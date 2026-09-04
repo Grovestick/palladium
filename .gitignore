@@ -1,0 +1,69 @@
+# Secrets. None of these may ever be published: invites.json holds live keys to
+# the library, and library.json holds the TMDB key.
+config.json
+invites.json
+library.json
+
+# The library itself, and what it collected: someone else's copy is meaningless, and
+# it records what has been watched and how far.
+library.db
+library.db-journal
+library.db.bak-*
+cache/
+feedback.jsonl
+feedback-archive.jsonl
+app-crash.log
+
+# Everyone's settings: what each person watches with, where they had got to, what they
+# have marked. Personal, and meaningless to anybody else.
+settings.json
+settings.json.bak
+settings.json.tmp
+debug.log
+panel_serial*.log
+
+# Build output. The APK is 15 MB and rebuilt from source in a minute.
+static/palladium.apk
+static/version.json
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+__pycache__/
+*.pyc
+
+# Generated
+palladium.ico
+nested_series.json
+
+# Scratch: films written out while testing the transcoder
+probe.mp4
+*.tmp
+
+# Diagnostics naming real files
+wrong_subs.json
+
+# what the build makes: 73 MB of compiled program and a 32 MB installer
+build/
+subcache/
+
+# beta keys are credentials, and the export is the same list without the names
+betakeys.json
+keys.json
+keys.bulk.json
+
+# The installer, put beside the web client so the server can hand it out.
+static/Palladium-Setup*.exe
+
+# the app, copied beside the site at publish time
+site/palladium.apk
+site/version.json
+
+# Nuitka leaves one of these behind when a compile falls over.
+nuitka-crash-report.xml
+
+# The version is written in by the build; the file it writes is not source.
+pd_built.py
+
+# the Linux machine pd-testbox.py makes, and Ubuntu's disk inside it
+.testbox/

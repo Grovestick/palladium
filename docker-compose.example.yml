@@ -1,0 +1,33 @@
+# Palladium on a machine of its own. Copy, edit the folder lines, docker compose up.
+#
+# It answers on http://<the machine>:8765. Set a password on first run: without one,
+# anybody on the same network is treated as the owner.
+services:
+  palladium:
+    image: ghcr.io/grovestick/palladium:latest
+    container_name: palladium
+    ports:
+      - "8765:8765"
+    environment:
+      # so the night hours, the watch log and "added today" mean what you mean
+      - TZ=Europe/Stockholm
+    volumes:
+      # everything the server writes: settings, the library index, invitations
+      - palladium-data:/data
+      # your films and series, read-only - it never writes to them
+      - /srv/films:/media/films:ro
+      - /srv/series:/media/series:ro
+      # and, if this one follows another server, where its copies are kept: a disk of
+      # its own, filled to the limit set in Settings, This computer
+      - /srv/cache:/media/cache
+    devices:
+      # Intel Quick Sync, for the conversions a screen cannot do for itself. Leave it
+      # out and they happen on the processor, which is slower but works everywhere.
+      # An NVIDIA card is reached a different way: install the NVIDIA container
+      # toolkit and give the service `gpus: all` instead of this line. There is no
+      # VAAPI path yet, so an AMD card on Linux encodes on the processor.
+      - /dev/dri:/dev/dri
+    restart: unless-stopped
+
+volumes:
+  palladium-data:

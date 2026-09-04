@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palladium</title>
+<meta name="description" content="A media server you run yourself. Your films and series, on every screen in the house. Windows installer or Docker image, no account, nothing uploaded.">
+<meta property="og:title" content="Palladium">
+<meta property="og:description" content="Your films and series, on every screen in the house. No account, no subscription, nothing uploaded.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' x='6' font-family='Georgia,serif' font-size='26' font-weight='700' fill='%231e4d3f'>P</text></svg>">
+<style>
+/* ---- paper ----
+   A page about somebody's own library, set like something out of one: paper rather
+   than a screen, ink rather than white text, and one colour - the green of a library
+   binding - doing every job an accent has to do. Nothing is loaded from anywhere: the
+   faces are the ones already on the machine reading this, which is also the only
+   honest arrangement for a page that promises nothing is sent anywhere. */
+:root{
+  --paper:#f3f4f0;      /* a cool paper, biased green rather than cream */
+  --plate:#fbfbf9;      /* what sits on it: lighter, never a shadow */
+  --line:#d7dad1;
+  --rule:#c3c8bd;       /* the darker hairline, for what divides sections */
+  --ink:#191c1a;
+  --muted:#5c625c;
+  --accent:#1e4d3f;     /* a binding, not a button */
+  --accentIn:#f6f7f3;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:17px/1.62 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.wrap{max-width:880px;margin:0 auto;padding:0 24px}
+
+/* ---- masthead ---- */
+header{border-bottom:1px solid var(--rule)}
+header .wrap{display:flex;align-items:baseline;gap:20px;padding:20px 24px 16px}
+.brand{display:flex;align-items:baseline;gap:11px;text-decoration:none;color:var(--ink)}
+.brand b{font-family:var(--serif);font-size:30px;line-height:1;color:var(--accent);
+  font-weight:600}
+.brand span{font-weight:600;letter-spacing:.2em;text-transform:uppercase;font-size:13px}
+nav{margin-left:auto;display:flex;gap:20px;font-size:14px;padding-right:160px}
+nav a{color:var(--muted);text-decoration:none;padding-bottom:2px;
+  border-bottom:1px solid transparent}
+nav a:hover{color:var(--ink);border-bottom-color:var(--rule)}
+
+/* ---- the opening ---- */
+h1{font-family:var(--serif);font-weight:600;font-size:clamp(31px,5vw,44px);
+  line-height:1.14;letter-spacing:-.008em;margin:54px 0 16px;max-width:19ch;
+  text-wrap:balance}
+.lede{font-size:19px;line-height:1.55;max-width:60ch;margin:0 0 30px;color:#333834}
+
+.take{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 14px}
+.dl{display:inline-flex;align-items:center;background:var(--accent);color:var(--accentIn);
+  border:1px solid var(--accent);border-radius:3px;padding:11px 20px;font-weight:600;
+  font-size:15px;text-decoration:none}
+.dl:hover{background:#173d32;border-color:#173d32}
+.dl.quiet{background:transparent;color:var(--ink);border-color:var(--rule)}
+.dl.quiet:hover{background:var(--plate);border-color:var(--muted)}
+.droid{width:17px;height:17px;fill:currentColor;margin-right:9px;flex:0 0 auto}
+.facts{color:var(--muted);font-size:13.5px;line-height:1.85;margin:0 0 54px;
+  max-width:66ch}
+.facts b{color:var(--ink);font-variant-numeric:tabular-nums}
+
+/* ---- plates ----
+   Screenshots as plates in a manual: numbered, ruled off, captioned underneath. The
+   numbers are not decoration - four pictures of one program need telling apart, and
+   a caption that begins with its own number can be referred to. */
+.plates{display:grid;grid-template-columns:1fr 1fr;gap:26px 24px;margin:0 0 54px}
+.plates figure{margin:0}
+.plates img{width:100%;height:auto;display:block;border:1px solid var(--line);
+  background:var(--plate)}
+.plates figcaption{margin:9px 0 0;color:var(--muted);font-size:13.5px;line-height:1.5}
+.plates figcaption b{color:var(--ink);font-weight:600;font-family:var(--mono);
+  font-size:12px;letter-spacing:.04em;margin-right:7px}
+
+h2{font-family:var(--sans);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);font-weight:700;margin:0 0 2px;padding-bottom:10px;
+  border-bottom:1px solid var(--rule)}
+
+/* ---- what it is for: a ruled list, read down ---- */
+.does{margin:0 0 54px}
+.does div{display:grid;grid-template-columns:220px 1fr;gap:6px 26px;
+  padding:15px 0;border-bottom:1px solid var(--line)}
+.does b{font-size:16px;font-weight:600}
+.does p{margin:0;color:var(--muted);font-size:15.5px;line-height:1.55}
+
+.plain{margin:14px 0 54px;padding:0;list-style:none;color:var(--muted);font-size:15.5px}
+.plain li{margin:0;padding:12px 0 12px 26px;border-bottom:1px solid var(--line);
+  position:relative}
+.plain li::before{content:"\2014";position:absolute;left:0;color:var(--rule)}
+
+.write{margin:14px 0 54px;color:var(--muted);font-size:15.5px;max-width:62ch}
+
+footer{border-top:1px solid var(--rule);margin-top:10px;padding:22px 0 46px;
+  color:var(--muted);font-size:13.5px;display:flex;justify-content:space-between;
+  gap:16px;flex-wrap:wrap}
+footer a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
+footer a:hover{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* ---- the tin by the door ----
+   Top right, small and quiet. Nothing here is asked for; it is only left where
+   somebody who wants to can find it. */
+#give{position:fixed;right:24px;top:15px;z-index:5;
+  display:inline-flex;align-items:center;gap:8px;
+  padding:7px 14px;border-radius:3px;border:1px solid var(--line);
+  background:var(--plate);color:var(--muted);cursor:pointer;font:inherit;font-size:13px}
+#give:hover,#give:focus-visible{color:var(--ink);border-color:var(--muted)}
+#give svg{width:14px;height:14px;fill:var(--accent)}
+
+#tin{position:fixed;inset:0;z-index:6;display:none;align-items:center;
+  justify-content:center;background:rgba(25,28,26,.45);padding:20px}
+#tin.on{display:flex}
+#tin .card{max-width:400px;width:100%;padding:28px 28px 22px;border-radius:3px;
+  background:var(--plate);border:1px solid var(--rule);text-align:center}
+#tin h3{font-family:var(--serif);margin:0 0 10px;font-size:22px;font-weight:600}
+#tin p{margin:0 0 18px;color:var(--muted);font-size:14.5px;line-height:1.55}
+#tin img{width:186px;height:186px;margin:0 auto 18px;display:block;
+  border:1px solid var(--line);background:#fff;padding:8px}
+#tin .go{display:inline-block;padding:10px 22px;border-radius:3px;
+  background:var(--accent);color:var(--accentIn);text-decoration:none;font-weight:600}
+#tin .go:hover{background:#173d32}
+#tin .shut{display:block;margin:14px auto 0;background:none;border:0;
+  color:var(--muted);font:inherit;font-size:13.5px;cursor:pointer}
+#tin .shut:hover{color:var(--ink)}
+
+@media (max-width:720px){
+  .plates,.does div{grid-template-columns:1fr}
+  .does div{gap:3px}
+  nav{padding-right:0;gap:16px;font-size:13.5px}
+  header .wrap{flex-wrap:wrap;gap:12px}
+  #give{right:16px;top:auto;bottom:14px;font-size:12.5px}
+}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="/"><b>P</b> <span>Palladium</span></a>
+  <nav>
+    <a href="/server">Server</a>
+    <a href="/app">App</a>
+    <a href="/features">What it does</a>
+    <a href="https://github.com/grovestick/palladium">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="wrap">
+  <h1>Your films, on every screen in the house.</h1>
+  <p class="lede">Palladium reads the folders you already have, finds the artwork and
+  the subtitles, and serves them to a browser, a phone and a television on your own
+  network. No account, no subscription, and nothing leaves the house unless you invite
+  somebody into it.</p>
+
+  <div class="take">
+    <a class="dl" href="https://get.palladium.video/build">Download for Windows</a>
+    <a class="dl quiet" href="/server#linux">Run it in Docker</a>
+    <a class="dl quiet" href="/app"><svg class="droid" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 5.6 5.9 3.7a.45.45 0 0 1 .76-.48l1.25 1.98A7.7 7.7 0 0 1 12 4.5c1.09 0 2.13.19 3.09.53l1.25-1.98a.45.45 0 1 1 .76.48l-1.2 1.9A6.2 6.2 0 0 1 18.7 10.4H5.3a6.2 6.2 0 0 1 1.8-4.8zM9.1 8.5a.78.78 0 1 0 0-1.56.78.78 0 0 0 0 1.56zm5.8 0a.78.78 0 1 0 0-1.56.78.78 0 0 0 0 1.56z"/><rect x="5.3" y="11.5" width="13.4" height="7.6" rx="1.3"/><rect x="2.1" y="11.4" width="2.3" height="6.2" rx="1.15"/><rect x="19.6" y="11.4" width="2.3" height="6.2" rx="1.15"/><rect x="7.6" y="18.6" width="2.3" height="4.1" rx="1.15"/><rect x="14.1" y="18.6" width="2.3" height="4.1" rx="1.15"/></svg>Download Android app</a>
+  </div>
+  <p class="facts">
+    Windows 10 or 11, 64-bit &middot; version <b id="ver">…</b> &middot;
+    <span id="size">…</span> &middot; the build is not signed, so Windows will ask
+    twice before it runs &middot; the Linux image is the same server with ffmpeg
+    inside it &middot; the Android build runs on a phone and on a television
+  </p>
+
+  <div class="plates">
+    <figure>
+      <img src="img/home.jpg" alt="The front page: rows of what is being watched and what was added"
+           width="1600" height="1000" loading="lazy">
+      <figcaption><b>1</b>What is half-watched, and what arrived lately.</figcaption>
+    </figure>
+    <figure>
+      <img src="img/collections.jpg" alt="Collections drawn as posters, each with what it holds"
+           width="1600" height="1000" loading="lazy">
+      <figcaption><b>2</b>Collections are rules rather than lists, so releases added
+      later join by themselves.</figcaption>
+    </figure>
+    <figure>
+      <img src="img/casual.jpg" alt="The casual shelf, with the shuffle button and how far it has got"
+           width="1600" height="1000" loading="lazy">
+      <figcaption><b>3</b>A shelf for putting something on without choosing, which
+      never appears in Continue watching.</figcaption>
+    </figure>
+    <figure>
+      <img src="img/settings.jpg" alt="The settings screen, with the subtitle appearance controls"
+           width="1600" height="1000" loading="lazy">
+      <figcaption><b>4</b>Subtitles set once, as a share of the picture rather than of
+      the panel, so a phone and a television agree.</figcaption>
+    </figure>
+  </div>
+
+  <h2>What it is for</h2>
+  <div class="does">
+    <div><b>Subtitles in time with the film</b><p>The subtitle is measured against the
+      film's own audio and corrected - one offset, a drift, or a number for each part
+      of it. The correction is kept for that file, so everybody watching it gets
+      it.</p></div>
+    <div><b>Plays what you have</b><p>The file goes to the screen untouched wherever
+      the screen can take it, and is converted only where it cannot - on the graphics
+      card if the machine has one. It says which of the two is happening.</p></div>
+    <div><b>Identified properly</b><p>Title and year are asked before popularity, so a
+      remake does not take the original's entry, and a release that counts a
+      double-length premiere as two is put back on its own episode numbers.</p></div>
+    <div><b>People you invite</b><p>An invitation is a link with a name on it. Each
+      guest keeps their own place in every film, sees nothing else, and can be watched
+      and stopped from Now playing.</p></div>
+    <div><b>A second machine</b><p>Another computer can follow the first and keep
+      copies of what is being watched. When the first is off the second answers, and a
+      film whose source goes away moves across mid-play.</p></div>
+    <div><b>Every screen</b><p>Any browser, an Android phone, and a television that
+      pairs with a five-character code. Chromecast and AirPlay where the device offers
+      them.</p></div>
+  </div>
+
+  <h2>Something wrong, or missing</h2>
+  <p class="write">Faults are best reported from Reports inside Palladium itself: the
+  report carries the version and what the server was doing, which a message never
+  does. For everything else, write to
+  <a href="mailto:supportpalladium@gmail.com">supportpalladium@gmail.com</a><noscript> (supportpalladium at gmail dot com)</noscript>.</p>
+
+  <h2>Licence</h2>
+  <p class="write">Free software, under the
+  <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU Affero General Public License v3</a>. Use it, change it, share it.
+  If you pass a changed version to anybody else, or run one as a service other people
+  use, that version's source has to be available to them under the same terms - which
+  is the clause that keeps this from being quietly turned into somebody's product.
+  The whole of it is in <a href="https://github.com/grovestick/palladium">the repository</a>.</p>
+
+  <h2>What it is not</h2>
+  <ul class="plain">
+    <li>Not a catalogue. Nothing is provided with it: what you can watch is what you
+      already have on disk.</li>
+    <li>Not a cloud service. Nothing is uploaded, and it keeps working whatever
+      happens to whoever wrote it.</li>
+    <li>Not a way to share a library with strangers. Guests are people you invite, and
+      you can see what they are watching.</li>
+  </ul>
+</main>
+
+<footer class="wrap">
+  <span>Palladium &middot; <a href="https://grovestick.com/">Grovestick Studios</a>
+        &middot; <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPL-3.0</a></span>
+  <span><a href="https://github.com/grovestick/palladium">GitHub</a> &middot;
+        <a href="mailto:supportpalladium@gmail.com">supportpalladium@gmail.com</a><noscript> (supportpalladium at gmail dot com)</noscript> &middot; palladium.video</span>
+</footer>
+
+<!-- The tin by the door: the same PayPal link as a button and as a code to scan. -->
+<button id="give" type="button" aria-haspopup="dialog">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.7-9.3-9A5.2 5.2 0 0 1 12 6.6 5.2 5.2 0 0 1 21.3 12c-1.8 4.3-9.3 9-9.3 9z"/></svg>
+  Support Palladium
+</button>
+
+<div id="tin" role="dialog" aria-modal="true" aria-labelledby="tinhead">
+  <div class="card">
+    <h3 id="tinhead">Support Palladium</h3>
+    <p>Palladium is free, and it stays free. If it has earned a place in your evenings
+       and you would like to put something in, it goes straight back into the work -
+       the hours, and the machines it is tested on. Entirely optional, and quietly
+       appreciated.</p>
+    <img id="tinqr" src="img/donate.png" alt="A code to scan to donate" hidden>
+    <a class="go" id="tinlink" href="#" target="_blank" rel="noopener">Donate with PayPal</a>
+    <button class="shut" type="button">No thanks</button>
+  </div>
+</div>
+
+<script>
+// Where the button and the code both point: the same PayPal link the code carries.
+var PAYPAL = "https://www.paypal.com/qrcodes/managed/90dfb904-1238-445b-a74c-0c87d6259cdc";
+
+(function () {
+  var give = document.getElementById("give");
+  var tin = document.getElementById("tin");
+  var link = document.getElementById("tinlink");
+  var qr = document.getElementById("tinqr");
+  link.href = PAYPAL;
+  // the picture only appears if it is there: a broken image is worse than none
+  var probe = new Image();
+  probe.onload = function () { qr.hidden = false; };
+  probe.src = "img/donate.png";
+
+  var show = function (on) {
+    tin.classList.toggle("on", on);
+    if (on) link.focus();
+    else give.focus();
+  };
+  give.onclick = function () { show(true); };
+  tin.querySelector(".shut").onclick = function () { show(false); };
+  tin.onclick = function (e) { if (e.target === tin) show(false); };
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && tin.classList.contains("on")) show(false);
+  });
+})();
+
+// the numbers come from the file the server itself reads, so the page and a running
+// copy never disagree about which build is current
+fetch("/server.json").then(function (r) { return r.json(); }).then(function (said) {
+  document.getElementById("ver").textContent = said.version || "";
+  document.getElementById("size").textContent =
+    Math.round((said.size || 0) / 1e6) + " MB";
+}).catch(function () {});
+</script>
+</body>
+</html>

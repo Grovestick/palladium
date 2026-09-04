@@ -1,0 +1,33 @@
+# What must never reach the build context. COPY names its files one by one, so none
+# of this would land in an image today - but a build context is also what gets sent
+# to the daemon, and one careless COPY . . later is all it takes.
+config.json
+invites.json
+library.json
+settings.json
+settings.json.*
+keys.json
+keys.bulk.json
+betakeys.json
+library.db
+library.db-*
+library.db.bak-*
+feedback.jsonl
+feedback-archive.jsonl
+*.log
+cache/
+subcache/
+build/
+site/
+beta/
+android/
+__pycache__/
+*.pyc
+.git/
+static/Palladium-Setup*.exe
+
+# The app and its version number are not source, and a stale number in an image is a
+# server advertising a file it has not got. A container fetches both for itself the
+# first time somebody asks for the app.
+static/palladium.apk
+static/version.json

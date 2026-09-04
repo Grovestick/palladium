@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palladium for Android</title>
+<meta name="description" content="The Palladium app for Android phones and televisions.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' x='6' font-family='Georgia,serif' font-size='26' font-weight='700' fill='%231e4d3f'>P</text></svg>">
+<style>
+:root{
+  --bg:#f3f4f0; --panel:#fbfbf9; --panel2:#eeefe9; --line:#d7dad1;
+  --fg:#191c1a; --dim:#5c625c; --accent:#1e4d3f;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:16.5px/1.62 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.wrap{max-width:760px;margin:0 auto;padding:0 22px}
+header{border-bottom:1px solid var(--line);padding:18px 0}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:.16em;
+  text-transform:uppercase;font-size:14px;color:var(--fg);text-decoration:none}
+.brand b{font-family:var(--serif);font-size:26px;color:var(--accent);
+  letter-spacing:0;line-height:1}
+h1{font-family:var(--serif);font-weight:600;
+  font-size:clamp(28px,5vw,40px);line-height:1.12;margin:44px 0 12px}
+.lede{color:var(--dim);font-size:18px;max-width:60ch;margin:0 0 28px}
+.get{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+  padding:22px;margin:0 0 30px}
+.dl{display:inline-flex;align-items:center;background:var(--accent);color:#f6f7f3;border-radius:3px;
+  padding:12px 22px;font-weight:600;text-decoration:none}
+.droid{width:17px;height:17px;fill:currentColor;vertical-align:-3px;margin-right:8px}
+.facts{color:var(--dim);font-size:13px;margin:14px 0 0;line-height:1.9}
+code{background:var(--panel2);border:1px solid var(--line);border-radius:2px;
+  padding:2px 6px;font:12.5px ui-monospace,Consolas,monospace;
+  word-break:break-all}
+h2{font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  margin:32px 0 10px;font-weight:600}
+ul{margin:0 0 26px;padding:0 0 0 18px;color:var(--dim)}
+/* the chain, numbered because the order is the point */
+ol.chain{margin:0 0 22px;padding:0 0 0 22px;color:var(--dim)}
+ol.chain li{margin:0 0 10px;padding-left:4px}
+ol.chain b{color:var(--fg);font-weight:600}
+li{margin:6px 0}
+footer{border-top:1px solid var(--line);margin-top:44px;padding:22px 0 40px;
+  color:var(--dim);font-size:13px;display:flex;justify-content:space-between;gap:14px;
+  flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header><div class="wrap"><a class="brand" href="/"><b>P</b> Palladium</a></div></header>
+
+<main class="wrap">
+  <h1>The app, for Android.</h1>
+  <p class="lede">One build for a phone and for a television. It finds a Palladium on
+  your own network, or takes the five-character code the server shows.</p>
+
+  <section class="get">
+    <a class="dl" href="https://get.palladium.video/app"><svg class="droid" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 5.6 5.9 3.7a.45.45 0 0 1 .76-.48l1.25 1.98A7.7 7.7 0 0 1 12 4.5c1.09 0 2.13.19 3.09.53l1.25-1.98a.45.45 0 1 1 .76.48l-1.2 1.9A6.2 6.2 0 0 1 18.7 10.4H5.3a6.2 6.2 0 0 1 1.8-4.8zM9.1 8.5a.78.78 0 1 0 0-1.56.78.78 0 0 0 0 1.56zm5.8 0a.78.78 0 1 0 0-1.56.78.78 0 0 0 0 1.56z"/><rect x="5.3" y="11.5" width="13.4" height="7.6" rx="1.3"/><rect x="2.1" y="11.4" width="2.3" height="6.2" rx="1.15"/><rect x="19.6" y="11.4" width="2.3" height="6.2" rx="1.15"/><rect x="7.6" y="18.6" width="2.3" height="4.1" rx="1.15"/><rect x="14.1" y="18.6" width="2.3" height="4.1" rx="1.15"/></svg>Download Android app</a>
+    <p class="facts">
+      Android 7 and later &middot; phones and Google TV &middot;
+      version <b id="ver">…</b> &middot; <span id="size">…</span>
+    </p>
+  </section>
+
+  <p class="facts" style="margin:0 0 40px">Or take it from your own server, which is
+  the shorter way: app and server are one release with one number, so a server hands
+  out the app that matches itself. Open the server's address in a browser and press
+  Install on a phone.</p>
+
+  <h2>Installing it on a phone or tablet</h2>
+  <p style="color:var(--dim);margin:0 0 14px">It is not on the Play Store, so it
+  installs the way any app from outside the store does. Android walks you through it;
+  these are the three places it stops to ask.</p>
+  <ul>
+    <li>Open this page on the phone itself and press the download button. The file is
+      about 17 MB.</li>
+    <li>Open it from the notification or from Downloads. The first time, Android says
+      the browser is <b>not allowed to install unknown apps</b> and offers a settings
+      screen - turn it on for the browser, come back, and press install. You are
+      allowing that one app to install this one, and you can turn it off again
+      afterwards.</li>
+    <li>Play Protect then says the app was <b>not scanned</b>, or that it comes from
+      an unknown developer. Choose <b>Install anyway</b>. That warning is what Android
+      says about every app that did not come from the store; the build is not signed
+      by a registered developer yet.</li>
+    <li>Open Palladium and give it a server: the address of the machine running it, or
+      the whole invitation link somebody sent you.</li>
+  </ul>
+
+  <h2>Installing it on a television</h2>
+  <p style="color:var(--dim);margin:0 0 14px">A Google TV has no browser worth typing
+  into, so the server hands the file over by a short code instead.</p>
+  <ul>
+    <li>Install <b>Downloader</b> from the Play Store on the television, and allow it
+      to install unknown apps when it asks.</li>
+    <li>On the computer running Palladium, open <b>Settings - Install on a phone</b>.
+      It shows a five-character code and the exact line to type, which looks like
+      <code>192.168.1.20:8765/i/AB12C.apk</code>.</li>
+    <li>Type that line into Downloader with the remote. It fetches the app from your
+      own server - the file never comes from here - and installs it.</li>
+    <li>Play Protect asks the same question as on a phone. Install anyway.</li>
+  </ul>
+
+  <h2>After that</h2>
+  <ul>
+    <li>The app updates itself from the Palladium server it is connected to. This page
+      is not needed again.</li>
+    <li>Uninstall it as you would any app; nothing is left behind on the phone but its
+      own settings.</li>
+  </ul>
+
+  <h2>If your server has no copy of it</h2>
+  <p style="color:var(--dim);margin:0 0 14px">A server installed from the Windows
+  installer carries the app and can hand it straight to a phone or a television. One
+  running in Docker, or from source, does not - the app is a build artefact, and a
+  repository is no place for a 17 MB binary that anybody can rebuild. Its owner has
+  two ways to give it one, in Settings:</p>
+  <ul>
+    <li><b>Fetch it.</b> One button. The server takes the published build from
+      palladium.video, keeps it, and hands it out from then on. Nothing about the
+      machine goes with the request.</li>
+    <li><b>Build it.</b> Clone
+      <a href="https://github.com/grovestick/palladium">the source</a>, build the app,
+      and put <code>palladium.apk</code> beside the program. The right answer if you
+      would rather your server asked nobody for anything.</li>
+  </ul>
+  <p style="color:var(--dim);margin:0 0 46px">Until one of those happens, the install
+  page on that server says so plainly rather than offering a file it has not got.</p>
+
+  <h2>Where a new version comes from</h2>
+  <p style="color:var(--dim);margin:0 0 14px">Updates travel down a chain, one link at
+  a time, and each link only ever talks to the next one. Nothing skips to the end, and
+  nothing on your side of it reports back.</p>
+  <ol class="chain">
+    <li><b>palladium.video publishes a build.</b> One installer, one app, one hash for
+      each. This is the only machine here that anybody else's computer talks to, and
+      only when it is asked.</li>
+    <li><b>Your server fetches it, when you say so.</b> It checks what is published,
+      shows you the number, and installs it on request - having checked the file
+      against the published hash and refused it if they disagree. It sends nothing to
+      get an answer: it reads a small file, the same one anybody can read.</li>
+    <li><b>The app updates from your server.</b> Not from here. It asks the server it
+      is connected to what build that server is carrying, and takes the app from it -
+      over your own network, at home. A phone that knows several servers asks the one
+      it is using first.</li>
+    <li><b>A second machine updates from the first.</b> If you have one keeping copies,
+      it follows the machine it copies from rather than the site, so a house ends up on
+      one build without anybody visiting a page.</li>
+  </ol>
+  <p style="color:var(--dim);margin:0 0 46px">Which is why the app never asks
+  palladium.video for anything: by the time it is installed, everything it needs is on
+  a machine you own. The one exception is the very first download, if you took the file
+  from this page rather than from a server.</p>
+
+  <h2>Then</h2>
+  <ul>
+    <li><a href="/server">The server</a>, if there is not one running yet.</li>
+    <li><a href="/features">What it does</a>, in full.</li>
+  </ul>
+</main>
+
+<footer class="wrap">
+  <span>Palladium &middot; Grovestick Studios &middot;
+        <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPL-3.0</a></span>
+  <span><a href="https://github.com/grovestick/palladium">GitHub</a> &middot;
+        <a href="mailto:supportpalladium@gmail.com">supportpalladium@gmail.com</a><noscript> (supportpalladium at gmail dot com)</noscript></span>
+</footer>
+
+<script>
+// what is actually in the file beside this page
+fetch("/version.json").then((r) => r.json()).then((said) => {
+  document.getElementById("ver").textContent = said.versionName || "";
+  document.getElementById("size").textContent = (said.sizeMb || 0) + " MB";
+}).catch(() => {});
+</script>
+</body>
+</html>

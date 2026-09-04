@@ -1,0 +1,6 @@
+<resources>
+    <color name="ground">#FF0B0D10</color>
+    <!-- the icon and the television banner: white on this reads at 4.9 to 1 -->
+    <color name="tile">#FF2F6FD0</color>
+    <color name="accent">#FF4A90F0</color>
+</resources>

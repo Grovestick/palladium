@@ -1,0 +1,21 @@
+<resources>
+    <!-- AppCompat, because the cast button inflates against it. Compose does not care
+         which of the two it sits in, but MediaRouteButton refuses anything else. -->
+    <style name="Theme.Palladium" parent="Theme.AppCompat.NoActionBar">
+        <!-- the same ground as the app itself, so the phone's status bar and the
+             navigation bar at the bottom do not frame the screen in a different black -->
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:statusBarColor">@color/ground</item>
+        <item name="android:navigationBarColor">@color/ground</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorAccent">@color/accent</item>
+    </style>
+    <style name="Theme.Palladium.Player" parent="Theme.Palladium">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>

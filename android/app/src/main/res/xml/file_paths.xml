@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The one file we ever hand to another app: the downloaded update, which the package
+     installer reads through this provider. Nothing else in the app is shared. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

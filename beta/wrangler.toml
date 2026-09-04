@@ -1,0 +1,35 @@
+# The gate in front of the installer. Deploy with:
+#
+#     npx wrangler kv namespace create BETA_KEYS       once, then paste the id below
+#     npx wrangler r2 bucket create palladium-builds   once
+#     npx wrangler r2 object put palladium-builds/Palladium-Setup.exe \
+#         --file ../build/Palladium-Setup-<version>.exe
+#     npx wrangler kv bulk put --binding KEYS ../keys.json
+#     npx wrangler deploy
+#
+# The bucket is private: nothing reaches it except through this Worker, which is the
+# whole point of the arrangement.
+#
+# Faults sent in by servers are stored in the same KV namespace under "fault:" and
+# read at get.palladium.video/faults?key=... - which answers 404 to everybody until
+# the key exists, so the page cannot be found by trying. Set it once, and never in
+# this file: a secret in a repository is a secret that has been published.
+#
+#     npx wrangler secret put ADMIN_KEY --config beta/wrangler.toml
+
+name = "palladium-beta"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+# where the page that carries the key box will call it from
+routes = [
+  { pattern = "get.palladium.video/*", zone_name = "palladium.video" },
+]
+
+[[kv_namespaces]]
+binding = "KEYS"
+id = "02981ff155244c93991768325ac17164"
+
+[[r2_buckets]]
+binding = "BUILDS"
+bucket_name = "palladium-builds"

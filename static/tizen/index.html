@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Palladium</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;color:#e8ecf1;
+    font:16px system-ui,sans-serif}
+  .mid{height:100%;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:14px;text-align:center;padding:0 40px}
+  .p{font:600 64px Georgia,serif;color:#4a90f0}
+  .note{color:#93a0b0;max-width:640px;line-height:1.5}
+  input{background:#161b22;border:1px solid #232a33;color:#e8ecf1;border-radius:9px;
+    padding:12px 14px;font:inherit;width:min(560px,80vw)}
+  button{background:#4a90f0;color:#111;border:0;border-radius:9px;padding:12px 22px;
+    font:inherit;font-weight:600}
+</style>
+<div class="mid">
+  <div class="p">P</div>
+  <div class="note" id="say">Opening your library&hellip;</div>
+  <input id="addr" placeholder="http://192.168.0.10:8765" style="display:none">
+  <button id="go" style="display:none">Open</button>
+</div>
+<script>
+/* The address this package was built for. The server writes it in on the way out;
+   a package built by hand keeps the placeholder and asks instead. */
+var HOME = "__SERVER__";
+
+/* The remote's Back key, which the television will not handle for us. */
+try { tizen.tvinputdevice.registerKey("Back"); } catch (e) {}
+document.addEventListener("keydown", function (e) {
+  if (e.keyCode === 10009) {            // Back
+    if (history.length > 1) history.back();
+    else try { tizen.application.getCurrentApplication().exit(); } catch (x) {}
+  }
+});
+
+var kept = null;
+try { kept = localStorage.getItem("palladium-home"); } catch (e) {}
+var where = (HOME.indexOf("__") === 0 ? "" : HOME) || kept || "";
+
+if (where) {
+  try { localStorage.setItem("palladium-home", where); } catch (e) {}
+  location.replace(where);
+} else {
+  document.getElementById("say").textContent =
+    "Type the address of your Palladium server, or the invitation link you were sent.";
+  var box = document.getElementById("addr");
+  var go = document.getElementById("go");
+  box.style.display = go.style.display = "";
+  box.focus();
+  go.onclick = function () {
+    var v = box.value.trim();
+    if (!v) return;
+    if (v.indexOf("http") !== 0) v = "http://" + v;
+    try { localStorage.setItem("palladium-home", v); } catch (e) {}
+    location.replace(v);
+  };
+  box.addEventListener("keydown", function (e) {
+    if (e.keyCode === 13) go.click();
+  });
+}
+</script>

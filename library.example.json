@@ -1,0 +1,13 @@
+{
+  "movies": [
+    "D:\\Films"
+  ],
+  "tv": [
+    "D:\\Series"
+  ],
+  "mixed": [
+    "D:\\Download"
+  ],
+  "tmdb_key": "your-tmdb-key-here",
+  "language": "en-US"
+}

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Palladium on a Samsung television.
+
+  A hosted web app: the whole client is the web client, served by the server this
+  package was built for. __SERVER__ is filled in when the package is downloaded, so
+  the television opens the right library without anybody typing an address on it.
+-->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://palladium.video/tv" version="1.0.0" viewmodes="maximized">
+  <tizen:application id="Palladium1.Palladium" package="Palladium1" required_version="2.4"/>
+  <content src="index.html"/>
+  <name>Palladium</name>
+  <icon src="icon.png"/>
+  <tizen:profile name="tv-samsung"/>
+  <access origin="*" subdomains="true"/>
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:setting screen-orientation="landscape" background-support="disable"
+                 encryption="disable" install-location="auto"/>
+  <feature name="http://tizen.org/feature/screen.size.all"/>
+</widget>

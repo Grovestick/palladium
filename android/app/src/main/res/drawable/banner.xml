@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 320x180 on the Google TV home row; the mark stays square inside it -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/tile" />
+    <item
+        android:width="84dp"
+        android:height="84dp"
+        android:gravity="center"
+        android:drawable="@drawable/ic_p" />
+</layer-list>

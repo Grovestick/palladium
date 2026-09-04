@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The P as a vector: a bitmap stretched whenever it landed in a box that was not
+     square (the TV banner above all). A path scales without distorting. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M36,24 h26 a18,18 0 0 1 0,36 h-16 v24 h-10 z M46,34 v16 h16 a8,8 0 0 0 0,-16 z" />
+</vector>

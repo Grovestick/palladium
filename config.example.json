@@ -1,0 +1,16 @@
+{
+  "//": "Codecs each screen can play for itself. Anything listed here is sent as it is instead of being re-encoded, which is the difference between an idle processor and a software transcode.",
+  "targets": {
+    "pc": {
+      "//": "A browser plays AAC/MP3/Opus/FLAC only - AC3 and DTS have to be converted, which is cheap because it is audio alone",
+      "audioPassthrough": []
+    },
+    "cast": {
+      "//": "A Chromecast and most televisions pass Dolby Digital straight through to the amplifier",
+      "audioPassthrough": [
+        "ac3",
+        "eac3"
+      ]
+    }
+  }
+}

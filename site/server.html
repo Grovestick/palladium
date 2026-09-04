@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Palladium server</title>
+<meta name="description" content="The Palladium server: one installer for Windows, one container for Linux, no account.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' x='6' font-family='Georgia,serif' font-size='26' font-weight='700' fill='%231e4d3f'>P</text></svg>">
+<style>
+:root{
+  --bg:#f3f4f0; --panel:#fbfbf9; --panel2:#eeefe9; --line:#d7dad1;
+  --fg:#191c1a; --dim:#5c625c; --accent:#1e4d3f;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:16.5px/1.62 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.wrap{max-width:760px;margin:0 auto;padding:0 22px}
+header{border-bottom:1px solid var(--line);padding:18px 0}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:.16em;
+  text-transform:uppercase;font-size:14px;color:var(--fg);text-decoration:none}
+.brand b{font-family:var(--serif);font-size:26px;color:var(--accent);
+  letter-spacing:0;line-height:1}
+h1{font-family:var(--serif);font-weight:600;
+  font-size:clamp(28px,5vw,40px);line-height:1.12;margin:44px 0 12px}
+.lede{color:var(--dim);font-size:18px;max-width:60ch;margin:0 0 28px}
+.get{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+  padding:22px;margin:0 0 30px}
+.dl{display:inline-flex;align-items:center;background:var(--accent);color:#f6f7f3;border-radius:3px;
+  padding:12px 22px;font-weight:600;text-decoration:none}
+.facts{color:var(--dim);font-size:13px;margin:14px 0 0;line-height:1.9}
+.facts code{background:var(--panel2);border:1px solid var(--line);border-radius:2px;
+  padding:2px 6px;font-size:12px;word-break:break-all}
+h2{font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  margin:32px 0 10px;font-weight:600}
+ul{margin:0 0 26px;padding:0 0 0 18px;color:var(--dim)}
+li{margin:6px 0}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+  padding:14px 16px;overflow-x:auto;font:12px/1.55 ui-monospace,Consolas,monospace;
+  color:#2b302c;margin:0 0 12px}
+footer{border-top:1px solid var(--line);margin-top:44px;padding:22px 0 40px;
+  color:var(--dim);font-size:13px;display:flex;justify-content:space-between;gap:14px;
+  flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header><div class="wrap"><a class="brand" href="/"><b>P</b> Palladium</a></div></header>
+
+<main class="wrap">
+  <h1>The server.</h1>
+  <p class="lede">One installer for Windows, one container for Linux. It reads the
+  folders you point it at and serves what it finds to a browser, a phone and a
+  television on your own network.</p>
+
+  <section class="get">
+    <a class="dl" href="https://get.palladium.video/build">Download the installer</a>
+    <p class="facts">
+      Windows 10 or 11, 64-bit &middot; version <b id="ver">…</b> &middot;
+      <span id="size">…</span><br>
+      SHA-256 <code id="sum">…</code>
+    </p>
+  </section>
+
+  <h2>Installing it</h2>
+  <ul>
+    <li>Windows will say it does not recognise the program - the build is not signed
+      yet. Compare the SHA-256 above if you want to be sure, then choose More info and
+      Run anyway.</li>
+    <li>It installs for your account alone. No administrator, no service, nothing
+      added to the system.</li>
+    <li>Point it at your folders on first run. The first scan takes a few minutes and
+      the artwork arrives as it goes.</li>
+    <li>It upgrades in place: settings, invitations and the index are kept, and the
+      program tells you when a new build is out.</li>
+  </ul>
+
+  <h2 id="linux">On Linux, in a container</h2>
+  <p style="color:var(--dim);margin:0 0 14px">The same server, with ffmpeg already
+  inside it. Everything it writes lives in <code>/data</code>; your films are mounted
+  read-only.</p>
+<pre>services:
+  palladium:
+    image: ghcr.io/grovestick/palladium:latest
+    ports: ["8765:8765"]
+    environment: [TZ=Europe/Stockholm]
+    volumes:
+      - palladium-data:/data
+      - /srv/films:/media/films:ro
+      - /srv/series:/media/series:ro
+    devices: ["/dev/dri:/dev/dri"]   # Intel Quick Sync, optional
+    restart: unless-stopped
+
+volumes: { palladium-data: }</pre>
+  <ul>
+    <li>Set a password on first run. Without one, everybody on that network is treated
+      as the owner.</li>
+    <li>Conversions run on the processor unless you pass a card through. Quick Sync
+      through <code>/dev/dri</code>; an NVIDIA card through the NVIDIA container
+      toolkit and <code>gpus: all</code>.</li>
+    <li>A container is also the sensible second machine: point it at your main server
+      and it keeps copies of what is being watched.</li>
+  </ul>
+
+  <h2>Then</h2>
+  <ul>
+    <li>Open the address the tray icon shows, from any machine in the house.</li>
+    <li>Install it a second time on another computer and set that one to follow this
+      one: it keeps copies of what is being watched and answers when this machine is
+      off. Settings - Follow another server, on the second machine.</li>
+    <li><a href="/app">Install the app</a> on a phone or a television.</li>
+    <li><a href="/features">What it does</a>, in full.</li>
+  </ul>
+</main>
+
+<footer class="wrap">
+  <span>Palladium &middot; Grovestick Studios &middot;
+        <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPL-3.0</a></span>
+  <span><a href="https://github.com/grovestick/palladium">GitHub</a> &middot;
+        <a href="mailto:supportpalladium@gmail.com">supportpalladium@gmail.com</a><noscript> (supportpalladium at gmail dot com)</noscript></span>
+</footer>
+
+<script>
+// the numbers come from the file the server itself reads, so a page and a running
+// copy never disagree about which build is current
+fetch("/server.json").then((r) => r.json()).then((said) => {
+  document.getElementById("ver").textContent = said.version || "";
+  document.getElementById("size").textContent =
+    Math.round((said.size || 0) / 1e6) + " MB";
+  document.getElementById("sum").textContent = said.sha256 || "";
+}).catch(() => {});
+</script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palladium</title>
+<link rel="icon" href="/palladium.ico" sizes="any">
+<link rel="stylesheet" href="style.css">
+<!-- Kept on a home screen it opens without Safari around it, which on an iPhone is as
+     close to an app as Apple allows anything to get without the App Store. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Palladium">
+<meta name="theme-color" content="#0b0d10">
+</head>
+<body>
+<div id="backdrop"></div>
+<div id="watermark" aria-hidden="true">P</div>
+
+<header id="topbar">
+  <span class="brand"><b>P</b> PALLADIUM<i id="ver" title="Version"></i></span>
+  <button id="srvpick" class="srvpick" title="Which server this is"></button>
+  <div id="srvlist" class="srvlist hidden"></div>
+  <button class="back" id="back" title="Back">&#8592;</button>
+  <nav>
+    <button data-view="home" data-label="Home" class="tab active">Home</button>
+    <button data-view="movies" data-label="Films" class="tab">Films</button>
+    <button data-view="shows" data-label="TV" class="tab">TV</button>
+    <button data-view="watchlist" data-label="Watchlist" class="tab">Watchlist</button>
+    <button data-view="collections" data-label="Collections" class="tab">Collections</button>
+    <button data-view="casual" data-label="Casual" class="tab">Casual</button>
+    <button data-view="party" data-label="Party" class="tab">Watch party</button>
+    <button data-view="settings" class="tab" title="Library settings">&#9881;</button>
+  </nav>
+  <input id="search" type="search" placeholder="Search&hellip;" autocomplete="off">
+  <div class="spacer"></div>
+  <google-cast-launcher id="castbtn" title="Cast"></google-cast-launcher>
+</header>
+
+<main id="main"></main>
+
+<div id="player" class="hidden">
+  <div class="pl-top">
+    <button id="pl-close" title="Close">&#10005;</button>
+    <button id="pl-settings" title="Settings (the film keeps playing)">&#9881;</button>
+    <span id="pl-title"></span>
+    <span id="pl-where"></span>
+    <label class="pref hidden">Engine <select id="pl-engine"></select></label>
+    <label class="pref hidden">Version <select id="pl-ver"></select><span
+      id="pl-verone" class="verone"></span></label>
+    <span id="pl-decision"></span>
+    <label class="pref hidden"><select id="pl-subs"></select></label>
+    <!-- the figures live in the bar itself: one strip across the top, not two -->
+    <div id="pl-stats"></div>
+  </div>
+  <!-- x-webkit-airplay: Safari's own way of sending a film to an Apple TV, which
+       is the only casting an iPhone will do from a web page -->
+  <video id="video" playsinline x-webkit-airplay="allow"></video>
+  <!-- the subtitles, drawn by us: the browser's own cue box leaves lines behind -->
+  <div id="subs"></div>
+  <div id="ctl">
+    <button id="c-play" title="Play/pause (space)">&#9654;</button>
+    <span id="c-now">0:00</span>
+    <div id="c-track"><div id="c-buf"></div><div id="c-fill"></div>
+      <input id="c-scrub" type="range" min="0" max="1000" value="0" step="1"></div>
+    <span id="c-dur">0:00</span>
+    <button id="c-mute" title="Mute (m)">&#128266;</button>
+    <input id="c-vol" type="range" min="0" max="100" value="100">
+    <span id="c-volpct"></span>
+    <!-- Google's own element rather than a button of ours calling requestSession:
+         it knows about sessions, devices and disconnecting, and it works -->
+    <google-cast-launcher id="c-castbtn" title="Cast to a television"></google-cast-launcher>
+    <button id="c-fit" title="Picture size: fit / fill (z)">F</button>
+    <button id="c-prev" title="Previous" class="hidden">&#9198;</button>
+    <button id="c-next" title="Next" class="hidden">&#9197;</button>
+    <!-- the two subtitle buttons stand together: which one, and how it looks -->
+    <button id="pl-cc" title="Which subtitle: choose, verify, download">CC</button>
+    <button id="pl-subcss" title="How subtitles look, for this film">Aa</button>
+    <button id="pl-audio" title="Which soundtrack">&#9834;</button>
+    <button id="pl-quality" title="Picture size and megabits">&#9881;</button>
+    <button id="c-fs" title="Fullscreen (f)">&#9974;</button>
+  </div>
+  <div id="cast-ui" class="hidden">
+    <div class="cast-art"><img id="cast-img" alt=""></div>
+    <div class="cast-controls">
+      <button id="c-playpause">&#9208;</button>
+      <input id="c-seek" type="range" min="0" max="1000" value="0">
+      <span id="c-time">0:00 / 0:00</span>
+      <button id="c-stop">Stop</button>
+    </div>
+  </div>
+</div>
+
+<div id="copynote" class="hidden"></div>
+<div id="stale" class="hidden">This tab is running an old version — <button onclick="location.reload(true)">reload</button></div>
+<div id="toast"></div>
+
+<script src="dash.all.min.js"></script>
+<script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+<script src="tizen.js"></script>
+<script src="setup.js"></script>
+<script src="app.js"></script>
+<script src="controls.js"></script>
+<script src="settings.js"></script>
+<script src="chat.js"></script>
+</body>
+</html>
