@@ -67,3 +67,9 @@ pd_built.py
 
 # the Linux machine pd-testbox.py makes, and Ubuntu's disk inside it
 .testbox/
+
+# What the publish scripts write, rather than anything anybody typed: the version and
+# hash of the current build, and the scripts zipped up for a server to fetch. Both are
+# made from what is already in this repository.
+site/server.json
+site/tools/
