@@ -83,6 +83,8 @@ None of those are in the repository, and none of them should be.
 ## Licence
 
 GNU Affero General Public License v3.0 - the full text is in [LICENSE](LICENSE).
+Two players by other people are carried here under their own permissive licences:
+[THIRD-PARTY.md](THIRD-PARTY.md).
 
 In short: use it, change it, share it. If you give a changed version to anybody else,
 or run one as a service other people use, that version's source has to be available to

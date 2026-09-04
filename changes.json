@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.17.182",
+    "when": "2026-09-04",
+    "title": "One library, and a ceiling on what another machine may take",
+    "items": [
+      "The option to browse a library on another kind of server is gone, and so is everything that existed only to reach one: the headers that named this client to it, the token on every address, the picture transcoder, the subtitle path that asked it to produce text, and the second decoder. What is left is this server's own library, which is what every install has actually been using.",
+      "A server now sets a ceiling on how much a machine following it may use. The machine doing the copying has always had a limit of its own; that is the right setting for whoever owns it and the wrong one for whoever owns the library. The smaller of the two wins, so the ceiling can only ever make it take less.",
+      "And the machines following this one are listed, with a way to stop one of them. Stopping is about a machine rather than about the key: a new key stops every follower at once, and this stops the one named. It keeps its key and is refused anyway, matched on the address the request arrives from rather than the one it claims.",
+      "A server built from source has no app beside it, because an app is not source. It can fetch the published one - but only when somebody here presses the button, never because a stranger asked for the file. The other way is to build it yourself and put it beside the program, which is the answer for a machine that should ask nobody for anything.",
+      "Report faults is its own card now, and the code another computer needs is on Remote computer with everything else about another machine - as is what this machine is called and where it answers, which is the half of the arrangement the other one has to be told."
+    ]
+  },
+  {
     "version": "0.17.181",
     "when": "2026-09-04",
     "title": "Ready to be handed to somebody else",

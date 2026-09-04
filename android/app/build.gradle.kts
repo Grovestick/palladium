@@ -16,10 +16,10 @@ android {
         // small additions, the second is reserved for a real feature release, the first
         // for calling it done. versionCode is separate and only ever counts up, because
         // that is the number Android compares when deciding an APK is an update.
-        versionCode = 504
+        versionCode = 505
         // A feature release rather than a patch: three subtitle profiles, per-title
         // overrides, and a settings screen the app never had.
-        versionName = "0.17.181"     // one number for the app and the server it ships with
+        versionName = "0.17.182"     // one number for the app and the server it ships with
 
         // Where the app looks for its own updates, whatever server it happens to be
         // browsing. A friend's Palladium serves whatever APK they downloaded, which

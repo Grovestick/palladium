@@ -110,6 +110,7 @@ footer{border-top:1px solid var(--line);margin-top:50px;padding:22px 0 40px;
     <button class="tab" id="tab-more" role="tab" aria-controls="pane-more">Features</button>
     <button class="tab" id="tab-home" role="tab" aria-controls="pane-home">Home streaming</button>
     <button class="tab" id="tab-download" role="tab" aria-controls="pane-download">Download</button>
+    <button class="tab" id="tab-source" role="tab" aria-controls="pane-source">Source</button>
   </div>
 
   <section class="pane" id="pane-more" role="tabpanel" hidden>
@@ -412,6 +413,56 @@ volumes: { palladium-data: }</pre>
   </ul>
   </section>
 
+  <section class="pane" id="pane-source" role="tabpanel" hidden>
+    <h1>All of it, in the open.</h1>
+    <p class="lede">Palladium is free software under the GNU Affero General Public
+    License v3. The server, the web client, the Android app and the pages you are
+    reading are one repository, and it is the same code the installer is built
+    from.</p>
+
+    <section class="get">
+      <h2>The repository</h2>
+      <p style="margin:0 0 14px;color:var(--dim);font-size:15px">Everything, at the
+      version currently published.</p>
+      <a class="dl" href="https://github.com/Grovestick/palladium">github.com/Grovestick/palladium</a>
+      <p class="facts">
+        AGPL-3.0 &middot; Python 3 and the standard library, plain JavaScript,
+        Kotlin and Compose &middot; no build step for the web client
+      </p>
+    </section>
+
+    <h2 class="sec">What the licence asks</h2>
+    <ul class="plain">
+      <li>Use it, read it, change it, run it for whatever you like.</li>
+      <li>If you give a changed version to somebody else, or run one as a service
+        other people use, that version's source has to be available to them under the
+        same terms.</li>
+      <li>That last clause is the whole point of choosing this licence rather than a
+        looser one: it keeps Palladium from being quietly turned into somebody's
+        closed product.</li>
+    </ul>
+
+    <h2 class="sec">Building it yourself</h2>
+    <ul class="plain">
+      <li><b>The server</b> runs from source with nothing installed but Python 3.11 or
+        newer and ffmpeg: <code>python pd-server.py</code>.</li>
+      <li><b>The web client</b> is plain JavaScript with no build step - the files in
+        <code>static/</code> are what the browser gets.</li>
+      <li><b>The Android app</b> is Kotlin and Compose in <code>android/</code>. Build
+        it and put the APK beside the server, and that server hands it out itself.</li>
+      <li><b>The container</b> builds from the Dockerfile in the root, for amd64 and
+        arm64.</li>
+    </ul>
+
+    <h2 class="sec">Faults and changes</h2>
+    <ul class="plain">
+      <li>Report a fault from Reports inside Palladium: it carries the version and
+        what the server was doing, which a message never does.</li>
+      <li>Anything else, including patches: the repository, or
+        <a href="mailto:supportpalladium@gmail.com">supportpalladium@gmail.com</a><noscript> (supportpalladium at gmail dot com)</noscript>.</li>
+    </ul>
+  </section>
+
   <section class="pane" id="pane-what" role="tabpanel">
     <h1>Your files, on every screen.</h1>
     <p class="lede">Palladium indexes the folders you point it at, fetches artwork and
@@ -519,6 +570,7 @@ volumes: { palladium-data: }</pre>
     more: { pane: "pane-more", at: "/features" },
     home: { pane: "pane-home", at: "/home-streaming" },
     download: { pane: "pane-download", at: "/download" },
+    source: { pane: "pane-source", at: "/source" },
   };
   const show = (which, replace) => {
     Object.keys(panes).forEach((name) => {

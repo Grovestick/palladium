@@ -1384,8 +1384,11 @@
     const again = () => drawServers(codeBox, followBox, keyBox);
     const put = async (what) => { await post("/follow", what); };
 
-    /* ---- what this server is, and what another needs to follow it ---- */
-    codeBox.innerHTML = "<h3>This server's code</h3>";
+    /* ---- what this machine is called, and where it answers ---- */
+    // The code another server needs is on Remote computer now, with the rest of what
+    // is about another machine. What stays here is what this one is: its name and the
+    // port it answers on.
+    codeBox.innerHTML = "<h3>Name and port</h3>";
     keyBox.innerHTML = "";
 
     // What this machine is called, wherever it is named: the drawing, the server
@@ -2285,6 +2288,12 @@
     // Two halves of one subject, and they are opposites: what this server lends to
     // another machine, and what it borrows from one. A rule between them, so nobody
     // reads a setting from the wrong side of the arrangement.
+    // What this machine is called and where it answers: it is the half of the
+    // arrangement the other computer has to be told, so it reads here rather than
+    // among this machine's own switches.
+    const codeCard = block("");
+    main.appendChild(codeCard);
+
     const lend = document.createElement("div");
     lend.className = "note";
     lend.style.cssText = "margin:0 0 8px;letter-spacing:.08em;text-transform:uppercase";
@@ -2308,7 +2317,7 @@
 
     const followBox = block("");
     main.appendChild(followBox);
-    drawServers(document.createElement("div"), followBox, keyBox);
+    drawServers(codeCard, followBox, keyBox);
 
     // the keys it needs of its own: subtitles it fetches itself, and the catalogue
     // it looks posters up in when this machine cannot be reached
@@ -2463,14 +2472,10 @@
     sleeps.appendChild(when);
     box.appendChild(sleeps);
 
-    // This server's own address and key. The other half of that answer - what this
-    // machine follows - is on Remote computer, because it is about another machine.
-    const codeBox = block("");
-    all.appendChild(codeBox);
-    // Handing another computer the right to copy this library is about another
-    // machine, so it is asked on Remote computer rather than here.
-    drawServers(codeBox, document.createElement("div"),
-                document.createElement("div"));
+    // What this machine is called, where it answers, and the code another computer
+    // needs: all three are about an arrangement with another machine, so all three
+    // are on Remote computer.
+
 
     // The big pieces of machinery. Neither ships with Palladium - together they are
     // eight gigabytes - so each says what it is for, what it costs on disk, and
