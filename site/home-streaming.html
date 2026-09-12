@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home streaming - Palladium</title>
+<meta name="description" content="Home streaming in plain terms: a server on a machine you own, sending your own files to the screens in your house.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' x='6' font-family='Georgia,serif' font-size='26' font-weight='700' fill='%234a90f0'>P</text></svg>">
+<style>
+:root{
+  --bg:#f3f4f0; --panel:#fbfbf9; --panel2:#eeefe9; --line:#d7dad1;
+  --fg:#191c1a; --dim:#5c625c; --accent:#2466c9; --good:#1e6b3a; --bad:#9d2f26;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:16.5px/1.62 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.wrap{max-width:940px;margin:0 auto;padding:0 22px}
+h1{font-family:var(--serif);font-weight:600;
+  font-size:clamp(30px,5vw,46px);line-height:1.12;margin:44px 0 12px;
+  text-wrap:balance;letter-spacing:-.01em}
+.lede{color:var(--dim);font-size:18px;max-width:62ch;margin:0 0 30px}
+.get{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+  padding:22px;margin:0 0 34px}
+.get h2{margin:0 0 6px;font-size:15px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--dim);font-weight:600}
+.dl{display:inline-flex;align-items:center;background:var(--accent);color:#f6f7f3;border-radius:3px;
+  padding:12px 22px;font-weight:600;text-decoration:none}
+.droid{width:17px;height:17px;fill:currentColor;vertical-align:-3px;margin-right:8px}
+input[type=text]{flex:1 1 220px;min-width:0;background:#fff;color:var(--fg);
+  border:1px solid var(--line);border-radius:3px;padding:11px 13px;font:inherit;
+  letter-spacing:.12em;text-transform:uppercase}
+input[type=text]:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{background:var(--accent);color:#f6f7f3;border:0;border-radius:3px;
+  padding:11px 20px;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button.ghost:hover{background:var(--panel)}
+.said{margin:12px 0 0;font-size:14px;min-height:1.4em}
+.said.no{color:var(--bad)}
+.said.yes{color:var(--good)}
+.facts{color:var(--dim);font-size:13px;margin:14px 0 0;line-height:1.9}
+.facts code{background:var(--panel2);border:1px solid var(--line);border-radius:2px;
+  padding:2px 6px;font-size:12px;word-break:break-all}
+.cols{display:grid;gap:26px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  margin:0 0 40px}
+.cols h3{margin:0 0 6px;font-size:16px}
+.cols p{margin:0;color:var(--dim);font-size:15px}
+h2.sec{font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  margin:36px 0 12px;font-weight:600}
+pre{background:var(--panel2);border:1px solid var(--line);border-radius:3px;
+  padding:13px 15px;overflow-x:auto;margin:0 0 14px;
+  font:12px/1.55 ui-monospace,Consolas,monospace;color:#2b302c}
+ul.plain{margin:0 0 30px;padding:0 0 0 18px;color:var(--dim)}
+ul.plain li{margin:5px 0}
+figure{margin:0 0 26px}
+figure img{width:100%;height:auto;display:block;border:1px solid var(--line);
+  background:var(--panel)}
+figcaption{color:var(--dim);font-size:13px;margin:8px 2px 0}
+/* What it does, one line each: a label and the fact behind it, ruled off from the
+   next so the list can be read down rather than across. */
+.does{margin:0 0 34px;border-top:1px solid var(--line)}
+.does div{display:grid;gap:4px 22px;grid-template-columns:210px 1fr;
+  padding:13px 2px;border-bottom:1px solid var(--line)}
+.does b{font-weight:600;font-size:15px}
+.does p{margin:0;color:var(--dim);font-size:15px}
+@media (max-width:620px){.does div{grid-template-columns:1fr;gap:2px}}
+/* the numbers, where a number is the answer */
+.spec{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  margin:0 0 34px}
+.spec div{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+  padding:14px 16px}
+.spec b{display:block;font-size:23px;font-family:var(--serif);color:var(--fg)}
+.spec span{color:var(--dim);font-size:13px}
+/* The studio, at the end of the page it made: a mark rather than a line of text,
+   drawn in the same serif as Palladium's own P so the two read as one house. */
+.house{display:flex;align-items:center;gap:16px;border-top:1px solid var(--line);
+  margin:44px 0 0;padding:26px 0 0}
+.house svg{flex:0 0 auto}
+.house b{display:block;font-size:15px;font-weight:600;letter-spacing:.02em}
+.house span{color:var(--dim);font-size:14px}
+.house a{color:var(--accent);text-decoration:none}
+.house a:hover{text-decoration:underline}
+footer{border-top:1px solid var(--line);margin-top:50px;padding:22px 0 40px;
+  color:var(--dim);font-size:13px;display:flex;justify-content:space-between;gap:14px;
+  flex-wrap:wrap}
+
+/* one masthead on every page: same width, height and scrollbar, so the menu stays put */
+html{overflow-y:scroll}
+header{border-bottom:1px solid #d7dad1;padding:0}
+header .wrap{max-width:940px;display:flex;align-items:center;gap:20px;padding:16px 22px}
+.brand{display:flex;align-items:baseline;gap:10px;text-decoration:none;color:#191c1a}
+.brand b{font-family:var(--serif);font-size:28px;line-height:1;color:#4a90f0;font-weight:600}
+.brand span{font-weight:600;letter-spacing:.18em;text-transform:uppercase;font-size:13.5px}
+nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px 20px;font-size:14px;line-height:1.6}
+nav a{color:#5c625c;text-decoration:none;padding-bottom:2px;border-bottom:1px solid transparent}
+nav a:hover{color:#191c1a;border-bottom-color:#d7dad1}
+nav a[aria-current=page]{color:#191c1a;border-bottom-color:#4a90f0}
+@media (max-width:640px){header .wrap{flex-wrap:wrap;gap:10px} nav{margin-left:0;gap:6px 16px;font-size:13.5px}}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="/"><b>P</b> <span>Palladium</span></a>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/features">Features</a>
+    <a href="/home-streaming" aria-current="page">Home streaming</a>
+    <a href="/server">Server</a>
+    <a href="/app">App</a>
+  </nav>
+</div></header>
+
+<main class="wrap">
+  <h1>Home streaming, in plain terms.</h1>
+  <p class="lede">A server on a machine you own reads the video files you already
+  have and sends them to the screens in your house. No catalogue that changes every
+  month, no film that disappears the week you meant to watch it, and no second
+  subscription to see the rest of a series.</p>
+
+  <h2 class="sec">How it works</h2>
+  <ul class="plain">
+    <li>One computer holds the files and runs the server. It can be the machine you
+      use every day; it does not need to be a dedicated box.</li>
+    <li>Every screen asks that machine for what it wants: a browser, a phone, a
+      television.</li>
+    <li>Inside the house the video travels over your own network, which is far
+      faster than any line to the internet - a 4K film plays without buffering
+      because nothing leaves the building.</li>
+    <li>From outside, one port is opened so the same server can be reached from
+      anywhere. That part is your connection's upload speed, and it is the only
+      number that matters for watching away from home.</li>
+    <li>A second computer can follow the first and keep copies of what is being
+      watched, so the machine you use every day can be turned off at night without
+      anybody's evening ending. The app moves between the two on its own.</li>
+  </ul>
+
+  <h2 class="sec">What it is not</h2>
+  <ul class="plain">
+    <li>It is not a catalogue. Nothing is provided with it: what you can watch is
+      what you already have on disk.</li>
+    <li>It is not a cloud service. Nothing is uploaded, nothing is stored elsewhere,
+      and it keeps working if the company that wrote it stops existing.</li>
+    <li>It is not a way to share a library with strangers. Guests are people you
+      invite by link, and you can see what they are watching and stop it.</li>
+  </ul>
+
+  <h2 class="sec">What you need</h2>
+  <ul class="plain">
+    <li>A computer that stays on while somebody is watching - Windows, or Linux
+      with Docker. An ordinary desktop is more than enough; most files are sent as
+      they are, which costs almost nothing.</li>
+    <li>Storage. Films are between 2 and 60 GB each depending on how they were
+      made; a series is smaller per episode and larger in total.</li>
+    <li>A network. Wired is best for the machine holding the files; the screens can
+      be on wifi.</li>
+    <li>For watching away from home: a router you can forward a port on, and enough
+      upload speed - about 8 Mbit/s for a 1080p film sent as it is, less if it is
+      converted on the way out.</li>
+  </ul>
+
+  <h2 class="sec">Where the work goes</h2>
+  <p style="color:var(--dim);margin:0 0 30px">Most of the time the file is sent
+  untouched and the screen does the decoding - that is what a television is for, and
+  it costs the server almost nothing. Converting is the expensive case: a browser
+  that cannot read the codec, or a picture-based subtitle that has to be drawn into
+  the image. Palladium uses the graphics card for that when there is one, and says
+  plainly which of the two is happening while something plays.</p>
+  
+</main>
+
+<footer class="wrap">
+  <span>Palladium &middot; Grovestick Studios</span>
+  <span><a href="mailto:support@grovestick.com">support@grovestick.com</a> &middot; <a href="/privacy">What it sends</a> &middot; palladium.video</span>
+</footer>
+</body>
+</html>

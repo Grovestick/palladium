@@ -3,7 +3,10 @@ package se.palladium.tv
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
@@ -45,6 +49,16 @@ object Skin {
      * picked for as long as they last.
      */
     var Mood by androidx.compose.runtime.mutableStateOf("house")
+    /** Where a poster stands: "on" behind the shelves as well, "poster" on a title's
+     *  own page and nowhere else, "off". This viewer's answer, from the server, so the
+     *  browser, the phone and the television agree. */
+    var Backdrop by androidx.compose.runtime.mutableStateOf("poster")
+
+    /** Behind the shelves, which is the only place the two answers differ. */
+    val BackdropBehind: Boolean get() = Backdrop == "on"
+
+    /** On a title's own page: everything but off. */
+    val BackdropOnPage: Boolean get() = Backdrop != "off"
 
     private fun hex(code: String, fallback: Color): Color {
         val bare = code.trim().removePrefix("#")
@@ -72,6 +86,12 @@ object Skin {
     /** One answer from the server, worn. Anything it leaves out keeps what it had. */
     fun wear(said: org.json.JSONObject) {
         Mood = said.optString("look", "house")
+        // an older server answers true or false, which arrive here as those words
+        Backdrop = when (val where = said.optString("backdrop", "poster")) {
+            "on", "poster", "off" -> where
+            "false" -> "off"
+            else -> "on"
+        }
         bgIs = hex(said.optString("bg"), bgIs)
         panelIs = hex(said.optString("panel"), panelIs)
         panel2Is = hex(said.optString("panel2"), panel2Is)
@@ -123,7 +143,9 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
            this is the grey a missing one leaves behind; a backdrop is fitted rather
            than cropped, and the grey either side of it reads as a band down the edge
            of the screen - which is what it was doing. */
-        ground: androidx.compose.ui.graphics.Brush = Skin.Empty) {
+        ground: androidx.compose.ui.graphics.Brush = Skin.Empty,
+        /* a film not here yet: its poster without colour */
+        grey: Boolean = false) {
     Box(modifier.background(ground), contentAlignment = Alignment.Center) {
         if (mark > 0) {
             Text("P", color = Color(0xFF2B333D), fontSize = mark.sp,
@@ -133,7 +155,11 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
             // Crop fills a poster-shaped slot; Fit is for the backdrop, where cropping
             // a tall poster into a squarish box pushes its head and feet off the screen
             AsyncImage(model = url, contentDescription = title, imageLoader = imageLoader(),
-                       contentScale = scale, modifier = Modifier.fillMaxSize())
+                       contentScale = scale, modifier = Modifier.fillMaxSize(),
+                       alpha = if (grey) 0.5f else 1f,
+                       colorFilter = if (grey) androidx.compose.ui.graphics.ColorFilter.colorMatrix(
+                           androidx.compose.ui.graphics.ColorMatrix().apply { setToSaturation(0f) })
+                       else null)
         }
     }
 }
@@ -142,12 +168,22 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
  * A poster. Focus lifts and rings it, because on a TV the remote gives no other clue
  * about where you are.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
            /** what to say under the title instead of the usual line */
            instead: String? = null,
+           /** the caller's own, for the one poster a screen wants to stand on */
+           modifier: Modifier = Modifier,
+           /** held rather than pressed, where a screen has something to offer for it */
+           onHold: (() -> Unit)? = null,
            onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
+    // held on the remote: the select button kept down repeats its press
+    var heldByKey by remember { mutableStateOf(false) }
+    // and pressed here: a release whose press landed on another screen is not a click
+    var downByKey by remember { mutableStateOf(false) }
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "posterScale")
     // the pixels this will actually occupy, so the server can send that and no more
     val density = androidx.compose.ui.platform.LocalDensity.current.density
@@ -155,7 +191,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
     Column(
         // in a grid the cell decides the width, and the poster takes all of it; in a
         // row there is no cell, so it keeps the width it was given
-        Modifier.padding(horizontal = 5.dp, vertical = 8.dp)
+        modifier.padding(horizontal = 5.dp, vertical = 8.dp)
             .then(if (fill) Modifier.fillMaxWidth() else Modifier.width(width.dp))
             .scale(scale)
             // hasFocus as well as isFocused: focus asked for by name can land on the
@@ -163,7 +199,42 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // ring then never appeared although the remote was there
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .focusable()
-            .clickable(onClick = onClick)
+            // No highlight of its own. The press indication is drawn over the whole
+            // column - poster, title and line under it - so it came up as a grey
+            // square bigger than the poster. The white ring already says where the
+            // remote is, which is the only thing that needs saying.
+            .then(if (onHold == null) Modifier else Modifier.onPreviewKeyEvent { e ->
+                val key = e.nativeKeyEvent
+                val select = key.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER ||
+                    key.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
+                    key.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
+                // Acted on at the release. Opened on the repeat, a menu took focus with
+                // the button still down and the release pressed its first item, Go to
+                // title. Every select event is taken here, so the click handler below
+                // cannot fire a long press of its own as well.
+                when {
+                    !select -> false
+                    key.action == android.view.KeyEvent.ACTION_DOWN -> {
+                        if (key.repeatCount == 0) downByKey = true else heldByKey = true
+                        true
+                    }
+                    key.action == android.view.KeyEvent.ACTION_UP -> {
+                        val held = heldByKey
+                        val pressed = downByKey
+                        heldByKey = false
+                        downByKey = false
+                        if (held) onHold() else if (pressed) onClick()
+                        true
+                    }
+                    else -> true
+                }
+            })
+            .then(if (onHold == null)
+                      Modifier.clickable(interactionSource = press, indication = null,
+                                         onClick = onClick)
+                  else Modifier.combinedClickable(
+                      interactionSource = press, indication = null,
+                      onClick = onClick, onLongClick = onHold))
     ) {
         Box(
             Modifier.fillMaxWidth()
@@ -178,7 +249,33 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                         if (focused) Color.White else Color.Transparent,
                         RoundedCornerShape(10.dp))
         ) {
-            Art(Api.artUrl(m, pixels), m.title, Modifier.fillMaxSize(), mark = width / 3)
+            Art(Api.artUrl(m, pixels), m.title, Modifier.fillMaxSize(), mark = width / 3,
+                grey = m.offered)
+            // a film on offer from a torrent pack: how far its download has got, from the live
+            // download list (refreshed every 10 s); the shelf row is a snapshot from when the
+            // grid loaded and kept showing Queued or 0% while the film came in
+            if (m.offered) {
+                val live = Api.downloading.value.firstOrNull { it.ratingKey == m.ratingKey }
+                val state = live?.offerState ?: m.offerState
+                val progress = live?.offerProgress ?: m.offerProgress
+                val eta = live?.offerEta ?: m.offerEta
+                val mbit = live?.offerMbit ?: m.offerMbit
+                Box(Modifier.align(Alignment.TopStart).padding(5.dp)
+                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)) {
+                    Text(when (state) {
+                             "downloading" -> "${(progress * 100).toInt()}%" +
+                                 (if (eta >= 0) " · " + (
+                                     if (eta < 60) "$eta s"
+                                     else if (eta < 3600) "${eta / 60} min"
+                                     else "${eta / 3600} h ${eta % 3600 / 60} min") else "") +
+                                 (if (mbit > 0) String.format(java.util.Locale.US, " · %.0f Mbit/s", mbit) else "")
+                             "queued" -> "Queued"
+                             "done" -> "Arriving"
+                             else -> "⤓"
+                         }, color = Skin.Fg, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
             // held in 2160 lines somewhere. Bottom right: the watched tick has the
             // top right, and the progress bar runs along the bottom, so it is
             // lifted clear of that.
@@ -189,6 +286,31 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                         .padding(horizontal = 5.dp, vertical = 2.dp)) {
                     Text("4K", color = Skin.Accent, fontSize = 10.sp,
                          fontWeight = FontWeight.SemiBold)
+                }
+            }
+            // A shelf being shuffled, standing on Continue watching as one row. Said
+            // across the poster because the row reads as the episode it happens to be
+            // showing otherwise, and pressing it plays whatever the hat has next
+            // rather than that programme.
+            if (m.shuffle.isNotEmpty()) {
+                // Big, because the whole job of it is to be told apart at a glance
+                // from a film started the ordinary way - including one out of the
+                // same shelf. Small print across a poster is something to notice
+                // afterwards.
+                // The word alone. It sat on a filled box, which over a bright
+                // poster reads as a grey square somebody has left there: the artwork
+                // is what is being covered, and the badge only has to be legible over
+                // it. The shadow is what holds it on a pale poster.
+                Box(Modifier.align(Alignment.Center).rotate(-45f)) {
+                    Text("SHUFFLE", color = Color.White,
+                         fontSize = if (width < 130) 13.sp else 17.sp,
+                         letterSpacing = 3.5.sp, maxLines = 1,
+                         fontWeight = FontWeight.ExtraBold,
+                         style = androidx.compose.ui.text.TextStyle(
+                             shadow = androidx.compose.ui.graphics.Shadow(
+                                 color = Color(0xE6000000),
+                                 offset = androidx.compose.ui.geometry.Offset(0f, 2f),
+                                 blurRadius = 14f)))
                 }
             }
             // finished, or part way through a series
@@ -212,6 +334,17 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                         .padding(start = 6.dp, bottom = if (p > 0f) 12.dp else 7.dp)
                         .size(9.dp)
                         .background(Color(0xFF42C96A), RoundedCornerShape(5.dp)))
+            }
+            // a favorite: a red heart in the corner, over the dot when there is one
+            if (m.ratingKey in Api.favKeys.value) {
+                Text("\u2665", color = Color(0xFFFF4D5E), fontSize = 15.sp,
+                     style = androidx.compose.ui.text.TextStyle(
+                         shadow = androidx.compose.ui.graphics.Shadow(Color.Black,
+                                                                     blurRadius = 4f)),
+                     modifier = Modifier.align(Alignment.BottomStart)
+                         .padding(start = 5.dp,
+                                  bottom = ((if (p > 0f) 10 else 4) +
+                                            (if (Api.copiedHere(m)) 11 else 0)).dp))
             }
             if (p > 0f) {
                 Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(4.dp)
@@ -513,4 +646,27 @@ private fun Key(label: String, modifier: Modifier = Modifier,
 fun SectionTitle(text: String, modifier: Modifier = Modifier) {
     Text(text.uppercase(), color = Skin.Dim, fontSize = 12.sp, letterSpacing = 1.2.sp,
          fontWeight = FontWeight.SemiBold, modifier = modifier)
+}
+
+/** A film on offer being fetched: how far and how long, across its poster on its own page. */
+@Composable
+fun androidx.compose.foundation.layout.BoxScope.OfferProgress(loaded: Media) {
+    val m = Api.liveOffer(loaded)          // live progress, not the page's snapshot
+    if (!loaded.offered || m.offerState !in setOf("queued", "downloading")) return
+    Box(Modifier.align(Alignment.TopEnd).padding(6.dp)
+            .background(Color(0xD9070A0E), RoundedCornerShape(6.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp)) {
+        Text(if (m.offerState == "queued") "Queued"
+             else "${(m.offerProgress * 100).toInt()}%" +
+                  (if (m.offerEta >= 0) " · " + etaShort(m.offerEta) else "") +
+                  (if (m.offerMbit > 0) String.format(java.util.Locale.US, " · %.0f Mbit/s", m.offerMbit) else ""),
+             color = Skin.Fg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** A download's time left, short enough for a poster's corner. */
+fun etaShort(s: Long): String = when {
+    s < 60 -> "$s s"
+    s < 3600 -> "${s / 60} min"
+    else -> "${s / 3600} h ${s % 3600 / 60} min"
 }

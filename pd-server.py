@@ -11,6 +11,7 @@ http://localhost:8765 also gives the Google Cast SDK the secure origin it insist
 """
 import hashlib
 import hmac
+from pd_library import is_episode, is_title, move_key
 import http.server
 import shutil
 import json
@@ -21,6 +22,10 @@ import time
 import socket
 import socketserver
 import urllib.parse
+# at the top, not inside a handler: importing it in one branch of a handler makes
+# the name local to the whole of that handler, and every other branch that used
+# urllib.parse then failed on a name it could see perfectly well from here
+import urllib.request
 import sys
 import threading
 import webbrowser
@@ -86,15 +91,18 @@ PORT = _port_wanted()
 
 ENGINE = None            # created on first use: probing NVENC takes a moment
 LOCAL = None             # our own library and the endpoints it answers
-INVITES = Invites(ROOT)  # the people who may watch from outside the house
+INVITES = Invites(ROOT)  # the people who may watch from outside the main server
 WAN = {"ip": "", "at": 0}
+#: a backlog of faults being handed to palladium.video: how many are left, how many
+#: went, and why the last one would not
+SENDING = {"busy": False, "left": 0, "sent": 0, "failed": 0, "why": ""}
 #: A line for the screens in the house: what it says, which one it is, and when it
 #: stops being said. Not written down - a notice nobody was in the room for is not
 #: worth keeping until tomorrow.
 #:
 #: This is the channel a watch party will speak over: one line to every screen is the
 #: hard half, and what that needs on top of it is a sender's name, a message per
-#: viewer rather than one for the house, and a guest allowed to send.
+#: viewer rather than one for the main server, and a guest allowed to send.
 NOTICE = {"id": 0, "text": "", "until": 0, "to": ""}
 #: Raised the moment a notice is written, so the screens waiting on one are answered
 #: at once rather than on their next visit. Cleared straight after: the flag is the
@@ -150,8 +158,127 @@ def local():
         import pd_localapi as localapi
         # where this server keeps its papers, which is not where its code sits
         localapi.use_data_dir(ROOT)
-        LOCAL = localapi.LocalAPI(library.Library(ROOT))
+        made = library.Library(ROOT)
+        LOCAL = localapi.LocalAPI(made)
+        # a conversion to title keys that failed leaves the library on its old keys,
+        # working but unable to agree with the other machine: said out loud
+        if getattr(made, "keys_failed", ""):
+            said = "converting the library to title keys failed" + chr(10) + made.keys_failed
+            try:
+                with open(os.path.join(ROOT, "debug.log"), "a", encoding="utf-8") as f:
+                    f.write(time.strftime("%H:%M:%S") + " fault " + said + chr(10))
+            except Exception:
+                pass
+            try:
+                Handler.note_fault(None, said)      # onto the reports page as well
+            except Exception:
+                pass
+        # the library has just turned its row numbers into keys; everything kept
+        # beside it names titles by those numbers and has to come too
+        moved = getattr(made, "keys_moved", None)
+        if not moved:
+            # left behind by a start that converted the library and then stopped
+            # before it could carry the rest: the tables will not be converted twice,
+            # so this is the only trace of what moved where
+            try:
+                with open(os.path.join(ROOT, "keys-moved.json"), encoding="utf-8") as f:
+                    moved = json.load(f)
+            except Exception:
+                moved = None
+        if moved:
+            carry_the_keys(moved)
     return LOCAL
+
+
+def carry_the_keys(moved):
+    """Rewrite every key kept outside the library, on the library's own list.
+
+    The shelves, the two marks, each shuffle's round and what was learned about a
+    subtitle are all filed under a title's key. They live in the settings file because
+    they belong to a person rather than to the library - which is exactly why they do
+    not move when it does.
+    """
+    try:
+        stored = read_settings() or {}
+    except Exception:
+        return
+
+    def one(k):
+        return move_key(moved, k)
+
+    def keyed(box):
+        return {one(k): v for k, v in box.items()} if isinstance(box, dict) else box
+
+    def listed(box):
+        # two old keys can be one title now: kept once, in the order first met
+        if not isinstance(box, list):
+            return box
+        out, seen = [], set()
+        for k in box:
+            k = one(k)
+            if k not in seen:
+                seen.add(k)
+                out.append(k)
+        return out
+
+    # Filed by key, at the top and under each viewer alike: a subtitle tried, picked
+    # or verified, when one was last seen, a card put aside. These were moved only at the top, and each viewer's own stayed on the old
+    # row numbers - a picked subtitle forgotten, a put-aside card back on the shelf.
+    by_key = ("subsTried", "subsPick", "subsOk", "subsFor", "deckAside",
+              "subSince")
+
+    def per_title(name):
+        # a per-title subtitle look is filed as device|l<key> or device|show|<key>
+        device, _, scope = str(name).partition("|")
+        if scope.startswith("show|"):
+            return device + "|show|" + one(scope[5:])
+        if scope.startswith("l"):
+            return device + "|l" + one(scope[1:])
+        return name
+
+    for holder in [stored] + list((stored.get("users") or {}).values()):
+        if isinstance(holder, dict):
+            for f in by_key:
+                if isinstance(holder.get(f), dict):
+                    holder[f] = keyed(holder[f])
+            if isinstance(holder.get("perTitle"), dict):
+                holder["perTitle"] = {per_title(k): v for k, v in holder["perTitle"].items()}
+    for mine in list((stored.get("users") or {}).values()) + [stored]:
+        if not isinstance(mine, dict):
+            continue
+        for f in ("watchlist", "favorites", "casual"):
+            if f in mine:
+                mine[f] = listed(mine[f])
+        for shelf in (mine.get("collections") or []):
+            if isinstance(shelf, dict):
+                for f in ("hidden", "pinned"):
+                    if f in shelf:
+                        shelf[f] = listed(shelf[f])
+                if shelf.get("cover"):
+                    shelf["cover"] = one(shelf["cover"])
+        for round_now in (mine.get("shuffles") or {}).values():
+            if not isinstance(round_now, dict):
+                continue
+            for f in ("queue", "played"):
+                if f in round_now:
+                    round_now[f] = listed(round_now[f])
+            if isinstance(round_now.get("at"), dict):
+                round_now["at"] = keyed(round_now["at"])
+    try:
+        write_settings(stored)
+    except Exception:
+        return                       # left for the next start to finish
+    # and the list of what the cache is holding, which is in this server's keys
+    try:
+        Handler.remember_copies(sorted({one(k)
+                                        for k in (Handler.COPIES.get("keys") or [])}))
+    except Exception:
+        pass
+    # done: the list is only needed until everything beside the library has followed
+    try:
+        os.remove(os.path.join(ROOT, "keys-moved.json"))
+    except OSError:
+        pass
 
 
 def lan_ip():
@@ -315,6 +442,35 @@ def ffmpeg_now():
         return ""
 
 
+def tools_on():
+    """Whether this server runs the subtitle tools it has. Let go of, it does not."""
+    return not (read_settings() or {}).get("toolsOff")
+
+
+def ffmpeg_in_home():
+    """The ffmpeg this server has already fetched, in use or not."""
+    want = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    for where, _, files in os.walk(FFMPEG_HOME):
+        if want in files:
+            return os.path.join(where, want)
+    return ""
+
+
+def use_ffmpeg(found):
+    """Start or stop using the cache that is here. The files are not touched."""
+    import pd_gpu
+    stored = read_settings() or {}
+    if found:
+        os.environ["PALLADIUM_FFMPEG"] = found
+        stored["ffmpeg"] = found
+    else:
+        os.environ.pop("PALLADIUM_FFMPEG", None)
+        stored.pop("ffmpeg", None)
+    write_settings(stored)
+    pd_gpu.rescan()
+    return pd_gpu.FFMPEG or ""
+
+
 def fetch_ffmpeg():
     """Download a static ffmpeg into the papers folder and use it.
 
@@ -329,13 +485,30 @@ def fetch_ffmpeg():
         FETCHING.update(busy=False, said="No build for this system - install ffmpeg "
                                          "yourself and it will be found.")
         return
-    FETCHING.update(busy=True, said="Fetching ffmpeg\u2026", done=False)
+    FETCHING.update(busy=True, said="Fetching ffmpeg\u2026", done=False,
+                    # where it comes from and how far along, so a slow line looks
+                    # like a slow line rather than like nothing happening
+                    what="ffmpeg", where=url, got=0, size=0, part=0.0)
     try:
         os.makedirs(FFMPEG_HOME, exist_ok=True)
         into = os.path.join(FFMPEG_HOME, "download" + (".zip" if os.name == "nt"
                                                        else ".tar.xz"))
         with urllib.request.urlopen(url, timeout=120) as r, open(into, "wb") as f:
-            shutil.copyfileobj(r, f)
+            size = int(r.headers.get("Content-Length") or 0)
+            FETCHING["size"] = size
+            got = 0
+            while True:
+                lump = r.read(262144)
+                if not lump:
+                    break
+                f.write(lump)
+                got += len(lump)
+                FETCHING["got"] = got
+                FETCHING["part"] = round(got / size, 3) if size else 0.0
+                FETCHING["said"] = ("Fetching ffmpeg - %d%% of %d MB"
+                                    % (round(100 * got / size), round(size / 1e6))
+                                    if size else
+                                    "Fetching ffmpeg - %d MB so far" % round(got / 1e6))
         FETCHING["said"] = "Unpacking\u2026"
         if into.endswith(".zip"):
             with zipfile.ZipFile(into) as z:
@@ -580,9 +753,44 @@ def read_settings():
             return {}
         except Exception:
             time.sleep(0.05)          # a write in progress; it will be over shortly
-    # unreadable four times running: the copy in hand is better than nothing, and
+    # unreadable four times running: the cache in hand is better than nothing, and
     # nothing is better than overwriting what could not be read
     return SETTINGS_LAST["good"]
+
+
+def carry_keys(moved):
+    """Whatever was written down by key follows the title that moved.
+
+    A merge folds two rows into one and drops a key; the index carries its own
+    (places, the watch log), but a watchlist, a shuffle's queue and the titles pinned
+    to a collection live here, and they went on naming a key that no longer answers.
+    Every string in the settings is looked up in the map, because that is exactly what
+    a key is - anything that is not one is left alone.
+    """
+    if not moved or not (moved.get("titles") or moved.get("episodes")):
+        return 0
+    count = [0]
+
+    def walk(o):
+        if isinstance(o, dict):
+            return {k: walk(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [walk(v) for v in o]
+        if isinstance(o, str):
+            now = move_key(moved, o)
+            if now and now != o:
+                count[0] += 1
+                return now
+        return o
+
+    stored = read_settings() or {}
+    fixed = walk(stored)
+    if count[0]:
+        write_settings(fixed, merge=False)
+        with open(os.path.join(ROOT, "debug.log"), "a", encoding="utf-8") as f:
+            f.write("%s carried %d written-down key(s) onto titles that moved%s"
+                    % (time.strftime("%H:%M:%S"), count[0], chr(10)))
+    return count[0]
 
 
 def write_settings(stored, merge=True):
@@ -1222,13 +1430,13 @@ def srt_to_vtt(text):
 COOKIE_LIFE = 365 * 86400
 
 
-def learn_invites(said, owner=None, master=""):
-    """Take the master's invitations, so its guests are known here too.
+def learn_invites(said, owner=None, master="", look=None):
+    """Take the main server's invitations, so its guests are known here too.
 
-    A following server holds copies of what the house watches; the people who may
-    watch them are the people the house invited. Their links are written into this
+    A following server holds copies of what the main server watches; the people who may
+    watch them are the people the main server invited. Their links are written into this
     server's own invitations, marked as borrowed so they can be told apart from the
-    ones this machine issued and dropped when the master stops sharing them.
+    ones this machine issued and dropped when the main server stops sharing them.
     """
     if not isinstance(said, list):
         return
@@ -1248,7 +1456,7 @@ def learn_invites(said, owner=None, master=""):
                      "expires": int(r.get("expires") or 0),
                      "language": r.get("language") or "",
                      "lastSeen": 0, "hits": 0, "borrowed": True})
-    # what the house keeps for each of them, refreshed every time: it is the
+    # what the main server keeps for each of them, refreshed every time: it is the
     # sentence this machine puts at the top of its own page
     for row in keep:
         theirs_row = theirs.get(row.get("token") or "")
@@ -1256,12 +1464,27 @@ def learn_invites(said, owner=None, master=""):
             for name in ("cacheDeck", "cacheList", "cacheCasual"):
                 row[name] = bool(theirs_row.get(name))
     INVITES.save(keep)
+    if isinstance(look, dict) and look:
+        # How the main server draws each person's subtitles, kept here under the same key.
+        # Only the look and the language: what they have watched is theirs and is
+        # already carried the other way.
+        stored = read_settings()
+        if stored is not None:
+            for who, said in look.items():
+                if not isinstance(said, dict):
+                    continue
+                where = stored if who == "me" else (
+                    stored.setdefault("users", {}).setdefault(str(who), {}))
+                for name in ("subtitles", "perTitle", "subLanguage", "language"):
+                    if said.get(name) is not None:
+                        where[name] = said[name]
+            write_settings(stored)
     if isinstance(owner, dict):
         stored = read_settings()
         if stored is not None:
             stored["copyOf"] = {"master": master, "owner": owner,
                                 "when": int(time.time())}
-            # Who the house calls its owner is written down but not adopted: this
+            # Who the main server calls its owner is written down but not adopted: this
             # machine is not that person, and saying it is would hand a name to a
             # box in a cupboard. The places that arrive under that name are filed
             # against this machine's own owner instead.
@@ -1336,6 +1559,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if hmac.compare_digest(str(one.get("token", "")), token):
                         row["name"] = one.get("name", "")
                         break
+            # and whoever sits at this machine is a person too. With no key of their
+            # own there was no name to find, so the owner's own screens stood in the
+            # list as bare addresses among named guests - the one person the server
+            # certainly knows, shown as a number.
+            if not row["name"] and self.at_home():
+                row["name"] = str((read_settings() or {}).get("ownerName") or "")
         row["when"] = time.time()
 
     def safely(self, what):
@@ -1397,13 +1626,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                           # or hiding one is not on this list: those are the owner's.
                           "/subs/verify", "/subs/reset",
                           # their own shelves, and trying a rule before saving it
-                          "/watchlist", "/collections", "/collections/test",
-                          "/casual", "/casual/next", "/casual/back", "/casual/peek",
-                          "/casual/reset", "/casual/queue",
+                          "/watchlist", "/favorites", "/collections", "/collections/test",
+                          # a title on or off a shelf, and a shelf played in shuffle: the
+                          # round belongs to the person, and the owner is a guest from outside
+                          "/collections/for", "/collections/mark",
+                          # a download they asked for, stopped by them
+                          "/torrents/cancel",
+                          "/collections/shuffle", "/collections/shuffle/queue",
+                          "/collections/shuffle/reset",
                           # a guest is a person in the room, and a room where only the
                           # owner may speak is not a conversation
                           "/chat", "/party",
-                          "/ondeck/aside")
+                          "/ondeck/aside",
+                          # what a screen has left to play, which is the screen's own
+                          # business and the one thing only it knows
+                          "/stream/buffer",
+                          # one film from a torrent pack, within their week's limit
+                          "/torrents/get")
         # Giving the password is how somebody who is nobody becomes the owner, so
         # it cannot be behind the check for being the owner. Its own rate limit is
         # what guards it.
@@ -1422,12 +1661,64 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(403, "that setting belongs to the server")
                 return
             self.settings_body = peek
+        if path == "/invites/role":
+            # What one key is for, changed on the key itself. The flags underneath it
+            # are kept in step so everything that asks "does this key follow us" goes
+            # on working; the role is the thing somebody sets.
+            body = self.read_json() or {}
+            token = str(body.get("token") or "")
+            role = str(body.get("role") or "")
+            if role not in Handler.ROLES:
+                self.reply_json({"error": "no such role"}, 400)
+                return
+            if role == "cache":
+                # it has to be a machine: one that has announced itself to this server
+                # with that key and is not stopped. A person's key cannot be a cache.
+                known = any(str(v.get("token") or "") == token
+                            for v in Handler.FOLLOWERS.values())
+                if not known:
+                    self.reply_json({"error": "That key has not been used by a server "
+                                              "yet. Point the other machine at this one "
+                                              "with that invitation first."}, 400)
+                    return
+            rows = INVITES.load()
+            for row in rows:
+                if row.get("token") != token:
+                    continue
+                row["role"] = role
+                row["follows"] = role == "cache"
+                if not row["follows"]:
+                    row.pop("follows", None)
+                INVITES.save(rows)
+                self.reply_json({"ok": True, "role": role})
+                return
+            self.reply_json({"error": "no such key"}, 404)
+            return
         if path == "/invites":
             body = self.read_json()
             row = INVITES.create((body.get("name") or "").strip()[:40],
                                  int(body.get("days") or 0),
                                  (body.get("email") or "").strip()[:120])
-            self.reply_json(self.with_link(row))
+            # Two kinds of key from one door. A guest is a person; a machine key lets
+            # another server read this library and keep copies of it.
+            kind = str(body.get("kind") or "guest")
+            if kind == "machine":
+                rows = INVITES.load()
+                for r in rows:
+                    if r["token"] != row["token"]:
+                        continue
+                    r["follows"] = True
+                    if body.get("cap") is not None:
+                        try:
+                            r["cap"] = max(0.0, float(body.get("cap") or 0))
+                        except (TypeError, ValueError):
+                            r["cap"] = 0.0
+                    if body.get("mayCopy") is not None:
+                        r["mayCopy"] = bool(body.get("mayCopy"))
+                    INVITES.save(rows)
+                    row = r
+                    break
+            self.reply_json(dict(self.with_link(row), kind=kind))
             return
         if path == "/ondeck/aside":
             # "I am done with this": the programme leaves Continue watching and stays
@@ -1440,8 +1731,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             local().who = self.viewer()
             con = local().lib.db()
+            cleared = 0
             try:
                 family = local().deck_family(con, key)
+                if body.get("on", True):
+                    # Done with it means done with it: the place is dropped, not
+                    # remembered behind a date. A film left at eighty-nine per cent
+                    # went on drawing a bar across its poster and went on being
+                    # copied to the other machine as something part-way through -
+                    # both reading a row the shelf had already been told to ignore.
+                    # A tick made by hand says something else and is left alone.
+                    keys = [family]
+                    if not family.startswith("e"):
+                        keys += [str(r["id"]) for r in con.execute(
+                            "SELECT id FROM episode WHERE item_id=?", (family,))]
+                    for one in keys:
+                        cleared += con.execute(
+                            "DELETE FROM progress WHERE who=? AND key=? "
+                            "AND COALESCE(marked, 0) = 0",
+                            (local().who, str(one))).rowcount
+                    con.commit()
             finally:
                 con.close()
             stored = self.settings_file()
@@ -1453,7 +1762,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 aside.pop(family, None)
             mine["deckAside"] = aside
             write_settings(stored)
-            self.reply_json({"aside": list(aside.keys())})
+            self.reply_json({"aside": list(aside.keys()), "cleared": cleared})
             return
         if path == "/party":
             # Starting one is the owner's; joining is anybody's, and is done by
@@ -1556,7 +1865,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             hold = max(10, min(int(body.get("seconds") or 600), 86400))
             NOTICE["id"] = NOTICE.get("id", 0) + 1
             NOTICE["text"] = words
-            # who it is for: nothing means the house, an address means one screen,
+            # who it is for: nothing means the main server, an address means one screen,
             # "all" means everybody including whoever is watching from away
             NOTICE["to"] = str(body.get("to") or "").strip()[:60]
             NOTICE["until"] = time.time() + hold if words else 0
@@ -1583,7 +1892,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     self.reply_json(dict(pd_machine.state(PORT, LAN_IP), why=why), 200)
                     return
             if body.get("private"):
-                # a network Windows calls public is shut to the house whatever rule
+                # a network Windows calls public is shut to the main server whatever rule
                 # is written, and this is the one thing that changes that
                 ok, why = pd_machine.make_private()
                 if not ok:
@@ -1623,13 +1932,57 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     pass
                 pd_update.install(path)
                 return
-            said = pd_update.latest(force=True) or {}
-            if not said.get("version"):
-                self.reply_json({"ok": False, "why": "palladium.video did not answer"},
-                                503)
-                return
+            # The machine this one follows, if it has the installer and this one is
+            # allowed to take it from there: the same file over the network the two
+            # share, rather than 34 MB across the internet - and it guarantees the two
+            # end up on the same build rather than both chasing what is published.
+            body = self.read_json() or {}
+            onto = ""
+            said = {}
+            # The library's settings, read so that a library which will not open does
+            # not also stop the one thing that could mend it. The cache's first key
+            # conversion left a half-made table behind, every start after that fell
+            # over opening the library, and this door asked the library for its
+            # settings before it did anything - so the build with the fix could not
+            # be taken, by this door, by the tray, or by the cache asking it.
+            cfg = self.library_settings_plain()
+            if not body.get("fromSite"):
+                try:
+                    import pd_follow
+                    onto, said = pd_follow.build_from_master(pd_follow.settings(cfg))
+                except Exception:
+                    onto, said = "", {}
+            if not onto:
+                if cfg.get("fetchFromSite") is False:
+                    self.reply_json({"ok": False,
+                                     "why": "This server is set not to fetch anything "
+                                            "from palladium.video, and the machine it "
+                                            "follows has no installer to give it"}, 409)
+                    return
+                said = pd_update.latest(force=True) or {}
+                # Never backwards, and only here. A site left announcing an old build
+                # had this server replace itself with one from weeks ago - a working
+                # install of the wrong thing, so nothing afterwards notices. An
+                # installer made on this machine is a different matter and is checked
+                # where it is found; putting this at the top of the door refused every
+                # install there is, including the ones that were newer.
+                here_now = self.build_version()
+                offered = str(said.get("version") or "")
+                if (offered and here_now and offered != here_now
+                        and not pd_update.newer(offered, here_now)):
+                    self.reply_json({"ok": False,
+                                     "why": "The site offers %s and this server is "
+                                            "%s. It will not go backwards."
+                                            % (offered, here_now)}, 400)
+                    return
+                if not said.get("version"):
+                    self.reply_json({"ok": False,
+                                     "why": "palladium.video did not answer"}, 503)
+                    return
             try:
-                onto = pd_update.fetch(stored.get("betaKey", ""), said.get("sha256"))
+                if not onto:
+                    onto = pd_update.fetch(stored.get("betaKey", ""),
+                                           said.get("sha256"))
             except Exception as e:
                 note_fault(traceback.format_exc())
                 self.reply_json({"ok": False, "why": "Could not fetch it: %s" % e}, 502)
@@ -1641,6 +1994,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
             pd_update.install(onto)
+            return
+        if path == "/collections/shuffle":
+            # Putting a shelf on: a draw, a look, a step back, or carrying on with
+            # what was left. The main server owns the round, so a machine keeping copies
+            # asks there first and hands the answer back.
+            body = self.read_json() or {}
+            said = self.house_answers(path, body)
+            if said is not None:
+                self.reply_json(said)
+                return
+            self.reply_json(self.shuffle_draw(
+                str(body.get("id") or ""), bool(body.get("peek")),
+                bool(body.get("resume")), bool(body.get("back"))))
+            return
+        if path == "/collections/shuffle/queue":
+            body = self.read_json() or {}
+            said = self.house_answers(path, body)
+            if said is not None:
+                self.reply_json(said)
+                return
+            self.reply_json(self.shuffle_lists(str(body.get("id") or "")))
+            return
+        if path == "/collections/shuffle/reset":
+            # The hat back to full, the history empty, and nothing kept half-watched.
+            body = self.read_json() or {}
+            said = self.house_answers(path, body)
+            if said is not None:
+                self.reply_json(said)
+                return
+            stored = self.settings_file()
+            mine = self.viewer_settings(stored)
+            one = self.shuffle_round(mine, str(body.get("id") or ""))
+            one.update({"queue": [], "played": [], "at": {},
+                        "run": int(one.get("run") or 1) + 1})
+            Handler.round_moved(one)
+            write_settings(stored)
+            self.reply_json({"ok": True, "run": one["run"]})
             return
         if path == "/collections/test":
             # What a rule would take, without saving it. The form sends what is typed
@@ -1719,7 +2109,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if c.get("id") != want:
                         continue
                     for field in ("name", "rule", "pinned", "hidden", "cover",
-                                  "mode"):
+                                  "mode", "view"):
                         if field in body:
                             c[field] = body[field]
                     # What the rule says on its own, so that a mark records only
@@ -1814,132 +2204,60 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json({"watchlist": marked, "on": key in marked,
                              "covers": full, "part": part})
             return
-        if path == "/casual":
-            # the second mark inside the watchlist: things to put on without choosing
+        if path == "/favorites":
+            # kept on both machines: a favourite is copied whatever else is wanted.
+            # A programme or a season is its episodes, as on the watchlist.
             body = self.read_json() or {}
-            key = str(body.get("key") or "")
-            stored = self.settings_file()
-            mine = self.viewer_settings(stored)
-            # a programme or a season is marked by marking its episodes, so one of
-            # them can be taken off again without fighting a mark above it
-            keys = self.spread(key)
-            gone = set([key] + keys)
-            was = [str(k) for k in (mine.get("casual") or [])]
-            marked = [k for k in was if k not in gone]
-            if key and body.get("on", True):
-                marked = keys + marked
-            elif key:
-                # Taking one season off a programme marked whole: the mark above it is
-                # broken into its own parts first, minus this one. Without that the
-                # shelf put the season straight back - the mark it was drawn from was
-                # never touched.
-                out = []
-                for k in marked:
-                    if self.covers(k, key):
-                        out += [x for x in self.without(k, key) if x not in gone]
-                    else:
-                        out.append(k)
-                marked = out
-            if key:
-                mine["casual"] = marked[:400]
-                # the hat belongs to the shelf: change the shelf and it is refilled,
-                # and whatever was set aside as "next" may no longer be on it
-                mine["casualNext"] = {}
-                mine["casualPlayed"] = []
-                write_settings(stored)
-            order = "random"
-            allPlayed, runs, played, run = self.casual_history(mine, order)
-            full, part = self.rollup(marked)
-            self.reply_json({
-                "casual": marked, "on": key in marked, "order": order, "run": run,
-                # the seasons and programmes those episodes add up to, so a grid can
-                # show the mark on a card that has no key of its own on this shelf
-                "covers": full, "part": part,
-                # where each way of playing has got to, so a client can say so and
-                # offer to start either of them over
-                "pool": len(self.casual_pool()),
-                "progress": {
-                    mode: {
-                        # how many have been put on altogether - past the size of the
-                        # shelf once it has been round more than once - and how far
-                        # into this time round
-                        "played": int((mine.get("casualTotal") or {}).get(mode) or 0),
-                        "thisRun": len(allPlayed.get(mode) or []),
-                        "run": int(runs.get(mode) or 1),
-                    }
-                    for mode in ("random", "rotate")
-                },
-            })
-            return
-        if path == "/casual/next":
-            body = self.read_json() or {}
-            # "resume" is Casual play picking up where the shelf was left; without it
-            # this is Next, which means something else than what is playing
-            self.reply_json(self.casual_next(bool(body.get("peek")),
-                                             bool(body.get("resume"))))
-            return
-        if path == "/casual/queue":
-            # the next several, named: what the shuffle has already decided to play
-            d = self.casual_next(peek=True)
-            keys = (d.get("queue") or [])[:int((self.read_json() or {}).get("n") or 10)]
-            self.reply_json({"queue": [self.casual_item(k) for k in keys],
-                             "run": d.get("run"), "pool": d.get("pool")})
-            return
-        if path == "/casual/peek":
-            # what would come next, without taking it: asked when something starts
-            # playing, so pressing Next later is instant and names the right film
-            self.reply_json(self.casual_next(peek=True))
-            return
-        if path == "/casual/back":
-            # the one before this in the shuffle: a person who presses "previous"
-            # means the thing they were just watching, not another random draw
-            stored = self.settings_file()
-            mine = self.viewer_settings(stored)
-            order = "random"
-            allPlayed, runs, played, run = self.casual_history(mine, order)
-            if len(played) < 2:
-                self.reply_json({"error": "nothing before this one"})
+            said = self.house_answers(path, body)
+            if said is not None:
+                self.reply_json(said)
                 return
-            played.pop()                       # what is playing now
-            key = played[-1]
-            allPlayed[order] = played
-            mine["casualPlayed"] = allPlayed
-            write_settings(stored)
-            local().who = self.viewer()
-            con = local().lib.db()
-            try:
-                item = local().metadata_for(con, key)
-            finally:
-                con.close()
-            self.reply_json({"item": item, "key": key,
-                             "run": int(mine.get("casualRun") or 1)})
-            return
-        if path == "/casual/reset":
-            # one mode, or both: starting the rotation over should not disturb a
-            # shuffle that is halfway through the shelf
-            want = (self.read_json() or {}).get("order") or "all"
             stored = self.settings_file()
             mine = self.viewer_settings(stored)
-            allPlayed, runs, _, _ = self.casual_history(mine, "random")
-            totals = mine.get("casualTotal")
-            if not isinstance(totals, dict):
-                totals = {}
-            for mode in ("random", "rotate"):
-                if want in (mode, "all"):
-                    allPlayed[mode] = []
-                    runs[mode] = 1
-                    totals[mode] = 0          # starting over means starting from none
-            mine["casualTotal"] = totals
-            mine["casualPlayed"] = allPlayed
-            mine["casualRun"] = runs
-            mine["casualNext"] = {}     # nothing is set aside from a run that is over
-            if want == "all":
-                # starting over means starting over: no half-watched episode is
-                # carried into the new round
-                mine["casualAt"] = {}
-                mine["casualQueue"] = {}
+            held = [str(k) for k in (mine.get("favorites") or [])]
+            key = str(body.get("key") or "")
+            if key:
+                keys = self.spread(key)
+                held = [k for k in held if k != key and k not in keys]
+                if body.get("on", True):
+                    held = keys + held
+                mine["favorites"] = held
+                write_settings(stored)
+            full, part = self.rollup(held)
+            self.reply_json({"favorites": held, "on": key in held,
+                             "covers": full, "part": part})
+            return
+        if path == "/collections/for":
+            # which shelves hold this title: all of it, some of it, or none
+            body = self.read_json() or {}
+            said = self.house_answers(path, body)
+            if said is not None:
+                self.reply_json(said)
+                return
+            self.reply_json({"collections": self.shelves_holding(str(body.get("key") or ""))})
+            return
+        if path == "/collections/mark":
+            # one title on or off one shelf; a programme or a season is its episodes
+            body = self.read_json() or {}
+            said = self.house_answers(path, body)
+            if said is not None:
+                self.reply_json(said)
+                return
+            key = str(body.get("key") or "")
+            want = str(body.get("id") or "")
+            if want.startswith("coll:"):
+                want = want[5:]
+            self.collections()                     # old marks become a shelf first
+            stored = self.settings_file()
+            mine = self.viewer_settings(stored)
+            shelf = next((c for c in (mine.get("collections") or [])
+                          if isinstance(c, dict) and str(c.get("id")) == want), None)
+            if not key or shelf is None:
+                self.reply_json({"error": "there is no such shelf"}, 404)
+                return
+            self.shelf_mark(shelf, key, bool(body.get("on", True)))
             write_settings(stored)
-            self.reply_json({"ok": True, "order": want})
+            self.reply_json({"collections": self.shelves_holding(key)})
             return
         if path == "/feedback/seen":
             # the owner has the page open: everything up to now has been looked at
@@ -1984,6 +2302,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.settings_body = None
             key = body.get("key") or ""
             device = self.device_of(body.get("device"))
+            # What somebody is called, set by them. A name was something only the
+            # person who wrote the invitation could give, so everybody wore whatever
+            # they were christened at the moment they were invited - and the owner
+            # wore "me", which is what a server calls whoever installed it before
+            # anybody has said who that is.
+            for name in ("splitPlay", "failover", "dropWatched"):
+                if name in body:
+                    stored = self.settings_file()
+                    self.viewer_settings(stored)[name] = bool(body[name])
+                    write_settings(stored, merge=False)
+                    self.reply_json({name: bool(body[name])})
+                    return
+            if "myName" in body:
+                called = str(body.get("myName") or "").strip()[:40]
+                if not called:
+                    self.reply_json({"error": "a name, please"}, 400)
+                    return
+                # Their own, not the one on the invitation. What the owner wrote
+                # when they made the key stays as it was written: it is how the owner
+                # knows who they gave it to, and somebody renaming themselves must not
+                # quietly rewrite that.
+                stored = self.settings_file()
+                self.viewer_settings(stored)["myName"] = called
+                write_settings(stored, merge=False)
+                # the owner has no key to keep a name on, so theirs is the one the
+                # server keeps for whoever installed it
+                if self.viewer() == "me":
+                    write_settings({"ownerName": called})
+                self.reply_json({"name": called})
+                return
             if key and body.get("reset"):
                 self.reply_json({"subtitles": self.clear_override(key, device),
                                  "override": False, "device": device})
@@ -2012,6 +2360,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                               bool(body.get("everyone"))),
                     "accentDefault": self.accent_default(),
                 })
+                return
+            if "backdrop" in body:
+                stored = self.settings_file()
+                mine = self.viewer_settings(stored)
+                was = mine.get("myBackdrop")
+                now = dict(was) if isinstance(was, dict) else {
+                    d: self.backdrop_word(was) for d in self.DEVICES}
+                which = self.device_of(body.get("device") or self.screen_now())
+                now[which] = self.backdrop_word(body["backdrop"])
+                mine["myBackdrop"] = now
+                write_settings(stored, merge=False)
+                self.reply_json({"backdrop": self.backdrop_all(),
+                                 "backdropHere": self.backdrop_now()})
                 return
             if "language" in body:
                 self.reply_json({"language": self.set_viewer_language(body["language"])})
@@ -2245,7 +2606,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if path == "/machine/port":
             # Which port this server answers on. Two Palladiums in one house are one
-            # router forwarding two ports: the library on 8765, the copy on 8764.
+            # router forwarding two ports: the library on 8765, the cache on 8764.
             # Taken at the next start - a server cannot move while it is answering.
             if self.role != "owner":
                 self.send_error(403, "not allowed")
@@ -2279,6 +2640,74 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             rows = (self.read_json() or {}).get("progress") or []
             self.reply_json({"taken": local().take_progress(rows[:200])})
             return
+        if path == "/follow/round":
+            # shuffle rounds the cache moved while this machine was off: per shelf,
+            # the newer round is taken whole
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if not (invite and invite.get("follows")) or self.follower_stopped():
+                self.send_error(403, "not allowed")
+                return
+            body = self.read_json() or {}
+            who = str(body.get("who") or "")
+            theirs = body.get("shuffles")
+            if not who or not isinstance(theirs, dict):
+                self.reply_json({"took": [], "why": "nothing to take"})
+                return
+            stored = self.settings_file()
+            here = (stored.setdefault("users", {}).setdefault(who, {})
+                    if who != "me" else stored)
+            rounds = here.get("shuffles")
+            if not isinstance(rounds, dict):
+                rounds = {}
+            took = []
+            for cid, one in theirs.items():
+                if (isinstance(one, dict)
+                        and self.round_stamp(one) > self.round_stamp(rounds.get(str(cid)))):
+                    rounds[str(cid)] = one
+                    took.append(str(cid))
+            if took:
+                here["shuffles"] = rounds
+                write_settings(stored)
+            self.reply_json({"took": took})
+            return
+        if path == "/follow/viewers":
+            # What each viewer keeps, for the machine that copies this library.
+            #
+            # A watchlist, the shelves somebody arranged, the collections they made:
+            # these live beside the library, and a copy held none of them. So the one
+            # moment a viewer needs the other machine - this one being off - is the
+            # moment their own list is empty and the shelves are somebody's defaults.
+            # Nothing about anybody's password or key goes over; only what they would
+            # see on a screen.
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if not (invite and invite.get("follows")) or self.follower_stopped():
+                self.send_error(403, "not allowed")
+                return
+            stored = read_settings() or {}
+            # the shuffle rounds travel too, so a phone on the cache carries on the round
+            keep = ("watchlist", "favorites", "collections", "homeRows", "skin", "myAccent",
+                    "subLang", "subtitles", "perTitle", "quality",
+                    "shuffles", "casualMoved")
+            out = {}
+            con = local().lib.db()
+            try:
+                for who, one in (stored.get("users") or {}).items():
+                    mine = {k: v for k, v in (one or {}).items() if k in keep}
+                    if mine:
+                        mine.update(local().round_in_words(con, one or {}))
+                        out[who] = mine
+            finally:
+                con.close()
+            # and the owner's own, under the key they watch by, so the person who
+            # owns the library is not the one viewer it forgets
+            owner = str(stored.get("ownerIs") or "")
+            if owner and owner not in out:
+                mine = {k: v for k, v in stored.items() if k in keep}
+                if mine:
+                    out[owner] = mine
+            self.reply_json({"viewers": out,
+                             "ownerIs": owner, "ownerName": stored.get("ownerName")})
+            return
         if path == "/follow/whatis":
             # What this library calls these files. The machine keeping copies knows
             # them by name and nothing else - it was copying before it started
@@ -2290,29 +2719,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(403, "not allowed")
                 return
             names = [str(n) for n in ((self.read_json() or {}).get("names") or [])][:400]
-            found, facts = {}, {}
+            found, facts, items = {}, {}, {}
             if names:
                 con = local().lib.db()
                 try:
                     wanted = {n.lower(): n for n in names}
                     for row in con.execute(
-                            """SELECT path, item_id, episode_id, duration, container,
-                                      vcodec, acodec, width, height, channels, bitrate
-                               FROM file"""):
+                            """SELECT f.path, f.item_id, f.episode_id, f.duration,
+                                      f.container, f.vcodec, f.acodec, f.width,
+                                      f.height, f.channels, f.bitrate,
+                                      e.aired AS aired
+                               FROM file f
+                               LEFT JOIN episode e ON e.id = f.episode_id"""):
                         low = os.path.basename(row["path"] or "").lower()
                         if low not in wanted:
                             continue
                         name = wanted[low]
-                        found[name] = ("e%d" % row["episode_id"] if row["episode_id"]
+                        found[name] = (str(row["episode_id"]) if row["episode_id"]
                                        else str(row["item_id"]))
-                        # and what was measured when it arrived here, so the copy
+                        items[name] = str(row["item_id"])      # the title, for a copy to file under
+                        # and what was measured when it arrived here, so the cache
                         # does not have to open the file to know what is in it
                         facts[name] = {k: row[k] for k in
                                        ("duration", "container", "vcodec", "acodec",
                                         "width", "height", "channels", "bitrate")}
+                        # and when the episode went out. A copy looks its titles up
+                        # for itself, but nothing tells it the air date of an episode
+                        # it holds - so the shelf of recently released episodes was
+                        # empty on the machine holding the newest of them.
+                        if row["aired"]:
+                            facts[name]["aired"] = row["aired"]
                 finally:
                     con.close()
-            self.reply_json({"keys": found, "facts": facts})
+            self.reply_json({"keys": found, "facts": facts, "items": items})
             return
         if path == "/follow/holding":
             # What the following server actually has, by this library's own numbers.
@@ -2321,67 +2760,140 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not self.follows_here():
                 self.send_error(403, "not allowed")
                 return
-            keys = [str(k) for k in ((self.read_json() or {}).get("keys") or [])][:2000]
-            Handler.COPIES = {"keys": keys, "when": int(time.time())}
+            body = self.read_json() or {}
+            keys = [str(k) for k in (body.get("keys") or [])][:2000]
+            # and what would not come, so the queue can say so. A copy that sets a
+            # file aside after it fails carries on down the list, and the page had no
+            # way of knowing - it showed rows waiting while something below them was
+            # being fetched, which reads as the queue being ignored.
+            bad = body.get("trouble")
+            if isinstance(bad, list):
+                Handler.FOLLOWER_TROUBLE = [
+                    {"name": str(r.get("name") or "")[:120],
+                     "why": str(r.get("why") or "")[:160],
+                     "key": str(r.get("key") or ""),
+                     "when": int(r.get("when") or time.time())}
+                    for r in bad[:40] if isinstance(r, dict)]
+            # The whole of what it holds replaces; a part of it is added to. Both
+            # were added to, because there was no way to tell them apart - so a film
+            # swept out of the cache's cache stayed on this list for good, the dot
+            # stayed on its poster, and with this machine off somebody chose it and
+            # there was nothing at the other end.
+            if body.get("whole"):
+                Handler.remember_copies(sorted(set(keys)))
+            else:
+                Handler.remember_copies(sorted(set(Handler.COPIES.get("keys") or [])
+                                               | set(keys)))
+            self.note_cache(kept=len(keys),
+                               bad=len(Handler.FOLLOWER_TROUBLE))
             # and what this library allows that machine to use, in gigabytes. Lending
             # somebody a copy of a library is not lending them the whole disk, and the
             # setting that says so belongs here rather than on their machine. Zero
             # means their own setting stands.
-            self.reply_json({"kept": len(keys),
-                             "cap": float(local().lib.config().get("followerCap")
-                                          or 0)})
-            return
-        if path == "/follow/first":
-            # Take this one next, or stop taking it next: the order is a good guess,
-            # and this is for when somebody knows better.
-            if self.role != "owner":
-                self.send_error(403, "not allowed")
-                return
-            body = self.read_json() or {}
-            key = str(body.get("key") or "")
-            stored = read_settings()
-            if not key or stored is None:
-                self.reply_json({"error": "nothing to pin"})
-                return
-            first = [str(k) for k in (stored.get("copyFirst") or [])]
-            move = str(body.get("move") or "")
-            if move in ("up", "down"):
-                # a title nobody has ordered yet joins the end of the ordered ones,
-                # and then moves - so one press of an arrow does what it looks like
-                if key not in first:
-                    first.append(key)
-                at = first.index(key)
-                to = at - 1 if move == "up" else at + 1
-                if 0 <= to < len(first):
-                    first[at], first[to] = first[to], first[at]
-            else:
-                first = [k for k in first if k != key]
-                if body.get("on", True):
-                    first.insert(0, key)
-            stored["copyFirst"] = first[:40]
-            write_settings(stored, merge=False)
-            self.reply_json({"first": stored["copyFirst"]})
+            # A ceiling belongs to the key, the way an invitation for a person
+            # carries what that person may do. One number for every machine meant
+            # lending a second machine a copy re-lent the first one's allowance, and
+            # taking it away from one took it from all of them. The library's old
+            # single figure stands for keys made before this.
+            mine = INVITES.check(self.bearer(), self.app_name()) or {}
+            cap = mine.get("cap")
+            # when the invitations last changed. The cache takes them a quarter of an
+            # hour at a time, which is a long while to wait after handing somebody a
+            # key - so this says whether there is anything new to take, and the cache
+            # comes back for them at once rather than on its own slow clock.
+            try:
+                changed = int(os.path.getmtime(INVITES.path))
+            except OSError:
+                changed = 0
+            if cap is None:
+                cap = local().lib.config().get("cacheCap") or 0
+            self.reply_json({"kept": len(keys), "cap": float(cap or 0),
+                             # and what it is allowed to do here
+                             "mayCopy": bool(mine.get("mayCopy", True)),
+                             "invitesAt": changed})
             return
         if path == "/follow/key":
             # A key for another Palladium, not for a person: it may read the library,
-            # take copies of the files, and ask what the house is watching. Revoked
+            # take copies of the files, and ask what the main server is watching. Revoked
             # like any other invitation.
             if self.role != "owner":
                 self.send_error(403, "not allowed")
                 return
+            asked = self.read_json() or {}
             rows = INVITES.load()
             mine = next((r for r in rows if r.get("follows")), None)
-            if not mine or self.read_json().get("again"):
-                mine = INVITES.create("a following server", 0, "")
+            if asked.get("remove"):
+                # Taking it away rather than replacing it. A new key stops the old
+                # one but leaves a key on the table; this leaves none, and nothing
+                # may read this library or take copies of it until one is made.
+                #
+                # One machine's key when one is named, every follow key when none is:
+                # revoking used to take the key away from every machine that had one,
+                # which is not what "stop this one" means.
+                only = str(asked.get("only") or "").strip()
+                if only:
+                    INVITES.save([r for r in rows if not (
+                        r.get("follows") and r.get("token") == only)])
+                else:
+                    INVITES.save([r for r in rows if not r.get("follows")])
+                gone = Handler.STANDBY.get("where") or ""
+                Handler.STANDBY.clear()
+                cfg = local().lib.config()
+                cfg["cache"] = {}
+                local().lib.save_config(cfg)
+                if gone and gone in Handler.FOLLOWERS:
+                    # kept in the record, marked for what it is: a machine that used
+                    # to copy from here is worth remembering after the key is gone
+                    Handler.FOLLOWERS[gone]["revoked"] = int(time.time())
+                    Handler.remember_followers(force=True)
+                self.reply_json({"key": "", "where": ""})
+                return
+            # A key per machine. There used to be one for all of them - a new key
+            # took the old one away from every cache at once, and stopping one
+            # machine stopped the lot - so a key is made for each, named after the
+            # machine it was made for, and revoked on its own.
+            # What this key allows, set when it is made or changed later: a
+            # ceiling in gigabytes, nought for as much as that machine allows itself,
+            # and whether it may take copies at all or only read.
+            forWhom = str(asked.get("for") or "").strip()
+            if asked.get("set"):
+                token = str(asked.get("set") or "")
+                for row in rows:
+                    if row.get("token") != token or not row.get("follows"):
+                        continue
+                    if "cap" in asked:
+                        try:
+                            row["cap"] = max(0.0, float(asked.get("cap") or 0))
+                        except (TypeError, ValueError):
+                            row["cap"] = 0.0
+                    if "mayCopy" in asked:
+                        row["mayCopy"] = bool(asked.get("mayCopy"))
+                    INVITES.save(rows)
+                    self.reply_json({"ok": True})
+                    return
+                self.send_error(404, "no such key")
+                return
+            if forWhom:
+                mine = next((r for r in rows if r.get("follows")
+                             and str(r.get("name") or "") == forWhom), None)
+            if not mine or asked.get("again"):
+                mine = INVITES.create(forWhom or "a following server", 0, "")
                 rows = INVITES.load()
                 for row in rows:
                     if row["token"] == mine["token"]:
                         row["follows"] = True
-                    elif row.get("follows"):
-                        row.pop("follows", None)   # one follower at a time
+                    elif not forWhom:
+                        # no machine named: the old behaviour, one key for the main server,
+                        # and a new one stops whatever was there
+                        row.pop("follows", None)
+                    elif str(row.get("name") or "") == forWhom:
+                        # the one this machine was using before: replaced, not kept -
+                        # and every other machine keeps the key it has
+                        row.pop("follows", None)
                 INVITES.save(rows)
-                mine = next(r for r in INVITES.load() if r.get("follows"))
-            self.reply_json({"key": mine["token"],
+                mine = next(r for r in INVITES.load()
+                            if r["token"] == mine["token"])
+            self.reply_json({"key": mine["token"], "name": mine.get("name") or "",
                              "where": "http://%s:%d" % (LAN_IP, PORT)})
             return
         if path == "/app/fetch":
@@ -2391,29 +2903,223 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if self.role != "owner":
                 self.send_error(403, "not allowed")
                 return
-            if self.app_beside_us():
-                self.reply_json({"here": True, "version": self.app_version()})
+            body = self.read_json() or {}
+            stored = read_settings() or {}
+            if body.get("off") or body.get("on"):
+                # handed out or not. The file stays either way: this is whether the
+                # server offers it, not whether it has it.
+                stored["appOff"] = bool(body.get("off"))
+                write_settings(stored)
+                self.reply_json({"off": bool(body.get("off")),
+                                 "have": bool(self.app_beside_us())})
+                return
+            if self.app_beside_us() and not body.get("overwrite"):
+                self.reply_json({"ask": True, "have": True,
+                                 "version": self.app_version(),
+                                 "where": Handler.APP_FROM})
                 return
             self.fetch_app(force=True)
             self.reply_json({"getting": True})
             return
+        if path == "/follow/clear":
+            # What clearing the cache would delete, and doing it. Read before it is
+            # done and before automatic clearing is switched on: "what will this do"
+            # has to be answerable before it is answered by it happening.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_follow
+            one = pd_follow.settings(local().lib.config())
+            folder = (one.get("folder") or "").strip()
+            cap = int(pd_follow.cap_now(one) * (1000 ** 3))
+            how = str(one.get("deleteBy") or "oldest")
+            keeping = set(pd_follow.KEEPING.get("set") or ())
+            body = self.read_json() or {}
+            said = pd_follow.could_go(folder, keeping, cap, how)
+            said["cap"] = round(cap / 1e9, 2)
+            # nothing has been copied yet this run, so nothing is known to be worth
+            # keeping - and a clear that does not know that would take tonight's
+            said["ready"] = bool(pd_follow.KEEPING.get("when"))
+            if body.get("now") and said["sane"] and said["ready"]:
+                pd_follow.make_room(folder, cap, keeping, how)
+                said["cleared"] = said["gb"]
+                after = pd_follow.could_go(folder, keeping, cap, how)
+                said.update({"files": after["files"], "gb": after["gb"],
+                             "rows": after["rows"], "used": after["used"]})
+            self.reply_json(said)
+            return
+        if path == "/follow/claim":
+            # Once, by hand: everything already in the cache folder is this
+            # machine's own. The only way back for copies made before there was a
+            # record of them - and it takes films and subtitles, nothing else.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_follow
+            one = pd_follow.settings(local().lib.config())
+            folder = (one.get("folder") or "").strip()
+            if not (self.read_json() or {}).get("confirm"):
+                self.reply_json({"ok": False, "why": "not confirmed"})
+                return
+            said = pd_follow.claim_folder(folder)
+            said["ok"] = bool(said.get("taken"))
+            said["folder"] = folder
+            self.reply_json(said)
+            return
+        if path == "/follow/extras":
+            # What is in the cache folder that this machine did not fetch. It is
+            # never deleted by the program - only what it wrote is - so this is the
+            # only way any of it goes: somebody reading the list and saying so.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_follow
+            one = pd_follow.settings(local().lib.config())
+            folder = (one.get("folder") or "").strip()
+            # read only. A file this machine did not fetch is not its to delete,
+            # whoever asks: the folder is a path typed by hand, and the whole point
+            # of the list is that these are the files nothing here can account for.
+            said = {}
+            found = pd_follow.extras(folder)
+            said.update({"folder": folder,
+                         "sane": pd_follow.a_sane_folder(folder),
+                         "extras": found[:200],
+                         "count": len(found),
+                         "gb": round(sum(f["bytes"] for f in found) / 1e9, 2)})
+            self.reply_json(said)
+            return
+        if path in ("/proxy/fetch", "/proxy/config", "/proxy/run", "/proxy/stop",
+                    "/proxy/login"):
+            # the way in from outside is the owner's arrangement with their own router
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_proxy
+            body = self.read_json() or {}
+            if path == "/proxy/fetch":
+                self.reply_json(pd_proxy.fetch())
+            elif path == "/proxy/config":
+                self.reply_json(pd_proxy.set_config(body))
+            elif path == "/proxy/login":
+                self.reply_json(pd_proxy.set_at_login(bool(body.get("on"))))
+            elif path == "/proxy/run":
+                said = pd_proxy.run()
+                said.update(pd_proxy.state())
+                self.reply_json(said)
+            else:
+                said = pd_proxy.stop()
+                said.update(pd_proxy.state())
+                self.reply_json(said)
+            return
+        if path in ("/torrents/config", "/torrents/add", "/torrents/remove"):
+            # the owner's: how qBittorrent is reached, and which packs are offered
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import base64
+            import pd_torrents
+            body = self.read_json() or {}
+            if path == "/torrents/config":
+                self.reply_json(pd_torrents.set_config(body))
+            elif path == "/torrents/add":
+                raw = None
+                if body.get("data"):
+                    try:
+                        raw = base64.b64decode(str(body["data"]).split(",")[-1])
+                    except (ValueError, TypeError):
+                        raw = None
+                given = str(body.get("path") or "").strip().strip('"')
+                if given and not os.path.isfile(given):
+                    self.reply_json({"ok": False, "why": "No such file: " + given})
+                    return
+                self.reply_json(pd_torrents.add_pack(raw=raw, path=given or None))
+            else:
+                self.reply_json(pd_torrents.remove_pack(str(body.get("hash") or "")))
+            return
+        if path == "/torrents/get":
+            # one film from a pack, for whoever asks, within their week's download limit
+            import pd_torrents
+            body = self.read_json() or {}
+            token = self.bearer() or "me"
+            cap = self.weekly_limits("downloadGbWeek").get(
+                self.name_of(token).strip().lower(), 0.0)
+            self.reply_json(pd_torrents.request(str(body.get("key") or ""), token,
+                                                self.watcher(), cap))
+            return
+        if path == "/torrents/cancel":
+            # a download stopped: by the owner, or by whoever asked for it
+            import pd_torrents
+            body = self.read_json() or {}
+            self.reply_json(pd_torrents.cancel(str(body.get("key") or ""), self.bearer() or "me",
+                                               self.role == "owner"))
+            return
+        if path == "/follow/managed":
+            # A cache's copying settings, read and set from here: only a machine
+            # that follows this one, at the address it announced, and only paths about
+            # its copying. The cache refuses unless it allows the main server to.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import urllib.request as _ureq
+            import urllib.error as _uerr
+            body = self.read_json() or {}
+            there = str(body.get("where") or "").rstrip("/")
+            known = Handler.FOLLOWERS.get(there) or {}
+            asked = str(body.get("path") or "")
+            method = "POST" if body.get("method") == "POST" else "GET"
+            allowed = {("GET", "/follow"), ("POST", "/follow"), ("POST", "/follow/clear"),
+                       ("POST", "/follow/extras"), ("POST", "/follow/claim"),
+                       ("GET", "/follow/test"), ("GET", "/follow/now")}
+            if not known or (method, asked.split("?", 1)[0]) not in allowed:
+                self.reply_json({"error": "Not a machine following this server, "
+                                          "or not one of its copying settings."})
+                return
+            called = known.get("name") or there
+            req = _ureq.Request(
+                there + asked, method=method,
+                data=(json.dumps(body.get("body") or {}).encode("utf-8")
+                      if method == "POST" else None),
+                headers={"X-Palladium-House": "1", "Content-Type": "application/json"})
+            try:
+                with _ureq.urlopen(req, timeout=60) as answer:
+                    self.reply_json(json.loads(
+                        answer.read().decode("utf-8", "replace") or "{}"))
+            except _uerr.HTTPError as e:
+                self.reply_json({"error": "%s refused (%d)%s" % (
+                    called, e.code, ": Managed from the main server is off there"
+                    if e.code in (401, 403) else "")})
+            except Exception as e:
+                self.reply_json({"error": "%s did not answer: %s" % (called, str(e)[:100])})
+            return
+        if path == "/follow/tonight":
+            # Take tonight's copies now. This machine cannot tell the other one
+            # anything - it is the other one that asks - so the answer is left here
+            # and handed over the next time it does, which is within the minute.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            Handler.EARLY_UNTIL = time.time() + 10 * 3600
+            self.reply_json({"ok": True,
+                             "said": "The other machine takes tonight's copies from "
+                                     "its next round, within a minute."})
+            return
         if path == "/follow/stop":
             # Stop one machine that follows this one, or let it back in. The key is
             # untouched: this is about a machine, not about the key it holds, and
-            # rotating the key would stop every other follower with it.
+            # rotating the key would stop every other cache with it.
             if self.role != "owner":
                 self.send_error(403, "not allowed")
                 return
             body = self.read_json() or {}
             where = str(body.get("where") or "").strip().rstrip("/")
             cfg = local().lib.config()
-            blocked = [str(x) for x in (cfg.get("blockedFollowers") or [])]
+            blocked = [str(x) for x in (cfg.get("blockedCaches") or [])]
             if where:
                 if body.get("allow"):
                     blocked = [x for x in blocked if x.rstrip("/") != where]
                 elif where not in blocked:
                     blocked.append(where)
-            cfg["blockedFollowers"] = blocked
+            cfg["blockedCaches"] = blocked
             local().lib.save_config(cfg)
             self.reply_json({"blocked": blocked})
             return
@@ -2424,8 +3130,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(403, "not allowed")
                 return
             import pd_follow
+            args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                    if "?" in self.path else {})
+            early = (args.get("early") or [""])[0] in ("1", "true", "yes")
             self.reply_json(pd_follow.sync_now(lambda: local().lib.config(),
-                                               local().lib, local()))
+                                               local().lib, local(), early=early))
             return
         if path == "/follow":
             # this server following another one
@@ -2453,6 +3162,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         one[name] = max(0, float(body[name]))
                     except (TypeError, ValueError):
                         pass
+            if "episodes" in body:
+                try:
+                    one["episodes"] = max(0, min(int(body["episodes"]), 40))
+                except (TypeError, ValueError):
+                    pass
+            # The hours this machine is the one awake. The page has always offered
+            # them and the server has always dropped them, so an owner who typed 21
+            # was left with 22 and nothing on screen to say otherwise.
+            for name in ("nightFrom", "nightTo"):
+                if name in body:
+                    try:
+                        one[name] = int(body[name]) % 24
+                    except (TypeError, ValueError):
+                        pass
+            # whose evening this cache is for, and whether the cap may delete on its
+            # own. Both are set from the page and neither was ever written down: a
+            # setting the page can change and the server drops is a switch that
+            # moves and does nothing.
+            if body.get("cacheFor") in ("user", "server"):
+                one["cacheFor"] = body["cacheFor"]
+            if "cacheWho" in body:
+                one["cacheWho"] = str(body["cacheWho"]).strip()[:60]
+            if body.get("clearBy") in ("manual", "auto"):
+                one["clearBy"] = body["clearBy"]
             cfg["follow"] = one
             # A folder of copies nothing scans is a folder of copies nobody can
             # watch: the cache joins the library as a mixed folder, films and
@@ -2467,11 +3200,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     mixed.append(one["folder"])
                     cfg["mixed"] = mixed
             local().lib.save_config(cfg)
+            # what is being read this minute, so the sweep leaves it alone
+            pd_follow.BUSY = WATCHING.paths
             pd_follow.start(lambda: local().lib.config(), local().lib,
                             lambda: Handler.game_holds("copies"),
                             (PORT, socket.gethostname(), STATIC,
-                             Handler.build_version()),
-                            learn_invites, local())
+                             Handler.build_version(), settings_path()),
+                            learn_invites, local(), carry_the_keys)
             self.reply_json({"follow": one, "state": pd_follow.look()})
             return
         if path == "/performance":
@@ -2513,7 +3248,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 switched[which] = bool(body["on"])
                 stored["addons"] = switched
                 write_settings(stored)
+            if body.get("tools") in ("off", "on"):
+                # let go of, or taken up again. The scripts stay on the disk: this
+                # is whether this server runs them, not whether it has them.
+                stored = read_settings() or {}
+                stored["toolsOff"] = body["tools"] == "off"
+                write_settings(stored)
             if body.get("tools") == "fetch":
+                # over a copy that is already here only when asked twice
+                have = (pd_ai_subs.tools() or {}).get("version")
+                if have and not body.get("overwrite"):
+                    self.reply_json({"ask": True, "have": have,
+                                     "where": "palladium.video"})
+                    return
                 said = pd_ai_subs.get_tools()
                 if said.get("error"):
                     self.reply_json(said, 409)
@@ -2527,7 +3274,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pd_ai_subs.drop_addon(which)
             stored = read_settings() or {}
             self.reply_json({"addons": pd_ai_subs.addons(stored.get("addons") or {}),
-                             "can": pd_ai_subs.ready(),
+                             "can": pd_ai_subs.ready() and tools_on(),
+                             "toolsOff": bool(stored.get("toolsOff")),
                              "tools": pd_ai_subs.tools()})
             return
         if path == "/subs/make":
@@ -2542,7 +3290,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not src:
                 self.reply_json({"error": "no file for that title"}, 404)
                 return
-            if not pd_ai_subs.ready():
+            if not (pd_ai_subs.ready() and tools_on()):
                 # This machine cannot hear a film - the speech model is three
                 # gigabytes and the machine that keeps copies has no card to run it
                 # on. The one it copies from has both, and the subtitle written there
@@ -2575,7 +3323,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 where = ("episode_id=?" if str(key).startswith("e")
                          else "item_id=? AND episode_id IS NULL")
-                number = int(str(key)[1:] if str(key).startswith("e") else key)
+                # the key as it is stored: an episode's with its e, a title's as hex.
+                # This took the number out of it, which a hex key has none of - the
+                # ValueError was swallowed below and no copy was ever found to listen to.
+                number = str(key)
                 for row in con.execute("SELECT path FROM file WHERE " + where, (number,)):
                     if os.path.exists(row["path"]):
                         copies.append(row["path"])
@@ -2649,10 +3400,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Hand this house's catalogue keys to the machine that keeps copies.
             #
             # It fetches subtitles for the films it takes and looks their posters up
-            # for itself when the house cannot be reached; without keys of its own it
-            # holds films half the house cannot read and a shelf of grey rectangles.
+            # for itself when the main server cannot be reached; without keys of its own it
+            # holds films half the main server cannot read and a shelf of grey rectangles.
             # Sent rather than copied by hand because the address and the invitation
-            # are already here. The owner's, and only to this house's own follower.
+            # are already here. The owner's, and only to this house's own cache.
             if self.role != "owner":
                 self.send_error(403, "not allowed")
                 return
@@ -2665,6 +3416,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             #: which of them to send: named, so a page can offer one button or two
             want = [k for k in ("opensubtitles_key", "tmdb_key")
                     if not body.get("only") or body.get("only") == k]
+            # and the login that goes with the subtitle key. A key searches; only a
+            # login downloads, and it carries the daily allowance. Sending one without
+            # the other gave the other machine a list of subtitles it could see and
+            # could not fetch, which is the same as no subtitles at all.
+            if "opensubtitles_key" in want:
+                want += ["opensubtitles_user", "opensubtitles_pass"]
             send = {k: (cfg.get(k) or "").strip() for k in want}
             send = {k: v for k, v in send.items() if v}
             if not send:
@@ -2687,6 +3444,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     headers={"Content-Type": "application/json"})
                 with urllib.request.urlopen(req, timeout=20) as answer:
                     answer.read()
+                # written down: which of this house's catalogue keys that machine
+                # has been given, so nobody has to remember whether they sent them
+                self.note_cache(sent=dict(
+                    (Handler.FOLLOWERS.get(Handler.STANDBY.get("where") or "") or {})
+                    .get("sent") or {},
+                    **{k: int(time.time()) for k in send}))
                 self.reply_json({"ok": True, "sent": sorted(send)})
             except Exception as e:
                 self.reply_json({"ok": False, "why": str(e)[:120]})
@@ -2695,9 +3458,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Hand the subtitle key to the machine that keeps copies.
             #
             # It fetches subtitles for the films it takes, and without a key of its
-            # own it takes films half the house cannot read. Sent rather than copied
+            # own it takes films half the main server cannot read. Sent rather than copied
             # by hand because the address and the invitation are already here; only
-            # the owner may, and only to this house's own follower.
+            # the owner may, and only to this house's own cache.
             if self.role != "owner":
                 self.send_error(403, "not allowed")
                 return
@@ -2719,7 +3482,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             import urllib.request
             try:
-                body = json.dumps({"opensubtitles_key": key}).encode()
+                body = json.dumps({
+                    "opensubtitles_key": key,
+                    # the login too: a key alone can search and cannot download
+                    "opensubtitles_user": (local().lib.config()
+                                           .get("opensubtitles_user") or "").strip(),
+                    "opensubtitles_pass": (local().lib.config()
+                                           .get("opensubtitles_pass") or "").strip(),
+                }).encode()
                 req = urllib.request.Request(
                     one["where"].rstrip("/") + "/library/config?t=" +
                     urllib.parse.quote(token),
@@ -2754,11 +3524,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not row:
                 self.reply_json({"ok": False, "why": "no such report"}, 404)
                 return
-            sent = self.tell_the_site(row, forced=True)
-            if sent:
-                self.amend_report(ident, {"sentAway": int(time.time())})
+            sent, why = self.tell_the_site(row, forced=True)
             self.reply_json({"ok": bool(sent),
-                             "why": "" if sent else "could not be sent"})
+                             "why": "" if sent else (why or "could not be sent")})
+            return
+        if path == "/feedback/sendall":
+            # The backlog. A machine told to send faults that had no way out keeps
+            # them, and they are worth nothing sitting here. Oldest first, one a
+            # second, and each row marked with what came of it.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            waiting = [r for r in self.reports()
+                       if (r.get("source") == "auto"
+                           or r.get("kind") in ("error", "crash"))
+                       and not r.get("sentAway") and not r.get("hidden")]
+            waiting.sort(key=lambda r: r.get("when") or 0)
+            if SENDING["busy"]:
+                self.reply_json({"ok": True, "already": True, "left": SENDING["left"]})
+                return
+            if not waiting:
+                self.reply_json({"ok": True, "queued": 0})
+                return
+            SENDING.update(busy=True, left=len(waiting), sent=0, failed=0, why="")
+
+            def hand_over(rows, me):
+                try:
+                    for one in rows:
+                        ok, why = me.tell_the_site(one, forced=True)
+                        SENDING["left"] = max(0, SENDING["left"] - 1)
+                        if ok:
+                            SENDING["sent"] += 1
+                        else:
+                            SENDING["failed"] += 1
+                            SENDING["why"] = str(why or "")[:160]
+                        time.sleep(1.0)
+                finally:
+                    SENDING["busy"] = False
+
+            threading.Thread(target=hand_over, args=(waiting, self),
+                             daemon=True).start()
+            self.reply_json({"ok": True, "queued": len(waiting)})
             return
         if path == "/feedback/fix":
             # ticking one off, and the two sentences worth keeping: what caused it and
@@ -2799,7 +3605,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 chosen["%s-s%s" % (key, season)] = mode
             stored["numbering"] = chosen
             write_settings(stored, merge=False)
-            moved = local().lib.renumber(int(key), int(season), mode)
+            moved = local().lib.renumber(str(key), int(season), mode)
             self.reply_json({"moved": moved, "mode": mode})
             return
         if path == "/library/rematch":
@@ -2807,13 +3613,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # where two unrelated things share a title that answer is the popular one
             # rather than the right one - a rescan would only choose it again.
             body = self.read_json() or {}
-            key = re.sub(r"[^0-9]", "", str(body.get("key") or ""))
+            # the library's keys are twelve hex digits; keeping only the digits named a
+            # different title, or none
+            key = re.sub(r"[^0-9a-f]", "", str(body.get("key") or "").lower())
             tmdb = re.sub(r"[^0-9]", "", str(body.get("tmdbId") or ""))
             if not key or not tmdb:
                 self.reply_json({"error": "which title, and which entry?"}, 400)
                 return
             try:
-                title = local().lib.rematch(int(key), int(tmdb))
+                title = local().lib.rematch(str(key), int(tmdb))
             except Exception as e:
                 self.reply_json({"error": str(e)[:200]}, 500)
                 return
@@ -2884,6 +3692,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              "shareLan"):
                     if name in body:
                         stored[name] = bool(body[name])
+                # gigabytes a week copied for them, and downloaded by them; nought is
+                # no limit
+                for name in ("syncGbWeek", "downloadGbWeek"):
+                    if name in body:
+                        try:
+                            stored[name] = max(0.0, float(body[name] or 0))
+                        except (TypeError, ValueError):
+                            pass
                 write_settings(stored)
             else:
                 rows = INVITES.load()
@@ -2895,6 +3711,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                      "shareLan"):
                             if name in body:
                                 row[name] = bool(body[name])
+                        for name in ("syncGbWeek", "downloadGbWeek"):
+                            if name in body:
+                                try:
+                                    row[name] = max(0.0, float(body[name] or 0))
+                                except (TypeError, ValueError):
+                                    pass
                 INVITES.save(rows)
             self.reply_json({"people": [self.with_link(r) for r in INVITES.load()],
                              "me": self.owner_caching()})
@@ -2917,18 +3739,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for key in ("movies", "tv", "mixed", "tmdb_key", "language",
                         "opensubtitles_key", "opensubtitles_user",
                         "opensubtitles_pass", "scanEvery", "scanOnChange",
-                        # when this machine goes off: a following server starts an
-                        # hour before it, so nothing half-watched is left behind
-                        "sleepAt",
                         # nothing, faults, or faults with a description of this
                         # computer: off unless somebody says otherwise
                         "sendFaults",
+                        # whether this machine may fetch anything from palladium.video
+                        "fetchFromSite",
                         # the most a machine following this one may use, in gigabytes
-                        "followerCap",
+                        "cacheCap",
+                        # the megabits a film is encoded at for somebody outside the
+                        # house when neither they nor the server has said. Eight
+                        # unless changed: what is out there is usually a phone.
+                        "awayMbit",
+                        # whether the shuffle's next picks are copied at all
+                        "copyCasual",
+                        # per cent of a film's blocks read off the machine that keeps
+                        # copies while this one hands the film to a screen
+                        "shareWithCopy",
+                        # the megabits a copy may take while somebody is watching.
+                        # Twenty unless changed; nought lets it run flat out.
+                        "syncMbitWhileWatching",
                         # what to call this machine, wherever it is named. Empty
                         # means the computer's own name, which is what it was
                         # before anybody thought to ask.
-                        "serverName"):
+                        "serverName",
+                        # where encodes are made: "here", or "connected" - the
+                        # computer this one copies from, or the one copying from it
+                        "encodeOn"):
                 if key in body:
                     cfg[key] = body[key]
                     if key in ("movies", "tv", "mixed"):
@@ -2998,6 +3834,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/setup/ffmpeg":
+            # Fetching, letting go of, or taking up again the cache on this disk.
+            # Letting go is not deleting: the files stay where they are and it is
+            # taken up again without asking anybody for anything.
+            body = self.read_json() or {}
+            if body.get("off"):
+                use_ffmpeg("")
+                self.reply_json({"using": "", "have": ffmpeg_in_home()})
+                return
+            if body.get("on"):
+                found = ffmpeg_in_home()
+                self.reply_json({"using": use_ffmpeg(found) if found else "",
+                                 "have": found})
+                return
+            # a fetch over a copy that is already here is a question, not a default
+            have = ffmpeg_in_home()
+            if have and not body.get("overwrite"):
+                self.reply_json({"ask": True, "have": have,
+                                 "where": FFMPEG_FROM.get(os.name) or ""})
+                return
             # 80 MB from the internet, so only ever because somebody pressed for it
             if not FETCHING["busy"]:
                 threading.Thread(target=fetch_ffmpeg, daemon=True).start()
@@ -3007,6 +3862,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             stored = read_settings() or {}
             stored["setupDone"] = True
             write_settings(stored)
+            # A server that does not come back after a restart reads as broken, and
+            # the first restart of a new machine is usually the same evening. So it
+            # is arranged when the setting up is finished rather than asked for in a
+            # wizard - the switch is in Settings, This computer, for whoever wants it
+            # off. Only the first time: somebody who turned it off meant it.
+            try:
+                import pd_machine
+                if not stored.get("askedStartup") and not pd_machine.starts_at_login():
+                    pd_machine.set_start_at_login(True)
+                stored["askedStartup"] = True
+                write_settings(stored)
+            except Exception:
+                pass
             self.reply_json({"ok": True})
             return
         if path == "/library/scan":
@@ -3299,6 +4167,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             height = cap["height"]
         if cap["mbit"] and (not mbit or mbit > cap["mbit"]):
             mbit = cap["mbit"]
+        # And a sensible ceiling for somebody outside the main server when nobody has set
+        # one. With no number at all the encoder is given a quality to hit and a
+        # ceiling meant for this network - twenty-four megabits, or forty for a 4K
+        # source - and it will use them: an 800p picture went out at more megabits
+        # than the film it was made from, to a phone on mobile data. Inside the main server
+        # that is right, and nothing here changes it.
+        if not self.at_home() and not mbit:
+            try:
+                mbit = int(local().lib.config().get("awayMbit") or 8)
+            except (TypeError, ValueError):
+                mbit = 8
         return int(height or 0), int(mbit or 0)
 
     def wanted_rate(self, q):
@@ -3479,6 +4358,224 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         finally:
             gate.cancel()
 
+    #: what each file's picture is, asked once: a copy is only for a picture the device
+    #: plays as it is
+    VIDEO_FORMATS = {}
+
+    def video_format(self, path):
+        """The first video track's codec and pixel format."""
+        if path in Handler.VIDEO_FORMATS:
+            return Handler.VIDEO_FORMATS[path]
+        out = {}
+        try:
+            import pd_gpu
+            from pd_library import ffprobe_beside
+            said = subprocess.run(
+                [ffprobe_beside(pd_gpu.FFMPEG), "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0", path],
+                capture_output=True, text=True, timeout=20, creationflags=pd_gpu.NO_WINDOW)
+            bits = ((said.stdout or "").strip().splitlines() or [""])[0].split(",")
+            out = {"codec": bits[0].strip().lower(),
+                   "pix": bits[1].strip().lower() if len(bits) > 1 else ""}
+        except Exception:
+            out = {}
+        Handler.VIDEO_FORMATS[path] = out
+        return out
+
+    def video_copies(self, src, q, height, mbit, burn):
+        """Whether an encode can pass the picture through: nothing burned into it, no
+        size or rate asked for, and a picture the device decodes as it is."""
+        if not src or not src.get("file") or burn is not None or mbit:
+            return False
+        if height and (src.get("height") or 0) > height:
+            return False
+        fmt = self.video_format(src["file"])
+        pix = fmt.get("pix", "")
+        if fmt.get("codec") == "h264":
+            return pix in ("yuv420p", "yuvj420p")
+        if fmt.get("codec") == "hevc":
+            return (q.get("hevc", ["0"])[0] in ("1", "true", "yes")
+                    and pix in ("yuv420p", "yuvj420p", "yuv420p10le"))
+        return False
+
+    @staticmethod
+    def copy_start(path, offset):
+        """Where a copied picture starts for a seek to this second. The keyframe list
+        and ffmpeg's seek do not always agree, so ffmpeg is asked, with the stream's
+        own flags, for the first frame it would copy."""
+        import pd_gpu
+        from fractions import Fraction
+        tag = ("%.3f" % float(offset)).rstrip("0").rstrip(".")
+        try:
+            said = subprocess.run(
+                [pd_gpu.FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
+                 "-noaccurate_seek", "-ss", tag, "-copyts", "-i", path,
+                 "-map", "0:v:0", "-c", "copy", "-frames:v", "1", "-f", "framecrc", "-"],
+                capture_output=True, text=True, timeout=20, creationflags=pd_gpu.NO_WINDOW)
+        except Exception:
+            return None
+        base = None
+        for line in (said.stdout or "").splitlines():
+            if line.startswith("#tb 0:"):
+                try:
+                    base = Fraction(line.split(":", 1)[1].strip())
+                except (ValueError, ZeroDivisionError):
+                    return None
+            elif line and not line.startswith("#") and base is not None:
+                try:
+                    return round(float(base * int(line.split(",")[2].strip())), 3)
+                except (IndexError, ValueError):
+                    return None
+        return None
+
+    def encode_begins(self, q):
+        """Where an encode asked for with these settings will start, in film time, and
+        whether its picture is copied. An app asks before it opens the stream."""
+        offset = float(q.get("offset", ["0"])[0] or 0)
+        try:
+            key = q.get("key", [""])[0]
+            src = (local().file_for(key, int(q.get("mi", ["0"])[0] or 0))
+                   or self.house_source(q)) \
+                if q.get("src", [""])[0] == "local" else None
+            height, mbit = self.capped(int(q.get("height", ["0"])[0] or 0),
+                                       self.wanted_rate(q))
+            burn = self.burn_for(q, src) if self.burn_allowed_here(q) else None
+            if not self.video_copies(src, q, height, mbit, burn):
+                return {"at": offset, "copy": False}
+            if offset <= 0:
+                return {"at": 0, "copy": True}
+            start = self.copy_start(src["file"], int(offset))
+            # a start after the second asked for, or far before it, is not a seek
+            # anybody should be handed
+            if start is None or start > int(offset) + 0.01 or int(offset) - start > 30:
+                return {"at": offset, "copy": False}
+            return {"at": start, "copy": True}
+        except Exception as e:
+            return {"at": offset, "copy": False, "why": str(e)[:120]}
+
+    #: whether a connected computer answered lately: address -> (when, answered)
+    CONNECTED_UP = {}
+
+    def encode_elsewhere(self, q):
+        """Sent to the connected computer to encode, when this one is set to and it answers.
+
+        The computer this one copies from, or the one copying from it. When it does not
+        answer, this one encodes. A request already handed over is made where it lands,
+        so two machines both set to hand over do not pass it back and forth. True when
+        sent.
+        """
+        if q.get("handed", ["0"])[0] == "1":
+            return False
+        cfg = self.library_settings_plain() or {}
+        if cfg.get("encodeOn") != "connected":
+            return False
+        import pd_follow
+        import urllib.request as _ureq
+        import urllib.error as _uerr
+        one = pd_follow.settings(cfg)
+        home = self.at_home()
+        if one.get("on") and one.get("master"):
+            doors = pd_follow.house_doors()
+            check = one["master"]
+            door = (doors.get("lan") or one["master"]) if home else (doors.get("outside") or "")
+        else:
+            other = self.standby_now() or {}
+            check = other.get("where") or ""
+            door = check if home else (other.get("outside") or "")
+        if not (check and door):
+            return False
+        was = Handler.CONNECTED_UP.get(check)
+        if was and time.time() - was[0] < 30:
+            up = was[1]
+        else:
+            try:
+                with _ureq.urlopen(check.rstrip("/") + "/where", timeout=2) as answer:
+                    up = answer.status == 200
+            except _uerr.HTTPError:
+                up = True                 # it answered, if not to this question
+            except Exception:
+                up = False
+            Handler.CONNECTED_UP[check] = (time.time(), up)
+        if not up:
+            return False
+        self.send_response(307)
+        self.send_header("Location", door.rstrip("/") + self.path +
+                         ("&" if "?" in self.path else "?") + "handed=1")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
+    #: what the main server said about files this copy holds none of: (when, answer)
+    HOUSE_SOURCES = {}
+
+    def house_source(self, q):
+        """A title this copy holds no file for, as the main server's file over the network.
+
+        Played from this machine, it is encoded by this machine: the main server hands over
+        the file, not the work. None when the file is here, when this machine follows
+        nothing, or when the main server does not answer.
+        """
+        key = q.get("key", [""])[0]
+        try:
+            mi = int(q.get("mi", ["0"])[0] or 0)
+            if local().file_for(key, mi):
+                return None
+        except Exception:
+            return None
+        import pd_follow
+        one = pd_follow.settings(self.library_settings_plain() or {})
+        if not (one.get("on") and one.get("master") and one.get("key")):
+            return None
+        mark = (key, mi)
+        was = Handler.HOUSE_SOURCES.get(mark)
+        # an answer is good for ten minutes; no answer is asked again in thirty seconds
+        if was and time.time() - was[0] < (600 if was[1] else 30):
+            said = was[1]
+        else:
+            try:
+                said = pd_follow.ask(one, "/follow/source?key=%s&mi=%d"
+                                     % (urllib.parse.quote(key), mi), 10)
+            except Exception:
+                said = None
+            Handler.HOUSE_SOURCES[mark] = (time.time(), said)
+        if not said or not said.get("part"):
+            return None
+        src = dict(said)
+        src["file"] = "%s/local/parts/%d?t=%s" % (one["master"].rstrip("/"), int(said["part"]),
+                                                  urllib.parse.quote(one["key"]))
+        src["remote"] = True
+        return src
+
+    def send_to_the_house(self, q):
+        """A title this copy holds no file for, sent on to the main server.
+
+        For subtitles, and for an encode when the main server's file cannot be read from
+        here. An app that moved here while the main server was away keeps asking here.
+        Redirected with the same query and key, by the door the viewer can reach;
+        True when sent.
+        """
+        try:
+            if local().file_for(q.get("key", [""])[0], int(q.get("mi", ["0"])[0] or 0)):
+                return False
+        except Exception:
+            return False
+        import pd_follow
+        one = pd_follow.settings(self.library_settings_plain() or {})
+        if not (one.get("on") and one.get("master")):
+            return False
+        doors = pd_follow.house_doors()
+        house = ((doors.get("lan") or one["master"]) if self.at_home()
+                 else doors.get("outside") or "")
+        if not house:
+            return False
+        self.send_response(307)
+        self.send_header("Location", house.rstrip("/") + self.path)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
     def gpu_stream(self, q):
         """Pipe one ffmpeg's fragmented MP4 straight to the browser."""
         # a television asking for the pipe is a mistake somewhere: it is the one thing
@@ -3492,9 +4589,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             key = q.get("key", [""])[0]
             mi = int(q.get("mi", ["0"])[0])
             # the library hands us the file itself; there is nothing else to ask
-            src = local().file_for(key, mi) if q.get("src", [""])[0] == "local" else None
+            src = ((local().file_for(key, mi) or self.house_source(q))
+                   if q.get("src", [""])[0] == "local" else None)
             height, mbit = self.capped(int(q.get("height", ["0"])[0]),
                                        self.wanted_rate(q))
+            burn = self.burn_for(q, src) if self.burn_allowed_here(q) else None
+            # the picture as it is, for an app that asked where such a stream starts
+            copy = (q.get("copyv", ["0"])[0] == "1"
+                    and self.video_copies(src, q, height, mbit, burn))
             begin = lambda mode: engine().start(
                                 key,
                                 audio_index=self.wanted_audio(q, src),
@@ -3504,8 +4606,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 offset=int(float(q.get("offset", ["0"])[0])),
                                 height=height, mbit=mbit,
                                 media_index=mi,
-                                burn_index=(self.burn_for(q, src)
-                                            if self.burn_allowed_here(q) else None),
+                                burn_index=burn,
+                                copy_video=copy,
                                 src=src,
                                 audio_mode=mode,
                                 # the client saying it can decode HEVC, which means
@@ -3531,7 +4633,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # fifteen seconds before a frame - and it would cost that on every play.
             if wanted == "passthrough" and self.no_dolby_here((src or {}).get("file", "")):
                 wanted = "aac"
-            st = begin(wanted)
+            # "Decoder: processor" on the settings page. The card is quicker and is
+            # what this uses by default; the processor is there for a card that is
+            # full, or busy with something else, or making a mess of a particular
+            # file. It costs nothing to offer and it is always present.
+            if q.get("engine", [""])[0] == "cpu":
+                import pd_gpu
+                with pd_gpu.on_the_cpu():
+                    st = begin(wanted)
+            else:
+                st = begin(wanted)
         except Exception as e:
             # An encoder that will not start is the end of the evening on a machine
             # that has no encoder - the machine that keeps copies is a spare box with
@@ -3543,6 +4654,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.log_message("no encoder here (%s); sending the file as it is",
                                  str(e)[:120])
                 self.send_file_ranged(src["file"])
+                return
+            # the main server's file, and this machine could not encode it: the main server can
+            if src and src.get("remote") and self.send_to_the_house(q):
                 return
             self.send_error(500, str(e)[:200])
             return
@@ -3620,7 +4734,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         sid = WATCHING.start(
             self.watcher(),
             local().title_for(key) if q.get("src", [""])[0] == "local" else key,
-            self.quality(src), "transcode (%s)" % st.info.get("engine", "?"),
+            self.quality(src),
+            ("direct video, sound encoded" if st.info.get("copyVideo")
+             else "transcode (%s)" % st.info.get("engine", "?")),
             self.client_address[0], key, self.app_name(), self.device_kind())
         try:
             self.wfile.write(first)
@@ -3660,7 +4776,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return want
 
     def burn_allowed_here(self, q):
-        """A burn asked for from outside the house, when the owner has not allowed it.
+        """A burn asked for from outside the main server, when the owner has not allowed it.
 
         Refused rather than obeyed: the film plays without the subtitle, which is the
         same answer the picker gives, and a page opened before the setting changed
@@ -3673,10 +4789,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def watcher(self):
-        """The name to show against a stream: a guest by name, anyone here by address."""
+        """The name to show against a stream.
+
+        What somebody calls themselves comes first: the name on their invitation is
+        what the owner wrote when they made the key, and a person may be known by
+        another.
+
+        A guest by the name on their invitation, whoever sits at this machine by the
+        owner's own name, and anybody else by the address they came from. The owner
+        stood in the watching list as a bare address among named guests - the one
+        person the server is certain of, shown as a number.
+        """
+        mine = self.viewer_settings(self.settings_file()).get("myName")
+        if mine:
+            return str(mine)
         if self.role == "guest" and self.guest_name:
             return self.guest_name
         host = self.client_address[0]
+        if self.at_home():
+            named = str((read_settings() or {}).get("ownerName") or "")
+            if named:
+                return named
         return "you" if host in ("127.0.0.1", "::1") else host
 
     @staticmethod
@@ -3723,7 +4856,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Whose settings these are: the owner, or the guest's invitation.
 
         The owner may have a key of their own - the invitation they use on the
-        television and away from the house. Then that is who they are on every
+        television and away from the main server. Then that is who they are on every
         screen, this one included, and one person has one history instead of two.
         Owning the machine is still a matter of where the request comes from; the
         key says who is watching, not what they may change.
@@ -3737,68 +4870,65 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         The owner keeps the top level - that is where these settings have always been
         - and everyone else gets a corner of their own, started from the defaults.
+
+        The owner may take a key of their own, so that they are the same person on the
+        television as at the desk. From that moment they are filed under it like
+        anybody else, and everything they had at the top level - their shelves, their
+        watchlist, how their subtitles look - was still sitting there and no longer
+        being read. It is carried over the first time they are asked for, once.
         """
-        if self.viewer() == "me":
+        who = self.viewer()
+        if who == "me":
             return stored
-        return stored.setdefault("users", {}).setdefault(self.viewer(), {})
+        mine = stored.setdefault("users", {}).setdefault(who, {})
+        if who == str(stored.get("ownerIs") or ""):
+            for name in Handler.VIEWER_KEYS:
+                if name in stored and name not in mine:
+                    mine[name] = stored.pop(name)
+            Handler.own_the_old_history(who)
+        return mine
+
+    #: done once per run: it is a rename of a handful of rows, not a thing to try on
+    #: every request
+    HISTORY_MOVED = set()
+
+    @classmethod
+    def own_the_old_history(cls, who):
+        """Put what the owner watched before they had a key under that key.
+
+        "me" is the name a server gives its owner before anybody has said who they
+        are. Taking an invitation of their own makes them a named person, and
+        everything they had watched stayed behind under the old name - so their own
+        Continue watching emptied itself on the day they became somebody.
+        """
+        if not who or who == "me" or who in cls.HISTORY_MOVED:
+            return
+        cls.HISTORY_MOVED.add(who)
+        try:
+            con = local().lib.db()
+            for table in ("progress", "watchlog"):
+                # anything the named person already has wins: they watched it later
+                con.execute(
+                    "DELETE FROM %s WHERE who='me' AND key IN "
+                    "(SELECT key FROM %s WHERE who=?)" % (table, table), (who,))
+                con.execute("UPDATE %s SET who=? WHERE who='me'" % table, (who,))
+            con.commit()
+        except Exception:
+            pass
 
     @staticmethod
-    def casual_history(mine, order):
-        """What this way of playing has already been through, and which run it is on.
+    def round_moved(mine):
+        """Say when this shuffle last moved, so two machines can tell whose is newer.
 
-        Kept per mode: Shuffle and Turn are two ways through the same shelf, and one
-        holding the other's history means a rotation coming back to find its episodes
-        already counted as played.
+        The round is one thing wherever it is played. Merging two of them makes a
+        queue nobody drew, so the newer one is taken whole and the older dropped.
         """
-        played = mine.get("casualPlayed")
-        runs = mine.get("casualRun")
-        # what an older settings file holds: one list and one number, which belonged
-        # to whichever mode happened to be in use
-        if isinstance(played, list):
-            played = {"random": played, "rotate": []}
-        if not isinstance(played, dict):
-            played = {}
-        if not isinstance(runs, dict):
-            runs = {"random": int(runs or 1), "rotate": 1}
-        return (played, runs,
-                [str(k) for k in (played.get(order) or [])],
-                int(runs.get(order) or 1))
+        mine["casualStamp"] = int(time.time())
 
-    def note_casual_place(self, key, position, duration):
-        """Remember where a casual playing has got to - and only there.
-
-        Near the end is the same as finished: the note is dropped, so coming back to
-        the shelf does not resume something four seconds from its credits.
-        """
-        stored = self.settings_file()
-        mine = self.viewer_settings(stored)
-        places = dict(mine.get("casualAt") or {})
-        done = duration and position / duration > 0.95
-        if done or position < 30:
-            if str(key) not in places:
-                return                       # nothing to write and nothing to forget
-            places.pop(str(key), None)
-        else:
-            # where, and when it was left: Casual play resumes the most recent one,
-            # which is not necessarily the last thing drawn
-            places[str(key)] = {"at": int(position), "when": int(time.time())}
-        mine["casualAt"] = places
-        write_settings(stored)
-
-    def casual_pool(self, grouped=False):
-        """Every episode and film the casual marks amount to, in library order.
-
-        Grouped, it is a list per programme - each one in season and episode order -
-        which is what a rotation needs: an episode of this, then one of that.
-        """
-        mine = self.viewer_settings(self.settings_file())
-        keys = [str(k) for k in (mine.get("casual") or [])]
-        if not keys:
-            return [] if not grouped else []
-        local().who = self.viewer()
-        body = local().route(local().lib.db(), "/library/casual/pool",
-                             {"keys": [",".join(keys)]}) or {}
-        return (body.get("groups") or []) if grouped else (body.get("keys") or [])
+    @staticmethod
+    def round_stamp(one):
+        """When a round last moved; nought for none."""
+        return int(one.get("casualStamp") or 0) if isinstance(one, dict) else 0
 
     def casual_item(self, key):
         """One key as a thing with a poster, for a client to name and show."""
@@ -3808,41 +4938,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return local().metadata_for(con, key)
         finally:
             con.close()
-
-    def casual_queue(self, mine, order, played, left, depth=10):
-        """What this way of playing will play next, in order, as far as it is known.
-
-        Kept rather than recomputed so that the answer does not change between being
-        asked and being acted on - which is what "what is next" has to mean if a
-        subtitle is to be fetched for it in advance.
-        """
-        queued = [k for k in ((mine.get("casualQueue") or {}).get(order) or [])
-                  if k in left]
-        if len(queued) >= min(depth, len(left)):
-            return queued
-        if order == "rotate":
-            # the rotation worked forward: each programme in turn, each carrying on
-            # from where it had got to
-            ahead, seen = list(queued), list(played) + list(queued)
-            while len(ahead) < min(depth, len(left)):
-                nxt = self.rotated_pick(self.casual_pool(grouped=True), seen,
-                                        [k for k in left if k not in ahead])
-                if not nxt:
-                    break
-                ahead.append(nxt)
-                seen.append(nxt)
-        else:
-            import random
-            rest = [k for k in left if k not in queued]
-            random.shuffle(rest)
-            ahead = queued + rest[:max(0, depth - len(queued))]
-        return ahead
-
-    def remember_queue(self, mine, order, ahead):
-        """Keep the queue with the rest of this viewer's casual settings."""
-        queues = dict(mine.get("casualQueue") or {})
-        queues[order] = list(ahead)
-        mine["casualQueue"] = queues
 
     def fetch_ahead(self, keys):
         """Fetch subtitles for what is coming, quietly and in the background.
@@ -3859,154 +4954,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     pass
         threading.Thread(target=work, daemon=True).start()
 
-    def casual_next(self, peek=False, resume=False):
-        """Draw the next thing to put on.
-
-        Nothing comes up twice until everything has come up once; when the hat is
-        empty it is refilled and the run counter goes up, so it starts over instead of
-        stopping. Peeking looks without drawing, which is how a client can say what is
-        coming next.
-        """
-        import random
-        stored = self.settings_file()
-        mine = self.viewer_settings(stored)
-        pool = self.casual_pool()
-        if not pool:
-            return {"error": "nothing is marked for casual watching"}
-        # One way of playing: anything from the shelf, nothing twice until the shelf is
-        # finished. The rota did the same job a second way and is gone; the per-mode
-        # bookkeeping stays because settings already written are shaped that way.
-        order = mine.get("casualOrder") or "random"
-        allPlayed, runs, mineNow, run = self.casual_history(mine, order)
-        played = [k for k in mineNow if k in pool]
-        left = [k for k in pool if k not in played]
-        if not left:                       # the hat is empty: fill it and count a run
-            played, left, run = [], list(pool), run + 1
-        # What was set aside when the last thing started. Peeking and drawing then
-        # agree, which they did not when a shuffle rolled the dice afresh for each
-        # question - "what is next" and "what came next" were different films.
-        # Something left part-way through comes back before anything new is drawn -
-        # but only when somebody presses Casual play. Pressing Next means "not this
-        # one", and answering that with the same episode again, from where it was
-        # left, is the opposite of what was asked.
-        places = mine.get("casualAt") or {}
-
-        def left_at(value):
-            """Seconds and when, from either the old form or the new one."""
-            if isinstance(value, dict):
-                return int(value.get("at") or 0), int(value.get("when") or 0)
-            return int(value or 0), 0
-
-        if not resume and not peek and played:
-            # Next means done with this one. It stays counted as played for this round,
-            # and its place is forgotten, so Casual play does not later offer to carry
-            # on with an episode that was deliberately skipped.
-            skipped = str(played[-1])
-            if skipped in places:
-                places = dict(places)
-                places.pop(skipped, None)
-                mine["casualAt"] = places
-        if resume and not peek and places:
-            # The most recently left thing, wherever it sits in the history. Pressing
-            # Next moves on without finishing what was on, and a reset empties the
-            # history while leaving the place - neither should lose it.
-            # the one that was on: the last thing drawn, if it was left part-way
-            unfinished, at = None, 0
-            if played:
-                seconds, _ = left_at(places.get(str(played[-1])))
-                if seconds > 30:
-                    unfinished, at = str(played[-1]), seconds
-            if not unfinished:
-                # otherwise whichever was left most recently
-                best = None
-                for k, value in places.items():
-                    seconds, when = left_at(value)
-                    if seconds > 30 and (best is None or when >= best[1]):
-                        best, at = (k, when), seconds
-                unfinished = best[0] if best else None
-            if unfinished:
-                local().who = self.viewer()
-                con = local().lib.db()
-                try:
-                    item = local().metadata_for(con, unfinished)
-                finally:
-                    con.close()
-                if item:
-                    return {"item": item, "key": unfinished, "run": run, "resumeAt": at,
-                            "left": len(left), "pool": len(pool)}
-        ahead = self.casual_queue(mine, order, played, left)
-        key = ahead[0] if ahead else (
-            self.rotated(played, left) if order == "rotate" else random.choice(left))
-        if peek:
-            # asked what is coming: settle it now, so the answer holds
-            self.remember_queue(mine, order, ahead)
-            write_settings(stored)
-            return {"item": self.casual_item(key), "key": key, "run": run,
-                    "queue": ahead[:10], "left": len(left), "pool": len(pool)}
-        if not peek:
-            allPlayed[order] = played + [key]
-            runs[order] = run
-            mine["casualPlayed"] = allPlayed
-            mine["casualRun"] = runs
-            # everything this way of playing has ever put on, which keeps counting
-            # past the end of the shelf: 434 of 400 on the second time round
-            totals = mine.get("casualTotal")
-            if not isinstance(totals, dict):
-                totals = {}
-            totals[order] = int(totals.get(order) or 0) + 1
-            mine["casualTotal"] = totals
-            # the rest of the queue, so what follows is known ten deep rather than
-            # one deep: long enough ahead for a subtitle to be found and downloaded
-            rest = [k for k in ahead if k != key]
-            self.remember_queue(mine, order, rest)
-            write_settings(stored)
-            # and their subtitles, fetched quietly while this one plays
-            self.fetch_ahead(rest[:3])
-        local().who = self.viewer()
-        con = local().lib.db()
-        try:
-            item = local().metadata_for(con, key)
-        finally:
-            con.close()
-        return {"item": item, "key": key, "run": run,
-                "left": len(left) - (0 if peek else 1), "pool": len(pool)}
-
-    @staticmethod
-    def rotated_pick(groups, played, left):
-        """A turn each: the next episode of the programme whose turn it is.
-
-        Each programme keeps its own place, so it carries on from where it got to
-        rather than starting again; whoever went last goes last again. A programme
-        with nothing left is skipped, and when they all are the caller has already
-        started a new run.
-        """
-        # where each programme has got to: the first of its episodes not yet played
-        ready = []
-        for group in groups:
-            nxt = next((k for k in group if k in left), None)
-            if nxt:
-                ready.append((group, nxt))
-        if not ready:
-            return None
-        if not played:
-            return ready[0][1]
-        # whichever programme the last thing came from, the next turn is the one after
-        last = played[-1]
-        at = next((i for i, (group, _) in enumerate(ready) if last in group), -1)
-        return ready[(at + 1) % len(ready)][1]
-
-    def rotated(self, played, left):
-        """The rotation's next pick, falling back to the front of the queue."""
-        groups = self.casual_pool(grouped=True)
-        return self.rotated_pick(groups, played, left) or left[0]
-
     def seasons_of(self, item):
         """The season keys of one programme, in order."""
         con = local().lib.db()
         try:
             rows = con.execute(
                 "SELECT DISTINCT season FROM episode WHERE item_id=? ORDER BY season",
-                (int(item),)).fetchall()
+                (str(item),)).fetchall()
             return ["%s-s%d" % (item, r["season"]) for r in rows]
         except Exception:
             return []
@@ -4018,8 +4972,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         con = local().lib.db()
         try:
             row = con.execute("SELECT item_id, season FROM episode WHERE id=?",
-                              (int(str(ekey)[1:]),)).fetchone()
-            return "%d-s%d" % (row["item_id"], row["season"]) if row else ""
+                              (str(ekey),)).fetchone()
+            return "%s-s%d" % (row["item_id"], row["season"]) if row else ""
         except Exception:
             return ""
         finally:
@@ -4036,7 +4990,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if mark == season:
                 return True
             return bool(season) and mark == season.split("-s")[0]
-        one = re.match(r"^(\d+)-s(\d+)$", key)
+        one = re.match(r"^([0-9a-f]{12})-s(\d+)$", key)
         return bool(one) and mark == one.group(1)
 
     def without(self, mark, key):
@@ -4049,15 +5003,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         mark, key = str(mark), str(key)
         if mark == key:
             return []
-        one = re.match(r"^(\d+)-s(\d+)$", key)
-        if mark.isdigit() and one and one.group(1) == mark:
+        one = re.match(r"^([0-9a-f]{12})-s(\d+)$", key)
+        if is_title(mark) and one and one.group(1) == mark:
             return [s for s in self.seasons_of(mark) if s != key]
         if key.startswith("e"):
             season = self.season_of(key)
             rest = [e for e in self.spread(season) if e != key] if season else []
             if mark == season:
                 return rest
-            if mark.isdigit() and season.startswith(mark + "-s"):
+            if is_title(mark) and season.startswith(mark + "-s"):
                 return [s for s in self.seasons_of(mark) if s != season] + rest
         return []
 
@@ -4074,21 +5028,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return [key] if key else []
         con = local().lib.db()
         try:
-            season = re.match(r"^(\d+)-s(\d+)$", key)
+            season = re.match(r"^([0-9a-f]{12})-s(\d+)$", key)
             if season:
                 rows = con.execute(
                     "SELECT id FROM episode WHERE item_id=? AND season=? ORDER BY number",
-                    (int(season.group(1)), int(season.group(2)))).fetchall()
-                return ["e%d" % r["id"] for r in rows] or [key]
-            if not key.isdigit():
+                    (season.group(1), int(season.group(2)))).fetchall()
+                return [str(r["id"]) for r in rows] or [key]
+            if not is_title(key):
                 return [key]
-            row = con.execute("SELECT type FROM item WHERE id=?", (int(key),)).fetchone()
+            row = con.execute("SELECT type FROM item WHERE id=?", (str(key),)).fetchone()
             if not row or row["type"] == "movie":
                 return [key]
             rows = con.execute(
                 "SELECT id FROM episode WHERE item_id=? ORDER BY season, number",
-                (int(key),)).fetchall()
-            return ["e%d" % r["id"] for r in rows] or [key]
+                (str(key),)).fetchall()
+            return [str(r["id"]) for r in rows] or [key]
         except Exception:
             return [key]
         finally:
@@ -4103,8 +5057,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         episodes: fully marked, and partly marked, kept apart so a half-marked season
         can look different from a whole one.
         """
-        ids = [int(k[1:]) for k in map(str, keys)
-               if k.startswith("e") and k[1:].isdigit()]
+        ids = [k for k in map(str, keys)
+               if is_episode(k)]
         if not ids:
             return [], []
         con = local().lib.db()
@@ -4128,13 +5082,71 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             con.close()
         full, part = [], []
         for where, count in held.items():
-            key = "%d-s%d" % where
+            key = "%s-s%d" % where
             (full if count >= whole.get(where, count) else part).append(key)
         for item in shows:
             mine = sum(c for w, c in held.items() if w[0] == item)
             all_of = sum(c for w, c in whole.items() if w[0] == item)
             (full if mine >= all_of else part).append(str(item))
         return full, part
+
+    def shelves_holding(self, key):
+        """Each of this viewer's shelves, with whether it holds all, some or none of a title."""
+        want = self.spread(key)
+        con = local().lib.db()
+        try:
+            above = {}                             # episode -> (its season, its programme)
+            eps = [k for k in want if k.startswith("e")]
+            for at in range(0, len(eps), 500):
+                part = eps[at:at + 500]
+                for r in con.execute("SELECT id, item_id, season FROM episode WHERE id IN (%s)"
+                                     % ",".join("?" * len(part)), part):
+                    above[str(r["id"])] = ("%s-s%d" % (r["item_id"], r["season"]),
+                                           str(r["item_id"]))
+            out = []
+            for shelf in self.collections():
+                held = set(str(k) for k in self.collection_keys(con, shelf))
+                if key in held:
+                    hit = len(want)
+                else:
+                    hit = sum(1 for k in want if k in held or (
+                        k in above and (above[k][0] in held or above[k][1] in held)))
+                out.append({"id": str(shelf.get("id")), "name": str(shelf.get("name") or ""),
+                            "mode": str(shelf.get("mode") or "filter"),
+                            "state": ("all" if want and hit >= len(want)
+                                      else "some" if hit else "none")})
+            return out
+        finally:
+            con.close()
+
+    def shelf_mark(self, shelf, key, on):
+        """Put a title on a shelf or take it off. A programme or a season is its episodes,
+        and on a filter shelf what the rule already catches is struck out, not unpinned."""
+        con = local().lib.db()
+        try:
+            byrule = (set() if str(shelf.get("mode") or "filter") == "manual"
+                      else set(str(k) for k in self.collection_keys(
+                          con, dict(shelf, pinned=[], hidden=[]))))
+            held = [str(k) for k in self.collection_keys(con, shelf)]
+        finally:
+            con.close()
+        keys = self.spread(key)
+        gone = set([key] + keys)
+        marked = [k for k in held if k not in gone]
+        if on:
+            marked = keys + marked
+        else:
+            # one season off a programme held whole: the mark above splits into its parts
+            out = []
+            for k in marked:
+                if self.covers(k, key):
+                    out += [x for x in self.without(k, key) if x not in gone]
+                else:
+                    out.append(k)
+            marked = out
+        wanted = set(marked)
+        shelf["pinned"] = [k for k in marked if k not in byrule]
+        shelf["hidden"] = [k for k in byrule if k not in wanted]
 
     def marks_state(self, shelf, key):
         """Whether all, some or none of what this key stands for is on that shelf."""
@@ -4148,12 +5160,55 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def collections(self):
         """This viewer's named shelves, in the order they were made."""
-        mine = self.viewer_settings(self.settings_file())
+        stored = self.settings_file()
+        mine = self.viewer_settings(stored)
+        self.casual_becomes_a_shelf(stored, mine)
         out = []
         for one in (mine.get("collections") or []):
             if isinstance(one, dict) and one.get("id"):
                 out.append(one)
         return out
+
+    def casual_becomes_a_shelf(self, stored, mine):
+        """What somebody marked for casual watching, as a shelf of its own.
+
+        Casual was a second list beside the collections and is now a way of playing
+        one. Somebody who had marked a hundred and eighty episodes should find them
+        where the shelves are rather than be asked to mark them again, so the marks
+        become a shelf once, keeping the round that went with them.
+        """
+        marks = [str(k) for k in (mine.get("casual") or [])]
+        if not marks or mine.get("casualMoved"):
+            return
+        shelves = [c for c in (mine.get("collections") or [])
+                   if isinstance(c, dict) and c.get("id")]
+        cid = "casual"
+        if not any(str(c.get("id")) == cid for c in shelves):
+            shelves.append({"id": cid, "name": "Casual", "mode": "manual",
+                            "pinned": marks, "hidden": []})
+        rounds = mine.get("shuffles")
+        if not isinstance(rounds, dict):
+            rounds = {}
+        if cid not in rounds:
+            # the round travels with the shelf: the hat it was drawn from is the same
+            # hat, and starting somebody over because the name changed is a loss
+            order = mine.get("casualOrder") or "random"
+            rounds[cid] = {
+                "queue": [str(k) for k in
+                          ((mine.get("casualQueue") or {}).get(order) or [])],
+                "played": [str(k) for k in
+                           ((mine.get("casualPlayed") or {}).get(order) or [])],
+                "at": dict(mine.get("casualAt") or {}),
+                "run": int((mine.get("casualRun") or {}).get(order) or 1),
+                "casualStamp": int(mine.get("casualStamp") or 0)}
+        mine["collections"] = shelves
+        mine["shuffles"] = rounds
+        mine["casualMoved"] = True
+        # Written down, not only handed back. Reading the settings a second time to
+        # write them fetches a fresh copy without the shelf in it, so the file kept
+        # being written exactly as it was - the shelf existed in every answer and in
+        # no file, and the row on Continue watching had no name to show for it.
+        write_settings(stored)
 
     def save_collections(self, shelves):
         stored = self.settings_file()
@@ -4190,11 +5245,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         bans = [w.strip().lower() for w in (rule.get("without") or []) if w.strip()]
         blocked = [[part for part in one.split() if part] for one in bans]
         kind = (rule.get("type") or "").strip()
-        genre = (rule.get("genre") or "").strip().lower()
+        genres = {g.strip().lower() for g in str(rule.get("genre") or "").split(",")
+                  if g.strip()}
         early = int(rule.get("from") or 0)
         late = int(rule.get("to") or 0)
         found = []
-        if words or kind or genre or early or late:
+        if words or kind or genres or early or late:
             sql = "SELECT id, title, sort_title, year, genres, type FROM item WHERE 1=1"
             args = []
             if kind in ("movie", "show"):
@@ -4213,10 +5269,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     continue
                 if any(all(part in name for part in one) for one in blocked):
                     continue
-                if genre and genre not in [g.strip().lower()
-                                           for g in (row["genres"] or "").split(",")]:
+                # several genres, comma-joined: the title carries all of them
+                if not genres <= {g.strip().lower()
+                                  for g in (row["genres"] or "").split(",")}:
                     continue
                 found.append(str(row["id"]))
+            # films on offer from a torrent pack, by the same rule: they join the shelf
+            # greyed until they are here
+            if kind in ("", "movie"):
+                try:
+                    import pd_torrents
+                    offers = pd_torrents.offered()
+                except Exception:
+                    offers = []
+                for one in offers:
+                    name = (one.get("title") or "").lower()
+                    year = int(one.get("year") or 0)
+                    if (early and (not year or year < early)) or (late and (not year or year > late)):
+                        continue
+                    if rules and not any(all(part in name for part in r) for r in rules):
+                        continue
+                    if any(all(part in name for part in r) for r in blocked):
+                        continue
+                    if not genres <= {g.strip().lower() for g in one.get("genres") or []}:
+                        continue
+                    found.append(str(one["ratingKey"]))
         # by hand: what the rule missed, and what it should not have caught
         hidden = set(str(k) for k in (shelf.get("hidden") or []))
         for key in (shelf.get("pinned") or []):
@@ -4248,15 +5325,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path from the browser - and an episode always stands for its series here.
         """
         text = str(key or "")
-        found = re.search(r"(?:^|[/l])e(\d+)", text)
+        found = re.search(r"(?:^|[/l])e([0-9a-f]{12})", text)
         if found:
             show = self.show_of("e" + found.group(1))
             if show:
                 return "show|" + show
-        season = re.search(r"(\d+)-s\d+", text)
+        season = re.search(r"([0-9a-f]{12})-s\d+", text)
         if season:
             return "show|" + season.group(1)
+        # a programme's own page names the programme, which is the scope its episodes read
+        whole = re.search(r"(?:^|[/l])([0-9a-f]{12})$", text)
+        if whole:
+            con = local().lib.db()
+            try:
+                row = con.execute("SELECT type FROM item WHERE id=?",
+                                  (whole.group(1),)).fetchone()
+            finally:
+                con.close()
+            if row and row["type"] == "show":
+                return "show|" + whole.group(1)
         return text
+
+    def everyones_subtitles(self):
+        """How each viewer here has their subtitles drawn, by the key they are known by.
+
+        The owner under "me", everybody else under their token. Sent to the machine
+        that keeps copies so an evening carried over mid-film looks the same.
+        """
+        stored = read_settings() or {}
+        out = {}
+
+        def bit(one):
+            said = {}
+            for name in ("subtitles", "perTitle", "subLanguage", "language"):
+                if one.get(name):
+                    said[name] = one[name]
+            return said
+
+        mine = bit(stored)
+        if mine:
+            out["me"] = mine
+        for token, one in (stored.get("users") or {}).items():
+            said = bit(one or {})
+            if said:
+                out[str(token)] = said
+        return out
 
     def subtitle_settings(self, key=None, device="web"):
         """The look for one screen, with that title's exceptions on top of it."""
@@ -4289,7 +5402,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if "size" in body:
                 cur["size"] = round(min(1.8, max(0.7, float(body["size"]))), 2)
             if "position" in body:
-                cur["position"] = round(min(0.4, max(0.0, float(body["position"]))), 3)
+                asked = float(body["position"])
+                # 0.9 and over is "very bottom", which both players draw at the floor
+                cur["position"] = (0.99 if asked >= 0.9
+                                   else round(min(0.4, max(0.0, asked)), 3))
             if "font" in body:
                 # the faces on offer; anything else is somebody guessing
                 name = str(body["font"]).lower()
@@ -4326,6 +5442,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             base = dict(self.SUBTITLE_DEFAULTS[device])
             base.update(kept.get(device, {}))
             differs = {k: v for k, v in cur.items() if base.get(k) != v}
+            # a height means nothing without what it is measured from: kept as a pair
+            if "position" in differs or "base" in differs:
+                differs["position"], differs["base"] = cur["position"], cur["base"]
             per = mine.get("perTitle", {}) or {}
             slot = device + "|" + self.scope_key(key)
             if differs:
@@ -4386,7 +5505,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 row = con.execute(
                     "SELECT e.season, e.number, i.title, i.year FROM episode e "
                     "JOIN item i ON i.id = e.item_id WHERE e.id=?",
-                    (int(str(key)[1:]),)).fetchone()
+                    (str(key),)).fetchone()
                 if not row:
                     return None, None, None, None, None
                 # Asked for by the number the release carries, not by ours. A season
@@ -4401,7 +5520,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return (src, row["title"], row["year"], row["season"],
                         row["number"] + shift)
             row = con.execute("SELECT title, year FROM item WHERE id=?",
-                              (int(key),)).fetchone()
+                              (str(key),)).fetchone()
             if not row:
                 return None, None, None, None, None
             return src, row["title"], row["year"], None, None
@@ -4417,10 +5536,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if str(key).startswith("e"):
                 row = con.execute(
                     "SELECT i.imdb_id FROM episode e JOIN item i ON i.id = e.item_id "
-                    "WHERE e.id=?", (int(str(key)[1:]),)).fetchone()
+                    "WHERE e.id=?", (str(key),)).fetchone()
             else:
                 row = con.execute("SELECT imdb_id FROM item WHERE id=?",
-                                  (int(key),)).fetchone()
+                                  (str(key),)).fetchone()
             return (row["imdb_id"] or "") if row else ""
         except (TypeError, ValueError):
             return ""
@@ -4607,12 +5726,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return {"cacheDeck": bool(row.get("cacheDeck")),
                     "cacheList": bool(row.get("cacheList")),
                     "cacheCasual": bool(row.get("cacheCasual")),
+                    "syncGbWeek": float(row.get("syncGbWeek") or 0),
+                    "downloadGbWeek": float(row.get("downloadGbWeek") or 0),
                     "token": mine}
         return {"cacheDeck": bool(stored.get("cacheDeck", True)),
                 "cacheList": bool(stored.get("cacheList", False)),
                 # what the shuffle would put on next: an evening of casual watching
                 # is exactly the evening nobody chooses a film for
-                "cacheCasual": bool(stored.get("cacheCasual", False))}
+                "cacheCasual": bool(stored.get("cacheCasual", False)),
+                "syncGbWeek": float(stored.get("syncGbWeek") or 0),
+                "downloadGbWeek": float(stored.get("downloadGbWeek") or 0)}
 
     #: What game mode may hold back, and what it holds back unless told otherwise.
     #: Encoding is off by default: stopping it turns somebody's film off, which is a
@@ -4711,7 +5834,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=30) as answer:
                 said = json.loads(answer.read().decode("utf-8", "replace"))
         except Exception as e:
-            return {"error": "Asked the house server and it did not answer: " +
+            return {"error": "Asked the main server server and it did not answer: " +
                              str(e)[:90]}
         said["handed"] = True
         said["where"] = one["master"]
@@ -4732,10 +5855,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not invite:
             return False
         if invite.get("follows"):
-            return True                    # the house's own second machine
+            return True                    # the main server's own second machine
         return bool(invite.get("shareLan", True))
 
-    @staticmethod
     def follower_stopped(self):
         """Whether this caller is a machine the owner has stopped.
 
@@ -4744,7 +5866,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         change.
         """
         try:
-            blocked = local().lib.config().get("blockedFollowers") or []
+            blocked = local().lib.config().get("blockedCaches") or []
         except Exception:
             return False
         if not blocked:
@@ -4763,7 +5885,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None
         return None if self.follower_stopped() else invite
 
-    @staticmethod
     def everyone_here(self):
         """Every name this house knows, for taking out of anything that leaves it."""
         stored = read_settings() or {}
@@ -4772,21 +5893,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             names += [str(r.get("name") or "") for r in INVITES.load()]
         except Exception:
             pass
-        return [n for n in names if n]
+        # once each: the owner's name is also an invitation name when somebody has
+        # a key of their own, and the list is read by people
+        seen, out = set(), []
+        for n in names:
+            if n and n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out
 
     def tell_the_site(self, row, forced=False):
-        """Hand one fault to palladium.video, if this machine is allowed to."""
+        """Hand one fault to palladium.video, and write down what came of it.
+
+        (sent, why). The row is marked sent only once the site has taken it, and
+        carries the reason when it would not go - a machine with no way out says so
+        on the report rather than showing 115 faults it thinks it has sent.
+        """
+        ident = str(row.get("id") or "")
+
+        def wrote(ok, why):
+            if not ident:
+                return
+            if ok:
+                self.amend_report(ident, {"sentAway": int(time.time()), "sendWhy": ""})
+            else:
+                self.amend_report(ident, {"sendWhy": str(why or "")[:160],
+                                          "sendTried": int(time.time())})
+
         try:
             import pd_faults
             # read where the page writes it: with the machine's own settings, not
             # the viewer's - what a computer sends about itself is the computer's
             how = str(local().lib.config().get("sendFaults") or pd_faults.OFF)
-            return pd_faults.send(row, how, build=self.build_version(),
-                                  app=str(row.get("app") or ""),
-                                  called=self.server_name(), forced=forced,
-                                  people=self.everyone_here())
-        except Exception:
-            return False
+            ok, why = pd_faults.send(row, how, build=self.build_version(),
+                                     app=str(row.get("app") or ""),
+                                     called=self.server_name(), forced=forced,
+                                     people=self.everyone_here(), then=wrote)
+        except Exception as e:
+            ok, why = False, str(e)[:160]
+        if forced:
+            wrote(ok, why)
+        return ok, why
 
     @staticmethod
     def server_name():  # noqa: D401
@@ -4811,9 +5958,129 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             return ""
 
+    def sharing_with_copy(self, path):
+        """Whether to read part of this file off the other machine, and how.
+
+        Off unless somebody sets a share. Worth having when the two machines are
+        comparable and worth nothing when they are not - a copy a tenth the speed
+        adds a tenth - so it is a number somebody chooses, not a guess this makes.
+        """
+        try:
+            share = int(local().lib.config().get("shareWithCopy") or 0)
+        except (TypeError, ValueError):
+            return None
+        if share <= 0:
+            return None
+        one = self.standby_now()
+        where = (one.get("where") or "").rstrip("/")
+        if not where or not one.get("alive"):
+            return None
+        token = ""
+        for row in INVITES.load():
+            if row.get("follows") and row.get("token"):
+                token = row["token"]
+                break
+        if not token:
+            return None
+        mark = self.quick_mark(path)
+        if not mark:
+            return None
+        return (min(share, 90), where, token, os.path.basename(path), mark)
+
+    #: The cache each following machine is being sent this moment, by address. One
+    #: file at a time is what the cache asks for, but a fetch it gives up on leaves
+    #: this side still sending - so two, three, four files went out at once, each
+    #: taking its share of the line and the air, for a machine that had stopped
+    #: listening to all but the last.
+    SYNC_NOW = {}
+    #: What each machine has carried for a viewer, so the screen can say so:
+    #: {who: (bytes from here, bytes from the cache, when)}
+    CARRIED = {}
+    #: Above this share of the time spent getting blocks off the disk rather than
+    #: handing them on, the disk is what is holding the film up. Below the lower
+    #: figure it is comfortably ahead and the cache is worth nothing.
+    DISK_BUSY = 0.35
+    DISK_EASY = 0.15
+
+    def share_by_reads(self, now, most, disk, wrote):
+        """How much of the reading the cache should do, from how this machine is faring.
+
+        Measured here rather than asked of the viewer. What a screen has left to play
+        was the old answer and it is not one: a browser keeps about two seconds in
+        front of itself however well it is fed, so it read as running out for the
+        whole of every film - and nothing ever sent the figure anyway.
+
+        What does say something is time. Getting a block off this disk against handing
+        it on: a disk keeping well ahead of the line is worth nothing to share, and one
+        the line is waiting on is worth every block the cache will take.
+        """
+        both = disk + wrote
+        if both <= 0:
+            return now
+        busy = disk / both
+        if busy > Handler.DISK_BUSY:
+            return min(most, now + 10)
+        if busy < Handler.DISK_EASY:
+            return max(0, now - 5)
+        return now
+
+    def block_from_copy(self, share, at, want):
+        """One block off the other machine, or nothing if it is not quick about it.
+
+        Nothing is retried and nothing is waited for: this is a way of spreading the
+        reading, not a way of getting the film. A block that does not come is read
+        off this disk instead, which is where it would have come from anyway.
+        """
+        _, where, token, name, mark = share
+        url = ("%s/copy/read?name=%s&mark=%s&t=%s"
+               % (where, urllib.parse.quote(name), urllib.parse.quote(mark),
+                  urllib.parse.quote(token)))
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                url, headers={"Range": "bytes=%d-%d" % (at, at + want - 1),
+                              "X-Palladium-App": "house"})
+            with urllib.request.urlopen(req, timeout=4) as answer:
+                got = answer.read(want)
+            return got if got else None
+        except Exception:
+            return None
+
+    def copy_holds(self, name, mark):
+        """The file of that name in the cache folder, if it is the same file.
+
+        The mark is the size and both ends: two rips never agree on it, and a copy
+        that arrived half-written does not agree with itself. Without this a request
+        for a name could be answered with a different film of the same name.
+        """
+        import pd_follow
+        try:
+            one = pd_follow.settings(local().lib.config())
+        except Exception:
+            return ""
+        folder = (one.get("folder") or "").strip()
+        safe = pd_follow.a_safe_name(name)
+        if not folder or not safe or not pd_follow.a_sane_folder(folder):
+            return ""
+        here = os.path.join(folder, safe)
+        if not pd_follow.inside(folder, here) or not os.path.exists(here):
+            return ""
+        if mark and self.quick_mark(here) != mark:
+            return ""
+        return here
+
     def house_doors(self):
-        """Both addresses of the machine this one follows, if it follows one."""
-        one = (read_settings() or {}).get("follow") or {}
+        """Both addresses of the machine this one follows, if it follows one.
+
+        Read from the library's settings, where the following is set up. It was read
+        from this viewer's own settings file, which has never held it - so a machine
+        that follows another answered that it followed nobody, and a page opened on
+        it had no way back to the main server.
+        """
+        try:
+            one = local().lib.config().get("follow") or {}
+        except Exception:
+            one = (read_settings() or {}).get("follow") or {}
         if not (one.get("on") and one.get("master")):
             return {}
         try:
@@ -4930,10 +6197,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: what belongs to a viewer rather than to the machine. The owner's are kept at
     #: the top level of the settings, mixed in with the server's own, so they move by
     #: name - the port and the library folders are not viewing.
-    VIEWER_KEYS = ("watchlist", "casual", "casualNext", "casualPlayed", "casualRun",
-                   "casualTotal", "casualAt", "casualQueue", "casualOrder",
+    #: Everything filed under one viewer. Anything missing from this list is left
+    #: behind when somebody is named the owner, still in the file and read by
+    #: nothing - which is how twelve collections and a front page arrangement came
+    #: to vanish on the day their owner took a key of their own.
+    VIEWER_KEYS = ("watchlist", "favorites", "casual", "casualMoved", "shuffles",
                    "subtitles", "perTitle", "myAccent", "autoNext", "autoFetch",
-                   "autoSync", "watchParty", "subLanguage", "mine", "deckAside")
+                   "autoSync", "watchParty", "subLanguage", "mine", "deckAside",
+                   "collections", "homeRows", "skin",
+                   # whether a film may be read off two machines at once, and whether
+                   # it may move to another machine when the one serving it stops.
+                   # Both on unless somebody says otherwise; both belong to the person
+                   # watching, not to the machine.
+                   "splitPlay", "failover", "dropWatched",
+                   # what somebody calls themselves, which is theirs. The name on the
+                   # invitation is the owner's record of who they gave a key to and
+                   # stays as they wrote it.
+                   "myName",
+                   # whether a poster stands behind the shelves. Theirs, on every
+                   # screen they watch on: the browser, the phone and the television.
+                   "myBackdrop")
 
     def hand_over_history(self, frm, to):
         """Move one viewer's viewing onto another. Returns what moved.
@@ -4949,18 +6232,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             rows = con.execute("UPDATE watchlog SET who=? WHERE who=?",
                                (to, frm)).rowcount
-            for key, pos, dur, upd in con.execute(
-                    "SELECT key, position, duration, updated FROM progress "
+            for key, pos, dur, upd, cas in con.execute(
+                    "SELECT key, position, duration, updated, "
+                    "COALESCE(casual, 0) casual FROM progress "
                     "WHERE who=?", (frm,)).fetchall():
                 had = con.execute("SELECT updated FROM progress WHERE who=? AND key=?",
                                   (to, key)).fetchone()
                 if had and int(had["updated"] or 0) >= int(upd or 0):
                     continue          # the later note wins, whichever side it is on
                 con.execute(
-                    """INSERT INTO progress (key, position, duration, updated, who)
-                       VALUES (?,?,?,?,?) ON CONFLICT(who, key) DO UPDATE SET
+                    """INSERT INTO progress (key, position, duration, updated, who,
+                                                casual)
+                       VALUES (?,?,?,?,?,?) ON CONFLICT(who, key) DO UPDATE SET
                        position=excluded.position, duration=excluded.duration,
-                       updated=excluded.updated""", (key, pos, dur, upd, to))
+                       updated=excluded.updated, casual=excluded.casual""",
+                    (key, pos, dur, upd, to, cas))
                 places += 1
             con.execute("DELETE FROM progress WHERE who=?", (frm,))
             con.commit()
@@ -4998,10 +6284,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         write_settings(stored, merge=False)
         return {"rows": rows, "places": places}
 
-    def cache_cost(self, who):
+    def follower_cost(self, who):
         """How many files, and how many gigabytes, keeping this person costs.
 
-        Counted the way the copying counts it: what they are half-way through, and
+        Counted the way the cacheing counts it: what they are half-way through, and
         what is on their list. It is what makes one person's two ticks visibly dearer
         than another's.
         """
@@ -5011,7 +6297,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             keys = [str(r["key"]) for r in con.execute(
                 """SELECT key FROM progress WHERE who = ? AND position > 30
-                   AND position < duration * 0.95 ORDER BY updated DESC LIMIT 40""",
+                   AND position < duration * 0.95 AND COALESCE(casual, 0) = 0
+                   ORDER BY updated DESC LIMIT 40""",
                 (who,))]
             listed = [str(k) for k in self.watchlist_of(who)[:40]]
             # and the shuffle, which is a shelf of its own and costs what it costs
@@ -5042,12 +6329,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ask the other machine to hold the whole library.
         """
         mine = self.owner_caching()
-        # an owner with a key of their own is counted as that key, once
+        # The owner, by whichever name they go under - their own key if they have
+        # taken one, and the placeholder a fresh install starts with if not. It read
+        # "only if they are still called me", so the moment the owner took a key of
+        # their own their deck, their list and their shuffle stopped being kept at
+        # all: the one person certain to be watching, left out of their own cache.
         me = mine.get("token") or "me"
-        decks = [me] if mine["cacheDeck"] and me == "me" else []
-        lists = [me] if mine["cacheList"] and me == "me" else []
-        shuffles = [me] if mine["cacheCasual"] and me == "me" else []
+        keyed = set()
+        decks = [me] if mine["cacheDeck"] else []
+        lists = [me] if mine["cacheList"] else []
+        shuffles = [me] if mine["cacheCasual"] else []
+        if me != "me":
+            keyed.add(me)                 # counted once, not twice
         for row in INVITES.load():
+            if row.get("token") in keyed:
+                continue
             if row.get("cacheDeck"):
                 decks.append(row["token"])
             if row.get("cacheList"):
@@ -5057,11 +6353,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return decks, lists, shuffles
 
     def watchlist_of(self, who):
-        """One viewer's watchlist, by the name their settings are filed under."""
+        """One viewer's watchlist, by the name their settings are filed under.
+
+        In the order it will be watched rather than the order it was marked. A list
+        built over a year holds episodes in the order somebody pressed the button, so
+        five of one series arrived from three different seasons at once.
+        """
         stored = read_settings() or {}
         if who == "me":
-            return list(stored.get("watchlist") or [])
-        return list(((stored.get("users") or {}).get(who) or {}).get("watchlist") or [])
+            marked = list(stored.get("watchlist") or [])
+        else:
+            marked = list(((stored.get("users") or {}).get(who) or {})
+                          .get("watchlist") or [])
+        return self.in_watching_order(marked)
+
+    def in_watching_order(self, keys):
+        """Episodes of one series together and in order; everything else left alone.
+
+        A series keeps the place its first marked episode had, so somebody's list
+        still reads in the order they built it - it is only the inside of each series
+        that is put right.
+        """
+        keys = [str(k) for k in keys]
+        wanted = [k for k in keys if k.startswith("e")]
+        if len(wanted) < 2:
+            return keys
+        facts = {}
+        try:
+            con = local().lib.db()
+            rows = con.execute(
+                "SELECT id, item_id, season, number FROM episode WHERE id IN (%s)"
+                % ",".join("?" * len(wanted)),
+                [k for k in wanted if is_episode(k)]).fetchall()
+            for r in rows:
+                facts[str(r["id"])] = (r["item_id"], r["season"] or 0,
+                                          r["number"] or 0)
+        except Exception:
+            return keys                    # nothing known: leave the list as it is
+        seen, out = set(), []
+        for k in keys:
+            if k in seen:
+                continue
+            if k not in facts:
+                seen.add(k)
+                out.append(k)
+                continue
+            show = facts[k][0]
+            same = sorted((x for x in keys if facts.get(x, (None,))[0] == show),
+                          key=lambda x: facts[x][1:])
+            for x in same:
+                if x not in seen:
+                    seen.add(x)
+                    out.append(x)
+        return out
 
     #: A file's mark, kept against its size and time so it is worked out once. Reading
     #: two ends of a film is a fraction of a second; reading the whole of a hundred of
@@ -5111,13 +6455,162 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: allowed - a house may keep a copy in the cupboard and another at a friend's -
     #: and the freshest is the one clients are sent to.
     FOLLOWERS = {}
+    #: written at most once a minute: an announcement arrives after every file
+    FOLLOWERS_WRITTEN = [0.0]
 
     #: What the following server says it holds, by this library's keys. Kept in
     #: memory: it is a fact about another machine, true until it says otherwise, and
     #: worth nothing after a restart of either.
     COPIES = {"keys": [], "when": 0}
 
-    def remember_standby(self, where, name, outside="", build="", room=None):
+    #: The question the machine keeping copies last asked, so the queue on the page
+    #: can be answered with the same one. The page used to ask for the night's list
+    #: whatever the hour, so what it showed and what was actually being fetched were
+    #: two different lists - and the one on screen was the longer of them.
+    #: Why each file is in the queue, so the cache log can say who wanted it
+    WHY_BY_KEY = {}
+
+    #: What the other machine could not fetch, as it last said
+    FOLLOWER_TROUBLE = []
+
+    LAST_ASK = {"hours": 4.0, "deck": False, "episodes": 6, "casual": 0.0,
+                "whole": False, "when": 0}
+
+    #: Somebody going to bed before the hour this machine sleeps at. The other machine
+    #: asks every minute; this is what it is told when it does.
+    EARLY_UNTIL = 0.0
+
+    @staticmethod
+    def build_beside_us():
+        """The installer this machine can hand to another, or nothing.
+
+        Not every server has one. The installer does not pack a copy of itself - that
+        would double every download - so this is the machine a build was made on, or
+        one that kept the file it was installed from.
+        """
+        try:
+            found = [f for f in os.listdir(STATIC)
+                     if f.lower().startswith("palladium-setup")
+                     and f.lower().endswith(".exe")]
+        except OSError:
+            return ""
+        if not found:
+            return ""
+        found.sort()
+        return os.path.join(STATIC, found[-1])
+
+    #: the hash of that file, worked out once: it is 34 MB and it does not change
+    BUILD_MARK = {"path": "", "sha256": "", "size": 0, "version": ""}
+
+    @classmethod
+    def build_on_offer(cls):
+        """What this machine offers, with its hash. Empty when it has no installer."""
+        path = cls.build_beside_us()
+        if not path:
+            return {}
+        if cls.BUILD_MARK.get("path") != path:
+            import hashlib
+            digest = hashlib.sha256()
+            try:
+                with open(path, "rb") as f:
+                    for lump in iter(lambda: f.read(262144), b""):
+                        digest.update(lump)
+            except OSError:
+                return {}
+            name = os.path.basename(path)
+            cls.BUILD_MARK = {"path": path, "sha256": digest.hexdigest(),
+                              "size": os.path.getsize(path),
+                              "version": name[len("Palladium-Setup-"):-len(".exe")]}
+        return {k: v for k, v in cls.BUILD_MARK.items() if k != "path"}
+
+    @staticmethod
+    def copies_file():
+        return os.path.join(ROOT, "copies.json")
+
+    @classmethod
+    def remember_copies(cls, keys):
+        """What the other machine says it holds, kept across a restart.
+
+        It was held in memory only, so restarting this server blanked the mark on
+        every poster until the other one next spoke - a quarter of an hour of a
+        library that looked like it had no copies at all.
+        """
+        cls.COPIES = {"keys": keys, "when": int(time.time())}
+        try:
+            with open(cls.copies_file(), "w", encoding="utf-8") as f:
+                f.write(json.dumps(cls.COPIES))
+        except OSError:
+            pass
+
+    @classmethod
+    def followers_file(cls):
+        return os.path.join(os.path.dirname(cls.copies_file()), "followers.json")
+
+    @classmethod
+    def remember_followers(cls, force=False):
+        """Keep the record of machines that follow this one across a restart.
+
+        Held in memory only, the list emptied on every restart - a machine that had
+        been keeping copies for a month showed as though it had never been here.
+        """
+        if not force and time.time() - cls.FOLLOWERS_WRITTEN[0] < 60:
+            return
+        cls.FOLLOWERS_WRITTEN[0] = time.time()
+        try:
+            with open(cls.followers_file(), "w", encoding="utf-8") as f:
+                f.write(json.dumps(cls.FOLLOWERS))
+        except OSError:
+            pass
+
+    @classmethod
+    def recall_followers(cls):
+        try:
+            with open(cls.followers_file(), encoding="utf-8") as f:
+                said = json.loads(f.read())
+            if isinstance(said, dict):
+                cls.FOLLOWERS = {str(k): v for k, v in said.items()
+                                 if isinstance(v, dict)}
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def note_cache(self, **stats):
+        """Write something down about the machine that is asking, if it is known."""
+        here = self.client_address[0]
+        where = ""
+        for key, one in Handler.FOLLOWERS.items():
+            host = urllib.parse.urlsplit(str(key)).hostname or str(key)
+            if host == here:
+                where = key
+                break
+        if not where:
+            where = Handler.STANDBY.get("where") or ""
+        if not where:
+            return
+        row = dict(Handler.FOLLOWERS.get(where) or {"where": where})
+        row.update(stats)
+        # and the key it came in with, so its own key can be shown against it and
+        # taken away on its own
+        was = self.bearer()
+        if was:
+            row["token"] = was
+        row["when"] = int(time.time())
+        Handler.FOLLOWERS[where] = row
+        Handler.remember_followers()
+
+    @classmethod
+    def recall_copies(cls):
+        """Read it back at startup. Old news is better than no news: the other
+        machine confirms or corrects it within the minute."""
+        try:
+            with open(cls.copies_file(), encoding="utf-8") as f:
+                said = json.loads(f.read())
+            if isinstance(said.get("keys"), list):
+                cls.COPIES = {"keys": [str(k) for k in said["keys"]],
+                              "when": int(said.get("when") or 0)}
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def remember_cache(self, where, name, outside="", build="", room=None):
         """Write down where the following server is, if it has moved."""
         moved = (where != Handler.STANDBY.get("where")
                  or name != Handler.STANDBY.get("name")
@@ -5130,15 +6623,97 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         Handler.STANDBY.update({"where": where, "outside": outside, "name": name,
                                 "build": build, "room": room,
                                 "when": int(time.time())})
-        Handler.FOLLOWERS[where] = {"where": where, "outside": outside, "name": name,
-                                    "build": build, "room": room,
-                                    "when": int(time.time())}
+        # merged, not replaced: what this machine holds and what was sent to it are
+        # learned from other requests and would be wiped by every announcement
+        was = dict(Handler.FOLLOWERS.get(where) or {})
+        was.update({"where": where, "outside": outside, "name": name,
+                    "build": build, "room": room, "when": int(time.time())})
+        held = self.bearer()
+        if held:
+            was["token"] = held
+            # and the key takes the machine's name, once the machine has said what it
+            # is called. A key made before anybody knew which computer would use it is
+            # called "a following server", and that is what the drawing and the list
+            # of keys then called the machine itself.
+            if name:
+                try:
+                    rows = INVITES.load()
+                    for row in rows:
+                        if (row.get("token") == held and row.get("follows")
+                                and str(row.get("name") or "") in
+                                ("", "a following server")):
+                            row["name"] = name
+                            INVITES.save(rows)
+                            break
+                except Exception:
+                    pass
+        Handler.FOLLOWERS[where] = was
+        # same machine and key under an older address (it moved port): one row, not two
+        host = urllib.parse.urlsplit(where).hostname
+        if held and host:
+            for old in [k for k, v in Handler.FOLLOWERS.items()
+                        if k != where and v.get("token") == held
+                        and urllib.parse.urlsplit(str(k)).hostname == host]:
+                Handler.FOLLOWERS.pop(old, None)
+        Handler.remember_followers()
         if not moved:
             return
         cfg = local().lib.config()
-        cfg["standby"] = {"where": where, "outside": outside, "name": name,
+        cfg["cache"] = {"where": where, "outside": outside, "name": name,
                           "when": int(time.time())}
         local().lib.save_config(cfg)
+
+    #: What the cache last said it was doing, and when we asked: (screens, when)
+    COPY_BUSY = None
+
+    @staticmethod
+    def host_of(where):
+        return urllib.parse.urlsplit(where).netloc or where
+
+    def copy_is_busy(self):
+        """Which screens the machine that keeps copies is serving, by address.
+
+        Asked of it, because this machine cannot see it. A player reading part of a
+        film off the cache talks to the cache directly and says nothing here, so the
+        drawing called a machine carrying half a film "standing by".
+
+        Kept for half a minute: the drawing is made again every few seconds and this
+        is a round trip to another computer.
+        """
+        now = time.time()
+        had = Handler.COPY_BUSY
+        if had and now - had[1] < 30:
+            return had[0]
+        Handler.COPY_BUSY = ([], now)
+        one = self.standby_now()
+        where = (one.get("where") or "").rstrip("/")
+        if not where or not one.get("alive"):
+            return []
+        token = ""
+        for row in INVITES.load():
+            if row.get("follows") and row.get("token"):
+                token = row["token"]
+                break
+        if not token:
+            return []
+        try:
+            import urllib.request
+            with urllib.request.urlopen(
+                    "%s/watching?t=%s" % (where, urllib.parse.quote(token)),
+                    timeout=3) as answer:
+                said = json.loads(answer.read().decode("utf-8", "replace"))
+            rows = said.get("live") or []
+            # who is reading off it and how fast, not merely how many: the drawing
+            # runs a line from a machine to the screen it is feeding, and says what
+            # is going down it. A count cannot say either.
+            busy = [{"address": str((r or {}).get("address") or ""),
+                     "mbit": round(float((r or {}).get("mbit") or 0), 1),
+                     "title": str((r or {}).get("title") or "")}
+                    for r in rows if (r or {}).get("how") != "syncing"]
+        except Exception:
+            busy = []
+        Handler.COPY_BUSY = (busy, now)
+        return busy
 
     def standby_now(self):
         """The following server for a client to fall back on, or nothing.
@@ -5150,15 +6725,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         one = dict(Handler.STANDBY)
         if not one.get("where"):
             one = dict((local().lib.config().get("standby") or {}))
+        # What this machine is and where else it can be reached, and the machine it
+        # follows if it follows one. Facts about the machine answering, not about any
+        # cache of its own - and they were left out of the answer given by a
+        # machine that has no cache, which is every copy. A page opened on the cache
+        # was told nothing about anywhere else and had no way back to the main server.
+        about_me = {
+            "mine": {"lan": (("http://%s:%d" % (LAN_IP, PORT))
+                             if LAN_IP and self.may_have_the_lan() else ""),
+                     "outside": (("http://%s:%d" % (wan_ip(), PORT))
+                                 if wan_ip() else ""),
+                     "name": self.server_name()},
+            "follows": self.house_doors(),
+        }
         where, when = one.get("where") or "", int(one.get("when") or 0)
         if not where or (when and time.time() - when > 86400):
-            return {"where": "", "outside": "", "name": "", "seen": 0}
+            return dict(about_me, where="", outside="", name="", seen=0)
         # a viewer on this network uses the first, one outside the second. Whether
         # it is awake is this machine's business to know: it is on the same network,
         # and a client that has to find out for itself only finds out too late.
-        if not self.may_have_the_lan():
+        # Whichever of the two the asker can actually reach. Being allowed the
+        # address on this network is one question and being able to use it is
+        # another: somebody away from the main server was handed 192.168.x for the other
+        # machine, asked it, and waited for an answer that could never come - so from
+        # away the second machine had no version, no build, and no way to be reached
+        # at all.
+        if not self.at_home() or not self.may_have_the_lan():
             # the way in from outside is the one that works from where they are
-            where = one.get("outside") or ""
+            where = one.get("outside") or where
         return {"where": where, "outside": one.get("outside") or "",
                 "name": one.get("name") or "", "seen": when,
                 "alive": time.time() - when < 180,
@@ -5167,20 +6761,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # and this machine's own two addresses, handed over while a screen
                 # can still reach it. A client away from home cannot ask a server it
                 # cannot reach where else it lives, so it has to have been told.
-                "mine": {"lan": (("http://%s:%d" % (LAN_IP, PORT))
-                                 if LAN_IP and self.may_have_the_lan() else ""),
-                         "outside": (("http://%s:%d" % (wan_ip(), PORT))
-                                     if wan_ip() else ""),
-                         "name": self.server_name()},
-                # This machine would rather the house watched from the other one.
+                "mine": about_me["mine"],
+                "follows": about_me["follows"],
+                # This machine would rather the main server watched from the other one.
                 # Game mode is the case: the card has been handed to something else,
-                # and a film asked of it now is a film nobody enjoys. The copy holds
-                # what the house is in the middle of, so everyone goes there until
+                # and a film asked of it now is a film nobody enjoys. The cache holds
+                # what the main server is in the middle of, so everyone goes there until
                 # the game is over.
                 "prefer": bool(self.game_mode().get("on")),
-                # and the guest's own link to it, so nobody has to be told an address
-                "link": ((one.get("outside") or "").rstrip("/") + "/s/" + self.bearer())
-                        if (self.role == "guest" and one.get("outside")) else ""}
+                # and a link to it that carries the key, so the other machine opens
+                # rather than asking who this is. A cookie belongs to the machine that
+                # set it, so arriving at the cache with one for the main server is arriving
+                # with nothing - which is why the owner, who has every right to be
+                # there, was shown the way in for a stranger.
+                "link": self.copy_link(one),
+                # the key itself, so a page that has picked an address of its own -
+                # the one on the home network rather than the one from outside - can
+                # put the two together
+                "key": self.bearer() or ""}
+
+    def copy_link(self, one):
+        """The way in to the other machine, carrying this viewer's own key."""
+        token = self.bearer()
+        if not token:
+            return ""
+        where = (one.get("outside") or one.get("where") or "").rstrip("/")
+        return (where + "/s/" + token) if where else ""
 
     def art_of(self, key):
         """The catalogue's own answer for a title: its number and its pictures.
@@ -5191,14 +6797,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         con = local().lib.db()
         try:
             key = str(key)
-            if key.startswith("e") and key[1:].isdigit():
+            if is_episode(key):
                 row = con.execute(
                     "SELECT i.id, i.tmdb_id, i.poster, i.backdrop, i.title, i.year "
                     "FROM episode e JOIN item i ON i.id = e.item_id WHERE e.id=?",
-                    (int(key[1:]),)).fetchone()
-            elif key.isdigit():
+                    (key,)).fetchone()
+            elif is_title(key):
                 row = con.execute("SELECT id, tmdb_id, poster, backdrop, title, year "
-                                  "FROM item WHERE id=?", (int(key),)).fetchone()
+                                  "FROM item WHERE id=?", (str(key),)).fetchone()
             else:
                 return None
             if not row or not (row["poster"] or row["tmdb_id"]):
@@ -5236,11 +6842,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         langs.discard("")
         return langs or {"en"}
 
-    def sides_worth_copying(self, path, key, langs, part_id=None):
+    def sides_worth_copying(self, path, key, langs, part_id=None, every=False):
         """Subtitle files beside a video that the other machine should have too.
 
         The ones in the languages being kept for, and whichever was actually chosen
         for this title - a subtitle somebody picked is the one they will look for.
+
+        For a film, [every] one of them: downloaded and already there alike. A film is
+        watched once and the subtitle wanted on the night is not always the one the
+        languages say, and a subtitle is a few kilobytes against a few gigabytes. What
+        changes on this machine follows: each carries the size and both its ends, and
+        the other machine fetches again whenever that no longer matches what it holds.
         """
         import pd_localapi as _la
         out = []
@@ -5257,7 +6869,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             name = os.path.basename(side.get("file") or "")
             if not name:
                 continue
-            if side.get("lang") not in langs and name != picked:
+            if not every and side.get("lang") not in langs and name != picked:
                 continue
             try:
                 size = os.path.getsize(side["file"])
@@ -5269,247 +6881,921 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "title": name})
         return out
 
-    def casual_ahead(self, who, hours=2.0):
-        """What the shuffle would put on next for one person, in order.
+    @classmethod
+    def link_seen(cls, total):
+        """Remember the most this machine has carried, and let it fade.
 
-        Their own queue where one has been worked out - that is what the next press
-        of Play draws - and otherwise whatever they have marked and not yet had this
-        time round. Nothing is drawn: peeking at the hat does not take from it.
+        A high-water mark that never falls is a measurement of the best night this
+        machine ever had, which is no use on a worse one. It halves after ten quiet
+        minutes, so a line that has got slower is believed within the hour.
+        """
+        now = time.time()
+        if total > cls.LINK["seen"]:
+            cls.LINK = {"seen": float(total), "when": now}
+        elif now - (cls.LINK["when"] or 0) > 600:
+            cls.LINK = {"seen": max(0.0, cls.LINK["seen"] * 0.5), "when": now}
+        return cls.LINK["seen"]
+
+    @staticmethod
+    def a_film_is_struggling(rows):
+        """Whether anybody watching is getting less than they were getting.
+
+        Measured against each viewer's own average rather than against the bitrate of
+        what they are watching: a direct play reads in bursts and idles between them,
+        so "below what the film needs" is true of a healthy one half the time. A rate
+        that has fallen away from its own average has not.
+
+        A viewer with nothing open is holding a full buffer, which is the opposite of
+        starved, and the first seconds of a viewing have no average worth the name.
+        """
+        for r in rows:
+            if r.get("how") == "syncing" or r.get("holding"):
+                continue
+            if int(r.get("seconds") or 0) < 20:
+                continue                  # too new to have an average
+            average = float(r.get("average") or 0) * 8
+            if average <= 0.5:
+                continue
+            if float(r.get("mbit") or 0) < average * Handler.STARVED:
+                return True
+        return False
+
+    @classmethod
+    def sync_ceiling(cls, cfg, streaming, syncing):
+        """What a copy may take this second, in megabits.
+
+        Nought from the settings means no ceiling and is left alone. A number means
+        that number. Otherwise it is worked out: what the line has been seen to carry,
+        less what the films are drawing, less a margin for the bursts they ask in.
+        """
+        said = cfg.get("syncMbitWhileWatching")
+        if said not in (None, ""):
+            try:
+                return float(said)
+            except (TypeError, ValueError):
+                pass
+        if not cfg.get("syncAdaptive", True):
+            return 20.0
+        line = cls.link_seen(float(streaming) + float(syncing))
+        if line <= 0:
+            return 0.0                    # nothing measured yet: no ceiling to give
+        # what is left on the line once the films have what they are drawing
+        spare = max(cls.LEAST_MBIT, line * cls.SPARE - float(streaming))
+        now = time.time()
+        pace = cls.PACE["mbit"] or spare
+        if now - (cls.PACE["when"] or 0) > 30:
+            pace = spare                  # nobody has watched for a while: start again
+        elif cls.a_film_is_struggling(cls.WATCHING_NOW):
+            pace = pace * cls.BACK_OFF
+        else:
+            pace = pace + cls.STEP_UP
+        pace = max(cls.LEAST_MBIT, min(spare, pace))
+        cls.PACE = {"mbit": pace, "when": now}
+        return pace
+
+    def name_of(self, who):
+        """What to call a viewer in a list somebody reads. "me" is the owner."""
+        who = str(who or "")
+        if not who or who == "me":
+            return str((read_settings() or {}).get("ownerName") or "you")
+        try:
+            for row in INVITES.load():
+                if row.get("token") == who or row.get("name") == who:
+                    return str(row.get("name") or who)
+        except Exception:
+            pass
+        return who
+
+    def house_answers(self, path, body):
+        """Put a question about somebody's shuffle to the machine that owns it.
+
+        Only from a machine that follows another, and only while that machine can be
+        reached: a copy answering for itself is a second evening, and two evenings is
+        the thing this is here to prevent. Under the same key the person is using
+        here, so the main server knows whose round it is - not this machine's own key,
+        which would make every viewer look like the cache.
+
+        Nothing is retried and nothing waits long. If the main server does not answer, this
+        machine answers from what it has, which is what it is for.
+        """
+        import pd_follow
+        try:
+            one = pd_follow.settings(local().lib.config())
+        except Exception:
+            return None
+        if not (one.get("on") and one.get("master") and one.get("key")):
+            return None                   # this machine is the main server
+        token = self.bearer()
+        if not token:
+            return None
+        url = (one["master"].rstrip("/") + path + "?t="
+               + urllib.parse.quote(token))
+        try:
+            asked = urllib.request.Request(
+                url, data=json.dumps(body or {}).encode("utf-8"),
+                headers={"Content-Type": "application/json",
+                         "X-Palladium-App": "follower"})
+            with urllib.request.urlopen(asked, timeout=6) as answer:
+                return json.loads(answer.read().decode("utf-8", "replace"))
+        except Exception:
+            return None                   # the main server is off: answer for ourselves
+
+    # ---- a collection, played in shuffle -------------------------------------
+
+    #: How far ahead the hat is drawn. Ten is what makes "what is next" answerable,
+    #: and answerable is what lets a subtitle be fetched for it and a copy kept of it.
+    SHUFFLE_DEEP = 10
+
+    def shuffle_round(self, mine, cid, make=True):
+        """This person's round for one shelf: the hat, the history and the places."""
+        rounds = mine.get("shuffles")
+        if not isinstance(rounds, dict):
+            rounds = {}
+            if make:
+                mine["shuffles"] = rounds
+        one = rounds.get(str(cid))
+        if not isinstance(one, dict):
+            one = {"queue": [], "played": [], "at": {}, "run": 1, "casualStamp": 0}
+            if make:
+                rounds[str(cid)] = one
+        return one
+
+    def shuffle_resume(self, cid):
+        """Where the title this person's round on one shelf is on was left, in seconds.
+
+        Only that title. Other titles left part-way on the shelf start from their
+        beginning when they are drawn. Nought when it has not been started or has been
+        finished - so a button can say Resume when there is something to resume.
+        """
+        stored = read_settings() or {}
+        who = self.viewer()
+        mine = (stored if who == "me"
+                else ((stored.get("users") or {}).get(who) or {}))
+        one = ((mine.get("shuffles") or {}).get(str(cid)) or {})
+        key = self.shuffle_current(one)
+        if not key:
+            return 0
+        value = (one.get("at") or {}).get(key)
+        at = int(value.get("at") or 0) if isinstance(value, dict) else int(value or 0)
+        return at if at > 30 else 0
+
+    @staticmethod
+    def shuffle_current(one):
+        """The title a round is on: the last one drawn, unless it has been finished."""
+        played = [str(k) for k in (one.get("played") or [])]
+        if not played or played[-1] == str(one.get("done") or ""):
+            return ""
+        return played[-1]
+
+    def shuffle_shelf(self, cid):
+        """The keys one shelf holds, in library order, or nothing if there is no shelf.
+
+        The name a shelf goes by on one page is "coll:f592640" and on another it is
+        "f592640" - the first is how the library API numbers everything it hands out,
+        so that a shelf and a film cannot collide. Both are the same shelf, and being
+        strict about which was sent is how a television came to say there was nothing
+        to play on a shelf full of films.
+        """
+        cid = str(cid or "")
+        if cid.startswith("coll:"):
+            cid = cid[5:]
+        shelf = next((c for c in self.collections()
+                      if str(c.get("id")) == str(cid)), None)
+        if not shelf:
+            return None, []
+        con = local().lib.db()
+        try:
+            # a film on offer cannot be played: the hat is what is here
+            return shelf, [str(k) for k in self.collection_keys(con, shelf)
+                           if not str(k).startswith("o")]
+        finally:
+            con.close()
+
+    def shuffle_draw(self, cid, peek=False, resume=False, back=False):
+        """Draw the next thing from one shelf, or look at it without drawing.
+
+        Nothing comes up twice until everything has, and then the hat is refilled and
+        the round counted - it starts again rather than stopping. Resume means carry
+        on with what was left part-way, which is what somebody means far more often
+        than "give me another one".
+        """
+        import random
+        stored = self.settings_file()
+        mine = self.viewer_settings(stored)
+        shelf, pool = self.shuffle_shelf(cid)
+        if shelf is None:
+            return {"error": "there is no such shelf"}
+        if not pool:
+            return {"error": "that shelf is empty"}
+        one = self.shuffle_round(mine, cid)
+        # the title the round is on, before the hat is refilled under it
+        current = self.shuffle_current(one) if resume else ""
+        played = [k for k in (one.get("played") or []) if k in pool]
+        left = [k for k in pool if k not in played]
+        if not left:                      # the hat is empty: fill it, count the round
+            played, left = [], list(pool)
+            one["run"] = int(one.get("run") or 1) + 1
+
+        if back:
+            # the one before this: somebody pressing previous means what they were
+            # just watching, not another draw
+            if len(played) < 2:
+                return {"error": "nothing before this one"}
+            played = played[:-1]
+            key = played[-1]
+            one["played"] = played
+            Handler.round_moved(one)
+            write_settings(stored)
+            return self.shuffle_said(one, key, pool, left)
+
+        if resume and current in pool:
+            # the title the round is on, where it was left - and only that one. Other
+            # titles left part-way on the shelf start from their beginning when drawn.
+            value = (one.get("at") or {}).get(current)
+            at = int(value.get("at") or 0) if isinstance(value, dict) else int(value or 0)
+            return self.shuffle_said(one, current, pool, left, at if at > 30 else 0)
+
+        # the hat itself, drawn ten deep and kept: asking twice has to give the same
+        # answer, or "what is next" means nothing and nothing can be got ready
+        queue = [k for k in (one.get("queue") or []) if k in left]
+        if len(queue) < min(self.SHUFFLE_DEEP, len(left)):
+            rest = [k for k in left if k not in queue]
+            random.shuffle(rest)
+            queue = queue + rest[:max(0, self.SHUFFLE_DEEP - len(queue))]
+        key = queue[0] if queue else random.choice(left)
+        if peek:
+            one["queue"] = queue
+            Handler.round_moved(one)
+            write_settings(stored)
+            return self.shuffle_said(one, key, pool, left)
+        one["played"] = played + [key]
+        one["queue"] = [k for k in queue if k != key]
+        Handler.round_moved(one)
+        write_settings(stored)
+        self.fetch_ahead(one["queue"][:3])
+        return self.shuffle_said(one, key, pool, left, drawn=True)
+
+    def shuffle_said(self, one, key, pool, left, at=0, drawn=False):
+        """One answer about a shelf: what to play, where to start, and how far in."""
+        local().who = self.viewer()
+        con = local().lib.db()
+        try:
+            item = local().metadata_for(con, key)
+        finally:
+            con.close()
+        return {"item": item, "key": str(key), "resumeAt": int(at or 0),
+                "run": int(one.get("run") or 1), "pool": len(pool),
+                "left": len(left) - (1 if drawn else 0),
+                "queue": list(one.get("queue") or [])[:self.SHUFFLE_DEEP]}
+
+    def shuffle_note(self, cid, key, position, duration):
+        """Remember where a shuffled playing got to, on the shelf it came from.
+
+        Near the end is finished and the note is dropped, so coming back does not
+        offer to resume something four seconds from its credits.
+        """
+        stored = self.settings_file()
+        mine = self.viewer_settings(stored)
+        one = self.shuffle_round(mine, cid)
+        places = dict(one.get("at") or {})
+        # whatever plays off the shelf is drawn, however it was started: a row pressed
+        # on Continue watching plays its episode without asking the hat
+        played = [str(k) for k in (one.get("played") or [])]
+        drawn = str(key) not in played
+        if drawn:
+            one["played"] = played + [str(key)]
+            one["queue"] = [k for k in (one.get("queue") or []) if str(k) != str(key)]
+        done = duration and position / duration > 0.95
+        if done or position < 30:
+            if str(key) not in places and not drawn:
+                return
+            places.pop(str(key), None)
+        else:
+            places[str(key)] = {"at": int(position), "when": int(time.time())}
+        one["at"] = places
+        Handler.round_moved(one)
+        write_settings(stored)
+
+    def shuffle_forget(self, key):
+        """Drop one title's place from every shelf this viewer has a round on.
+
+        A shelf keeps where a playing got to so it can be carried on. Only a playing
+        started off the shelf says which shelf it is on, so anything else - the title's
+        own page, another screen, marking it watched - finished the episode and left
+        the place standing. The row then offered to resume something already watched
+        and could not be got rid of by watching it again.
+        """
+        stored = self.settings_file()
+        mine = self.viewer_settings(stored)
+        moved = False
+        for cid, one in (mine.get("shuffles") or {}).items():
+            if not isinstance(one, dict):
+                continue
+            places = one.get("at") or {}
+            if str(key) in places:
+                places.pop(str(key), None)
+                one["at"] = places
+                Handler.round_moved(one)
+                moved = True
+            # the title the round was on is finished: Resume draws the next one
+            if [str(k) for k in (one.get("played") or [])][-1:] == [str(key)]:
+                one["done"] = str(key)
+                Handler.round_moved(one)
+                moved = True
+        if moved:
+            write_settings(stored)
+
+    def title_finished(self, key):
+        """A title finished or marked watched: its shelf places go, and it leaves the
+        viewer's watchlist unless it is one of their favorites."""
+        self.shuffle_forget(key)
+        stored = self.settings_file()
+        mine = self.viewer_settings(stored)
+        # a favorite stays on the watchlist watched or not - that is what makes it one -
+        # and an episode of a favorite programme with it
+        kept = {str(k) for k in (mine.get("favorites") or [])}
+        show = ""
+        if str(key).startswith("e"):
+            con = local().lib.db()
+            try:
+                row = con.execute("SELECT item_id FROM episode WHERE id=?",
+                                  (str(key),)).fetchone()
+                show = str(row["item_id"]) if row else ""
+            finally:
+                con.close()
+        if str(key) in kept or (show and show in kept):
+            return
+        listed = [str(k) for k in (mine.get("watchlist") or [])]
+        if str(key) in listed:
+            mine["watchlist"] = [k for k in listed if k != str(key)]
+            write_settings(stored)
+
+    def shuffle_lists(self, cid, most=40):
+        """What is coming, what was left part-way, and what the hat has used."""
+        stored = read_settings() or {}
+        who = self.viewer()
+        mine = (stored if who == "me"
+                else ((stored.get("users") or {}).get(who) or {}))
+        one = self.shuffle_round(mine, cid, make=False)
+        _, pool = self.shuffle_shelf(cid)
+        places = one.get("at") or {}
+
+        def seconds(v):
+            return int(v.get("at") or 0) if isinstance(v, dict) else int(v or 0)
+
+        def when(v):
+            return int(v.get("when") or 0) if isinstance(v, dict) else 0
+
+        carry = []
+        for key in sorted(places, key=lambda k: -when(places[k])):
+            item = self.casual_item(key)
+            if item:
+                carry.append({"item": item, "key": str(key),
+                              "at": seconds(places[key]), "when": when(places[key])})
+        played = [str(k) for k in reversed(one.get("played") or [])][:most]
+        return {"queue": [i for i in (self.casual_item(k)
+                                      for k in (one.get("queue") or [])[:10]) if i],
+                "carryOn": carry,
+                "seen": [i for i in (self.casual_item(k) for k in played) if i],
+                "played": len(one.get("played") or []),
+                "run": int(one.get("run") or 1), "pool": len(pool)}
+
+    def casual_places(self, who):
+        """What this person left part-way in any shelf's shuffle, newest first, five at most."""
+        stored = read_settings() or {}
+        mine = (stored if who == "me"
+                else ((stored.get("users") or {}).get(who) or {}))
+        places = []
+        for one in (mine.get("shuffles") or {}).values():
+            if not isinstance(one, dict):
+                continue
+            for key, value in (one.get("at") or {}).items():
+                when = int(value.get("when") or 0) if isinstance(value, dict) else 0
+                places.append((when, str(key)))
+        return [k for _, k in sorted(places, reverse=True)][:5]
+
+    def casual_ahead(self, who):
+        """What this person's shuffle rounds draw next, most recently moved round first.
+
+        Only queues already drawn: peeking does not take from the hat, and an empty
+        queue means nothing is copied.
         """
         stored = read_settings() or {}
         mine = (stored if who == "me"
                 else ((stored.get("users") or {}).get(who) or {}))
-        marked = [str(k) for k in (mine.get("casual") or [])]
-        if not marked:
-            return []
-        order = mine.get("casualOrder") or "random"
-        played = set((mine.get("casualPlayed") or {}).get(order) or [])
-        ahead = [k for k in ((mine.get("casualQueue") or {}).get(order) or [])
-                 if k not in played]
-        if len(ahead) < 20:
-            body = local().route(local().lib.db(), "/library/casual/pool",
-                                 {"keys": [",".join(marked)]}) or {}
-            for key in (body.get("keys") or []):
-                if key not in played and key not in ahead:
-                    ahead.append(key)
-        # an hour of half-hour comedies is two of them; twenty is plenty to choose
-        # from and stops a shuffle of two hundred episodes filling the disk
-        return ahead[:20]
+        rounds = [r for r in (mine.get("shuffles") or {}).values() if isinstance(r, dict)]
+        ahead = []
+        for one in sorted(rounds, key=lambda r: -self.round_stamp(r)):
+            played = set(str(k) for k in (one.get("played") or []))
+            ahead += [str(k) for k in (one.get("queue") or [])
+                      if str(k) not in played and str(k) not in ahead]
+        return ahead[:10]
 
     #: however few hours are asked for, a series is copied this far ahead: an
     #: evening is at least three episodes of anything.
     LEAST_AHEAD = 3
 
-    def worth_copying(self, hours=4.0, deck=False, episodes=6, mine=None,
-                      casual=0.0, whole=False):
-        """The files a following server should have: what is on, and what comes next.
+    #: What is on a screen this minute without anybody having chosen it. Kept where it
+    #: is, never fetched, and never the start of a run of episodes.
+    CASUAL_NOW = set()
 
-        What is playing now first, because that is what somebody is in the middle of.
-        Then the episodes after it, up to the hours asked for - a series watched at
-        night runs past midnight, and the machine with the library on it does not.
+    #: What the shuffle has drawn for somebody. Copied as it stands, with nothing
+    #: taken after it: the next thing a shuffle plays is the next thing it draws.
+    DRAWN = set()
+
+    #: The most this machine has been seen to shift at once, and when that was seen.
+    #: Nobody can ask a network how fast it is; what it has actually carried is the
+    #: only honest answer, and it is only learnt while something is pushing it.
+    LINK = {"seen": 0.0, "when": 0.0}
+
+    #: How much of the line to leave alone above what the films are drawing. A film
+    #: asks in bursts and a buffer that is filling wants more than its average.
+    SPARE = 0.85
+
+    #: And the least a copy may have, so it is never stopped outright.
+    LEAST_MBIT = 4.0
+
+    #: What a copy is allowed this second. Steered rather than calculated: the line is
+    #: wireless and the number it carried an hour ago is not the number it carries
+    #: when somebody walks between the aerials.
+    PACE = {"mbit": 0.0, "when": 0.0}
+
+    #: The live rows the steering last saw. Handed in rather than fetched again: the
+    #: caller has just taken the snapshot and taking a second one costs the lock.
+    WATCHING_NOW = []
+
+    #: Given up in one step when a film is struggling, and taken back in small ones.
+    #: The other way round ends with the cache winning, which is the wrong way round.
+    BACK_OFF = 0.55
+    STEP_UP = 8.0
+
+    #: A viewer getting this much less than its own running average, with a socket
+    #: still open, is being starved rather than sitting on a full buffer.
+    STARVED = 0.75
+
+    def wanted_keys(self, con, hours, deck, episodes, mine, casual, whole, watched=None):
+        """What is worth copying, in the order to fetch it, as (key, why, who, live).
+
+        One list of sources, asked in order. Nothing here reads a file or decides a
+        rank: it says what the main server wants and why, and the order it says it in is
+        the order it is wanted. Whether a thing is on a screen this minute travels
+        with it, because that is the one fact that moves something to the front.
+        """
+        out = []
+        said = set()
+
+        def want(key, why, who, live=False):
+            key = str(key or "")
+            if not key:
+                return
+            if key in said:
+                # reached twice - a watchlist and a screen, say. It is the same file
+                # either way and it is wanted at the sooner of the two moments.
+                for had in out:
+                    if had[0] != key:
+                        continue
+                    if live:
+                        had[3] = True
+                    # and a watchlist or a favourite keeps its reason: those are copied
+                    # watched or not, and the first reason reached was dropped as watched
+                    if (why in ("on their watchlist", "a favourite")
+                            and had[1] not in ("on their watchlist", "a favourite")):
+                        had[1], had[2] = why, who
+                return
+            said.add(key)
+            out.append([key, why, who, live])
+
+        if mine:
+            # One person's own cache on somebody else's machine: what they are in the
+            # middle of, then what they mean to watch. Nothing about anybody else in
+            # the main server is theirs to copy.
+            for row in con.execute(
+                    """SELECT key FROM progress WHERE who = ?
+                       AND position > 30 AND position < duration * 0.95
+                       AND COALESCE(casual, 0) = 0
+                       ORDER BY updated DESC LIMIT 40""", (mine,)):
+                want(row["key"], "part-way through", self.name_of(mine))
+            for key in self.watchlist_of(mine)[:40]:
+                want(key, "on their watchlist", self.name_of(mine))
+            return out, set()
+
+        # What is on a screen this minute. Somebody is sitting in front of it and the
+        # next episode is wanted in twenty minutes, which nothing else on this list is.
+        Handler.CASUAL_NOW = set()
+        Handler.DRAWN = set()
+        for one in (local().playing_now() or {}).values():
+            if one.get("casual"):
+                # On a screen, and nobody picked it. It is named all the same, because
+                # the list is what keeps a file on the other machine's disk and the
+                # film being read off it is the last one to delete. The mark below
+                # stops it being fetched and stops the six episodes after it: what
+                # comes next in a shuffle is whatever the shuffle draws.
+                Handler.CASUAL_NOW.add(str(one.get("key") or ""))
+            want(one.get("key"), "on a screen now",
+                 self.name_of(one.get("who") or one.get("name") or ""), True)
+        # The shuffle is left out here too. A casual playing writes a log line like
+        # any other - it has to, or Now playing and the watch log would lie - but
+        # "the house watched this lately" is a reason to copy the rest of the series,
+        # and nobody watched it. One evening of shuffled episodes put five of a
+        # season on the other machine at eight in the evening.
+        # Named, because somebody watched it. "The main server" is not a viewer: it has no
+        # invitation, it is on nobody's cache, and a queue that says it cannot be
+        # filtered down to one person's shelf.
+        for row in con.execute(
+                "SELECT key, who FROM watchlog WHERE COALESCE(casual, 0) = 0 "
+                "ORDER BY updated DESC LIMIT 12"):
+            want(row["key"], "watched lately", self.name_of(row["who"]))
+
+        listed = set()
+        if deck:
+            # What the people this is kept for are part-way through, and what they
+            # mean to watch. Before this machine sleeps that is what somebody reaches
+            # for next, and the other machine is the one that will be awake.
+            decks, lists, shuffles = self.cached_for()
+            for who in decks:
+                for row in con.execute(
+                        """SELECT key FROM progress WHERE who = ? AND position > 30
+                           AND position < duration * 0.95
+                           AND COALESCE(casual, 0) = 0
+                           ORDER BY updated DESC LIMIT 40""", (who,)):
+                    want(row["key"], "part-way through", self.name_of(who))
+            for who in lists:
+                marked = self.watchlist_of(who)[:40]
+                # Whole list off: a programme's night's worth, not every marked episode
+                if not whole:
+                    marked = self.first_unwatched(con, marked, episodes, watched,
+                                                  self.name_of(who))
+                for key in marked:
+                    listed.add(str(key))
+                    want(key, "on their watchlist", self.name_of(who))
+            # favourites, everybody's and all of them: marked to be on both machines
+            everyone = read_settings() or {}
+            for who, one in (list((everyone.get("users") or {}).items())
+                             + [("me", everyone)]):
+                for key in ((one or {}).get("favorites") or []):
+                    want(key, "a favourite", self.name_of(who))
+            for who in shuffles:
+                if casual <= 0:
+                    continue          # "do not copy", said on the machine keeping them
+                # An evening of casual watching is the one nobody picks a film for.
+                # What was left part-way comes first, because carrying on with what
+                # was actually on is the thing the other machine could not do at all:
+                # a casual playing writes no row Continue watching reads, so nothing
+                # ever put a half-watched shuffled episode over there.
+                # Ten in all, which is the depth of the queue - not ten and then some.
+                theirs, said_here = [], set()
+                for keys, why_these in (
+                        (self.casual_places(who), "left part-way in the shuffle"),
+                        (self.casual_ahead(who), "the shuffle's next")):
+                    for key in keys:
+                        key = str(key)
+                        if key in said_here:
+                            continue
+                        said_here.add(key)
+                        theirs.append((key, why_these))
+                # How many, and how much of an evening, are the same two numbers
+                # that govern everything else kept ahead: Episodes ahead, and Hours
+                # ahead at most. A shelf of half-hour comedies and one of hour-long
+                # drama are not the same number of files, and the settings already
+                # say so.
+                # Ten is the ceiling whatever the settings say, because ten is all
+                # the shuffle knows: the queue is drawn ten deep and the eleventh
+                # has not been decided. Asking for twenty would mean inventing ten.
+                covered, taken = 0.0, 0
+                for key, why_it in theirs[:10]:
+                    if taken >= episodes:
+                        break
+                    # Hours of casual play, which is the shuffle's own setting and
+                    # was being asked for and ignored: the hours that govern a series
+                    # somebody is part-way through are about the night ahead, and an
+                    # evening of putting something on is a different question.
+                    if covered >= casual * 3600 and taken >= self.LEAST_AHEAD:
+                        break
+                    Handler.DRAWN.add(key)
+                    want(key, why_it, self.name_of(who))
+                    taken += 1
+                    covered += self.how_long(con, key)
+        return out, listed
+
+    @staticmethod
+    def first_unwatched(con, keys, episodes, watched, who):
+        """Each series' episodes cut to the first `episodes` unwatched, in order; other keys kept."""
+        eps = [str(k) for k in keys if is_episode(k)]
+        shows = {}
+        if eps:
+            try:
+                rows = con.execute("SELECT id, item_id FROM episode WHERE id IN (%s)"
+                                   % ",".join("?" * len(eps)), eps).fetchall()
+                shows = {str(r["id"]): r["item_id"] for r in rows}
+            except Exception:
+                return list(keys)
+        taken, out = {}, []
+        for k in keys:
+            show = shows.get(str(k))
+            if show is None:
+                out.append(k)
+                continue
+            if watched and watched(str(k), who):
+                continue
+            if taken.get(show, 0) >= episodes:
+                continue
+            taken[show] = taken.get(show, 0) + 1
+            out.append(k)
+        return out
+
+    def episodes_after(self, con, plan, listed, hours, episodes, whole, watched):
+        """The episodes following each series already wanted, in order.
+
+        Walked in the order the series were asked for, so the one somebody is
+        watching now is walked first and its next episode is second on the list
+        rather than fortieth. Walking in the order a set happens to hold things in is
+        what makes a queue of episodes read as random when each series is in order.
+        """
+        after = []
+        said = set(k for k, _, _, _ in plan)
+        # one window per programme and viewer: each place a series was reached from (screen,
+        # watch log, part-way) walked its own, so Episodes ahead 10 queued 21 of one series
+        ahead = {}
+        for key, why, who, live in list(plan):
+            # Nothing follows a shuffled draw. What comes after one of those is
+            # whatever the shuffle draws next, which is already on this list - and
+            # taking six episodes after each of ten draws made seventy files out of
+            # ten, in season order, for a shelf whose whole point is that it is not.
+            if (not key.startswith("e") or key in Handler.CASUAL_NOW
+                    or key in Handler.DRAWN):
+                continue
+            # Every unwatched episode of a programme somebody put on a list is a
+            # different question from enough for tonight: they mean to watch all of
+            # it. Otherwise, forward until either limit is reached.
+            enough = 9999 if (whole and key in listed) else episodes
+            try:
+                row = con.execute("SELECT item_id FROM episode WHERE id=?", (str(key),)).fetchone()
+                show = row["item_id"] if row else key
+            except Exception:
+                show = key
+            slot = ahead.setdefault((show, who), [0.0, 0])     # seconds covered, episodes ahead
+            at, tried = key, 0
+            while (slot[1] < enough and tried < 200
+                   and (slot[0] < hours * 3600 or slot[1] < self.LEAST_AHEAD
+                        or enough > episodes)):
+                nxt = local().next_episode_key(con, at)
+                if not nxt:
+                    break
+                tried += 1
+                at = nxt
+                if watched(nxt, who):
+                    continue          # walked past, not copied and not counted
+                if nxt not in said:
+                    said.add(nxt)
+                    after.append([nxt, why, who, live])
+                # already listed from another source still fills this viewer's window
+                slot[1] += 1
+                slot[0] += self.how_long(con, nxt)
+        return after
+
+    @staticmethod
+    def in_series_order(con, plan):
+        """Each programme's episodes in season and episode order, where it stands.
+
+        Episodes reach the list from three places - a watchlist, somebody part-way
+        through, and the walk ahead of both - and each added where it landed, so a
+        series read as S01E01, S01E04, S01E02. A programme keeps the place of its
+        earliest entry, so the list still reads in the order the main server wants things;
+        it is only the inside of each series that is put right.
+        """
+        want = [k for k, _, _, _ in plan
+                if is_episode(k)]
+        if len(want) < 2:
+            return plan
+        facts = {}
+        try:
+            rows = con.execute(
+                "SELECT id, item_id, season, number FROM episode WHERE id IN (%s)"
+                % ",".join("?" * len(want)), [str(k) for k in want]).fetchall()
+            for r in rows:
+                facts[str(r["id"])] = (r["item_id"], r["season"] or 0,
+                                          r["number"] or 0)
+        except Exception:
+            return plan                    # nothing known: leave it as it is
+        at = {}
+        for i, one in enumerate(plan):
+            at[one[0]] = i
+        done, out = set(), []
+        for one in plan:
+            key = one[0]
+            if key in done:
+                continue
+            if key not in facts:
+                done.add(key)
+                out.append(one)
+                continue
+            show = facts[key][0]
+            group = [x for x in plan if facts.get(x[0], (None,))[0] == show]
+            # whatever is on a screen now stays at the front of its own series: it is
+            # what somebody is watching, not the earliest episode they own
+            group.sort(key=lambda x: (0 if x[3] else 1, facts[x[0]][1:]))
+            for x in group:
+                if x[0] not in done:
+                    done.add(x[0])
+                    out.append(x)
+        return out
+
+    @staticmethod
+    def how_long(con, key):
+        """How long that episode runs, for counting an evening. Nought if unmeasured."""
+        if not is_episode(key):
+            return 0.0
+        try:
+            row = con.execute("SELECT duration FROM file WHERE episode_id=? "
+                              "AND duration > 0 LIMIT 1", (str(key),)).fetchone()
+            return float((row and row["duration"]) or 0)
+        except Exception:
+            return 0.0
+
+    def worth_copying(self, hours=4.0, deck=False, episodes=6, mine=None,
+                      casual=0.0, whole=False, only=""):
+        """The files a machine keeping copies should have, in the order to fetch them.
+
+        Three steps, and each is somewhere else: what the main server wants and why, the
+        episodes that follow it, and the rows a copy can act on. The order is the
+        order the sources were asked in, with one exception - whatever is on a screen
+        this minute leads, because it is wanted in twenty minutes and nothing else on
+        the list is. A queue with several kinds of priority in it is a queue nobody
+        can predict, and predicting it is the whole point of having one.
         """
         con = local().lib.db()
-        want, seen, sided, playing = [], set(), set(), []
-        # what somebody put on a watchlist, as opposed to what they happen to be
-        # part-way through: only these are taken whole when that is asked for
-        listed = set()
-        # Whether what is being added belongs to somebody sitting in front of a
-        # screen right now. Their episode and the ones after it come before anything
-        # else on the list - before a film moved to the front by hand, which was
-        # asked for at some point rather than being wanted in twenty minutes.
-        live = {"now": False}
-        # whose viewing decides what is worth keeping: the house's own, or the one
-        # person whose key asked. Watched is a question about a viewer.
         local().who = mine or self.viewer()
-        wanted_langs = self.languages_kept(mine)
-
-        def already(key):
-            """Seen it: there is no reason to send it anywhere."""
-            try:
-                return local()._watched(con, key)
-            except Exception:
-                return False
-
-        def add(key, mi=0):
-            if key in seen:
-                # Already on the list from an earlier pass - the watchlog, somebody's
-                # deck - and now reached again while walking ahead of a screen that
-                # is on. It is the same file either way, but it is wanted sooner than
-                # it was: three episodes of what somebody is watching sat below a
-                # film nobody had started, because a shelf had mentioned them first.
-                if live["now"]:
-                    for had in want:
-                        if str(had.get("key")) == str(key):
-                            had["hot"] = True
-                return 0.0
-            seen.add(key)
-            if already(key):
-                return 0.0
-            found = local().file_for(key, mi) or {}
-            path = found.get("file")
-            if not path or not os.path.exists(path):
-                return 0.0
-            row = con.execute(
-                """SELECT id, size, duration, container, vcodec, acodec, width,
-                          height, channels, bitrate FROM file WHERE path=?""",
-                (path,)).fetchone()
-            if not row:
-                return 0.0
-            title, subtitle, _ = local().now_playing_fields(key)
-            hot = live["now"]
-            # What this title is, as a catalogue rather than as a file: the other
-            # machine cannot always reach TMDB, and a shelf of grey rectangles is
-            # what that looks like. The pictures themselves it fetches from here.
-            want.append({"key": key, "part": row["id"], "art": self.art_of(key),
-                         "hot": hot,
-                         "name": os.path.basename(path),
-                         "size": row["size"] or os.path.getsize(path),
-                         # what the other machine should find when it has it
-                         "mark": self.quick_mark(path),
-                         # and what is inside it. The other machine has no ffprobe
-                         # worth the name and no reason to open twenty gigabytes to
-                         # learn what this one measured when the file arrived. Without
-                         # it every copy reads as an unknown container, which a player
-                         # answers by asking for a transcode of a file it could have
-                         # played as it stands.
-                         "facts": {k: row[k] for k in
-                                   ("duration", "container", "vcodec", "acodec",
-                                    "width", "height", "channels", "bitrate")},
-                         "title": " - ".join(x for x in (title, subtitle) if x)})
-            # and the subtitles sitting beside it, in the languages the people this
-            # is being kept for read. A film on the other machine with no subtitle is
-            # a film half the house cannot watch, and a subtitle is a few kilobytes.
-            for side in self.sides_worth_copying(path, key, wanted_langs,
-                                                 row["id"]):
-                if side["name"] in sided:
-                    continue
-                sided.add(side["name"])
-                want.append(dict(side, hot=hot))
-            return float(row["duration"] or 0)
-
+        langs = self.languages_kept(mine)
         try:
-            if mine:
-                # one person's own viewing on somebody else's server: what they are
-                # in the middle of, then what they mean to watch. Nothing about
-                # anybody else in the house is theirs to copy.
-                for row in con.execute(
-                        """SELECT key FROM progress WHERE who = ?
-                           AND position > 30 AND position < duration * 0.95
-                           ORDER BY updated DESC LIMIT 40""", (mine,)):
-                    add(str(row["key"]))
-                for key in self.watchlist_of(mine)[:40]:
-                    add(str(key))
-            else:
-                # What is on a screen this minute, first and by name: somebody is
-                # sitting in front of it, and the next episode of what they are
-                # watching is worth more than a film nobody has started. This asked
-                # the panel's answer for a list it does not carry, so nothing that
-                # was actually playing ever reached the front of the queue.
-                live["now"] = True
-                for said in (local().playing_now() or {}).values():
-                    key = str(said.get("key") or "")
-                    if key:
-                        playing.append(key)
-                    add(key)
-                live["now"] = False
-                # then what the house was watching lately, newest first
-                for row in con.execute(
-                        """SELECT key FROM watchlog ORDER BY updated DESC LIMIT 12"""):
-                    add(str(row["key"]))
-            if deck and not mine:
-                # What the people who asked for it are in the middle of, and what
-                # they mean to watch. Before this machine goes to sleep that is what
-                # somebody will reach for next, and the other server is the one that
-                # will be awake.
-                decks, lists, shuffles = self.cached_for()
-                for who in decks:
-                    for row in con.execute(
-                            """SELECT key FROM progress
-                               WHERE who = ? AND position > 30
-                                 AND position < duration * 0.95
-                               ORDER BY updated DESC LIMIT 40""", (who,)):
-                        add(str(row["key"]))
-                for who in lists:
-                    for key in self.watchlist_of(who)[:40]:
-                        # a series on a list means its first unwatched episode, and
-                        # the walk below goes on from there
-                        listed.add(str(key))
-                        add(str(key))
-                # and what the shuffle would put on for them next: an evening of
-                # casual watching is the evening nobody picks a film for, and the
-                # machine holding the shelf is the one about to go to sleep
-                for who in shuffles:
-                    covered = 0.0
-                    for key in self.casual_ahead(who, casual):
-                        if covered >= casual * 3600:
-                            break
-                        covered += add(str(key))
-            # then forward through each series until the hours are covered. The
-            # ones somebody is watching this minute are walked first, so their next
-            # episode is second on the list rather than fortieth: a list is taken in
-            # order, and by the time the other machine reached them the evening was
-            # over.
-            ahead_first = [k for k in playing if k in seen]
-            for key in (() if mine else ahead_first + [k for k in seen
-                                                       if k not in ahead_first]):
-                # A person's own cache is their watchlist and what they are in the
-                # middle of - nothing else. Copying ahead through a series is the
-                # house's server looking after the house.
-                if not str(key).startswith("e"):
+            # watched by the person a title is kept for, not by whoever asked: the
+            # owner having seen a film is no reason to drop it from a guest's list
+            asking = local().who
+            tokens = {}
+            for row in INVITES.load():
+                if row.get("token"):
+                    tokens.setdefault(self.name_of(row["token"]), row["token"])
+
+            def watched(key, who=None):
+                local().who = tokens.get(who, asking) if who else asking
+                try:
+                    return local()._watched(con, key)
+                except Exception:
+                    return False
+                finally:
+                    local().who = asking
+
+            plan, listed = self.wanted_keys(con, hours, deck, episodes, mine,
+                                            casual, whole, watched)
+            if not mine:
+                plan += self.episodes_after(con, plan, listed, hours, episodes,
+                                            whole, watched)
+            plan = self.in_series_order(con, plan)
+            want, sided = [], set()
+            for key, why, who, live in plan:
+                # a watchlist is kept whole, watched or not: it is what somebody asked for
+                if why not in ("on their watchlist", "a favourite") and watched(key, who):
                     continue
-                # forward until either limit is reached: a house that watches
-                # half-hour comedies wants a count, one that watches drama wants
-                # hours, and whichever runs out first is the honest answer
-                # the episodes after what is on a screen this minute belong to the
-                # person watching it, and are wanted before the evening moves on
-                live["now"] = key in ahead_first
-                covered, taken, at, tried = 0.0, 0, str(key), 0
-                # Three ahead whatever the clock says. The hours are a ceiling for a
-                # house that watches drama - six forty-minute episodes is four hours
-                # - and a ceiling that leaves somebody one episode ahead of an
-                # evening is no use to them.
-                # "every unwatched episode" is a different question from "enough
-                # for tonight", and a programme somebody put on a list is the case
-                # for it: they mean to watch all of it, not the next three.
-                enough = 9999 if (whole and key in listed) else episodes
-                while ((covered < hours * 3600 or taken < self.LEAST_AHEAD
-                        or enough > episodes)
-                       and taken < enough and tried < 200):
-                    after = local().next_episode_key(con, at)
-                    if not after:
-                        break
-                    tried += 1
-                    at = after
-                    # an episode already seen is walked past rather than copied and
-                    # counted: six ahead means six nobody has watched
-                    if already(after):
-                        continue
-                    got = add(after)
-                    if got or after in seen:
-                        covered += got
-                        taken += 1
+                want += self.rows_for(con, key, why, who, live, langs, sided)
         finally:
             con.close()
-        # anything pinned by hand leads, in the order it was pinned: what the machine
-        # works out is usually right and occasionally not
-        first = [str(k) for k in ((read_settings() or {}).get("copyFirst") or [])]
+
+        # A cache kept for one person holds what that person is watching. The machine
+        # in somebody's own room filled up with the rest of the main server's evening.
+        if only:
+            wanted_by = only.strip().lower()
+            want = [w for w in want
+                    if str(w.get("who") or "").strip().lower() == wanted_by
+                    or self.name_of(w.get("who")).strip().lower() == wanted_by]
+
+        # what each person may have copied to the other machine in a week
+        want = self.within_weekly_sync(want)
+
+        # One thing lifts anything above the list: a screen that is on this minute,
+        # because what it needs is needed in twenty minutes. Everything else keeps the
+        # place the sources gave it. Moving a title to the front by hand used to be a
+        # second kind of priority, and two kinds of priority make a queue nobody can
+        # predict - which is the whole of what a queue is for.
+        want.sort(key=lambda w: 0 if w.get("hot") else 1)
+
+        # Why each of these is wanted, where the serving side can find it: by the time
+        # a file is being sent the reason is three functions away, and a log of what
+        # moved says nothing about who wanted it.
         for w in want:
-            if str(w.get("key")) in first:
-                w["pinned"] = True
-        # Three ranks, and the order inside each is the order they were worked out.
-        # Somebody watching now comes before anything, because what they need is
-        # needed in twenty minutes; then what a person moved to the front by hand;
-        # then the rest. Pinning used to beat everything, so a seventeen-gigabyte
-        # film asked for hours ago was fetched while the person on the sofa waited
-        # for the next episode of what they were in the middle of.
-        def rank(w):
-            if w.get("hot"):
-                return 0
-            if str(w.get("key")) in first:
-                return 1 + first.index(str(w.get("key"))) / (len(first) + 1.0)
-            return 2
-        want.sort(key=rank)
+            mark = str(w.get("key") or "")
+            if mark:
+                Handler.WHY_BY_KEY[mark] = (w.get("why") or "", w.get("who") or "")
+        if len(Handler.WHY_BY_KEY) > 4000:
+            Handler.WHY_BY_KEY.clear()
         return want
+
+    def weekly_limits(self, name):
+        """Gigabytes a week per person, by the name the cache list files them under."""
+        caps = {}
+        stored = read_settings() or {}
+        for row in INVITES.load():
+            try:
+                gb = float(row.get(name) or 0)
+            except (TypeError, ValueError):
+                gb = 0.0
+            if gb > 0 and row.get("token"):
+                caps[self.name_of(row["token"]).strip().lower()] = gb
+        try:
+            mine = float(stored.get(name) or 0)
+        except (TypeError, ValueError):
+            mine = 0.0
+        if mine > 0 and not stored.get("ownerIs"):
+            caps[self.name_of("me").strip().lower()] = mine
+        return caps
+
+    def within_weekly_sync(self, want):
+        """The cache list, less what would take a person past their week's gigabytes.
+
+        What is on a screen now is taken regardless, and so is what the other machine
+        already holds: neither costs anything more.
+        """
+        caps = self.weekly_limits("syncGbWeek")
+        if not caps:
+            return want
+        import pd_traffic
+        since = time.time() - 7 * 86400
+        spent = {}
+        for row in pd_traffic.copies(100000):
+            if int(row.get("when") or 0) < since:
+                continue
+            who = str(row.get("for") or "").strip().lower()
+            spent[who] = spent.get(who, 0.0) + float(row.get("gb") or 0)
+        held = set(Handler.COPIES.get("keys") or [])
+        left = {who: cap - spent.get(who, 0.0) for who, cap in caps.items()}
+        out, dropped = [], set()
+        for w in want:
+            who = str(w.get("who") or "").strip().lower()
+            key = str(w.get("key") or "")
+            if who not in left or w.get("hot") or key in held:
+                out.append(w)
+                continue
+            if w.get("side") is not None:
+                if key not in dropped:
+                    out.append(w)
+                continue
+            gb = float(w.get("size") or 0) / 1e9
+            if gb > left[who]:
+                dropped.add(key)
+                continue
+            left[who] -= gb
+            out.append(w)
+        return out
+
+    def rows_for(self, con, key, why, who, live, langs, sided, mi=0):
+        """One wanted title as the rows a copy can act on: the file, then its subtitles.
+
+        Nothing decides anything here. It is the film, what is inside it, what it is
+        called and what sits beside it - everything the other machine would otherwise
+        have to open the file or reach the internet to find out.
+        """
+        found = local().file_for(key, mi) or {}
+        path = found.get("file")
+        if not path or not os.path.exists(path):
+            return []
+        row = con.execute(
+            """SELECT id, size, duration, container, vcodec, acodec, width,
+                      height, channels, bitrate FROM file WHERE path=?""",
+            (path,)).fetchone()
+        if not row:
+            return []
+        title, subtitle, _ = local().now_playing_fields(key)
+        out = [{
+            "key": key, "part": row["id"], "art": self.art_of(key), "hot": live,
+            "why": why, "who": who,
+            # keep it where it is, but do not go and get it
+            "casual": str(key) in Handler.CASUAL_NOW,
+            "name": os.path.basename(path),
+            "size": row["size"] or os.path.getsize(path),
+            # what the other machine should find when it has it
+            "mark": self.quick_mark(path),
+            # and what is inside it, so a copy does not read as an unknown container -
+            # which a player answers by asking for a transcode of a file it could
+            # have played as it stands
+            "facts": {k: row[k] for k in
+                      ("duration", "container", "vcodec", "acodec",
+                       "width", "height", "channels", "bitrate")},
+            # Series and numbering first: a queue is read down a column of series,
+            # not of episode names.
+            "title": (" - ".join(
+                x for x in ((subtitle, title) if str(key).startswith("e")
+                            else (title, subtitle)) if x).replace("  ", " ")),
+        }]
+        # and the subtitles beside it, in the languages the people this is kept for
+        # read. A film on the other machine with no subtitle is a film half the main server
+        # cannot watch, and a subtitle is a few kilobytes.
+        # a film takes all of its subtitles; an episode takes the languages being
+        # kept for, because a series is hundreds of files and a film is one
+        for side in self.sides_worth_copying(path, key, langs, row["id"],
+                                             every=not str(key).startswith("e")):
+            if side["name"] in sided:
+                continue
+            sided.add(side["name"])
+            out.append(dict(side, hot=live))
+        return out
 
     def sync_subtitle(self, key, mi=0, index=0, skey="", sub="", save=True):
         """Put this subtitle in step with the film, by listening to the film.
@@ -5798,7 +8084,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def addressed_to_me(self, whom):
         """Whether a message marked for somebody is for the screen now asking.
 
-        Empty is the house: everybody on this network. An address is one screen -
+        Empty is the main server: everybody on this network. An address is one screen -
         which is how a test reaches the television and nothing else. "all" is the
         house and everybody watching from outside it, which is what a room is.
         """
@@ -5818,7 +8104,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         lives in a cupboard, and walking to it to change a number is the thing this
         avoids; the address it follows is the only one it will take orders from.
         """
-        one = (read_settings() or {}).get("follow") or {}
+        # the library's settings, where the following is set up: the settings file
+        # never held it, so this answered no whatever the switch said
+        one = (self.library_settings_plain() or {}).get("follow") or {}
         if not (one.get("on") and one.get("allowRemote") and one.get("master")):
             return False
         master = str(one.get("master") or "")
@@ -5840,6 +8128,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return ipaddress.ip_address(where).is_private
         except Exception:
             return False
+
+    def library_settings_plain(self):
+        """The library's settings, from the library if it opens and from its file if not.
+
+        Library.config() is a read of library.json, but getting to it opens the
+        library first - and a library that cannot open then takes the settings down
+        with it.
+        """
+        try:
+            return local().lib.config()
+        except Exception:
+            try:
+                with open(os.path.join(ROOT, "library.json"), encoding="utf-8") as f:
+                    got = json.load(f)
+                return got if isinstance(got, dict) else {}
+            except Exception:
+                return {}
 
     def installer_folders(self):
         """Where an installer made on this machine would be sitting."""
@@ -6079,7 +8384,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         con = local().lib.db()
         try:
             row = con.execute("SELECT title, season, number FROM episode WHERE id=?",
-                              (int(str(key)[1:]),)).fetchone()
+                              (str(key),)).fetchone()
             if not row:
                 return {}
             said = dict(row)
@@ -6206,7 +8511,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         con = local().lib.db()
         try:
             row = con.execute("SELECT item_id FROM episode WHERE id=?",
-                              (int(str(episode_key)[1:]),)).fetchone()
+                              (str(episode_key),)).fetchone()
             return str(row["item_id"]) if row else None
         except (TypeError, ValueError):
             return None
@@ -6363,12 +8668,52 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         want = str(stored.get("accent", "") or "").lower()
         return want if want in [c for c, _ in ACCENTS] else ACCENT
 
+    def screen_now(self):
+        """Which kind of screen is asking: the television app, a phone, or a browser."""
+        said = (self.headers.get("X-Palladium-App") or "").lower()
+        if said.startswith("android"):
+            return "tv" if said.endswith(" tv") else "phone"
+        return "web"
+
+    def backdrop_word(self, said):
+        """One of on, poster, off. True and False are what older clients stored.
+
+        Nobody having said: a poster stands on a title's own page and nowhere else.
+        Behind the shelves as well is a taste, to be asked for rather than given.
+        """
+        if said is None:
+            return "poster"
+        if said is True:
+            return "on"
+        if said is False:
+            return "off"
+        word = str(said).strip().lower()
+        return word if word in ("on", "poster", "off") else "poster"
+
+    def backdrop_now(self, device=None):
+        """Where a poster stands on one kind of screen: on, poster, or off.
+
+        on is behind the shelves as well, poster is a title's own page and nowhere
+        else. Per viewer and per screen: a television across the room and a phone at
+        arm's length are not the same picture, and one person's answer is not another's.
+        """
+        which = self.device_of(device or self.screen_now())
+        mine = self.viewer_settings(self.settings_file()).get("myBackdrop")
+        if isinstance(mine, dict):
+            return self.backdrop_word(mine.get(which))
+        # what it used to be: one answer for every screen
+        return self.backdrop_word(mine)
+
+    def backdrop_all(self):
+        """Every screen's answer, for a settings page that draws one row each."""
+        return {d: self.backdrop_now(d) for d in self.DEVICES}
+
     def accent_now(self):
         """The colour this viewer draws with, on every screen they use.
 
         The server's answer is the default and nothing more: somebody who wants their
         own library green should have it green on the television and on the phone
-        alike, without deciding it for the rest of the house.
+        alike, without deciding it for the rest of the main server.
         """
         stored = self.settings_file()
         mine = str(self.viewer_settings(stored).get("myAccent", "") or "").lower()
@@ -6588,7 +8933,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not video:
             return None
         if str(using).startswith("t") and str(using)[1:].isdigit():
-            index = int(str(using)[1:])
+            index = str(using)
             con = local().lib.db()
             try:
                 row = con.execute(
@@ -6783,7 +9128,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         con = local().lib.db()
         try:
             row = con.execute("SELECT streams FROM file WHERE episode_id=?",
-                              (int(str(key)[1:]),)).fetchone()
+                              (str(key),)).fetchone()
             tracks = json.loads((row["streams"] if row else None) or "[]")
         except Exception:
             tracks = []
@@ -6861,11 +9206,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         con = local().lib.db()
         try:
             row = (con.execute("SELECT item_id FROM episode WHERE id=?",
-                               (int(str(key)[1:]),)).fetchone() if episode else None)
+                               (str(key),)).fetchone() if episode else None)
             # the same question for whatever is playing now, so a remembered choice is
             # only carried across when both belong to the same programme
             before = (con.execute("SELECT item_id FROM episode WHERE id=?",
-                                  (int(str(after)[1:]),)).fetchone()
+                                  (str(after),)).fetchone()
                       if str(after).startswith("e") else None)
         except (TypeError, ValueError):
             row, before = None, None
@@ -6910,7 +9255,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         con = local().lib.db()
         try:
             here = (con.execute("SELECT title, season, number FROM episode WHERE id=?",
-                                (int(str(key)[1:]),)).fetchone() if episode else None)
+                                (str(key),)).fetchone() if episode else None)
         except (TypeError, ValueError):
             here = None
         finally:
@@ -7177,7 +9522,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     APP_SAYS = "https://palladium.video/version.json"
 
     #: One fetch at a time, and not again for an hour if it failed
-    APP_FETCH = {"busy": False, "tried": 0.0}
+    APP_FETCH = {"busy": False, "tried": 0.0, "where": "", "got": 0, "size": 0,
+                 "part": 0.0}
 
     @staticmethod
     def app_beside_us():
@@ -7202,6 +9548,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if not force and time.time() - cls.APP_FETCH["tried"] < 3600:
             return
+        try:
+            if local().lib.config().get("fetchFromSite") is False:
+                return                    # this house asks the site for nothing
+        except Exception:
+            pass
         if cls.app_beside_us():
             return
 
@@ -7211,8 +9562,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 import urllib.request
                 req = urllib.request.Request(cls.APP_FROM,
                                              headers={"User-Agent": "palladium"})
+                cls.APP_FETCH.update(where=cls.APP_FROM, got=0, size=0, part=0.0)
                 with urllib.request.urlopen(req, timeout=180) as r:
-                    body = r.read()
+                    size = int(r.headers.get("Content-Length") or 0)
+                    cls.APP_FETCH["size"] = size
+                    parts, got = [], 0
+                    while True:
+                        lump = r.read(262144)
+                        if not lump:
+                            break
+                        parts.append(lump)
+                        got += len(lump)
+                        cls.APP_FETCH["got"] = got
+                        cls.APP_FETCH["part"] = round(got / size, 3) if size else 0.0
+                    body = b"".join(parts)
                 if len(body) > 1_000_000 and body[:2] == b"PK":
                     part = os.path.join(ROOT, "palladium.apk.part")
                     with open(part, "wb") as f:
@@ -7241,10 +9604,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         Named for its version, because Downloader keeps what it fetches under a name
         taken from the address: ask twice for palladium.apk and the second answer may
-        never be looked at, the copy already on the television being installed instead.
+        never be looked at, the cache already on the television being installed instead.
         That is what being stuck on an old version looks like.
         """
-        apk = self.app_beside_us()
+        # let go of in Settings means not handed out, whatever is on the disk
+        apk = "" if (read_settings() or {}).get("appOff") else self.app_beside_us()
         if not apk:
             # A server built from source has no app beside it. It can fetch one, but
             # not because a stranger asked for a file: whoever owns this machine says
@@ -7612,10 +9976,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "2. Settings &rsaquo; Apps &rsaquo; Security &amp; restrictions "
                 "&rsaquo; Unknown sources: turn <b style='color:#c3ccd6'>Downloader"
                 "</b> on.<br>"
-                "3. Open Downloader and type:<br>"
+                "3. Open Downloader and type this in the address box, exactly "
+                "as it reads - no http, nothing on the end:<br>"
                 "<span style='display:inline-block;margin:8px 0 4px;font:600 18px "
                 "ui-monospace,monospace;color:#4a90f0;letter-spacing:1px'>"
-                "%(host)s/i/%(code)s.apk</span><br>"
+                "%(host)s/i/%(code)s</span><br>"
                 "4. When the app asks for a server, give it "
                 "<span style='color:#c3ccd6'>%(host)s</span> and the code "
                 "<span style='color:#c3ccd6'>%(code)s</span>."
@@ -7697,6 +10062,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     @staticmethod
     def password_set():
         return bool((read_settings() or {}).get("ownerHash"))
+
+    @staticmethod
+    def untouched():
+        """A server nobody has set up yet: no password, no invitations, no folders.
+
+        There is nothing here to protect at that point - no library, no settings, no
+        keys - and whoever reaches it is the person who has just installed it.
+        """
+        try:
+            stored = read_settings() or {}
+            if stored.get("setupDone") or stored.get("ownerHash"):
+                return False
+            if INVITES.load():
+                return False
+            lib = local().lib.config() or {}
+            return not (lib.get("movies") or lib.get("tv") or lib.get("mixed"))
+        except Exception:
+            return False
 
     def password_ok(self, word):
         import hmac
@@ -7872,25 +10255,84 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                        (" [%s]" % who) if who else "",
                        chr(10)))
 
+    #: What a key is for. "user" watches; "owner" may change the library as though
+    #: sitting at the machine; "cache" is another server keeping copies of this one.
+    #: Kept on the key itself, so one list of keys answers "who has a way in here,
+    #: and what may they do".
+    ROLES = ("user", "owner", "admin", "cache")
+
+    @staticmethod
+    def role_of(row):
+        """The role on a key, or the one its old flags imply."""
+        role = str((row or {}).get("role") or "")
+        if role in Handler.ROLES:
+            return role
+        if (row or {}).get("follows"):
+            return "cache"
+        return "user"
+
     def who(self, path):
         """'owner', 'guest' or None - the answer every request starts with."""
+        if self.headers.get("X-Palladium-House"):
+            # the server this machine follows, setting how it copies: only while
+            # somebody here allows it, from that server's address, and its copying only
+            return ("owner" if self.managed_from_the_house()
+                    and str(path).startswith("/follow") else None)
+        # The machine itself needs no key: somebody sitting at it can read the files
+        # anyway. Every other caller carries one - being on the home network is not a
+        # credential, and a television in the kitchen is as much a stranger as a phone
+        # on the train until it holds an invitation.
+        here = (self.client_address[0] in ("127.0.0.1", "::1")
+                and not self.through_a_proxy())
+        # In a container there is no sitting at the machine: every request arrives off
+        # the network, including the first one. So a server in one could not be set up
+        # at all - no password to give, no invitation to hold, and the only address
+        # that counted was inside the container. Until somebody has set it up, being
+        # on the same network is enough; finishing the wizard is what closes it.
+        if not here and self.untouched() and self.in_the_house():
+            here = True
         if self.password_set():
-            # The address proves nothing once a password exists. The machine itself
-            # still needs none - somebody sitting at it can read the files anyway -
-            # unless the request came through a proxy, which makes every caller look
-            # like the machine itself.
-            here = (self.client_address[0] in ("127.0.0.1", "::1")
-                    and not self.through_a_proxy())
             if here or self.session_ok():
                 return "owner"
-        elif self.at_home():
+        elif here:
             return "owner"
-        elif self.managed_from_the_house():
+        if self.managed_from_the_house():
             # This machine keeps copies for another and has been told that machine
             # may change its settings. Only that machine, only by its address, and
             # only because somebody sitting here turned it on.
             return "owner"
         invite = INVITES.check(self.bearer(), self.app_name())
+        if invite and Handler.role_of(invite) == "owner":
+            # a key that carries the run of the place, for somebody who has it and is
+            # not sitting at the machine
+            self.guest_name = invite["name"]
+            return "owner"
+        # A machine that keeps copies is not a guest and never was: it was owner here
+        # only because it sat on the same network, and requiring a key of every screen
+        # took that away - so its own rounds were refused at the door, and caching
+        # stopped. The handlers behind /follow check the key themselves, that it
+        # follows this server and that it has not been stopped; the door defers to
+        # them rather than deciding it twice.
+        # and the build this machine is running: a machine that follows this one
+        # replaces itself with what this one has, which means fetching the installer.
+        # Being on the same network stopped being a credential, and its key was good
+        # for /follow alone - so following the build broke at the door.
+        low = str(path).lower()
+        build_file = low.startswith("/palladium-setup") and low.endswith(".exe")
+        if (invite and Handler.role_of(invite) == "cache"
+                and (str(path).startswith("/follow") or path == "/server"
+                     or build_file)):
+            self.guest_name = invite["name"]
+            return "owner"
+        if invite and Handler.role_of(invite) == "admin":
+            # A panel on the wall rather than a person: it reads whatever the owner
+            # reads - who is watching, who holds a key, what is arriving - and writes
+            # nothing. Asking is a GET; everything that changes anything is refused,
+            # because only the owner's own key answers "owner" to those.
+            self.guest_name = invite["name"]
+            if self.command in ("GET", "HEAD"):
+                return "owner"
+            return "guest" if Invites.allowed(path) else None
         if invite and Invites.allowed(path):
             self.guest_name = invite["name"]
             return "guest"
@@ -7929,19 +10371,104 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         remaining = end - start + 1
         asked = remaining
         trouble = None
+        # A share of the blocks read off the other machine instead of this disk, if
+        # somebody has asked for that and the other machine holds the same file. The
+        # viewer sees one unbroken answer either way: this is where the block came
+        # from, not what the answer looks like.
+        share = self.sharing_with_copy(path)
+        # How much of the reading the cache is doing at this moment. It starts at
+        # nothing: this machine is used for the whole of an evening while it can keep
+        # up. What says it cannot is its own reading falling behind what the viewer
+        # is taking - the disk is busy, something else is being written to it - and
+        # that is the same thing the viewer sees as a buffer going down, seen from
+        # the side that can do something about it.
+        now, at, taken, slow = 0, start, 0, 0
+        # time spent getting blocks off this disk, and time spent handing them on,
+        # since the share was last worked out
+        disk, wrote = 0.0, 0.0
+        # Whether this is a copy going to another machine rather than a film going to
+        # somebody. A copy is never in a hurry: it is for an evening that has not
+        # happened yet, and it was taking its share of the disk, the line and the
+        # router from a film somebody was watching at the time.
+        copying_out = bool(sid is not None
+                           and (WATCHING.live.get(sid) or {}).get("how") == "syncing")
+        held_back = 0.0
+        # One file at a time to any one machine. Whoever asked last is the one still
+        # listening; anything older is being sent to nobody.
+        whom = self.client_address[0]
+        if copying_out:
+            Handler.SYNC_NOW[whom] = sid
         with open(path, "rb") as f:
             f.seek(start)
             while remaining > 0:
-                try:
-                    chunk = f.read(min(262144, remaining))
-                except OSError as e:
-                    trouble = "the disk stopped answering: %s" % e
-                    break
+                want = min(262144, remaining)
+                chunk = None
+                # evenly spread rather than the first so-many of every hundred:
+                # one block in five for a fifth, not twenty then eighty
+                if now and (taken * now) % 100 < now:
+                    # its turn: ask the cache, and fall to this disk the moment it is
+                    # slow or unwilling. A block late is worse than a block read here.
+                    chunk = self.block_from_copy(share, at, want)
+                    if chunk:
+                        f.seek(at + len(chunk))
+                        Handler.CARRIED[self.watcher()] = (
+                            lambda c: (c[0], c[1] + len(chunk), time.time()))(
+                                Handler.CARRIED.get(self.watcher()) or (0, 0, 0))
+                if chunk is None:
+                    try:
+                        began = time.monotonic()
+                        chunk = f.read(want)
+                        disk += time.monotonic() - began
+                        if chunk:
+                            Handler.CARRIED[self.watcher()] = (
+                                lambda c: (c[0] + len(chunk), c[1], time.time()))(
+                                    Handler.CARRIED.get(self.watcher()) or (0, 0, 0))
+                    except OSError as e:
+                        trouble = "the disk stopped answering: %s" % e
+                        break
+                # How this machine is faring, over the last eight blocks: a disk
+                # holding the line up hands work to the cache, a disk well ahead of it
+                # takes the work back.
+                if share and taken and taken % 8 == 0:
+                    now = self.share_by_reads(now, share[0], disk, wrote)
+                    disk, wrote = 0.0, 0.0
                 if not chunk:
                     trouble = "the file ended %d bytes early" % remaining
                     break
+                at += len(chunk)
+                taken += 1
+                # and held back while anybody is watching. Nothing is stopped: it
+                # goes on at a walk instead of a run, and has the line to itself again
+                # the moment the last film ends.
+                if copying_out and taken % 4 == 0:
+                    # given up on: that machine has asked for something else since
+                    if Handler.SYNC_NOW.get(whom) != sid:
+                        trouble = ""
+                        break
+                    seen = WATCHING.snapshot()
+                    watching = sum(1 for r in seen if r.get("how") != "syncing")
+                    if watching:
+                        # What the films are drawing and what the cacheing is, both
+                        # measured this second. The ceiling follows from the two.
+                        streaming = sum(float(r.get("mbit") or 0) for r in seen
+                                        if r.get("how") != "syncing")
+                        syncing = sum(float(r.get("mbit") or 0) for r in seen
+                                      if r.get("how") == "syncing")
+                        Handler.WATCHING_NOW = seen
+                        ceiling = Handler.sync_ceiling(local().lib.config(),
+                                                       streaming, syncing)
+                        if ceiling > 0:
+                            # how long these four blocks should have taken at the
+                            # ceiling, less what they did take
+                            owed = (4 * 262144 * 8 / (ceiling * 1e6)) - held_back
+                            if owed > 0:
+                                time.sleep(min(owed, 1.0))
+                            held_back = 0.0
                 try:
+                    began = time.monotonic()
                     self.wfile.write(chunk)
+                    wrote += time.monotonic() - began
+                    held_back += time.monotonic() - began
                 except Exception as e:
                     # ordinarily the player seeked away or closed, which is not worth
                     # a line; anything else is what we have been guessing about
@@ -7955,9 +10482,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # A film that stops mid-stream reads as ERROR_CODE_IO_UNSPECIFIED on the
             # device and as nothing at all here, which is how it stayed a mystery.
             with open(os.path.join(ROOT, "debug.log"), "a", encoding="utf-8") as f:
-                f.write("%s stream cut %s to %s after %.1f of %.1f MB - %s%s"
+                # and what asked for it. A film arrived from an address with no
+                # program name against it and nobody could say what had fetched it -
+                # the name it calls itself is the one thing that answers that, and it
+                # costs a few characters on a line that is already being written.
+                said = (self.headers.get("X-Palladium-App")
+                        or (self.headers.get("User-Agent") or "")[:60] or "says nothing")
+                f.write("%s stream cut %s to %s [%s] after %.1f of %.1f MB - %s%s"
                         % (time.strftime("%H:%M:%S"), os.path.basename(path)[:40],
-                           self.client_address[0], (asked - remaining) / 1e6,
+                           self.client_address[0], said, (asked - remaining) / 1e6,
                            asked / 1e6, trouble, chr(10)))
 
     def do_HEAD(self):
@@ -8070,13 +10603,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             people = [self.with_link(r) for r in INVITES.load()]
             mine = self.owner_caching()
             for row in people:
-                row["cost"] = self.cache_cost(row["token"])
+                row["cost"] = self.follower_cost(row["token"])
+                # What sort of key this is. They were all drawn as people, so a key
+                # made for a machine sat in the list of viewers being asked whose
+                # half-watched films it should keep.
+                row["role"] = Handler.role_of(row)
+                # and what they call themselves, if they have said. The name on the
+                # invitation is the owner's record of who they gave a key to; this is
+                # the name that shows on a screen.
+                row["shown"] = str(((read_settings() or {}).get("users") or {})
+                                   .get(row["token"], {}).get("myName") or "")
+                row["kind"] = "machine" if row["role"] == "cache" else "guest"
                 # the owner's own key: one person, one row
                 row["you"] = bool(mine.get("token")
                                   and row["token"] == mine["token"])
             self.reply_json({"people": people,
+                             # what the owner is called, so no screen shows "me" -
+                             # which is a placeholder a server wears until somebody
+                             # says who they are, not a person's name
+                             "ownerName": (read_settings() or {}).get("ownerName") or "",
                              "me": dict(mine,
-                                        cost=self.cache_cost(mine.get("token")
+                                        cost=self.follower_cost(mine.get("token")
                                                              or "me")),
                              "lan": LAN_IP, "wan": wan_ip(), "port": PORT})
             return
@@ -8159,24 +10706,91 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             import pd_follow
             one = pd_follow.settings(local().lib.config())
             held = set(Handler.COPIES.get("keys") or [])
-            first = [str(k) for k in ((read_settings() or {}).get("copyFirst") or [])]
-            rows = self.worth_copying(float(one.get("hours") or 4), True,
-                                      int(one.get("episodes") or 6), None,
-                                      float(one.get("casualHours") or 0))
+            # Only what the other machine says it holds. Having sent a file once is
+            # not the same as it being there - it can arrive wrong, be swept away to
+            # stay under a cap, or never finish - and treating "sent" as "here" hid
+            # forty-six rows the other machine was still asking for, which is how a
+            # transfer comes to have no line anywhere on this page.
+            # The same question the other machine last asked, rather than one of this
+            # page's own. Asking for the night's list at four in the afternoon showed
+            # a queue nobody was working through.
+            ask = Handler.LAST_ASK
+            fresh = ask.get("when") and time.time() - ask["when"] < 900
+            rows = self.worth_copying(
+                float(ask["hours"]) if fresh else float(one.get("hours") or 4),
+                bool(ask["deck"]) if fresh else False,
+                int(ask["episodes"]) if fresh else int(one.get("episodes") or 6),
+                None,
+                float(ask["casual"]) if fresh else float(one.get("casualHours") or 0),
+                bool(ask["whole"]) if fresh else bool(one.get("wholeList")))
             queue = [{"key": r.get("key"),
                       "title": r.get("title") or r.get("name"),
+                      # why it is in the list, and whose viewing put it there
+                      "why": r.get("why") or "",
+                      "who": r.get("who") or "",
                       "gb": round((r.get("size") or 0) / 1e9, 2),
                       "here": r.get("key") in held,
-                      "pinned": str(r.get("key")) in first,
+                      # nothing is moved to the front by hand any more: a screen
+                      # that is on is the only thing that lifts a row
+                      "pinned": False,
                       # somebody is watching this, or the episode before it
                       "hot": bool(r.get("hot")),
                       "side": r.get("side") is not None}
-                     for r in rows[:60]]
+                     for r in rows]
             # What is still to come stands above what has already arrived. The order
             # inside each half is the order the other machine will work in; a list
             # that reads top to bottom should not put a dozen finished rows between
             # the thing being fetched and the thing after it.
             queue.sort(key=lambda r: 1 if r["here"] else 0)
+            # And the file actually being fetched this minute goes at the top, whether
+            # or not the list as it stands now would still ask for it. The other
+            # machine works from the list it was given a minute ago and finishes what
+            # it started; a queue that leaves that file out is describing a different
+            # evening from the one happening. It is the first thing anybody looks for.
+            # What would not come stands above what has not been tried: a file that
+            # failed is the thing holding the queue up, and it was being reported in a
+            # list of its own underneath while the queue above pretended it was next.
+            import pd_follow
+            stuck = {}
+            for bad in (list(Handler.FOLLOWER_TROUBLE)
+                        + list(pd_follow.troubles() or [])):
+                mark = str(bad.get("name") or "")
+                if mark:
+                    stuck[mark] = bad
+            if stuck:
+                def failed(r):
+                    title = str(r.get("title") or "")
+                    for name, bad in stuck.items():
+                        if name == r.get("name") or (title and
+                                                     name.startswith(title)):
+                            return bad
+                    return None
+                first, rest = [], []
+                for r in queue:
+                    bad = failed(r)
+                    if bad:
+                        r["stuck"] = str(bad.get("said") or "would not come")
+                        r["tries"] = int(bad.get("tries") or 1)
+                        first.append(r)
+                    else:
+                        rest.append(r)
+                queue = first + rest
+            busy = next((r for r in WATCHING.snapshot()
+                         if r.get("how") == "syncing"), None)
+            if busy:
+                mark = str(busy.get("key") or "")
+                already = next((r for r in queue if str(r["key"]) == mark), None)
+                if already:
+                    queue.remove(already)
+                    already["now"] = True
+                    queue.insert(0, already)
+                else:
+                    queue.insert(0, {
+                        "key": mark,
+                        "title": str(busy.get("title") or ""),
+                        "gb": round(float(busy.get("size") or 0) / 1e9, 2),
+                        "here": False, "pinned": False, "hot": False,
+                        "side": False, "now": True})
             self.reply_json({"queue": queue})
             return
         if path == "/follow/test":
@@ -8189,7 +10803,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             import pd_follow
             one = pd_follow.settings(local().lib.config())
             said = {"master": pd_follow.try_master(one) if one.get("master") else None,
-                    "follower": pd_follow.try_follower(
+                    "follower": pd_follow.try_standby(
                         (self.standby_now() or {}).get("where") or ""),
                     "kept": pd_follow.kept_here(one)}
             self.reply_json(said)
@@ -8202,15 +10816,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # the key this server hands to a machine that follows it, if one has
             # been made: the page shows it rather than making somebody press a
             # button to find out whether there is one
-            mine = next((r for r in INVITES.load() if r.get("follows")), None)
+            # a key is a machine's because somebody marked it Cache under Users;
+            # the flag underneath it is set at the same time, but the role is what
+            # was chosen and what this list is of
+            machines = [r for r in INVITES.load()
+                        if Handler.role_of(r) == "cache"]
+            mine = next(iter(machines), None)
             self.reply_json({"follow": pd_follow.settings(local().lib.config()),
                              "state": pd_follow.look(),
+                             # how much of the reading is handed to the cache
+                             "share": int(local().lib.config()
+                                          .get("shareWithCopy") or 0),
+                             # every key made for a machine, with what each one
+                             # allows. There was one key for the main server and one
+                             # ceiling for whoever held it.
+                             "keys": [
+                                 {"token": r.get("token") or "",
+                                  "name": r.get("name") or "",
+                                  "created": int(r.get("created") or 0),
+                                  "lastSeen": int(r.get("lastSeen") or 0),
+                                  "cap": float(r.get("cap") or 0),
+                                  "mayCopy": bool(r.get("mayCopy", True)),
+                                  "role": Handler.role_of(r)}
+                                 for r in machines],
                              "mine": {"key": (mine or {}).get("token") or "",
                                       "where": "http://%s:%d" % (LAN_IP, PORT),
                                       # the ceiling this library puts on a machine
                                       # that follows it; 0 means it sets its own
                                       "cap": float(local().lib.config()
-                                                   .get("followerCap") or 0)},
+                                                   .get("cacheCap") or 0)},
                              # and the machine following this one, as it announced
                              # itself: the address viewers are sent to when this
                              # server is off
@@ -8219,6 +10853,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              # name is chosen rather than guessed at
                              "name": self.server_name(),
                              "hostname": socket.gethostname(),
+                             # what the main server's key allows, the main server's name, and
+                             # whether this request is the main server managing this machine
+                             "houseCap": float(pd_follow.ALLOWED.get("gb") or 0),
+                             "houseName": pd_follow.house_doors().get("name") or "",
+                             "fromHouse": bool(self.headers.get("X-Palladium-House")
+                                               and self.managed_from_the_house()),
+                             # which catalogue keys this house holds: a button
+                             # offering to send one it has not got can only fail
+                             "have": {k: bool((local().lib.config().get(k) or "").strip())
+                                      for k in ("opensubtitles_key", "tmdb_key")},
                              "standby": self.standby_now(),
                              # every machine that follows this one, freshest first,
                              # with whether it has spoken lately
@@ -8238,7 +10882,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              # machines the owner has stopped, which keep their key
                              # and are refused anyway until they are let back in
                              "blocked": list(local().lib.config()
-                                             .get("blockedFollowers") or []),
+                                             .get("blockedCaches") or []),
                              "port": PORT,
                              "portWanted": int((read_settings() or {}).get("port")
                                                or PORT)})
@@ -8262,10 +10906,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             os.environ["PALLADIUM_DATA"] = ROOT
             stored = read_settings() or {}
             self.reply_json({"addons": pd_ai_subs.addons(stored.get("addons") or {}),
-                             "can": pd_ai_subs.ready(),
+                             "can": pd_ai_subs.ready() and tools_on(),
+                             "toolsOff": bool(stored.get("toolsOff")),
                              # the scripts that drive the models, which are ours and
                              # come from our own site rather than from a model's
                              "tools": pd_ai_subs.tools()})
+            return
+        if path == "/stream/buffer":
+            # What each machine has carried of the film this viewer is watching. The
+            # screen used to send what it had left to play and this decided the share
+            # from it; the share is worked out where the reading happens now, and this
+            # only answers with what the two of them have carried.
+            self.read_json()
+            if len(Handler.CARRIED) > 200:
+                Handler.CARRIED.clear()
+            # and what each machine has carried, for the line along the top: the
+            # browser cannot see which disk a block came off, and this is the only
+            # place that can tell it.
+            mine, theirs, _ = Handler.CARRIED.get(self.watcher()) or (0, 0, 0)
+            out = {"ok": True}
+            if theirs > 0:
+                whole = float(mine + theirs)
+                out["split"] = [int(round(mine * 100 / whole)),
+                                int(round(theirs * 100 / whole))]
+                out["with"] = (self.standby_now() or {}).get("name") or ""
+            self.reply_json(out)
+            return
+        if path == "/copy/read":
+            # One stretch of a file this machine holds, for the server it copies from
+            # to hand on as part of its own answer. Named by the file and its mark
+            # rather than by a number: a part id belongs to the library that issued
+            # it, and these are two libraries.
+            if not self.follows_here():
+                self.send_error(403, "not allowed")
+                return
+            args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                    if "?" in self.path else {})
+            name = (args.get("name") or [""])[0]
+            mark = (args.get("mark") or [""])[0]
+            here = self.copy_holds(name, mark)
+            if not here:
+                self.send_error(404, "not that file")
+                return
+            self.send_file_ranged(here)
             return
         if path == "/follow/side":
             # A subtitle file beside a video, as it lies on disk. Named by the video
@@ -8317,7 +11000,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/follow/here":
             # The following server saying where it can be reached. Written down so
             # that a viewer whose server does not answer has somewhere else to ask.
-            # Only the house's own follower: an ordinary invitation is somebody
+            # Only the main server's own cache: an ordinary invitation is somebody
             # else's machine, and its address is theirs, not ours to hand out.
             invite = INVITES.check(self.bearer(), self.app_name())
             # a machine the owner has stopped keeps its key and is refused
@@ -8332,9 +11015,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 port = 8765
             # the address it came from, not one it asks us to believe
             where = "http://%s:%d" % (self.client_address[0], port)
-            # and the address from outside the house, which is this network's own
+            # and the address from outside the main server, which is this network's own
             # with that machine's port forwarded to it - unless the owner set one
-            # by hand, for a follower that lives somewhere else entirely
+            # by hand, for a cache that lives somewhere else entirely
             said = (args.get("outside") or [""])[0][:120].strip().rstrip("/")
             # an address typed without http:// in front of it is still an address
             if said and not said.startswith(("http://", "https://")):
@@ -8346,12 +11029,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     return round(float((args.get(name) or ["0"])[0]), 1)
                 except (ValueError, TypeError):
                     return 0.0
-            self.remember_standby(where, (args.get("name") or [""])[0][:40],
+            self.remember_cache(where, (args.get("name") or [""])[0][:40],
                                   outside.rstrip("/"),
                                   (args.get("build") or [""])[0][:20],
                                   {"gb": number("gb"), "free": number("free"),
                                    "cap": number("cap"),
                                    "files": int(number("files"))})
+            # whether that machine lets this one set how it copies
+            if where in Handler.FOLLOWERS:
+                Handler.FOLLOWERS[where]["managed"] = \
+                    (args.get("managed") or ["0"])[0] == "1"
+                Handler.remember_followers()
             self.reply_json({"ok": True, "where": where, "outside": outside})
             return
         if path == "/copies":
@@ -8366,6 +11054,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 said = {"keys": [], "when": 0}
             self.reply_json(said)
             return
+        if path == "/server/build":
+            # The installer this machine is running, for the one that follows it. Only
+            # a cache may ask: it is 34 MB off this machine's disk, and the hash
+            # goes with it so what arrives is checked rather than trusted.
+            if not (self.role == "owner" or self.follows_here()):
+                self.send_error(403, "not allowed")
+                return
+            said = Handler.build_on_offer()
+            if not said:
+                self.reply_json({"version": ""})
+                return
+            args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                    if "?" in self.path else {})
+            if (args.get("file") or [""])[0] not in ("1", "true", "yes"):
+                self.reply_json(said)
+                return
+            where = Handler.BUILD_MARK.get("path") or ""
+            if not where or not os.path.exists(where):
+                self.send_error(404, "no installer here")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "application/vnd.microsoft.portable-executable")
+            self.send_header("Content-Length", str(os.path.getsize(where)))
+            self.send_header("X-Palladium-Version", said.get("version", ""))
+            self.end_headers()
+            with open(where, "rb") as f:
+                while True:
+                    lump = f.read(262144)
+                    if not lump:
+                        break
+                    try:
+                        self.wfile.write(lump)
+                    except Exception:
+                        break
+            return
         if path == "/standby":
             # The other machine that holds copies of what this house watches, for a
             # client to fall back on when this server is off. Answered to anybody who
@@ -8377,8 +11101,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json(self.standby_now())
             return
         if path == "/follow/invites":
-            # The house's invitations, for the follower to honour: a guest whose
-            # server is off reaches the copy with the link they already have.
+            # The main server's invitations, for the cache to honour: a guest whose
+            # server is off reaches the cache with the link they already have.
             invite = INVITES.check(self.bearer(), self.app_name())
             # a machine the owner has stopped keeps its key and is refused
             if not (invite and invite.get("follows")) or self.follower_stopped():
@@ -8395,7 +11119,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                  "cacheCasual": bool(r.get("cacheCasual"))}
                 for r in INVITES.load() if not r.get("follows")],
                 "owner": self.owner_caching(),
-                # and who the person at that machine is, so the copy files their
+                # and who the person at that machine is, so the cache files their
                 # viewing under the same name: the places travel under it, and a
                 # machine that calls them somebody else shows an empty shelf
                 "ownerIs": str((read_settings() or {}).get("ownerIs") or ""),
@@ -8403,16 +11127,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "name": socket.gethostname(),
                 # the catalogue key, so what the other machine copies arrives as
                 # films with posters rather than as a list of file names. It is the
-                # house's own key, going to the house's own second machine.
+                # house's own key, going to the main server's own second machine.
                 "tmdb": (local().lib.config().get("tmdb_key") or ""),
+                # How each person has their subtitles drawn, and in what language.
+                # An evening that moves to the cache mid-film should not change size,
+                # colour or language halfway through - and the menus over there had
+                # this machine's defaults behind them rather than that person's.
+                "look": self.everyones_subtitles(),
                 "language": (local().lib.config().get("language") or "en-US")})
             return
         if path == "/follow/playing":
             # What another server should keep a copy of: whatever is being watched
-            # here, and the episodes after it. Only a key marked as a follower may
-            # ask - it is the house's viewing, not a guest's business.
-            # Two kinds of follower. A key marked as one is another server of this
-            # house: it may know what the house is watching. An ordinary invitation
+            # here, and the episodes after it. Only a key marked as a cache may
+            # ask - it is the main server's viewing, not a guest's business.
+            # Two kinds of cache. A key marked as one is another server of this
+            # house: it may know what the main server is watching. An ordinary invitation
             # is a person keeping their own copies on their own machine - they get
             # what is theirs and nothing else, which is no more than they can already
             # see in Continue watching.
@@ -8441,19 +11170,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except ValueError:
                 casual = 0.0
             cfg = local().lib.config()
+            # What the shuffle would play next is copied when the machine keeping the
+            # copies asks for it, and not otherwise. It used to be asked and then
+            # overruled here, so the setting on that machine's own page did nothing
+            # anybody could see. It is that machine's disk and its own hours.
+            if mine is None:
+                # The fuller question wins. A cache asks twice a round - once for
+                # what is on a screen, once for the watchlists as well - and asks the
+                # lighter one every minute while a copy is running. Remembering
+                # whichever came last meant the page reproduced the short list and
+                # left out everything actually being fetched from a watchlist.
+                held = Handler.LAST_ASK
+                fresher = (deck or not held.get("deck")
+                           or time.time() - (held.get("when") or 0) > 900)
+                if fresher:
+                    Handler.LAST_ASK = {"hours": hours, "deck": deck,
+                                        "episodes": episodes, "casual": casual,
+                                        "whole": whole, "when": int(time.time())}
+            # whose cache this is: a name means only that viewer's own viewing is
+            # worth copying, and nothing means the whole house's
+            only = (args.get("for") or [""])[0][:60].strip()
             self.reply_json({"wanted": self.worth_copying(hours, deck, episodes, mine,
-                                                          casual, whole),
+                                                          casual, whole, only),
+                             # who this house has, so the other machine can offer
+                             # the names rather than asking somebody to type one
+                             "house": self.everyone_here()[:40],
+                             # what this machine is running, and what it thinks
+                             # the asking one is. A cache set to replace itself
+                             # when the main server moves on reads both from here - and
+                             # neither was ever sent, so it compared nothing against
+                             # nothing and stayed on the build it was installed with.
+                             "serverVersion": self.build_version(),
+                             "mine": (Handler.STANDBY.get("build") or ""),
                              # whose viewing this answer is about, so the other
                              # machine can say so on its own page
-                             "whose": ("the house" if mine is None
+                             "whose": ("the main server" if mine is None
                                        else (invite.get("name") or "you")),
-                             # when this machine goes off, so a follower knows how
-                             # long it has to take copies of anything left
-                             "sleeps": str(cfg.get("sleepAt") or ""),
                              # and whether anybody is watching this minute: the disk
                              # and the line belong to them, not to a copy of a film
                              # nobody has started
-                             "watching": len(local().playing_now() or {}) > 0})
+                             "watching": len(local().playing_now() or {}) > 0,
+                             # somebody here is going to bed early: take everything
+                             # anybody is half way through, whatever the clock says
+                             "earlyUntil": (Handler.EARLY_UNTIL
+                                            if Handler.EARLY_UNTIL > time.time()
+                                            else 0)})
             return
         if path == "/subs/making":
             # what is being written down at the moment, and what is waiting
@@ -8476,6 +11237,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             key = (args.get("key") or [""])[0]
             device = self.device_of((args.get("device") or ["web"])[0])
             self.reply_json({
+                # what this viewer is called, so a page can show it and let them
+                # change it - guests included
+                "myName": (self.viewer_settings(self.settings_file()).get("myName")
+                           or self.guest_name
+                           or (read_settings() or {}).get("ownerName") or ""),
+                # how a film should be fetched for this viewer
+                "splitPlay": bool(self.viewer_settings(self.settings_file())
+                                  .get("splitPlay", True)),
+                "failover": bool(self.viewer_settings(self.settings_file())
+                                 .get("failover", True)),
+                # whether finishing a title takes it off this viewer's watchlist
+                "dropWatched": bool(self.viewer_settings(self.settings_file())
+                                    .get("dropWatched", True)),
                 "subtitles": self.subtitle_settings(key, device),
                 "override": bool(key) and self.has_override(key, device),
                 "device": device,
@@ -8485,6 +11259,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # the accent, and the colours on offer, so a settings page anywhere
                 # can draw the row without knowing the list itself
                 "accent": self.accent_now(),
+                # a poster behind the shelves, per screen: the row for each, and
+                # the answer for whichever screen is asking
+                "backdrop": self.backdrop_all(),
+                "backdropHere": self.backdrop_now(),
                 # what the server draws with, so a settings page can show which
                 # swatch is merely the default and which one this viewer chose
                 "accentDefault": self.accent_default(),
@@ -8541,7 +11319,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             key = (args.get("key") or [""])[0]
             self.reply_json({"key": key,
                              "watchlist": self.marks_state("watchlist", key),
-                             "casual": self.marks_state("casual", key)})
+                             "favorites": self.marks_state("favorites", key)})
             return
         if path == "/mystream":
             # what this caller is being sent, for its own statistics line
@@ -8558,7 +11336,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for row in live:
                 # a file going to the machine that keeps copies is not a viewing:
                 # nobody is at the other end of it, so it borrows neither a name from
-                # the house nor a state from a player
+                # the main server nor a state from a player
                 if row.get("how") == "syncing":
                     row["state"] = "syncing"
                     continue
@@ -8608,12 +11386,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         # first title it holds, so a new shelf has a face at once
                         face = str(c.get("cover") or "")
                         if face not in keys:
-                            face = keys[0] if keys else ""
+                            face = next((k for k in keys if not str(k).startswith("o")), keys[0] if keys else "")
                         art = None
                         if face:
                             one = local().metadata_for(con, face, brief=True) or {}
                             art = one.get("thumb") or one.get("grandparentThumb")
-                        out.append(dict(c, count=len(keys), cover=face, art=art))
+                        out.append(dict(c, count=len(keys), cover=face, art=art,
+                                        resumeAt=self.shuffle_resume(c.get("id"))))
                     self.reply_json({"collections": out})
                     return
                 args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
@@ -8623,11 +11402,63 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not shelf:
                     self.reply_json({"error": "no such collection", "Metadata": []}, 404)
                     return
-                rows = []
+                # Episodes stand as the seasons they belong to. A shelf holding four
+                # episodes of a fifty-six episode programme showed four episode cards
+                # and said nothing about the programme; one season card saying "4 of
+                # 56 episodes" is what somebody reading the shelf wants to know. The
+                # episodes are still what the shelf holds - this is how it is read,
+                # not what it is.
+                keys, seasons = [], {}
                 for key in self.collection_keys(con, shelf):
+                    if str(key).startswith("e"):
+                        seat = con.execute(
+                            "SELECT item_id, season, number FROM episode WHERE id=?",
+                            (str(key),)).fetchone() if is_episode(key) else None
+                        if seat:
+                            where = "%s-s%d" % (seat["item_id"], seat["season"] or 0)
+                            seasons.setdefault(where, [])
+                            seasons[where].append((seat["number"] or 0, str(key)))
+                            continue
+                    keys.append(key)
+                rows = []
+                for key in keys:
                     one = local().metadata_for(con, key, brief=True)
                     if one:
                         rows.append(one)
+                for where, inside in seasons.items():
+                    held = len(inside)
+                    one = local().metadata_for(con, where, brief=True)
+                    if not one:
+                        continue
+                    # Named as the season it is. The key for a season answers with the
+                    # programme, so nineteen cards all read as the same programme and
+                    # counted their episodes against the whole of it - "7 of 179" for
+                    # a season of twelve, nineteen times over.
+                    show, _, number = str(where).partition("-s")
+                    try:
+                        number = int(number)
+                    except ValueError:
+                        number = 0
+                    seat = con.execute(
+                        "SELECT COUNT(*) c FROM episode WHERE item_id=? AND season=?",
+                        (show, number)).fetchone()
+                    one = dict(one)
+                    one["type"] = "season"
+                    one["ratingKey"] = str(where)
+                    one["parentTitle"] = one.get("title") or ""
+                    one["grandparentTitle"] = one.get("title") or ""
+                    one["title"] = "Season %d" % number if number else "Specials"
+                    one["index"] = number
+                    # how much of it is here, against how much of it there is: the
+                    # difference between a season on a shelf and part of one
+                    one["leafCount"] = int((seat and seat["c"]) or held)
+                    one["shelfCount"] = held
+                    # and what it stands for, in order. A card rolled up out of
+                    # episodes is a way of reading the shelf; playing it has to play
+                    # the episodes, and playing the season's own key opened the
+                    # programme's page instead - Play took somebody to the show.
+                    one["holds"] = [k for _, k in sorted(inside)]
+                    rows.append(one)
                 # In the order they were made. A collection is usually a series of
                 # films, and the year is how anybody reads one - alphabetical put
                 # Resurrection before Aliens, and anything added by hand at the end.
@@ -8669,7 +11500,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 con.close()
         if path == "/machine":
             # what this computer is set to do about Palladium: start it at sign-in,
-            # and let the rest of the house reach it
+            # and let the rest of the main server reach it
             if self.role != "owner":
                 self.send_error(403, "not allowed")
                 return
@@ -8867,6 +11698,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             import pd_machine
             import pd_follow
+            import pd_torrents
             now = time.time()
             rows = WATCHING.snapshot()
             self.reply_json({
@@ -8877,12 +11709,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 lan=("http://%s:%d" % (LAN_IP, PORT)) if LAN_IP else "",
                                 # this machine's own way in from outside, so the
                                 # drawing can name both doors rather than the
-                                # follower's alone
+                                # cache's alone
                                 outside=(("http://%s:%d" % (wan_ip(), PORT))
                                          if wan_ip() else "")),
-                "standby": self.standby_now(),
+                "standby": dict(self.standby_now(), busy=self.copy_is_busy()),
                 # and the machine this one follows, for a drawing made on the
-                # follower: the other half of the pair is the house, not a follower
+                # cache: the other half of the pair is the main server, not a cache
                 # of its own that it does not have
                 "follows": self.house_doors(),
                 "state": dict(pd_follow.STATE),
@@ -8890,8 +11722,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             for row in sorted(self.SEEN.values(),
                                               key=lambda r: -r["when"])
                             if now - row["when"] < 86400],
+                # films coming in from a torrent pack, the one downloading first: the
+                # machine is busy even when nothing is going out
+                "downloads": [{k: d.get(k) for k in ("title", "year", "state", "progress",
+                                                     "mbit", "eta", "who")}
+                              for d in sorted(pd_torrents.downloads(), key=lambda d: (
+                                  d.get("state") != "downloading", d.get("when") or 0))
+                              if d.get("state") in ("queued", "downloading")],
                 "live": [r for r in rows if r.get("how") != "syncing"],
                 "syncing": sum(1 for r in rows if r.get("how") == "syncing"),
+                # and what the cacheing is taking off this machine. Only the number of
+                # them was sent, so what a machine was actually shifting left the
+                # copying out - which on a night of syncing is most of it.
+                "syncingMbit": round(sum(float(r.get("mbit") or 0) for r in rows
+                                         if r.get("how") == "syncing"), 1),
+                # what the line has been seen to carry, and what a copy is allowed
+                # against it this second. Both are worked out rather than set, so
+                # there is nowhere else to read them.
+                "linkMbit": round(Handler.LINK["seen"], 1),
+                "syncGivingWay": bool(Handler.a_film_is_struggling(rows)),
+                "syncCeiling": round(Handler.sync_ceiling(
+                    local().lib.config(),
+                    sum(float(r.get("mbit") or 0) for r in rows
+                        if r.get("how") != "syncing"),
+                    sum(float(r.get("mbit") or 0) for r in rows
+                        if r.get("how") == "syncing")), 1),
             })
             return
         if path == "/skins":
@@ -8910,7 +11765,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Both ways in to this machine, and the name it answers to.
             #
             # A screen that only knows the address it happened to be opened with has
-            # one way in: a page opened at home cannot reach the house from a train,
+            # one way in: a page opened at home cannot reach the main server from a train,
             # and one opened from away goes out to the router and back in to reach a
             # machine three feet from it. Neither is a secret - anybody who can ask
             # this question already has one of the two - and knowing both is what
@@ -8930,7 +11785,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "engine": self.engine_name(),
                 # And the machine this one follows, both of its ways in. Whichever of
                 # the two machines somebody adds, they get all four addresses: this
-                # one answers for itself and repeats what the house told it while the
+                # one answers for itself and repeats what the main server told it while the
                 # house could still be asked.
                 "follows": self.house_doors(),
             })
@@ -8952,10 +11807,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/mood":
             # What this machine should be dressed as. Two things change it and
             # neither is a preference: a server that only holds copies, after dark,
-            # is not the one the house usually watches - and a machine whose card has
+            # is not the one the main server usually watches - and a machine whose card has
             # been handed to a game is not serving films at all. Anyone may ask; it
             # decides nothing, it only says what is already true.
-            self.reply_json(self.mood_now())
+            self.reply_json(dict(self.mood_now(),
+                                 backdrop=self.backdrop_now()))
             return
         if path == "/build":
             # what this server is, for a page that wants to say which build drew it -
@@ -8971,11 +11827,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_installer()
             return
         if path == "/update":
-            # What build the site is carrying, against the one running. The owner's
-            # business: it is their machine that would be replaced.
-            if self.role != "owner":
-                self.send_error(403, "not allowed")
-                return
+            # What build the site is carrying, against the one running. Anybody
+            # holding a key may ask: it is a version number, and a screen that cannot
+            # ask shows nothing at all where the machines should be - which is what a
+            # viewer away from the main server saw, an empty box rather than two servers.
+            #
+            # Replacing the program is a different matter and stays where it was: the
+            # owner, from the same house as the machine. "lan" below says which of the
+            # two the asker is, so a screen that may not press knows not to offer.
             args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
                     if "?" in self.path else {})
             import pd_update
@@ -8988,7 +11847,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json(said)
             return
         if path == "/copied":
-            # The copying, asked the way the watching is asked: this week, this
+            # The cacheing, asked the way the watching is asked: this week, this
             # month, altogether. Two different questions about the same machine, and
             # they read best side by side.
             if self.role != "owner":
@@ -9008,7 +11867,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json(pd_traffic.read())
             return
         if path == "/stats":
-            # What the house has watched: this week, this month, and since the
+            # What the main server has watched: this week, this month, and since the
             # library was built. The owner's, like the log it is counted from.
             if self.role != "owner":
                 self.send_error(403, "not allowed")
@@ -9080,6 +11939,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              # what has been cleared away, so a mistake can be undone
                              # without going to look in a file
                              "filed": self.filed(),
+                             # and how a backlog being handed over is getting on
+                             "sending": dict(SENDING),
                              "unseen": unseen})
             return
         if path == "/manifest.webmanifest":
@@ -9131,8 +11992,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     continue
             # and whether there is actually a file to go with the number
-            info["here"] = bool(self.app_beside_us())
+            # what is on the disk, and whether this server hands it out
+            info["have"] = bool(self.app_beside_us())
+            info["off"] = bool((read_settings() or {}).get("appOff"))
+            info["here"] = info["have"] and not info["off"]
             info["getting"] = bool(Handler.APP_FETCH["busy"])
+            info["from"] = Handler.APP_FETCH.get("where") or Handler.APP_FROM
+            info["got"] = Handler.APP_FETCH.get("got") or 0
+            info["size"] = Handler.APP_FETCH.get("size") or 0
+            info["part"] = Handler.APP_FETCH.get("part") or 0.0
             if path == "/app/version":
                 # The server's own release as well as the app's. They were one number
                 # while both were built together and have since drifted - the browser
@@ -9142,13 +12010,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # machine that follows it compares itself against. It was read out
                 # of the changelog beside the program - a file the installer
                 # rewrites, and one that is missing entirely on a machine running
-                # from source - so the answer was often empty, and a follower
+                # from source - so the answer was often empty, and a cache
                 # comparing itself against nothing never updated at all.
                 info["serverVersion"] = self.build_version()
                 self.reply_json(info)
                 return
             # the invitation this page was opened with travels on to the file, or the
-            # button is refused the moment it is pressed from outside the house
+            # button is refused the moment it is pressed from outside the main server
             token = self.bearer()
             info["carry"] = ("?t=" + token) if token else ""
             # A television has no browser: the way anything is installed on a Google TV
@@ -9163,9 +12031,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "padding-top:20px'>On a <b style='color:#e8ecf1'>Google TV</b> "
                     "there is no browser. Install <b style='color:#e8ecf1'>Downloader"
                     "</b> from the Play Store, allow it to install unknown apps, and "
-                    "type this in:<br><span style='display:inline-block;margin-top:10px;"
+                    "type this in the address box - no http, nothing on the end:"
+                    "<br><span style='display:inline-block;margin-top:10px;"
                     "font:600 19px ui-monospace,monospace;color:#4a90f0;letter-spacing:"
-                    "1px'>%s/i/%s.apk</span></p>"
+                    "1px'>%s/i/%s</span></p>"
                     % (self.headers.get("Host") or LAN_IP, code))
             html = ("<meta name=viewport content='width=device-width,initial-scale=1'>"
                     "<title>Palladium</title>"
@@ -9240,11 +12109,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # what this viewer has put aside from Continue watching
             local().aside = (self.viewer_settings(self.settings_file())
                              .get("deckAside") or {})
-            # and where their casual watching had got to, which is kept apart from
-            # the library's record of what has been watched
-            local().casual_at = (self.viewer_settings(self.settings_file())
-                                 .get("casualAt") or {})
-            local().casual_note = self.note_casual_place
+            # and the shelves being shuffled, so Continue watching can carry a row
+            # for each of them: what is being carried on with, or what is next
+            mine_now = self.viewer_settings(self.settings_file())
+            local().shuffles = mine_now.get("shuffles") or {}
+            local().shelf_names = {str(c.get("id")): str(c.get("name") or "")
+                                   for c in (mine_now.get("collections") or [])
+                                   if isinstance(c, dict) and c.get("id")}
+            # where a shuffled playing got to, kept on the shelf's round
+            local().shelf_note = self.shuffle_note
+            local().shelf_forget = self.title_finished
             # and what the client calls itself, so the watch log can say which build
             # was watching - a fault from a three-week-old one is a different
             # conversation from a fault on today's
@@ -9263,6 +12137,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # and gathered into seasons for the same reason the shuffle is:
                 # starring a season writes a mark on each of its episodes
                 q["byseason"] = ["1"]
+            if sub == "/library/favorites":
+                # the same shelf drawing as the watchlist, over this viewer's favourites
+                sub = "/library/watchlist"
+                mine = self.viewer_settings(self.settings_file())
+                q["keys"] = [",".join(str(k) for k in (mine.get("favorites") or []))]
+                q["byseason"] = ["1"]
             if sub == "/library/collections":
                 # The shelves themselves, drawn as things with posters so a client can
                 # show a row of them the way it shows a row of films. The key says
@@ -9275,7 +12155,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         keys = self.collection_keys(con, c)
                         face = str(c.get("cover") or "")
                         if face not in keys:
-                            face = keys[0] if keys else ""
+                            face = next((k for k in keys if not str(k).startswith("o")), keys[0] if keys else "")
                         art = None
                         if face:
                             one = local().metadata_for(con, face, brief=True) or {}
@@ -9284,6 +12164,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                      "type": "collection",
                                      "title": str(c.get("name") or ""),
                                      "thumb": art, "childCount": len(keys),
+                                     # where the round on this shelf was left, so the
+                                     # button can say Resume rather than Play
+                                     "resumeAt": self.shuffle_resume(c.get("id")),
+                                     # the sort and filters it opens with
+                                     "view": c.get("view") or {},
                                      "leafCount": len(keys)})
                 finally:
                     con.close()
@@ -9308,16 +12193,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 sub = "/library/watchlist"
                 q["keys"] = [",".join(keys)]
                 q["byseason"] = ["1"]
-            if sub == "/library/casualshelf":
-                # the casual shelf is its own list, not a corner of the watchlist: a
-                # film can be something to put on without being something to sit down
-                # to, and most of them are
-                sub = "/library/watchlist"
-                mine = self.viewer_settings(self.settings_file())
-                q["keys"] = [",".join(str(k) for k in (mine.get("casual") or []))]
-                # gathered into seasons: marking a programme marks its episodes, and
-                # two hundred cards is not a shelf anybody can look at
-                q["byseason"] = ["1"]
             m = re.match(r"^/parts/(\d+)$", sub)
             if m:
                 real = local().part(m.group(1))
@@ -9338,19 +12213,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # heaviest thing on the line, so it belongs in the list too.
                 # The machine that keeps copies reads files the same way, and read as
                 # a viewing it says somebody is watching a film in another room.
-                taking = self.app_name().startswith("follower")
+                # It calls itself a follower; this asked whether it called itself a
+                # cache, so every file it pulled was written down as somebody watching
+                # - at the speed of a copy, and never giving way to a real viewer.
+                said = self.app_name().lower()
+                its_key = INVITES.check(self.bearer(), self.app_name())
+                taking = (said.startswith(("cache", "follower"))
+                          or (its_key is not None
+                              and Handler.role_of(its_key) == "cache"))
                 # and it is named as the machine it is, not as an address in the
                 # house that appears to be watching something
                 who = self.watcher()
                 if taking:
                     who = (Handler.STANDBY.get("name")
-                           or "the machine keeping copies")
+                           or Handler.host_of(Handler.STANDBY.get("where") or "")
+                           or "another server")
+                # why the cache wanted this one, worked out when the queue was
+                # made and kept against the key until the file goes out
+                fileKey = local().key_for_file(m.group(1))
+                why, asked = Handler.WHY_BY_KEY.get(str(fileKey or ""), ("", ""))
                 sid = WATCHING.start(who, local().title_for_file(m.group(1)),
                                      local().facts_for_file(m.group(1)),
                                      "syncing" if taking else "direct play",
                                      self.client_address[0],
-                                     local().key_for_file(m.group(1)),
-                                     self.app_name(), self.device_kind())
+                                     fileKey,
+                                     self.app_name(), self.device_kind(),
+                                     why=why, asked_for=self.name_of(asked),
+                                     path=m.group(1))
                 try:
                     self.send_file_ranged(real, sid)
                 finally:
@@ -9408,12 +12297,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path == "/library/scan":
+            # An address somebody can open to start a scan - and anything that opens
+            # an address can open it again. Without this it started another scan on
+            # every visit, and several walks of the same folders writing to one index
+            # is where "database is locked" comes from.
+            lib = local().lib
+            if lib.scan_state.get("running"):
+                self.reply_json({"started": False, "why": "a scan is already running",
+                                 "scan": lib.scan_state})
+                return
             import threading as _t
-            _t.Thread(target=lambda: local().lib.scan(), daemon=True).start()
+            _t.Thread(target=lambda: lib.scan(), daemon=True).start()
             self.reply_json({"started": True})
             return
         if path == "/library/status":
-            self.reply_json(local().lib.stats())
+            said = local().lib.stats()
+            try:
+                import pd_torrents
+                said["offered"] = len(pd_torrents.offered())
+            except Exception:
+                said["offered"] = 0
+            self.reply_json(said)
             return
         if path == "/tizen.zip":
             # The source of a Samsung TV app, with this server's address written into
@@ -9465,6 +12369,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "folders": folders,
                 "tmdb": bool((cfg.get("tmdb_key") or "").strip()),
                 "ffmpeg": ffmpeg_now(),
+                # the cache on this disk, in use or let go of: a row that vanished
+                # when it was fetched left nowhere to say either
+                "ffmpegHave": ffmpeg_in_home(),
+                "ffmpegFrom": FFMPEG_FROM.get(os.name) or "",
                 "engine": engine_name(),
                 "fetching": dict(FETCHING),
                 "films": stats.get("movies", 0),
@@ -9490,6 +12398,70 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/gpu/hls":
             self.gpu_hls(q)
             return
+        if path == "/torrents/active":
+            # what is coming in now, for the line in the menu: everyone's for the owner,
+            # a guest's own otherwise
+            import pd_torrents
+            got = pd_torrents.active(None if self.role == "owner" else (self.bearer() or "me"))
+            self.reply_json({"MediaContainer": {"size": len(got), "Metadata": got}})
+            return
+        if path == "/proxy":
+            # how this server is reached from outside: the port forwarded in the
+            # router, which is the default, or Caddy with a name and a certificate
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_proxy
+            self.reply_json(pd_proxy.state())
+            return
+        if path in ("/torrents", "/torrents/log"):
+            # films offered from torrent packs, and every download somebody asked for
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_torrents
+            self.reply_json(pd_torrents.status() if path == "/torrents"
+                            else {"downloads": pd_torrents.downloads()})
+            return
+        if path == "/follow/torrents":
+            # the packs offered here, for a cache to offer the same films while this
+            # machine is off; the torrent itself only for a pack it does not hold yet
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if not (invite and invite.get("follows")) or self.follower_stopped():
+                self.send_error(403, "not allowed")
+                return
+            import pd_torrents
+            if q.get("ping"):
+                self.reply_json({"ok": True})
+            else:
+                self.reply_json(pd_torrents.mirror(
+                    set(h for h in q.get("have", [""])[0].split(",") if h)))
+            return
+        if path == "/follow/source":
+            # what a file is and the part it is read by, for a cache asked to play a
+            # title it holds no copy of: it encodes with its own encoder, off this file
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if not (invite and invite.get("follows")) or self.follower_stopped():
+                self.send_error(403, "not allowed")
+                return
+            found = local().file_for(q.get("key", [""])[0], int(q.get("mi", ["0"])[0] or 0))
+            if not found or not found.get("part"):
+                self.send_error(404, "no such file here")
+                return
+            self.reply_json({k: v for k, v in found.items() if k != "file"})
+            return
+        if path in ("/gpu/begins", "/gpu/stream", "/gpu/subs") and q.get("src", [""])[0] == "local":
+            # made on the connected computer when this one is set to, while it answers
+            if path != "/gpu/subs" and self.encode_elsewhere(q):
+                return
+            # a title this copy holds no file for: its own encoder reads the main server's
+            # file. Subtitles, which mean reading the whole file, are cut by the main server.
+            if (path == "/gpu/subs" or not self.house_source(q)) and self.send_to_the_house(q):
+                return
+        if path == "/gpu/begins":
+            # where an app's encode will start, and whether its picture goes through
+            self.reply_json(self.encode_begins(q))
+            return
         if path == "/gpu/stream":
             self.gpu_stream(q)
             return
@@ -9509,7 +12481,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                    q.get("offset", ["0"])[0])
                 return
             try:
-                offset = int(float(q.get("offset", ["0"])[0]))
+                offset = float(q.get("offset", ["0"])[0])
                 video = (local().file_for(q.get("key", [""])[0],
                                           int(q.get("mi", ["0"])[0])) or {}).get("file", "")
                 partial = False
@@ -9680,6 +12652,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    #: How many connections may be waiting to be accepted. Python's own answer is
+    #: five, which was plenty while a film was one long connection: it is one stretch
+    #: at a time from one screen. Reading a film off several machines asks for every
+    #: two megabytes on a connection of its own, so a 4K film is several a second from
+    #: each screen, and a copy taking files and a settings page asking how things are
+    #: going are on top of that. Past five, the rest are refused - and what the player
+    #: sees is a machine that will not answer, waits five seconds, and drops it. The
+    #: film stopped for that long, now and then, on a server that was perfectly well.
+    request_queue_size = 128
 
 
 def flush_invites():
@@ -9933,8 +12914,26 @@ def main():
         # they are swept rather than left for the temp folder to accumulate
         threading.Thread(target=sweep_segments, daemon=True).start()
         threading.Thread(target=flush_invites, daemon=True).start()
+        # films offered from torrent packs: matched to TMDB, and followed while fetching
+        import pd_torrents
+
+        def scan_after_download():
+            lib = local().lib
+            if lib.scan_state.get("running"):
+                return False
+            threading.Thread(target=lambda: lib.scan(probe=True, identify=True),
+                             daemon=True).start()
+            return True
+        pd_torrents.start(ROOT, lambda: local().lib, scan_after_download)
+        # the way in from outside: nothing runs unless somebody set up the other way
+        import pd_proxy
+        pd_proxy.start(ROOT, PORT)
+        import pd_library
+        pd_library.UNFINISHED = pd_torrents.unfinished
+        # a title that moves onto another key takes what was written down about it
+        pd_library.CARRY = carry_keys
         # what has gone out of this machine, month by month: what people watched and
-        # what the copy cost, in rows of their own
+        # what the cache cost, in rows of their own
         import pd_traffic
         pd_traffic.use(os.path.join(ROOT, "traffic.json"))
         pd_traffic.use_log(os.path.join(ROOT, "copies.jsonl"))
@@ -9944,19 +12943,35 @@ def main():
         try:
             import pd_follow
             if pd_follow.settings(local().lib.config()).get("on"):
+                # what is being read this minute, so the sweep leaves it alone
+                pd_follow.BUSY = WATCHING.paths
                 pd_follow.start(lambda: local().lib.config(), local().lib,
-                            lambda: Handler.game_holds("copies"),
-                            (PORT, socket.gethostname(), STATIC,
-                             Handler.build_version()),
-                            learn_invites, local())
+                                lambda: Handler.game_holds("copies"),
+                                (PORT, socket.gethostname(), STATIC,
+                                 Handler.build_version(), settings_path()),
+                                learn_invites, local(), carry_the_keys)
         except Exception:
             pass
+        # what the other machine said it was holding last time this one was running,
+        # so the marks on the posters are there before it next speaks
+        Handler.recall_copies()
+        Handler.recall_followers()
         # and the notes about films nobody is watching any more
         threading.Thread(target=sweep_subtitle_notes, daemon=True).start()
         try:
             engine().sweep_old()          # and whatever an earlier run left behind
         except Exception:
             pass
+        # The icon in the notification area, shown by the server itself. It was a
+        # separate program that started this one hidden at sign-in, and Defender's
+        # machine learning took that launcher for malware and quarantined it.
+        packaged = bool(globals().get("__compiled__")) or getattr(sys, "frozen", False)
+        if packaged and os.name == "nt" and "--no-tray" not in sys.argv:
+            try:
+                import pd_tray
+                pd_tray.start_inside()
+            except Exception:
+                pass                       # no icon is no reason not to serve
         if "--no-open" not in sys.argv:
             threading.Timer(0.5, lambda: webbrowser.open(url)).start()
         try:

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What Palladium sends</title>
+<meta name="description" content="What a Palladium server sends, what it never sends, and what this website records. Nothing about what you watch leaves your machine.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' x='6' font-family='Georgia,serif' font-size='26' font-weight='700' fill='%234a90f0'>P</text></svg>">
+<style>
+:root{
+  --paper:#f3f4f0; --plate:#fbfbf9; --line:#d7dad1; --rule:#c3c8bd;
+  --ink:#191c1a; --muted:#5c625c; --accent:#2466c9;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:17px/1.62 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.wrap{max-width:760px;margin:0 auto;padding:0 24px}
+h1{font-family:var(--serif);font-weight:600;font-size:clamp(29px,5vw,40px);
+  line-height:1.14;margin:52px 0 14px;max-width:20ch;text-wrap:balance}
+.lede{font-size:19px;line-height:1.55;max-width:60ch;margin:0 0 12px;color:#333834}
+.when{color:var(--muted);font-size:13.5px;margin:0 0 44px}
+h2{font-family:var(--sans);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);font-weight:700;margin:0 0 2px;padding-bottom:10px;
+  border-bottom:1px solid var(--rule)}
+p{max-width:64ch}
+ul{margin:14px 0 44px;padding:0;list-style:none;color:var(--muted);font-size:15.5px}
+li{margin:0;padding:12px 0 12px 26px;border-bottom:1px solid var(--line);position:relative}
+li::before{content:"\2014";position:absolute;left:0;color:var(--rule)}
+li b{color:var(--ink);font-weight:600}
+.after{margin:14px 0 44px;color:var(--muted);font-size:15.5px;max-width:64ch}
+footer{border-top:1px solid var(--rule);margin-top:10px;padding:22px 0 46px;
+  color:var(--muted);font-size:13.5px;display:flex;justify-content:space-between;
+  gap:16px;flex-wrap:wrap}
+footer a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
+footer a:hover{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* one masthead on every page: same width, height and scrollbar, so the menu stays put */
+html{overflow-y:scroll}
+header{border-bottom:1px solid #d7dad1;padding:0}
+header .wrap{max-width:940px;display:flex;align-items:center;gap:20px;padding:16px 22px}
+.brand{display:flex;align-items:baseline;gap:10px;text-decoration:none;color:#191c1a}
+.brand b{font-family:var(--serif);font-size:28px;line-height:1;color:#4a90f0;font-weight:600}
+.brand span{font-weight:600;letter-spacing:.18em;text-transform:uppercase;font-size:13.5px}
+nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px 20px;font-size:14px;line-height:1.6}
+nav a{color:#5c625c;text-decoration:none;padding-bottom:2px;border-bottom:1px solid transparent}
+nav a:hover{color:#191c1a;border-bottom-color:#d7dad1}
+nav a[aria-current=page]{color:#191c1a;border-bottom-color:#4a90f0}
+@media (max-width:640px){header .wrap{flex-wrap:wrap;gap:10px} nav{margin-left:0;gap:6px 16px;font-size:13.5px}}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="/"><b>P</b> <span>Palladium</span></a>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/features">Features</a>
+    <a href="/home-streaming">Home streaming</a>
+    <a href="/server">Server</a>
+    <a href="/app">App</a>
+  </nav>
+</div></header>
+
+<main class="wrap">
+  <h1>What Palladium sends, and what it never does.</h1>
+  <p class="lede">Palladium runs on a computer you own. What you watch, who watches
+  it, and what is in your library stay on that machine. There is no account, no
+  profile and nothing to sign in to.</p>
+  <p class="when">Last changed 5 September 2026.</p>
+
+  <h2>What never leaves your machine</h2>
+  <ul>
+    <li><b>What is in your library.</b> Titles, file names and folders are read on
+      your own computer and stay there.</li>
+    <li><b>What anybody watches.</b> Viewing history, how far through something you
+      are, watchlists and marks are kept in a file beside the program.</li>
+    <li><b>Who watches.</b> Names, invitations and the addresses people connect from
+      are the server's own business and are shown only to whoever runs it.</li>
+    <li><b>Your files.</b> Nothing is uploaded. Playing a film sends it to the screen
+      that asked for it, on your own network or through the port you opened.</li>
+  </ul>
+
+  <h2>What the server asks the internet for</h2>
+  <p>Only things it needs, and only about the file in front of it - never about you.</p>
+  <ul>
+    <li><b>Artwork and descriptions</b> from TMDB, using the key you provide. TMDB is
+      asked about a title and a year; it is not told who is watching.</li>
+    <li><b>Subtitles</b> from OpenSubtitles, using the key you provide, searched by
+      release name or by a fingerprint of the file.</li>
+    <li><b>Updates.</b> The server reads a small file on palladium.video to see
+      whether a newer build exists. It sends nothing to ask.</li>
+    <li><b>ffmpeg, the app, and the subtitle tools</b>, each only when somebody presses
+      the button that fetches it.</li>
+  </ul>
+
+  <h2>Fault reports, which are off</h2>
+  <p>A server can be told to send fault reports to palladium.video. It is off unless
+  you turn it on, and it has three positions and no others: send nothing, send faults,
+  or send faults with a description of the computer.</p>
+  <ul>
+    <li><b>Taken out before anything is sent:</b> the name of any film, series or
+      episode; the name or address of anybody watching; invitation keys; file paths;
+      the address of the machine or any other. These are stripped on the way out
+      rather than trusted not to appear.</li>
+    <li><b>What "the computer" means</b> is how many processor cores, how much memory,
+      which Windows and what the graphics card calls itself. A description of a
+      machine, not of a person.</li>
+    <li><b>Kept for ninety days</b>, then deleted. Read only by the person who
+      maintains Palladium.</li>
+    <li><b>One report can be sent by hand</b> from the Reports screen whatever the
+      setting says, after a question that spells out what goes.</li>
+  </ul>
+
+  <h2>What this website records</h2>
+  <p>palladium.video is a static site behind Cloudflare. It sets no cookies, carries
+  no analytics, and loads no fonts, scripts or images from anybody else.</p>
+  <ul>
+    <li>Cloudflare keeps ordinary web server logs for its own operation and abuse
+      handling.</li>
+    <li>Downloads are counted by day, by country and by kind of browser - a tally with
+      no addresses in it and nothing that identifies a person.</li>
+    <li>The donate button opens PayPal. Anything you do there is between you and
+      PayPal; nothing about it comes back here.</li>
+  </ul>
+
+  <h2>The Android app</h2>
+  <ul>
+    <li>It talks to the Palladium servers you point it at, and to nothing else.</li>
+    <li>It looks for a newer version by asking those same servers. It does not ask
+      palladium.video.</li>
+    <li>It keeps its settings on the phone: which servers you know, how subtitles
+      look, where you had got to. Uninstalling removes them.</li>
+    <li>No advertising, no analytics, no third-party software development kits.</li>
+  </ul>
+
+  <h2>Your rights, and how to use them</h2>
+  <p class="after">There is no account here to delete, because there is no account.
+  What a Palladium server holds is held by whoever runs it - if that is somebody
+  else's server, ask them; they can remove your invitation and everything recorded
+  against it. If you have sent a fault report and want it removed, write to
+  <a href="mailto:support@grovestick.com">support@grovestick.com</a>
+  and say roughly when it was sent - reports carry no name, so that is what identifies
+  one. Palladium is made by Grovestick Studios in Sweden, and the GDPR applies to what
+  this site and those reports hold.</p>
+</main>
+
+<footer class="wrap">
+  <span>Palladium &middot; <a href="https://grovestick.com/">Grovestick Studios</a></span>
+  <span><a href="mailto:support@grovestick.com">support@grovestick.com</a></span>
+</footer>
+</body>
+</html>

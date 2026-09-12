@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Following another Palladium: keeping copies of what the house is watching.
+"""Following another Palladium: keeping copies of what the main server is watching.
 
-One server is the master - the one with the library on it. Another can follow it: it
-asks what is being played, copies those files while the master is on, and serves them
+One server is the main server - the one with the library on it. Another can follow it: it
+asks what is being played, copies those files while the main server is on, and serves them
 itself when it is not. For a series it copies ahead, so that finishing an episode at
 one in the morning does not mean finding the next one gone.
 
-Nothing is pushed. The follower asks, and takes what it is given: the master needs no
+Nothing is pushed. The cache asks, and takes what it is given: the main server needs no
 knowledge of who is following it beyond a key it can revoke.
 """
+import io
 import json
 import os
 import shutil
@@ -17,26 +18,26 @@ import time
 import urllib.parse
 import urllib.request
 
-#: how often to ask the master what is happening. A film is two hours; a minute is
+#: how often to ask the main server what is happening. A film is two hours; a minute is
 #: often enough to catch it, and quiet enough to leave a sleeping machine alone.
 ASK_EVERY = 60
 
 #: read in lumps, so a stopped copy leaves something to carry on from
 LUMP = 4 * 1024 * 1024
 
-#: what to tell the master about this machine, so a viewer whose server is off can
+#: what to tell the main server about this machine, so a viewer whose server is off can
 #: be pointed here. Filled in by start().
-ME = {"port": 8765, "name": "", "static": "", "build": ""}
+ME = {"port": 8765, "name": "", "static": "", "build": "", "settings": ""}
 
-#: what to do with the master's invitations, set by start(). A guest whose server is
+#: what to do with the main server's invitations, set by start(). A guest whose server is
 #: off reaches this one with the link they already hold, or not at all.
-KEYS = {"learn": None, "last": 0.0}
+KEYS = {"learn": None, "last": 0.0, "stamp": 0}
 
-#: Where the house had got to, and when we last asked. Copying the films without the
+#: Where the main server had got to, and when we last asked. Copying the films without the
 #: places in them means a shelf of things that all start at the beginning.
 PLACES = {"since": 0, "at": 0.0, "gave": 0.0}
 
-#: what the house calls its owner. Their places arrive under that name and are filed
+#: what the main server calls its owner. Their places arrive under that name and are filed
 #: here against whoever owns this machine - which is a different person, or none.
 HOUSE = {"owner": ""}
 
@@ -65,10 +66,26 @@ TROUBLE_MANY = 12
 PASS = threading.Lock()
 
 
+def for_whom(one):
+    """The viewer this cache is kept for, or nothing for the whole house.
+
+    A machine in one person's room that fills with the rest of the main server's evening
+    is using their disk for somebody else, so this is the way round it starts.
+    """
+    if str(one.get("cacheFor") or "user") != "user":
+        return ""
+    return str(one.get("cacheWho") or HOUSE.get("ownerName") or "").strip()
+
+
 def look():
-    """What the follower is doing, for the page that set it up."""
+    """What the cache is doing, for the page that set it up."""
     with LOCK:
-        return dict(STATE)
+        said = dict(STATE)
+    # who the main server has, as it last said: the page offers the names rather than
+    # asking somebody to spell one, and a name spelled wrong copies nothing at all
+    said["house"] = list(HOUSE.get("people") or [])
+    said["forWhom"] = HOUSE.get("ownerName") or ""
+    return said
 
 
 def settings(cfg):
@@ -81,36 +98,47 @@ def settings(cfg):
     one.setdefault("hours", 4)            # of episodes to keep ahead, at most
     one.setdefault("episodes", 6)         # and no more than this many of them
     one.setdefault("cap", 200)            # gigabytes to use at most
-    one.setdefault("coverNight", True)    # enough to last the hours the house sleeps
+    one.setdefault("coverNight", True)    # enough to last the hours the main server sleeps
     one.setdefault("wholeList", False)    # every unwatched episode of a watchlisted
                                           # programme, rather than the night's worth
     one.setdefault("deleteBy", "oldest")  # oldest untouched first, or biggest first
     one.setdefault("listByDay", True)     # watchlists may fill in daylight
-    one.setdefault("allowRemote", False)  # the house may change this machine's own
+    one.setdefault("allowRemote", False)  # the main server may change this machine's own
     one.setdefault("nightFrom", 22)       # the hours this server is the one awake
     one.setdefault("nightTo", 8)
-    # what to tell the master to hand out to viewers from outside the house. Empty
+    # what to tell the main server to hand out to viewers from outside the main server. Empty
     # means this network's own address with this machine's port on it, which is
     # right whenever both servers sit behind the one router.
     one.setdefault("outside", "")
     # hours of the shuffle to keep ahead for whoever asked for it, alongside the
     # films and the series. Nought means the shuffle is not copied at all.
-    one.setdefault("casualHours", 2)
+    one.setdefault("casualHours", 0)      # the shuffle, only if asked for
     # whether this machine replaces itself when the one it follows is newer. Off
     # unless asked for: replacing a server is not something to do behind somebody.
     one.setdefault("updateWith", False)
+    # Whose cache this is. A user cache holds what one person is watching - the
+    # machine in their own room, filling with their own evening. A server cache
+    # holds the whole house's, for a machine that stands in for the library itself.
+    # A machine already set up and keeping copies for a house was keeping them for
+    # the main server; it is not for a new setting to decide otherwise behind everybody.
+    # Only a following that has not been set up yet starts as one person's.
+    one.setdefault("cacheFor", "server" if one.get("master") else "user")
+    one.setdefault("cacheWho", "")        # which viewer, when it is a user cache
+    # Whether the cap may delete on its own. Off unless asked for: a program that
+    # deletes files in a folder somebody typed the name of should be told to.
+    one.setdefault("clearBy", "manual")   # "manual" or "auto"
     return one
 
 
 def night_length(one):
-    """How many hours the house server is asleep for, by its own settings."""
+    """How many hours the main server server is asleep for, by its own settings."""
     frm = int(one.get("nightFrom", 22)) % 24
     to = int(one.get("nightTo", 8)) % 24
     return float((to - frm) % 24 or 24)
 
 
 def hours_wanted(one):
-    """How far ahead to keep: enough to last the hours the house is asleep.
+    """How far ahead to keep: enough to last the hours the main server is asleep.
 
     The number in the settings is a floor. What decides it is how long this machine
     is the only one awake - four hours of episodes is no use across a ten-hour night,
@@ -123,30 +151,42 @@ def hours_wanted(one):
 
 
 def in_the_night(one, now=None):
-    """Whether this is one of the hours the follower is the server that is awake."""
+    """Whether this is one of the hours the cache is the server that is awake."""
     hour = (now or time.localtime()).tm_hour
     start, end = int(one.get("nightFrom", 22)), int(one.get("nightTo", 8))
     return (start <= hour or hour < end) if start > end else (start <= hour < end)
 
 
-def stocking_up(one, sleeps, now=None):
-    """Whether to be taking copies of everything half-watched.
+#: The pass being worked through, if there is one. One at a time and no more: two
+#: passes share the link, and both take twice as long for no gain.
+PASS_NOW = {"thread": None}
 
-    From an hour before the master goes to sleep until the night is over: that is
-    when what somebody left half-watched has to be here rather than there.
-    """
-    at = now or time.localtime()
-    if in_the_night(one, at):
+
+def a_pass_is_running():
+    return PASS_NOW["thread"] is not None and PASS_NOW["thread"].is_alive()
+
+
+#: Somebody going to bed early. Until this time, take copies as though the night
+#: had started - it is the same work, done when it is wanted rather than at an hour.
+EARLY = {"until": 0.0}
+
+
+def start_the_night(one):
+    """Behave as though the night had begun, until it actually ends."""
+    EARLY["until"] = time.time() + max(1, int(night_length(one))) * 3600
+    return EARLY["until"]
+
+
+def stocking_up(one, now=None):
+    """Whether to also copy what is on a screen: inside the set sync hours, or after
+    Early was pressed."""
+    if EARLY["until"] > time.time():
         return True
-    try:
-        hour = int(str(sleeps).split(":")[0])
-    except (ValueError, AttributeError, IndexError):
-        return False
-    return at.tm_hour == (hour - 1) % 24
+    return in_the_night(one, now or time.localtime())
 
 
 def ask(one, path, patience=30):
-    """One request to the master, with the key it gave us."""
+    """One request to the main server, with the key it gave us."""
     url = one["master"].rstrip("/") + path
     url += ("&" if "?" in path else "?") + "t=" + urllib.parse.quote(one["key"])
     req = urllib.request.Request(url, headers={"X-Palladium-App": "follower"})
@@ -190,9 +230,14 @@ def a_safe_name(name):
     return said
 
 
-def looks_like_film(path):
-    """Whether what arrived begins the way a film begins."""
-    if path.lower().endswith((".srt", ".ass", ".vtt", ".sub", ".idx")):
+def looks_like_film(path, called=""):
+    """Whether what arrived begins the way a film begins.
+
+    `called` is the name it will have once it lands. What is being read is a .part
+    file, so asking the temporary name whether it ends in .srt answered no every time
+    - and every subtitle was deleted as "not a film" and asked for again, for ever.
+    """
+    if (called or path).lower().endswith((".srt", ".ass", ".vtt", ".sub", ".idx")):
         return True                        # text, and read as text by everything here
     try:
         with open(path, "rb") as f:
@@ -228,7 +273,7 @@ def quick_mark(path):
 
 
 def tell(one, path, what, patience=20):
-    """Say something to the master. Same key, a body rather than a question."""
+    """Say something to the main server. Same key, a body rather than a question."""
     url = one["master"].rstrip("/") + path
     url += ("&" if "?" in path else "?") + "t=" + urllib.parse.quote(one["key"])
     body = json.dumps(what).encode()
@@ -239,17 +284,17 @@ def tell(one, path, what, patience=20):
         return json.loads(answer.read().decode("utf-8", "replace") or "{}")
 
 
-#: when the app the master carries was last looked at
+#: when the app the main server carries was last looked at
 APP = {"at": 0.0}
 APP_EVERY = 1800
 
 
 def mirror_app(one):
-    """Keep the master's app beside this server's own pages.
+    """Keep the main server's app beside this server's own pages.
 
     A viewer whose server is off reaches this one, and the update banner asks every
     server it knows for a newer app. This machine would offer whatever its installer
-    happened to carry - which is older than the master's the moment the master is
+    happened to carry - which is older than the main server's the moment the main server is
     built again. Two small files, half-hourly, and it mirrors the current app.
     """
     where = ME.get("static") or ""
@@ -259,19 +304,6 @@ def mirror_app(one):
         return
     APP["at"] = time.time()
     said = ask(one, "/app/version", 20)
-    # the same answer says which server the house is running; this machine's own
-    # number comes from itself, which is the one place that cannot be wrong
-    try:
-        with urllib.request.urlopen(
-                "http://127.0.0.1:%d/app/version" % ME["port"], timeout=15) as answer:
-            said["mine"] = (json.loads(answer.read().decode("utf-8", "replace"))
-                            .get("serverVersion") or "")
-    except Exception:
-        said["mine"] = ""
-    try:
-        follow_the_build(one, said)
-    except Exception:
-        pass
     theirs = int(said.get("versionCode") or 0)
     if theirs <= 0:
         return
@@ -311,7 +343,7 @@ def mirror_app(one):
 #: when this machine last thought about replacing itself
 #: Both ways in to the machine this one follows, as that machine names them. Asked
 #: while it can be reached, because the point of holding them is the hour it cannot:
-#: somebody who finds this machine first should be able to find the house from here.
+#: somebody who finds this machine first should be able to find the main server from here.
 HOUSE = {"at": 0.0, "lan": "", "outside": "", "name": ""}
 HOUSE_EVERY = 900
 
@@ -344,32 +376,201 @@ def newer(a, b):
     return False
 
 
+#: how often to fetch what viewers keep. Their own lists, not the library: it
+#: changes when somebody presses something, not while a film plays.
+#: Watchlists and shelves change slowly; where somebody is in a shuffle changes
+#: every twenty minutes, and it now travels both ways on this same round.
+VIEWERS_EVERY = 120
+VIEWERS_AT = [0.0]
+
+
+def round_stamp(rnd):
+    """When a shuffle round last moved; nought for none."""
+    return int(rnd.get("casualStamp") or 0) if isinstance(rnd, dict) else 0
+
+
+def learn_the_viewers(one, settings_path, api=None):
+    """Take a copy of what each viewer keeps, so this machine knows them too.
+
+    A watchlist, the shelves somebody arranged, the collections they made: these live
+    beside the library and were never copied, so the one moment a viewer needs this
+    machine - the main server being off - was the moment their own list was empty and the
+    shelves were somebody's defaults.
+
+    Written under the same key each viewer watches by, and only where this machine has
+    nothing of its own for them: what somebody set here, sitting here, is theirs and is
+    not overwritten by the main server.
+    """
+    if not settings_path:
+        return 0
+    if time.time() - VIEWERS_AT[0] < VIEWERS_EVERY:
+        return 0
+    VIEWERS_AT[0] = time.time()
+    said = tell(one, "/follow/viewers", {}, 30)
+    if not said or not isinstance(said.get("viewers"), dict):
+        return 0
+    mine = _read_settings_file(settings_path)
+    if mine is None:
+        return 0                  # unreadable: writing what is in hand would empty it
+    before = json.loads(json.dumps(mine))
+    users = mine.setdefault("users", {})
+    filled = 0
+    mine_to_send = []
+    for who, theirs in said["viewers"].items():
+        theirs = theirs or {}
+        here = users.setdefault(str(who), {})
+        for name, value in theirs.items():
+            if name in ("watchlistIs", "shuffles"):
+                continue                  # settled below
+            if not here.get(name):
+                here[name] = value
+                filled += 1
+        # shuffle rounds, per shelf: the newer round is taken whole, and one moved
+        # here while the main server was off goes back up
+        rounds = here.get("shuffles") if isinstance(here.get("shuffles"), dict) else {}
+        house = theirs.get("shuffles") if isinstance(theirs.get("shuffles"), dict) else {}
+        for cid, rnd in house.items():
+            if isinstance(rnd, dict) and round_stamp(rnd) > round_stamp(rounds.get(cid)):
+                rounds[cid] = rnd
+                filled += 1
+        if rounds:
+            here["shuffles"] = rounds
+        newer = {cid: rnd for cid, rnd in rounds.items()
+                 if round_stamp(rnd) > round_stamp(house.get(cid))}
+        if newer:
+            mine_to_send.append((str(who), newer))
+        # A watchlist is nobody's round and is not stamped, so what somebody made
+        # sitting at this machine is left alone. What was numbered by the other
+        # library is not a watchlist at all - none of it can be placed here - and
+        # that is replaced.
+        if api is not None and (theirs or {}).get("watchlistIs") is not None:
+            con = api.lib.db()
+            try:
+                theirs_here = [k for k in (api.key_of(con, w) for w in
+                                           (theirs.get("watchlistIs") or [])) if k]
+                ours = [str(k) for k in (here.get("watchlist") or [])]
+                usable = [k for k in ours if api.what_it_is(con, k)]
+            except Exception:
+                theirs_here, usable, ours = [], [], []
+            finally:
+                con.close()
+            if theirs_here and not usable and ours != theirs_here:
+                here["watchlist"] = theirs_here
+                filled += 1
+    for who, rounds in mine_to_send:
+        try:
+            tell(one, "/follow/round", {"who": who, "shuffles": rounds}, 20)
+        except Exception:
+            pass                          # the main server will hear on the next round
+    # and who the main server calls its owner, so the person who owns the library is the
+    # same person here rather than a stranger with no key
+    if said.get("ownerIs") and not mine.get("ownerIs"):
+        mine["ownerIs"] = said["ownerIs"]
+    if said.get("ownerName") and not mine.get("ownerName"):
+        mine["ownerName"] = said["ownerName"]
+    if mine != before:
+        # laid over the file as it is now: the server writes it too, and only what
+        # changed here replaces anything
+        fresh = _read_settings_file(settings_path)
+        if fresh is None or (not fresh and before):
+            return filled
+        for name in ("ownerIs", "ownerName"):
+            if mine.get(name) != before.get(name):
+                fresh[name] = mine.get(name)
+        users = fresh.setdefault("users", {})
+        for who, one in (mine.get("users") or {}).items():
+            was = (before.get("users") or {}).get(who) or {}
+            there = users.setdefault(who, {})
+            for name, value in (one or {}).items():
+                if was.get(name) != value:
+                    there[name] = value
+        tmp = settings_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(fresh, f, indent=2)
+        os.replace(tmp, settings_path)
+    return filled
+
+
+def _read_settings_file(path):
+    """The settings file, {} when there is none, or None when it cannot be read."""
+    for _ in range(4):
+        try:
+            with open(path, encoding="utf-8") as f:
+                got = json.loads(f.read())
+            return got if isinstance(got, dict) else None
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            time.sleep(0.05)      # a write in progress
+    return None
+
+
+def check_the_build(one):
+    """Ask whether the main server is running something newer than this machine.
+
+    Its own round. It used to be asked inside the app-mirroring round, which does
+    nothing at all unless there is a folder to mirror the app into - so a machine with
+    no such folder never looked for a newer build and stayed where it was installed.
+    """
+    if time.time() - GROWN["at"] < GROWN_EVERY:
+        return
+    said = ask(one, "/app/version", 20)
+    # what the main server is running, and what this machine is running: its own number
+    # comes from itself, which is the one place that cannot be wrong
+    try:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/app/version" % ME["port"], timeout=15) as answer:
+            said["mine"] = (json.loads(answer.read().decode("utf-8", "replace"))
+                            .get("serverVersion") or "")
+    except Exception:
+        said["mine"] = ""
+    follow_the_build(one, said)
+
+
+def where_is_the_house(one):
+    """Ask the machine this one follows what it is called and how to reach it.
+
+    Its own round, because a page opened on this machine has no other way back: the
+    list of servers a browser keeps belongs to the address it is on, and on this one
+    that list is empty. It used to be asked inside the app-mirroring round, which
+    returns without doing anything unless there is a folder to mirror into and half
+    an hour has gone by - so a machine with nothing to mirror never found out where
+    the main server was, and never looked for a newer build either.
+    """
+    if time.time() - HOUSE["at"] < HOUSE_EVERY:
+        return
+    HOUSE["at"] = time.time()
+    try:
+        told = ask(one, "/where", 15)
+    except Exception:
+        HOUSE["at"] = 0.0                 # ask again next round rather than in an hour
+        return
+    with LOCK:
+        HOUSE["lan"] = str(told.get("lan") or "")
+        HOUSE["outside"] = str(told.get("outside") or "")
+        HOUSE["name"] = str(told.get("name") or "")
+
+
 def follow_the_build(one, said):
     """Replace this server when the one it follows has moved on.
 
-    The copy is only as good as the server it copies: a machine two months behind
+    The cache is only as good as the server it copies: a machine two months behind
     speaks a different language to the same app. This asks its own server to take the
     update it would have taken from the settings page - the same fetch, from the same
-    place, checked against the same hash - and only when the house is on something
+    place, checked against the same hash - and only when the main server is on something
     newer than this.
     """
     if not one.get("updateWith"):
         return
-    if time.time() - HOUSE["at"] > HOUSE_EVERY:
-        HOUSE["at"] = time.time()
-        try:
-            told = ask(one, "/where", 15)
-            with LOCK:
-                HOUSE["lan"] = str(told.get("lan") or "")
-                HOUSE["outside"] = str(told.get("outside") or "")
-                HOUSE["name"] = str(told.get("name") or "")
-        except Exception:
-            pass                          # an older house, or one that is off
     if time.time() - GROWN["at"] < GROWN_EVERY:
         return
     GROWN["at"] = time.time()
     theirs = str(said.get("serverVersion") or "")
-    mine = str(said.get("mine") or "")
+    # what this machine is running, as this machine knows it. Reading it back out of
+    # the other one's answer meant that for the first minutes after the main server
+    # restarted - before this machine had announced itself again - it was comparing
+    # against nothing and declining to update.
+    mine = str(ME.get("build") or said.get("mine") or "")
     if not theirs or not mine or not newer(theirs, mine):
         return
     req = urllib.request.Request("http://127.0.0.1:%d/update/install" % ME["port"],
@@ -377,6 +578,42 @@ def follow_the_build(one, said):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as answer:
         return json.loads(answer.read().decode("utf-8", "replace") or "{}")
+
+
+def build_from_master(one):
+    """The installer the other machine is running, if it has one to give.
+
+    Returns (path, what it said) or ("", {}). Checked against the hash that machine
+    sent with it: the file comes off a disk in the same house, but a file is a file
+    and one that arrived wrong should not be run.
+    """
+    import hashlib
+    import tempfile
+    if not (one.get("master") and one.get("key")):
+        return "", {}
+    said = ask(one, "/server/build", 20) or {}
+    if not said.get("version") or not said.get("sha256"):
+        return "", {}
+    url = (one["master"].rstrip("/") + "/server/build?file=1&t="
+           + urllib.parse.quote(one["key"]))
+    req = urllib.request.Request(url, headers={"X-Palladium-App": "follower"})
+    onto = os.path.join(tempfile.gettempdir(),
+                        "Palladium-Setup-%s.exe" % said["version"])
+    digest = hashlib.sha256()
+    with urllib.request.urlopen(req, timeout=600) as answer, open(onto, "wb") as f:
+        while True:
+            lump = answer.read(LUMP)
+            if not lump:
+                break
+            digest.update(lump)
+            f.write(lump)
+    if digest.hexdigest() != said["sha256"]:
+        try:
+            os.remove(onto)
+        except OSError:
+            pass
+        raise ValueError("what arrived from the other machine does not match its hash")
+    return onto, said
 
 
 def try_master(one):
@@ -420,10 +657,10 @@ def try_master(one):
             "wanted": len(wanted),
             "said": "Answered in %d ms. %d file%s to keep for %s.%s"
                     % (took, len(wanted), "" if len(wanted) == 1 else "s",
-                       answer.get("whose") or "the house", room)}
+                       answer.get("whose") or "the main server", room)}
 
 
-def try_follower(where, patience=10):
+def try_standby(where, patience=10):
     """Knock on the machine that follows this one, and say whether it is there."""
     import urllib.error
     if not where:
@@ -494,12 +731,70 @@ def size_of(folder):
     return total
 
 
-def note_trouble(name, why, size=0):
+def size_of_ours(folder):
+    """How much of that folder is this machine's own copies.
+
+    The cap has to be measured against what this program put there, not against the
+    folder. Measured against the folder, one large file somebody else left in it
+    counts towards the cap, and this machine deletes its own copies for ever to make
+    room it can never make.
+    """
+    mine = ours(folder)
+    total = 0
+    for here, dirs, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(here, name)
+            if not inside(folder, path):
+                continue
+            try:
+                if os.path.relpath(path, folder).replace("\\", "/") not in mine:
+                    continue
+                total += os.path.getsize(path)
+            except (OSError, ValueError):
+                pass
+    return total
+
+
+#: How many times the same file may fail the same way before this machine stops
+#: asking for it. Three is enough to tell a bad minute from a bad file.
+GIVE_UP_AFTER = 3
+#: Files not worth asking for again, by name: what was wrong, and the size and mark
+#: they had when it went wrong. A file replaced at the other end is a different file
+#: and is tried afresh.
+GIVEN_UP = {}
+
+
+def worth_asking_again(item):
+    """Whether to fetch this again, or whether it has failed the same way too often.
+
+    A file that fails the check on arrival - it is not the film that was offered, or
+    not a film at all - fails it again every time, because nothing about it has
+    changed. Asking anyway meant fetching the same broken files every pass, all night,
+    and deleting each one as it landed: twenty-three files and seven gigabytes an hour
+    for nothing.
+    """
+    had = GIVEN_UP.get(str(item.get("name") or ""))
+    if not had:
+        return True
+    if (had.get("size") != item.get("size")
+            or had.get("mark") != (item.get("mark") or "")):
+        GIVEN_UP.pop(str(item.get("name") or ""), None)   # a different file now
+        return True
+    return False
+
+
+def note_trouble(name, why, size=0, item=None):
     """Write down a file that would not come. Called with the lock held."""
     text = str(why)[:160]
     for row in TROUBLE:
         if row["name"] == name and row["why"] == text:
             row["times"] += 1
+            if row["times"] >= GIVE_UP_AFTER and item is not None:
+                # the same file, the same complaint, three times over. It is the file
+                GIVEN_UP[str(name)] = {"size": item.get("size"),
+                                       "mark": item.get("mark") or "",
+                                       "why": text, "when": int(time.time())}
+                row["given_up"] = True
             row["when"] = int(time.time())
             TROUBLE.remove(row)
             TROUBLE.insert(0, row)
@@ -515,21 +810,220 @@ def troubles():
         return [dict(r) for r in TROUBLE]
 
 
+def inside(folder, path):
+    """Whether that file really is under that folder, after every link is followed.
+
+    os.walk does not leave a folder, but a junction or a symlink inside one is a way
+    out of it, and the folder itself is a path somebody typed. Nothing outside is
+    looked at, listed or deleted.
+    """
+    try:
+        root = os.path.realpath(folder)
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    return (os.path.normcase(real).startswith(os.path.normcase(root) + os.sep)
+            and os.path.normcase(real) != os.path.normcase(root))
+
+
+def a_sane_folder(folder):
+    """Whether that path is a folder this program may keep copies in.
+
+    A drive root, a profile, or a folder somebody's documents are in is not one. The
+    setting is a path typed by hand, and the cost of a wrong one is somebody's disk.
+    """
+    folder = (folder or "").strip()
+    if not folder or not os.path.isdir(folder):
+        return False
+    here = os.path.normcase(os.path.realpath(folder)).rstrip("\\/")
+    if len(here.split(os.sep)) < 2 or os.path.dirname(here) == here:
+        return False                       # a drive root, or the root of a disk
+    no = [os.environ.get(v) for v in
+          ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramFiles",
+           "ProgramFiles(x86)", "ProgramData", "SystemRoot", "windir", "HOME")]
+    for one in no:
+        if one and os.path.normcase(os.path.realpath(one)).rstrip("\\/") == here:
+            return False
+    for name in ("Documents", "Desktop", "Downloads", "Pictures", "OneDrive"):
+        home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        if os.path.normcase(os.path.join(os.path.realpath(home), name)) == here:
+            return False
+    return True
+
+
+def ledger_file(folder):
+    return os.path.join(folder, ".palladium-copies.json")
+
+
+def ours(folder):
+    """The files in that folder this machine fetched, by name.
+
+    Deletion used to be by exclusion: everything under the folder that was not
+    wanted tonight. Anything else somebody had in there went with it, and the
+    setting is a path typed by hand - one wrong folder and it empties a disk. A file
+    is deleted now only if it is written here, which is to say only if this machine
+    put it there.
+    """
+    try:
+        with io.open(ledger_file(folder), encoding="utf-8") as f:
+            said = json.loads(f.read())
+        return set(str(n) for n in (said.get("files") or []))
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+def note_ours(folder, path):
+    """Write down that this machine wrote that file, before it can be deleted."""
+    try:
+        name = os.path.relpath(path, folder).replace("\\", "/")
+    except ValueError:
+        return
+    mine = ours(folder)
+    if name in mine:
+        return
+    mine.add(name)
+    try:
+        with io.open(ledger_file(folder), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"files": sorted(mine)}))
+    except OSError:
+        pass
+
+
+def claim_folder(folder):
+    """Say once that everything already in this folder is Palladium's own cache.
+
+    Copies made before there was a record of what came from where cannot be told
+    apart from somebody's own files, so the cap will not touch them and the folder
+    grows past its cap for ever. This is the way back, and it is asked for by hand,
+    once, with the folder named.
+
+    Only files a player could open are taken. A folder of archives and disk images is
+    not a cache whatever anybody presses, and anything that is not a film or a
+    subtitle stays untracked and untouchable.
+    """
+    if not a_sane_folder(folder):
+        return {"taken": 0, "skipped": 0, "why": "not a folder to keep copies in"}
+    mine = ours(folder)
+    taken, skipped, others = 0, 0, []
+    for one in extras(folder):
+        if one["name"].lower().endswith(FILMS):
+            mine.add(one["name"])
+            taken += 1
+        else:
+            skipped += 1
+            if len(others) < 20:
+                others.append(one["name"])
+    try:
+        with io.open(ledger_file(folder), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"files": sorted(mine)}))
+    except OSError:
+        return {"taken": 0, "skipped": 0, "why": "could not write the record"}
+    return {"taken": taken, "skipped": skipped, "others": others}
+
+
+def extras(folder):
+    """Files in the cache folder this machine did not fetch, largest first.
+
+    They are never deleted by this program - it deletes only what it wrote - so the
+    only way they go is somebody looking at the list and saying so.
+    """
+    if not a_sane_folder(folder):
+        return []
+    mine = ours(folder)
+    out = []
+    for here, dirs, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(here, name)
+            if name == os.path.basename(ledger_file(folder)):
+                continue
+            if not inside(folder, path):
+                continue
+            try:
+                known = os.path.relpath(path, folder).replace("\\", "/")
+            except ValueError:
+                continue
+            if known in mine:
+                continue
+            try:
+                out.append({"name": known, "bytes": os.path.getsize(path)})
+            except OSError:
+                pass
+    out.sort(key=lambda f: -f["bytes"])
+    return out
+
+
+#: what the last pass wanted kept. A clear by hand is the same rule as the cap's
+#: own, and neither may take what somebody is going to watch tonight.
+KEEPING = {"set": set(), "when": 0.0}
+
+
+def could_go(folder, keeping, cap_bytes=0, how="oldest"):
+    """What a clear would delete, in the order it would go, and how much it frees.
+
+    Read before anything is deleted and before automatic clearing is switched on:
+    the answer to "what will this do" has to be available before it is done.
+    """
+    if not a_sane_folder(folder):
+        return {"files": 0, "gb": 0.0, "rows": [], "folder": folder, "sane": False}
+    mine = ours(folder)
+    files, total = 0, 0
+    rows = []
+    for here, dirs, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(here, name)
+            if path in keeping or not inside(folder, path):
+                continue
+            try:
+                known = os.path.relpath(path, folder).replace("\\", "/")
+                if known not in mine:
+                    continue
+                rows.append((os.path.getatime(path), os.path.getsize(path), known))
+            except (OSError, ValueError):
+                pass
+    rows.sort(key=(lambda r: -r[1]) if how == "largest" else None)
+    # only as far down the list as the cap actually reaches. Everything under it
+    # stays, and saying otherwise would overstate what switching this on does.
+    have = size_of_ours(folder)
+    going = []
+    for when, size, known in rows:
+        if cap_bytes and have <= cap_bytes:
+            break
+        going.append({"name": known, "bytes": size,
+                      "idle": int(max(0, time.time() - when))})
+        have -= size
+        total += size
+        files += 1
+    return {"files": files, "gb": round(total / 1e9, 2), "rows": going[:200],
+            "folder": os.path.abspath(folder), "sane": True,
+            "used": round(size_of_ours(folder) / 1e9, 2)}
+
+
 def make_room(folder, cap_bytes, keeping, how="oldest"):
     """Delete until the folder is inside its cap, in the order asked for.
 
-    Nothing on the list is deleted, whatever its age: the point of the copy is that
-    it is there when the master is not. What goes is chosen from the rest, either the
+    Nothing on the list is deleted, whatever its age: the point of the cache is that
+    it is there when the main server is not. What goes is chosen from the rest, either the
     one nobody has touched for longest - which is the honest default, since it is the
     one nobody will miss - or the largest, which empties the disk in fewer deletions
     and is what somebody wants when one film is in the way of ten episodes.
+
+    And only ever a file this machine fetched. The folder is a path somebody typed.
     """
+    if not a_sane_folder(folder):
+        return                             # not a folder to be deleting things in
+    mine = ours(folder)
     files = []
     for here, dirs, names in os.walk(folder):
         for name in names:
             path = os.path.join(here, name)
-            if path in keeping:
+            if path in keeping or not inside(folder, path):
                 continue
+            try:
+                known = os.path.relpath(path, folder).replace("\\", "/")
+            except ValueError:
+                continue
+            if known not in mine:
+                continue                   # not this machine's to delete
             try:
                 files.append((os.path.getatime(path), os.path.getsize(path), path))
             except OSError:
@@ -538,15 +1032,79 @@ def make_room(folder, cap_bytes, keeping, how="oldest"):
         files.sort(key=lambda f: -f[1])
     else:
         files.sort()
-    total = size_of(folder)
+    total = size_of_ours(folder)
     for when, size, path in files:
         if total <= cap_bytes:
             return
         try:
             os.remove(path)
             total -= size
+            mine.discard(os.path.relpath(path, folder).replace("\\", "/"))
         except OSError:
             pass
+    try:
+        with io.open(ledger_file(folder), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"files": sorted(mine)}))
+    except OSError:
+        pass
+
+
+#: Which files this machine is serving this minute, whatever the main server wants.
+#: Set by the server at startup. A player between two range requests holds no handle,
+#: so the lock this used to rely on is not there for most of a film.
+BUSY = None
+
+
+def clear_unwanted(folder, qualified, keeping):
+    """Delete what this machine fetched and the main server has stopped wanting.
+
+    Everything the main server named is safe, whether tonight's hour lets it move or not:
+    the list to test against is what the main server wants at all, never the shorter list
+    of what may be fetched this minute.
+
+    Only ever a file this machine fetched - the folder is a path somebody typed - and
+    only when the main server actually named something. An empty list is an answer nobody
+    should act on by emptying a disk, and a file somebody is watching refuses to be
+    deleted and stays.
+    """
+    if not a_sane_folder(folder) or not qualified:
+        return {"files": 0, "gb": 0.0}
+    mine = ours(folder)
+    gone, freed = 0, 0
+    for here, dirs, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(here, name)
+            if path in qualified or path in keeping or not inside(folder, path):
+                continue
+            if BUSY:
+                try:
+                    if os.path.normcase(path) in BUSY():
+                        continue          # somebody is watching this one right now
+                except Exception:
+                    pass
+            if name.endswith(".part"):
+                continue                   # arriving now, not left over
+            try:
+                known = os.path.relpath(path, folder).replace("\\", "/")
+            except ValueError:
+                continue
+            if known not in mine:
+                continue                   # not this machine's to delete
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+            except OSError:
+                continue                   # open, or gone already: leave it
+            mine.discard(known)
+            gone += 1
+            freed += size
+    if gone:
+        try:
+            with io.open(ledger_file(folder), "w", encoding="utf-8") as f:
+                f.write(json.dumps({"files": sorted(mine)}))
+        except OSError:
+            pass
+    return {"files": gone, "gb": round(freed / 1e9, 2)}
 
 
 def copy_file(one, item, folder):
@@ -599,7 +1157,7 @@ def copy_file(one, item, folder):
         # connection went before the first block. Not a bad file: an absent one.
         os.remove(part)
         raise ValueError("nothing arrived; will ask again")
-    if not looks_like_film(part):
+    if not looks_like_film(part, into):
         os.remove(part)
         raise ValueError("what arrived is not a film")
     # and it is the film that was offered, not another one of the same length
@@ -608,6 +1166,7 @@ def copy_file(one, item, folder):
         os.remove(part)
         raise ValueError("what arrived is not the file that was offered")
     os.replace(part, into)
+    note_ours(folder, into)
     with LOCK:
         STATE["copying"] = ""
         STATE["size"] = 0
@@ -637,7 +1196,7 @@ def adopt_folder(one, lib):
 
 
 def as_ours(rows):
-    """The house's owner, read as whoever owns this machine.
+    """The main server's owner, read as whoever owns this machine.
 
     This is a second server, not a second person: the places that arrive under the
     house's own name belong, here, to whoever sits at this one.
@@ -654,7 +1213,11 @@ def as_ours(rows):
 #: What the other machine allows this one to use, in gigabytes, as it last said.
 #: Zero until it says anything - an older master says nothing, and then the setting
 #: on this machine is the only one there is.
-ALLOWED = {"gb": 0.0}
+#: What the machine this one follows allows it: a ceiling in gigabytes, nought
+#: for "as much as you allow yourself", and whether it may take copies at all. Both
+#: belong to the key this machine came in with, so one house may lend a library to
+#: two machines on different terms.
+ALLOWED = {"gb": 0.0, "mayCopy": True}
 
 
 def cap_now(one):
@@ -665,7 +1228,7 @@ def cap_now(one):
 
 
 def learn_the_facts(one, lib):
-    """Ask the house what is inside the files here that nobody has measured.
+    """Ask the main server what is inside the files here that nobody has measured.
 
     A file that arrives by copy is never opened: this machine has no encoder and no
     reason to read twenty gigabytes to find out what the other one already knows. But
@@ -694,6 +1257,16 @@ def learn_the_facts(one, lib):
         filled = 0
         for name, ids in by_name.items():
             keep = {k: v for k, v in (facts.get(name) or {}).items() if v is not None}
+            # when the episode went out belongs to the episode, not to the file
+            aired = keep.pop("aired", None)
+            if aired:
+                try:
+                    con.execute(
+                        "UPDATE episode SET aired=? WHERE aired IS NULL AND id IN "
+                        "(SELECT episode_id FROM file WHERE id IN (%s))"
+                        % ",".join("?" * len(ids)), [aired] + list(ids))
+                except Exception:
+                    pass
             if not keep:
                 continue
             for one_id in ids:
@@ -710,12 +1283,71 @@ def learn_the_facts(one, lib):
         con.close()
 
 
+#: file names whose key here already matches the main server's, and what moves the settings
+HOUSE_KEYS = {"ok": set(), "carry": None}
+
+
+def take_the_house_keys(one, lib, api=None, carry=None):
+    """File what is here under the main server's keys.
+
+    A key comes from the title and year as each library holds them, and a copy often
+    has no year, so a programme here had a key the main server did not know. The main server says
+    per file what it calls it; what differs moves, rows and settings alike.
+    """
+    if not lib:
+        return 0
+    try:
+        if api is not None and api.playing_now():
+            return 0              # a key moving under a playing would strand its place
+    except Exception:
+        return 0
+    con = lib.db()
+    try:
+        rows = con.execute("SELECT path, item_id, episode_id FROM file").fetchall()
+    finally:
+        con.close()
+    by_name = {}
+    for row in rows:
+        name = os.path.basename(row["path"] or "")
+        if name and name.lower() not in HOUSE_KEYS["ok"]:
+            by_name[name] = row
+    if not by_name:
+        return 0
+    titles, episodes, owner, clash, sure = {}, {}, {}, set(), []
+    names = list(by_name)
+    for at in range(0, len(names), 400):
+        said = tell(one, "/follow/whatis", {"names": names[at:at + 400]}, 40) or {}
+        if "items" not in said:
+            return 0              # an older house cannot say
+        for name in names[at:at + 400]:
+            item = str((said.get("items") or {}).get(name) or "")
+            if not item:
+                continue          # not the main server's: asked again next round
+            row = by_name[name]
+            here = str(row["item_id"] or "")
+            if titles.get(here, item) != item:
+                clash.add(here)
+            titles[here] = item
+            key = str((said.get("keys") or {}).get(name) or "")
+            if row["episode_id"] and key.startswith("e"):
+                episodes[str(row["episode_id"])] = key
+                owner[str(row["episode_id"])] = here
+            sure.append(name.lower())
+    titles = {k: v for k, v in titles.items() if k and k != v and k not in clash}
+    episodes = {k: v for k, v in episodes.items() if k != v and owner.get(k) not in clash}
+    moved = lib.rekey(titles, episodes) if (titles or episodes) else {}
+    if carry and (moved.get("titles") or moved.get("episodes")):
+        carry(moved)
+    HOUSE_KEYS["ok"].update(sure)
+    return len(moved.get("titles") or {}) + len(moved.get("episodes") or {})
+
+
 def dress_the_copies(one, lib, folder, wanted):
     """Give what has arrived the catalogue's own name and pictures.
 
     This machine can hold a film without being able to say what it is: it reaches the
     house over the network and TMDB over the internet, and the second is not always
-    there. The house already knows - it is the machine the film came from - so the
+    there. The main server already knows - it is the machine the film came from - so the
     number, the poster and the backdrop come with the file, and the pictures
     themselves are fetched from it rather than from the catalogue.
     """
@@ -741,7 +1373,7 @@ def dress_the_copies(one, lib, folder, wanted):
             found = beside.get(name.lower())
             if not found:
                 continue
-            # what the house measured, written down here as measured rather than as
+            # what the main server measured, written down here as measured rather than as
             # unknown: an unprobed file has no codec, no size on screen and no
             # duration, and a player handed one of those asks for a transcode
             facts = item.get("facts") or {}
@@ -805,20 +1437,20 @@ def dress_the_copies(one, lib, folder, wanted):
 
 
 def _art_key(item):
-    """Which number the master files the picture under.
+    """Which number the main server files the picture under.
 
-    The master answers /local/art/<key>/poster for a film by its own number and for
+    The main server answers /local/art/<key>/poster for a film by its own number and for
     an episode by its programme's - which is the same answer it gives its own pages.
     """
     return str((item.get("art") or {}).get("owner") or item.get("key") or "")
 
 
 def name_the_strangers(one, folder, known):
-    """Ask the master what the files it never listed are called.
+    """Ask the main server what the files it never listed are called.
 
     Copying began before this machine started writing down what each file is, so a
     disk full of films answered to nothing: they were here, they played, and the
-    house was never told it had them. The master knows every one of them by name.
+    house was never told it had them. The main server knows every one of them by name.
     """
     try:
         here = [n for n in os.listdir(folder)
@@ -839,16 +1471,16 @@ def name_the_strangers(one, folder, known):
 
 
 def say_what_is_here(one, folder, wanted):
-    """Tell the master everything on this disk, by the numbers it files them under.
+    """Tell the main server everything on this disk, by the numbers it files them under.
 
     Not only what is on today's list. A film copied last week for somebody who has
     since finished it is still here and still plays - for anyone, since what is on
-    this machine is on it for the house - and the house should know that. So the
+    this machine is on it for the main server - and the main server should know that. So the
     names it has been given are remembered, and everything still on the disk is
     reported whether it was asked for this time or not.
 
-    Said before the copying starts as well as after it: a pass that fetches two
-    seven-gigabyte films takes an hour, and until it ended the house was told nothing.
+    Said before the cacheing starts as well as after it: a pass that fetches two
+    seven-gigabyte films takes an hour, and until it ended the main server was told nothing.
     """
     known = name_the_strangers(one, folder, _remember_keys(folder, wanted))
     _keep_book(folder, known)
@@ -858,9 +1490,23 @@ def say_what_is_here(one, folder, wanted):
         if os.path.exists(here) and os.path.getsize(here) > 0:
             holding.append(key)
     try:
-        said = tell(one, "/follow/holding", {"keys": holding}) or {}
+        # whole: this list was built by looking at the disk, so it is everything
+        # this machine holds and anything missing from it has gone. The short report
+        # sent when copying starts carries no such claim.
+        said = tell(one, "/follow/holding",
+                    {"keys": holding, "whole": True,
+                     "trouble": troubles()[:40]}) or {}
         if said.get("cap") is not None:
             ALLOWED["gb"] = max(0.0, float(said.get("cap") or 0))
+        if said.get("mayCopy") is not None:
+            ALLOWED["mayCopy"] = bool(said.get("mayCopy"))
+        # and if the main server's keys have changed since the ones here were taken, come
+        # back for them now rather than on the quarter-hour: a key handed to somebody
+        # is no use to them until this machine has it too.
+        told = int(said.get("invitesAt") or 0)
+        if told and told != KEYS.get("stamp"):
+            KEYS["stamp"] = told
+            KEYS["last"] = 0.0
     except Exception:
         pass                          # an older master has no such door
     return holding
@@ -902,14 +1548,14 @@ def _keep_book(folder, known):
             json.dump(known, f, indent=1)
         os.replace(tmp, book)
     except OSError:
-        pass                          # the copy still works without the book
+        pass                          # the cache still works without the book
 
 
 def light_round(one, lib=None, api=None):
     """The quick half, for while a long copy is in flight.
 
     Fetching two seven-gigabyte films takes an hour, and nothing else used to happen
-    in that hour: the master heard nothing about this machine, the places did not
+    in that hour: the main server heard nothing about this machine, the places did not
     travel, and the posters wore no dot for films that were already here. None of
     that needs to wait for a disk.
     """
@@ -917,16 +1563,17 @@ def light_round(one, lib=None, api=None):
     if not folder:
         return
     try:
-        # and how full it is, which is the one thing about this machine the house
+        # and how full it is, which is the one thing about this machine the main server
         # cannot work out for itself
         room = kept_here(one)
         ask(one, "/follow/here?port=%d&name=%s&outside=%s&build=%s"
-                 "&gb=%.1f&free=%.1f&cap=%.1f&files=%d"
+                 "&gb=%.1f&free=%.1f&cap=%.1f&files=%d&managed=%d"
                  % (int(ME["port"]), urllib.parse.quote(ME["name"][:40]),
                     urllib.parse.quote((one.get("outside") or "").strip()),
                     urllib.parse.quote(ME.get("build") or ""),
                     room.get("gb") or 0.0, room.get("free") or 0.0,
-                    room.get("cap") or 0.0, int(room.get("files") or 0)), 15)
+                    room.get("cap") or 0.0, int(room.get("files") or 0),
+                    1 if one.get("allowRemote") else 0), 15)
     except Exception:
         pass
     if api and time.time() - PLACES["at"] > 120:
@@ -938,10 +1585,11 @@ def light_round(one, lib=None, api=None):
         except Exception:
             pass
     try:
-        forward = "hours=%s&eps=%s&casual=%s&whole=%d" % (
+        forward = "hours=%s&eps=%s&casual=%s&whole=%d&for=%s" % (
             hours_wanted(one), one.get("episodes") or 6,
-            one.get("casualHours") or 0, 1 if one.get("wholeList") else 0)
-        said = ask(one, "/follow/playing?" + forward, 30)
+            one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
+            urllib.parse.quote(for_whom(one)))
+        said = ask(one, "/follow/playing?deck=1&" + forward, 30)
         wanted = said.get("wanted") or []
         say_what_is_here(one, folder, wanted)
         if lib:
@@ -968,22 +1616,23 @@ def _round(one, lib, api, folder):
     """The pass itself, with the door held by round_of."""
     os.makedirs(folder, exist_ok=True)
     adopt_folder(one, lib)
-    # say where this machine can be reached, so the master can hand the address to
+    # say where this machine can be reached, so the main server can hand the address to
     # its viewers: when it is off, they have somewhere to go
     try:
-        # and how full it is, which is the one thing about this machine the house
+        # and how full it is, which is the one thing about this machine the main server
         # cannot work out for itself
         room = kept_here(one)
         ask(one, "/follow/here?port=%d&name=%s&outside=%s&build=%s"
-                 "&gb=%.1f&free=%.1f&cap=%.1f&files=%d"
+                 "&gb=%.1f&free=%.1f&cap=%.1f&files=%d&managed=%d"
                  % (int(ME["port"]), urllib.parse.quote(ME["name"][:40]),
                     urllib.parse.quote((one.get("outside") or "").strip()),
                     urllib.parse.quote(ME.get("build") or ""),
                     room.get("gb") or 0.0, room.get("free") or 0.0,
-                    room.get("cap") or 0.0, int(room.get("files") or 0)), 15)
+                    room.get("cap") or 0.0, int(room.get("files") or 0),
+                    1 if one.get("allowRemote") else 0), 15)
     except Exception:
         pass                               # an older master has no such door
-    # and take the house's invitations, so the links guests already hold work here
+    # and take the main server's invitations, so the links guests already hold work here
     if KEYS["learn"] and time.time() - KEYS["last"] > 900:
         KEYS["last"] = time.time()
         try:
@@ -992,9 +1641,13 @@ def _round(one, lib, api, folder):
             told["ownerIs"] = said.get("ownerIs") or ""
             told["ownerName"] = said.get("ownerName") or ""
             HOUSE["owner"] = told["ownerIs"]
+            HOUSE["ownerName"] = told["ownerName"]
             KEYS["learn"](said.get("invites") or [], told,
-                          said.get("name") or one.get("master") or "")
-            # the house's catalogue key, so copies arrive as films with posters
+                          said.get("name") or one.get("master") or "",
+                          # and how the main server draws each person's subtitles, so an
+                          # evening that moves here mid-film looks the same
+                          said.get("look") or {})
+            # the main server's catalogue key, so copies arrive as films with posters
             # rather than as file names
             if lib and said.get("tmdb"):
                 cfg = lib.config()
@@ -1004,23 +1657,47 @@ def _round(one, lib, api, folder):
                     lib.save_config(cfg)
         except Exception:
             pass
-    forward = "hours=%s&eps=%s&casual=%s&whole=%d" % (
+    forward = "hours=%s&eps=%s&casual=%s&whole=%d&for=%s" % (
         hours_wanted(one), one.get("episodes") or 6,
-        one.get("casualHours") or 0, 1 if one.get("wholeList") else 0)
-    said = ask(one, "/follow/playing?" + forward)
-    # an hour before the other machine sleeps, and through the night, take copies of
-    # everything anybody is in the middle of - not only what is on at this moment
-    stock = stocking_up(one, said.get("sleeps"))
-    if stock:
-        said = ask(one, "/follow/playing?deck=1&" + forward, 60)
+        one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
+        urllib.parse.quote(for_whom(one)))
+    # One question, always the whole of it: what is on a screen, what people are
+    # part-way through, and every watchlist. Asking a short question first and a
+    # fuller one afterwards gave the main server two different lists - and the page could
+    # only ever show one of them, so whatever was being fetched from a watchlist was
+    # missing from the queue while it arrived. What the hour decides is what is acted
+    # on, below, not what is asked for.
+    said = ask(one, "/follow/playing?deck=1&" + forward, 60)
+    names = said.get("house")
+    if isinstance(names, list):
+        HOUSE["people"] = [str(n)[:60] for n in names][:40]
+    # inside the set night hours, or after Early, take copies of everything anybody
+    # is in the middle of - not only what is on at this moment
+    # the main server said it is going to bed early, on the machine with the library on it
+    try:
+        told = float(said.get("earlyUntil") or 0)
+        if told > time.time():
+            EARLY["until"] = max(EARLY["until"], told)
+    except (TypeError, ValueError):
+        pass
+    stock = stocking_up(one)
     with LOCK:
         STATE["stocking"] = stock
         # a key of one's own on somebody else's server keeps that person's films and
-        # nobody else's; a key marked as a following server keeps the house's
+        # nobody else's; a key marked as a following server keeps the main server's
         STATE["whose"] = said.get("whose") or ""
     wanted = said.get("wanted") or []
+    # What there is a reason to hold, films and subtitles alike, before the hour
+    # below decides what may move tonight. A file is swept when it is on neither
+    # this list nor the shorter one, and testing against the shorter one alone would
+    # delete the whole cache every morning.
+    qualified = set()
+    for item in wanted:
+        safe = a_safe_name(item.get("name"))
+        if safe:
+            qualified.add(os.path.join(folder, safe))
     say_what_is_here(one, folder, wanted)
-    # The master lists what is on a screen now first. A pass that is half way through
+    # The main server lists what is on a screen now first. A pass that is half way through
     # a seventeen-gigabyte film nobody is watching should not make somebody wait for
     # their next episode, so anything small enough to arrive in a minute or two is
     # taken first - the big one carries on from where it stopped, next round.
@@ -1037,10 +1714,16 @@ def _round(one, lib, api, folder):
     # What somebody started watching this minute is fetched at night, not by day.
     #
     # At night this machine is the one that will be awake, so the episode after the
-    # one on screen has to be here before the house sleeps. By day the house is
+    # one on screen has to be here before the main server sleeps. By day the main server is
     # answering for itself, and chasing every episode somebody starts spends the link
     # on a copy nobody is going to need for hours. The rest of the list - watchlists,
     # what people are part-way through - goes on quietly either way.
+    # A key may be for reading only. Then this machine still knows the library and
+    # still answers for it, and takes no copies of anything.
+    if not ALLOWED.get("mayCopy", True):
+        STATE["why"] = "this key may read the library but not copy it"
+        wanted = []
+
     if not stock:
         wanted = [w for w in wanted if not w.get("hot")]
         # and a watchlist can be told to wait for the night as well: a house on a
@@ -1060,22 +1743,64 @@ def _round(one, lib, api, folder):
         if item.get("part") and safe:
             keeping.add(os.path.join(folder, safe))
 
-    taken_now = 0
-    for item in wanted:
-        if taken_now >= 40:
-            break
+    # Everything on the list this machine already has, by the main server's own numbers.
+    # Saying so needs no matching of filenames back to keys - the list gives both -
+    # and it is the only reliable way the main server learns what is here, which is what a
+    # queue needs to stop offering files that arrived days ago.
+    got_already = []
+
+    def still_wanted(item):
+        """Whether this one is worth fetching: named, a file, not here, not hopeless."""
         if not item.get("part"):
-            continue
+            return False
+        if item.get("casual"):
+            return False              # on a screen, unchosen: kept, not fetched
+        if not worth_asking_again(item):
+            return False
         safe = a_safe_name(item.get("name"))
         if not safe:
             with LOCK:
                 STATE["why"] = "refused a file named %.40s" % (item.get("name") or "")
-            continue
+            return False
         here = os.path.join(folder, safe)
         keeping.add(here)
         if (os.path.exists(here) and os.path.getsize(here) == item.get("size")
                 and (not item.get("mark") or quick_mark(here) == item["mark"])):
-            continue
+            if item.get("key") and item["key"] not in got_already:
+                got_already.append(item["key"])
+            return False
+        return True
+
+    # said before any copying starts, so the queue is right from the first minute
+    for w in wanted:
+        still_wanted(w)
+    if got_already:
+        try:
+            tell(one, "/follow/holding", {"keys": got_already})
+        except Exception:
+            pass
+
+    # What has no reason to be here goes before anything is fetched, not after. At
+    # the end of the pass it ran once a pass - and a pass with a backlog runs for
+    # hours, so on a busy night it never ran at all. It belongs here anyway: free the
+    # disk, then fill it. A read-only key copies nothing and has nothing to delete.
+    if ALLOWED.get("mayCopy", True):
+        swept = clear_unwanted(folder, qualified, keeping)
+        if swept["files"]:
+            with LOCK:
+                STATE["swept"] = swept
+
+    taken_now = 0
+    tried_and_failed = set()
+    while taken_now < 40:
+        # The top of the list as it stands, every time. Working through a list taken
+        # at the start of the pass meant fetching what was wanted an hour ago while
+        # the queue on screen had moved on - and the two could never agree.
+        item = next((w for w in wanted
+                     if str(w.get("name") or "") not in tried_and_failed
+                     and still_wanted(w)), None)
+        if item is None:
+            break
         try:
             copy_file(one, item, folder)
             # A subtitle is a few kilobytes riding along with its film, not one of
@@ -1106,9 +1831,26 @@ def _round(one, lib, api, folder):
             with LOCK:
                 STATE["why"] = str(e)[:160]
                 note_trouble(item.get("name") or item.get("title") or "?", e,
-                             item.get("size") or 0)
+                             item.get("size") or 0, item)
+            # one that will not come is set aside for this pass rather than tried
+            # again immediately: without this the loop asks for it for ever and
+            # nothing below it in the queue is ever reached
+            tried_and_failed.add(str(item.get("name") or ""))
             continue
-    # where the house had got to in what it is watching, so Continue watching on
+        # and the list again, because it has had a whole file's worth of time to
+        # change: somebody has started an episode, or moved something up
+        try:
+            said = ask(one, "/follow/playing?deck=1&" + forward, 60)
+            fresh = said.get("wanted") or []
+            if fresh:
+                wanted = fresh
+                for w in wanted:
+                    safe = a_safe_name(w.get("name"))
+                    if w.get("part") and safe:
+                        keeping.add(os.path.join(folder, safe))
+        except Exception:
+            pass                          # the main server is busy: carry on with this list
+    # where the main server had got to in what it is watching, so Continue watching on
     # this machine is the same shelf rather than an empty one
     if api and time.time() - PLACES["at"] > 120:
         PLACES["at"] = time.time()
@@ -1123,10 +1865,10 @@ def _round(one, lib, api, folder):
         PLACES["gave"] = time.time()
         try:
             # this machine's own viewers, from the last week: an evening here is
-            # the house's evening, and the master keeps the book
+            # the main server's evening, and the main server keeps the book
             mine = api.progress_of(["me"], int(time.time()) - 86400 * 7)
             if mine:
-                # sent back under the name the house files them under, or they
+                # sent back under the name the main server files them under, or they
                 # would arrive there belonging to a machine nobody watches on
                 for row in mine:
                     if HOUSE["owner"]:
@@ -1134,8 +1876,24 @@ def _round(one, lib, api, folder):
                 tell(one, "/follow/watched", {"progress": mine})
         except Exception:
             pass
+    # where the main server is, so a page opened on this machine has a way back to it
+    try:
+        where_is_the_house(one)
+    except Exception:
+        pass
+    # and whether the main server has moved on to a newer build than this machine
+    try:
+        check_the_build(one)
+    except Exception:
+        pass
+    # and what the people watching keep - their watchlists, their shelves - so this
+    # machine knows them when it is the one answering
+    try:
+        learn_the_viewers(one, ME.get("settings") or "", api)
+    except Exception:
+        pass
     # and the app itself, so a phone that reaches this machine is offered the same
-    # version the house is running rather than whatever this installer carried
+    # version the main server is running rather than whatever this installer carried
     try:
         got = mirror_app(one)
         if got:
@@ -1144,10 +1902,13 @@ def _round(one, lib, api, folder):
     except Exception:
         pass
     say_what_is_here(one, folder, wanted)
-    make_room(folder, int(cap_now(one) * (1000 ** 3)), keeping,
-              str(one.get("deleteBy") or "oldest"))
+    KEEPING["set"] = set(keeping)
+    KEEPING["when"] = time.time()
+    if str(one.get("clearBy") or "manual") == "auto":
+        make_room(folder, int(cap_now(one) * (1000 ** 3)), keeping,
+                  str(one.get("deleteBy") or "oldest"))
     with LOCK:
-        STATE["kept"] = round(size_of(folder) / 1e9, 1)
+        STATE["kept"] = round(size_of_ours(folder) / 1e9, 1)
         STATE["last"] = int(time.time())
     if lib:
         # what has arrived is only worth having if the library knows about it
@@ -1163,10 +1924,16 @@ def _round(one, lib, api, folder):
         except Exception as e:
             with LOCK:
                 STATE["why"] = "could not name what is here: " + str(e)[:120]
+        # and filed under the main server's keys, so both machines name a title alike
+        try:
+            take_the_house_keys(one, lib, api, HOUSE_KEYS["carry"])
+        except Exception as e:
+            with LOCK:
+                STATE["why"] = "could not take the main server's keys: " + str(e)[:120]
 
 
-def sync_now(config, library=None, api=None):
-    """Ask the master again and take what is missing, without waiting for the round.
+def sync_now(config, library=None, api=None, early=False):
+    """Ask the main server again and take what is missing, without waiting for the round.
 
     What is worth keeping changes the moment somebody watches something: a run of
     episodes ahead is a different run once one of them is seen. This is the button
@@ -1180,6 +1947,15 @@ def sync_now(config, library=None, api=None):
     KEYS["last"] = 0.0
     PLACES["at"] = 0.0
     STOP.clear()
+    if early:
+        start_the_night(one)
+
+    if a_pass_is_running():
+        # The list is rebuilt at the start of every pass, and the one running will
+        # reach it within the minute. Starting another here is how two files ended up
+        # arriving at once, each at half the speed.
+        return {"ok": True,
+                "said": "A pass is already running - it takes the new list next round."}
 
     def work():
         try:
@@ -1190,14 +1966,15 @@ def sync_now(config, library=None, api=None):
             with LOCK:
                 STATE["why"] = str(e)[:160]
 
-    threading.Thread(target=work, daemon=True).start()
+    PASS_NOW["thread"] = threading.Thread(target=work, daemon=True)
+    PASS_NOW["thread"].start()
     return {"ok": True, "said": "Asking the other server what is wanted."}
 
 
-def start(config, library=None, quiet=None, me=None, keys=None, api=None):
+def start(config, library=None, quiet=None, me=None, keys=None, api=None, carry=None):
     """Follow, for as long as this server runs. Safe to call more than once.
 
-    `me` is (port, name): what to tell the master about this machine.
+    `me` is (port, name): what to tell the main server about this machine.
     """
     global STARTED
     if me:
@@ -1205,18 +1982,24 @@ def start(config, library=None, quiet=None, me=None, keys=None, api=None):
         if len(me) > 2:
             ME["static"] = str(me[2])
         if len(me) > 3:
-            # what this machine is running, said when it announces itself: the house
+            # what this machine is running, said when it announces itself: the main server
             # shows it beside the name, and two machines on different builds speak
             # slightly different languages to the same app
             ME["build"] = str(me[3])
+        if len(me) > 4:
+            # where this machine keeps what viewers have set, so what the main server knows
+            # about them can be written down here as well
+            ME["settings"] = str(me[4])
     if keys:
         KEYS["learn"] = keys
+    if carry:
+        HOUSE_KEYS["carry"] = carry
     with LOCK:
         if STARTED:
             return
         STARTED = True
 
-    pass_now = {"thread": None}
+
 
     def one_pass(one):
         try:
@@ -1242,18 +2025,17 @@ def start(config, library=None, quiet=None, me=None, keys=None, api=None):
             else:
                 STOP.set()
             if STATE["on"]:
-                busy = pass_now["thread"] is not None and pass_now["thread"].is_alive()
-                if busy:
-                    # a copy is running: keep talking to the master anyway
+                if a_pass_is_running():
+                    # a copy is running: keep talking to the main server anyway
                     try:
                         light_round(one, library, api)
                     except Exception as e:
                         with LOCK:
                             STATE["why"] = str(e)[:160]
                 else:
-                    pass_now["thread"] = threading.Thread(
+                    PASS_NOW["thread"] = threading.Thread(
                         target=one_pass, args=(one,), daemon=True)
-                    pass_now["thread"].start()
+                    PASS_NOW["thread"].start()
             time.sleep(ASK_EVERY)
 
     threading.Thread(target=work, daemon=True).start()

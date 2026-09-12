@@ -292,6 +292,93 @@ def flatten_title(title):
     return re.sub(r"[^a-z0-9]+", "", (title or "").lower().replace("&", "and"))
 
 
+#: how many hex digits a key is made of. Twelve is one chance in fifty million of
+#: two titles colliding in a library this size, and one in two hundred thousand at ten
+#: times it; a clash is caught at scan time either way, so the length decides how often
+#: that happens rather than whether it is handled.
+KEY_LENGTH = 12
+
+
+def title_key(kind, title, year):
+    """The key for a film or a programme, from what it is rather than when it arrived.
+
+    Both machines scan the same films and flatten the same titles, so both arrive at
+    the same key without asking each other. That is the whole point of it: a copy can
+    be played from without translating anything, and a key in a report means the same
+    title wherever it is read.
+    """
+    import hashlib
+    plain = flatten_title(title)
+    seed = "%s|%s|%s" % (kind, plain, int(year or 0))
+    whole = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    # never starting with an e. An episode is told from a title by that letter in
+    # three dozen places, and twelve hex digits begin with one once in sixteen - so a
+    # film would have been read as an episode of nothing. Slide along the digest
+    # instead of rehashing: the digits are as good wherever they are taken from.
+    at = 0
+    while whole[at] == "e" and at + KEY_LENGTH < len(whole):
+        at += 1
+    return whole[at:at + KEY_LENGTH]
+
+
+#: two titles that came out as one key, this run. Kept rather than raised: the key
+#: has to stay what it is - both machines work it out for themselves, and a machine
+#: holding only one of the two would arrive somewhere else - so what is wanted is for
+#: somebody to see it and correct a year.
+CLASHES = []
+
+#: What the server does with the keys a merge moved. The settings file is the
+#: server's, not the library's, and a watchlist lives in it - so the library says what
+#: moved and the server carries it. Set at startup.
+CARRY = None
+
+
+def move_key(moved, key):
+    """An old key's new one, by what the old key was.
+
+    `moved` is {"titles": old -> new, "episodes": old e-key -> new}. A key starting
+    with e is an episode; a season is its programme's key with -s after it; anything
+    else is looked up as a title. Anything not in the maps is returned as it was.
+    """
+    k = str(key if key is not None else "")
+    titles = moved.get("titles") if isinstance(moved.get("titles"), dict) else moved
+    eps = moved.get("episodes") if isinstance(moved.get("episodes"), dict) else {}
+    m = re.match(r"^([0-9a-f]+)-s(\d+)$", k)
+    if m:
+        show = titles.get(m.group(1))
+        return ("%s-s%s" % (show, m.group(2))) if show else k
+    if k.startswith("e"):
+        return eps.get(k, k)
+    return titles.get(k, k)
+
+
+def is_episode(key):
+    """Whether a key names an episode. Titles never begin with an e - title_key sees
+    to that - so the letter is the whole of the question."""
+    return str(key or "").startswith("e")
+
+
+def is_title(key):
+    """Whether a key names a film or a programme, as against an episode or a shelf."""
+    k = str(key or "")
+    # and not a season, which is a title key with -s and a number after it: hex has no
+    # dash in it, so the dash alone tells them apart
+    return (bool(k) and not k.startswith("e") and not k.startswith("coll:")
+            and "-s" not in k)
+
+
+def episode_key(show_key, season, number):
+    """The key for one episode, hung off its programme's.
+
+    season and number rather than the title: an episode's name is the thing most often
+    spelt differently between two scrapes, and the table already treats the number as
+    what makes it unique.
+    """
+    import hashlib
+    seed = "episode|%s|%d|%d" % (show_key, int(season or 0), int(number or 0))
+    return "e" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:KEY_LENGTH]
+
+
 def parse_episode_loose(path):
     """(show, season, episode) for a file in a series folder with no SxxExx.
 
@@ -361,6 +448,34 @@ def ffprobe_beside(ffmpeg):
         if os.path.exists(near):
             return near
     return shutil.which("ffprobe") or "ffprobe"
+
+
+def hollow_file(path, look=65536):
+    """Whether that file is an empty space with a name on it.
+
+    A download client asks for the whole size before it has any of it, and what it
+    leaves if it never finishes is a file of the right name, the right size and the
+    right date with nothing inside. Windows calls it sparse; reading it gives zeros.
+    Cheap to ask - the first block and one in the middle - and it is only asked of
+    files nothing has been able to read.
+    """
+    try:
+        size = os.path.getsize(path)
+        if size <= 0:
+            return True
+        with open(path, "rb") as f:
+            if any(f.read(look)):
+                return False
+            f.seek(size // 2)
+            if any(f.read(look)):
+                return False
+    except OSError:
+        return False                      # unreadable is a different complaint
+    return True
+
+
+# a file a download has not finished, left out until it has; set by the server
+UNFINISHED = None
 
 
 class Library:
@@ -438,7 +553,9 @@ class Library:
         con = self.db()
         con.executescript("""
         CREATE TABLE IF NOT EXISTS item (
-            id INTEGER PRIMARY KEY,
+            -- from the title, not from the order things were scanned: a number means
+            -- whatever this machine inserted first, and the cache inserted its own
+            id TEXT PRIMARY KEY,
             type TEXT,                -- movie | show
             title TEXT, sort_title TEXT, year INTEGER,
             tmdb_id INTEGER, imdb_id TEXT,
@@ -448,15 +565,15 @@ class Library:
         );
         CREATE TABLE IF NOT EXISTS file (
             id INTEGER PRIMARY KEY,
-            item_id INTEGER, episode_id INTEGER,
+            item_id TEXT, episode_id TEXT,
             path TEXT UNIQUE, size INTEGER, mtime INTEGER,
             duration REAL, container TEXT, vcodec TEXT, acodec TEXT, ctime INTEGER,
             width INTEGER, height INTEGER, channels INTEGER, bitrate INTEGER,
             probed INTEGER DEFAULT 0, streams TEXT
         );
         CREATE TABLE IF NOT EXISTS episode (
-            id INTEGER PRIMARY KEY,
-            item_id INTEGER, season INTEGER, number INTEGER,
+            id TEXT PRIMARY KEY,
+            item_id TEXT, season INTEGER, number INTEGER,
             title TEXT, overview TEXT, aired TEXT, still TEXT,
             UNIQUE(item_id, season, number)
         );
@@ -489,6 +606,20 @@ class Library:
         # existed; filled in the first time somebody opens the title.
         if "atracks" not in cols:
             con.execute("ALTER TABLE file ADD COLUMN atracks TEXT")
+        # A file a download left behind: the right name, the right size, the right
+        # date, and nothing inside it. Shelved as a film like any other, offered to
+        # anybody who pressed it, and handed to the machine keeping copies over and
+        # over because what arrives is not a film and is deleted on arrival.
+        if "hollow" not in cols:
+            con.execute("ALTER TABLE file ADD COLUMN hollow INTEGER DEFAULT 0")
+        # A file probed before the column existed was written down as having an empty
+        # list of soundtracks rather than none recorded, and the two look the same
+        # from the outside. What fills them in on first open skips anything that is
+        # not empty, so those files kept their empty list for ever - no numbered
+        # tracks, nothing to choose between, and whatever ffmpeg took first. A file
+        # that has a soundtrack codec but no soundtracks was never really asked.
+        con.execute("UPDATE file SET atracks=NULL WHERE atracks='[]'"
+                    " AND acodec IS NOT NULL AND acodec<>''")
         # Everyone keeps their own place in a film. "who" is "me" for whoever runs the
         # server and the invitation token for everybody else; progress recorded before
         # this becomes the owner's, which is whose it was.
@@ -547,8 +678,243 @@ class Library:
                              AND NOT EXISTS (SELECT 1 FROM watchlog w
                                              WHERE w.who = progress.who
                                                AND w.key = progress.key)""")
+        # A shuffled playing is not a sit-down. Keeping its place is worth doing -
+        # that is what resumes it - but it does not belong on Continue watching and it
+        # does not belong in the cache queue, which was filling with episodes nobody
+        # had chosen.
+        if not any(r[1] == "casual" for r in
+                   con.execute("PRAGMA table_info(progress)").fetchall()):
+            con.execute("ALTER TABLE progress ADD COLUMN casual INTEGER DEFAULT 0")
+            # and the rows left behind before there was anywhere to say it: what the
+            # log last says about that viewing is whether somebody put it on or chose
+            # it. A hand mark is nobody's shuffle and is left alone.
+            # only the rows that were leaking: something part-way through. A row
+            # sitting at the credits already reads as watched, and saying it was
+            # casual now would put four finished episodes back on the cache queue.
+            con.execute("""UPDATE progress SET casual = 1
+                           WHERE COALESCE(marked, 0) = 0
+                             AND position > 30 AND position < duration * 0.95
+                             AND EXISTS (
+                             SELECT 1 FROM watchlog w
+                              WHERE w.who = progress.who AND w.key = progress.key
+                                AND w.casual = 1
+                                AND w.updated = (SELECT MAX(w2.updated) FROM watchlog w2
+                                                  WHERE w2.who = progress.who
+                                                    AND w2.key = progress.key))""")
         con.commit()
+        self._keys_from_titles(con)
         con.close()
+
+    def _keys_from_titles(self, con):
+        """Turn row numbers into keys derived from the titles, once.
+
+        Every machine does its own: they hold the same films under the same names and
+        the rule is the same, so they arrive at the same keys without asking each
+        other. That is the whole reason for doing it - a copy could not be played from
+        while the two libraries numbered their titles independently.
+
+        `id INTEGER PRIMARY KEY` is sqlite's own row number and will not hold anything
+        else, so each table is made again with the column it should have had.
+        """
+        kind = [r for r in con.execute("PRAGMA table_info(item)")
+                if r["name"] == "id"]
+        if not kind or (kind[0]["type"] or "").upper() != "INTEGER":
+            return                                  # already done, or a new library
+        rows = con.execute("SELECT COUNT(*) c FROM item").fetchone()
+        if not rows or not rows["c"]:
+            return                                  # nothing to carry across
+        # One transaction, with the write lock taken before anything is touched.
+        # Python's sqlite commits a CREATE TABLE on its own, so the cache's first
+        # attempt left an empty item_new behind when a lock stopped it, and every
+        # start after that fell over creating it again. Now it is all or nothing:
+        # leftovers go, and a failure rolls back and is tried again next start
+        # rather than taking every request down with it.
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            for leftover in ("item_new", "episode_new", "file_new"):
+                con.execute("DROP TABLE IF EXISTS %s" % leftover)
+            self._carry_keys(con)
+        except Exception:
+            try:
+                con.rollback()
+            except Exception:
+                pass
+            import traceback
+            # Kept, not written to stderr: a program with no window has nowhere to
+            # send stderr, and the cache ran on its old keys for an hour with nobody
+            # able to see why. The server reports this as a fault.
+            self.keys_failed = traceback.format_exc()
+
+    def _carry_keys(self, con):
+        """The conversion itself, inside the transaction _keys_from_titles holds."""
+        titles, eps, eps_by_row = {}, {}, {}
+        for r in con.execute("SELECT id, type, title, year FROM item"):
+            titles[str(r["id"])] = title_key(r["type"], r["title"], r["year"])
+        for r in con.execute("SELECT id, item_id, season, number FROM episode"):
+            show = titles.get(str(r["item_id"]))
+            if show:
+                new = episode_key(show, r["season"], r["number"])
+                # by its e for anything that names an episode; by its bare row number
+                # only for the file table, the one place that is how it is named
+                eps["e" + str(r["id"])] = new
+                eps_by_row[str(r["id"])] = new
+        moved = {"titles": titles, "episodes": eps}
+
+        def carry(table, keyed, first):
+            """Rebuild one table with text where the key goes."""
+            spec, rest = [], []
+            for r in con.execute("PRAGMA table_info(%s)" % table):
+                name = r["name"]
+                if name in keyed:
+                    spec.append("%s TEXT%s" % (name, " PRIMARY KEY"
+                                               if name == first else ""))
+                else:
+                    spec.append("%s %s%s" % (name, r["type"] or "",
+                                             " PRIMARY KEY" if name == first else ""))
+                    rest.append(name)
+            extra = (", UNIQUE(item_id, season, number)" if table == "episode" else "")
+            con.execute("CREATE TABLE %s_new (%s%s)" % (table, ", ".join(spec), extra))
+            return rest
+
+        carry("item", {"id"}, "id")
+        for r in con.execute("SELECT * FROM item").fetchall():
+            mine = titles.get(str(r["id"]))
+            if not mine:
+                continue
+            cols = [c for c in r.keys() if c != "id"]
+            con.execute("INSERT OR IGNORE INTO item_new (id, %s) VALUES (%s)"
+                        % (", ".join(cols), ",".join("?" * (len(cols) + 1))),
+                        [mine] + [r[c] for c in cols])
+
+        carry("episode", {"id", "item_id"}, "id")
+        for r in con.execute("SELECT * FROM episode").fetchall():
+            show = titles.get(str(r["item_id"]))
+            if not show:
+                continue
+            cols = [c for c in r.keys() if c not in ("id", "item_id")]
+            con.execute("INSERT OR IGNORE INTO episode_new (id, item_id, %s) VALUES (%s)"
+                        % (", ".join(cols), ",".join("?" * (len(cols) + 2))),
+                        [episode_key(show, r["season"], r["number"]), show]
+                        + [r[c] for c in cols])
+
+        carry("file", {"item_id", "episode_id"}, "id")
+        for r in con.execute("SELECT * FROM file").fetchall():
+            cols = [c for c in r.keys() if c not in ("item_id", "episode_id")]
+            con.execute("INSERT OR IGNORE INTO file_new (item_id, episode_id, %s) "
+                        "VALUES (%s)"
+                        % (", ".join(cols), ",".join("?" * (len(cols) + 2))),
+                        [titles.get(str(r["item_id"])) if r["item_id"] is not None else None,
+                         eps_by_row.get(str(r["episode_id"])) if r["episode_id"] is not None else None]
+                        + [r[c] for c in cols])
+
+        for table in ("item", "episode", "file"):
+            con.execute("DROP TABLE %s" % table)
+            con.execute("ALTER TABLE %s_new RENAME TO %s" % (table, table))
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS file_path ON file(path)")
+
+        self._carry_places(con, moved)
+        con.commit()
+        # What everything outside the library needs to follow it across - written
+        # down as well as handed over. The tables are text now, so a second start
+        # will not do this again: if the shelves and the rounds were not carried
+        # over before something went wrong, nothing would ever carry them.
+        self.keys_moved = moved
+        try:
+            import json as _json
+            with open(os.path.join(os.path.dirname(self.dbpath), "keys-moved.json"),
+                      "w", encoding="utf-8") as f:
+                _json.dump(self.keys_moved, f)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _carry_places(con, moved):
+        """Move progress and watch log rows onto new keys.
+
+        Two old keys can be one title now, and one viewer's two places then want the
+        same (who, key): the place watched last is kept. The watch log simply follows.
+        """
+        for r in con.execute(
+                "SELECT rowid AS rid, who, key, updated FROM progress").fetchall():
+            was = str(r["key"] or "")
+            now = move_key(moved, was)
+            if not now or now == was:
+                continue
+            there = con.execute(
+                "SELECT rowid AS rid, updated FROM progress WHERE who=? AND key=?",
+                (r["who"], now)).fetchone()
+            if there:
+                if (there["updated"] or 0) >= (r["updated"] or 0):
+                    con.execute("DELETE FROM progress WHERE rowid=?", (r["rid"],))
+                    continue
+                con.execute("DELETE FROM progress WHERE rowid=?", (there["rid"],))
+            con.execute("UPDATE progress SET key=? WHERE rowid=?", (now, r["rid"]))
+        for r in con.execute("SELECT rowid AS rid, key FROM watchlog").fetchall():
+            was = str(r["key"] or "")
+            now = move_key(moved, was)
+            if now and now != was:
+                con.execute("UPDATE watchlog SET key=? WHERE rowid=?", (now, r["rid"]))
+
+    def rekey(self, titles, episodes):
+        """Move titles and episodes onto the keys another library files them under.
+
+        `titles` and `episodes` map a key here to the key there. A row already under
+        the new key takes the old row's episodes and files. Returns the moves made,
+        shaped for move_key.
+        """
+        moved = {"titles": {}, "episodes": {}}
+        con = self.db()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+
+            def move_episode(old_id, want, show, season, number):
+                there = con.execute(
+                    "SELECT id FROM episode WHERE id=? OR (item_id=? AND season=? AND number=?)",
+                    (want, show, season, number)).fetchone()
+                if there and there["id"] != old_id:
+                    con.execute("UPDATE file SET episode_id=? WHERE episode_id=?",
+                                (there["id"], old_id))
+                    con.execute("DELETE FROM episode WHERE id=?", (old_id,))
+                    want = there["id"]
+                else:
+                    con.execute("UPDATE episode SET id=?, item_id=? WHERE id=?",
+                                (want, show, old_id))
+                    con.execute("UPDATE file SET episode_id=? WHERE episode_id=?",
+                                (want, old_id))
+                if want != old_id:
+                    moved["episodes"][old_id] = want
+
+            for old, new in titles.items():
+                if not new or old == new or not con.execute(
+                        "SELECT 1 FROM item WHERE id=?", (old,)).fetchone():
+                    continue
+                for ep in con.execute("SELECT id, season, number FROM episode WHERE item_id=?",
+                                      (old,)).fetchall():
+                    move_episode(ep["id"], episodes.get(ep["id"])
+                                 or episode_key(new, ep["season"], ep["number"]),
+                                 new, ep["season"], ep["number"])
+                con.execute("UPDATE file SET item_id=? WHERE item_id=?", (new, old))
+                if con.execute("SELECT 1 FROM item WHERE id=?", (new,)).fetchone():
+                    con.execute("DELETE FROM item WHERE id=?", (old,))
+                else:
+                    con.execute("UPDATE item SET id=? WHERE id=?", (new, old))
+                moved["titles"][old] = new
+            # an episode the main server numbers differently under a title whose key agrees
+            for old, new in episodes.items():
+                if not new or old == new or old in moved["episodes"]:
+                    continue
+                ep = con.execute("SELECT item_id, season, number FROM episode WHERE id=?",
+                                 (old,)).fetchone()
+                if ep:
+                    move_episode(old, new, ep["item_id"], ep["season"], ep["number"])
+            self._carry_places(con, moved)
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+        return moved
 
     # ---- scanning -----------------------------------------------------------
     def walk(self, folders):
@@ -562,6 +928,8 @@ class Library:
                 for name in files:
                     if os.path.splitext(name)[1].lower() in VIDEO_EXT:
                         full = os.path.join(dirpath, name)
+                        if UNFINISHED and UNFINISHED(full):
+                            continue
                         try:
                             st = os.stat(full)
                         except OSError:
@@ -608,7 +976,9 @@ class Library:
             if row and row["size"] == st.st_size and row["mtime"] == int(st.st_mtime):
                 self.scan_state["done"] += 1
                 continue                                    # unchanged
-            self._index_file(con, kind, path, st)
+            # new path, same name and size as a file already indexed: a move, not an arrival
+            was = None if row else self._moved_from(con, path, st)
+            self._index_file(con, kind, path, st, moved_from=was)
             self.scan_state["done"] += 1
         # Rows the walk did not produce: either the file is gone, or it is no longer
         # one of ours - a sample, an extra, or a folder taken off the list. Both are
@@ -634,7 +1004,17 @@ class Library:
         self.scan_state.update(running=False, phase="idle")
         return self.stats()
 
-    def _index_file(self, con, kind, path, st, reset_probe=True):
+    @staticmethod
+    def _moved_from(con, path, st):
+        """item_id of an indexed file at another path with this name and size, else None."""
+        name = os.path.normcase(os.path.basename(path))
+        for other in con.execute("SELECT path, item_id FROM file WHERE size=? AND path<>?",
+                                 (st.st_size, path)):
+            if os.path.normcase(os.path.basename(other["path"] or "")) == name:
+                return other["item_id"]
+        return None
+
+    def _index_file(self, con, kind, path, st, reset_probe=True, moved_from=None):
         """What a file is comes from the list its folder is in.
 
         A series folder yields episodes, taking the season from the folder when the
@@ -654,12 +1034,11 @@ class Library:
         if parsed:
             show, season, number = parsed
             item_id = self._upsert_item(con, "show", show, None)
+            episode_id = episode_key(item_id, season, number)
             con.execute(
-                "INSERT OR IGNORE INTO episode (item_id, season, number) VALUES (?,?,?)",
-                (item_id, season, number))
-            episode_id = con.execute(
-                "SELECT id FROM episode WHERE item_id=? AND season=? AND number=?",
-                (item_id, season, number)).fetchone()["id"]
+                "INSERT OR IGNORE INTO episode (id, item_id, season, number) "
+                "VALUES (?,?,?,?)",
+                (episode_id, item_id, season, number))
         elif kind == "show":
             return                       # nothing in the name or the folders to go on
         else:
@@ -678,12 +1057,32 @@ class Library:
                          episode_id=excluded.episode_id, size=excluded.size,
                          mtime=excluded.mtime, ctime=excluded.ctime, {probe_clause}""",
                     (item_id, episode_id, path, st.st_size, int(st.st_mtime), ctime))
-        # "recently added" should mean when it arrived here, not when the scan ran
-        con.execute("""UPDATE item SET added = MAX(COALESCE(added, 0), ?) WHERE id = ?""",
-                    (ctime, item_id))
+        # "recently added" should mean when it arrived here, not when the scan ran.
+        # A moved file gets a new ctime on another drive; it keeps the date it first came.
+        if moved_from is None:
+            con.execute("""UPDATE item SET added = MAX(COALESCE(added, 0), ?) WHERE id = ?""",
+                        (ctime, item_id))
+        elif moved_from != item_id:
+            con.execute("""UPDATE item SET added = MAX(COALESCE(added, 0),
+                             COALESCE((SELECT added FROM item WHERE id = ?), 0)) WHERE id = ?""",
+                        (moved_from, item_id))
 
     def _upsert_item(self, con, kind, title, year):
         sort = re.sub(r"^(the|a|an)\s+", "", (title or "").lower()).strip()
+        # A filename for an episode carries no year and the catalogue's row does:
+        # "its.always.sunny.s18e05" against a programme filed under 2005. Matched on
+        # the year, the two can never meet, and every new episode started a second,
+        # unidentified programme - a season on its own, no air date, nothing in
+        # Recently released. With no year to go on the title is enough, and the row
+        # the catalogue identified wins, so episodes land where the posters are.
+        if year is None:
+            plain = flatten_title(sort)
+            if plain:
+                for other in con.execute(
+                        "SELECT id, sort_title, tmdb_id FROM item WHERE type=? "
+                        "AND tmdb_id IS NOT NULL", (kind,)):
+                    if flatten_title(other["sort_title"] or "") == plain:
+                        return other["id"]
         row = con.execute("SELECT id FROM item WHERE type=? AND sort_title=? AND "
                           "(year IS ? OR year=?)", (kind, sort, year, year)).fetchone()
         if row:
@@ -700,12 +1099,43 @@ class Library:
                     (kind, year, year)):
                 if flatten_title(other["sort_title"] or "") == plain:
                     return other["id"]
+        # A filename for an episode carries no year, and the row the catalogue made
+        # carries one: "its.always.sunny.s18e05" against a programme filed under 2005.
+        # Gated on the year, the comparison above can never meet, so every new episode
+        # of an identified programme started a second, unidentified one - a season on
+        # its own, with no air date and nothing in Recently released. With no year to
+        # go on, the title is enough; the identified row wins, so the episodes land
+        # where the posters and the air dates already are.
+        if plain and year is None:
+            best = None
+            for other in con.execute(
+                    "SELECT id, sort_title, tmdb_id FROM item WHERE type=?", (kind,)):
+                if flatten_title(other["sort_title"] or "") != plain:
+                    continue
+                if other["tmdb_id"]:
+                    return other["id"]
+                if best is None:
+                    best = other["id"]
+            if best:
+                return best
         # No arrival time of its own: it belongs to the files. Stamping the scan time
         # here is what made "recently added" mean "in the order I was indexed" - the
         # MAX() that folds in the file's own date could never beat the current time.
-        cur = con.execute("INSERT INTO item (type, title, sort_title, year, added) "
-                          "VALUES (?,?,?,?,0)", (kind, title, sort, year))
-        return cur.lastrowid
+        # Its own key, worked out from what it is. A clash would mean two different
+        # titles flattening to the same twelve digits, which at this size is one
+        # chance in fifty million - and if it ever happens the row is already there
+        # under that key and this returns it rather than making a second.
+        mine = title_key(kind, title, year)
+        # Whoever is already under that key. Ordinarily this title itself, on a second
+        # scan; if it is another title, two different films have flattened to the same
+        # digits and one poster is about to stand for both.
+        held = con.execute("SELECT title, year FROM item WHERE id=?", (mine,)).fetchone()
+        if held and (str(held["title"] or "") != str(title or "")
+                     or int(held["year"] or 0) != int(year or 0)):
+            self.note_clash(mine, held["title"], held["year"], title, year)
+        con.execute("INSERT OR IGNORE INTO item (id, type, title, sort_title, year, added) "
+                    "VALUES (?,?,?,?,?,0)", (mine, kind, title, sort, year))
+        return mine
 
     # ---- media facts --------------------------------------------------------
     def probe_pending(self, limit=100000):
@@ -716,6 +1146,12 @@ class Library:
         rows = con.execute("SELECT id, path FROM file WHERE probed=0 LIMIT ?", (limit,)).fetchall()
         self.scan_state.update(phase="probing", total=len(rows), done=0)
         for row in rows:
+            if hollow_file(row["path"]):
+                # nothing in it to probe. Left as unprobed so that finishing the
+                # download and scanning again picks it up as the film it becomes.
+                con.execute("UPDATE file SET hollow=1 WHERE id=?", (row["id"],))
+                continue
+            con.execute("UPDATE file SET hollow=0 WHERE id=?", (row["id"],))
             info = self.probe(ffprobe, row["path"])
             if info:
                 con.execute("""UPDATE file SET duration=?, container=?, vcodec=?, acodec=?,
@@ -917,7 +1353,7 @@ class Library:
         """What this could be instead: TMDB's answers, for somebody to choose from."""
         con = self.db()
         try:
-            row = con.execute("SELECT * FROM item WHERE id=?", (int(item_id),)).fetchone()
+            row = con.execute("SELECT * FROM item WHERE id=?", (str(item_id),)).fetchone()
             if not row:
                 return []
             kind = "movie" if row["type"] == "movie" else "tv"
@@ -942,7 +1378,7 @@ class Library:
         """Say what this actually is, and rewrite it from that entry."""
         con = self.db()
         try:
-            row = con.execute("SELECT * FROM item WHERE id=?", (int(item_id),)).fetchone()
+            row = con.execute("SELECT * FROM item WHERE id=?", (str(item_id),)).fetchone()
             if not row:
                 return None
             kind = "movie" if row["type"] == "movie" else "tv"
@@ -1042,10 +1478,10 @@ class Library:
                 """SELECT f.path, e.id eid, e.number FROM file f
                    JOIN episode e ON e.id=f.episode_id
                    WHERE e.item_id=? AND e.season=? ORDER BY e.number""",
-                (int(item_id), int(season))).fetchall()
+                (str(item_id), int(season))).fetchall()
             if mode == "auto":
                 said = con.execute("SELECT tmdb_id FROM item WHERE id=?",
-                                   (int(item_id),)).fetchone()
+                                   (str(item_id),)).fetchone()
                 data = {}
                 if said and said["tmdb_id"]:
                     try:
@@ -1060,11 +1496,11 @@ class Library:
                             """UPDATE episode SET title=?, overview=?, aired=?, still=?
                                WHERE item_id=? AND season=? AND number=?""",
                             (ep.get("name"), ep.get("overview"), ep.get("air_date"),
-                             ep.get("still_path"), int(item_id), int(season),
+                             ep.get("still_path"), str(item_id), int(season),
                              ep.get("episode_number")))
 
                 write_titles()
-                moved = self._align_season(con, int(item_id), int(season))
+                moved = self._align_season(con, str(item_id), int(season))
                 if moved:
                     write_titles()
                 con.commit()
@@ -1083,7 +1519,7 @@ class Library:
                     continue
                 taken = con.execute(
                     "SELECT id FROM episode WHERE item_id=? AND season=? AND number=? "
-                    "AND id<>?", (int(item_id), int(season), target, r["eid"])).fetchone()
+                    "AND id<>?", (str(item_id), int(season), target, r["eid"])).fetchone()
                 if taken:
                     continue
                 con.execute("UPDATE episode SET number=? WHERE id=?", (target, r["eid"]))
@@ -1186,6 +1622,10 @@ class Library:
         con.close()
         return len(rows)
 
+    #: what the last merge moved, for anything outside the index that named a key
+    #: (settings are not the library's to write, so the server carries those)
+    moved_keys = {"titles": {}, "episodes": {}}
+
     def merge_duplicates(self):
         """Fold together items that turned out to be the same title.
 
@@ -1196,18 +1636,37 @@ class Library:
         """
         con = self.db()
         merged = 0
+        # every key this fold drops, and what it became: a watchlist or a shuffle's
+        # queue names a title by its key, and the key that went was simply gone
+        moved = {"titles": {}, "episodes": {}}
         rows = con.execute("""SELECT type, tmdb_id, GROUP_CONCAT(id) ids, COUNT(*) c
                               FROM item WHERE tmdb_id IS NOT NULL
                               GROUP BY type, tmdb_id HAVING c > 1""").fetchall()
         for row in rows:
-            ids = sorted(int(x) for x in row["ids"].split(","))
+            # The one holding the most files keeps its key, and the rest move onto it:
+            # whatever is written down elsewhere - a watchlist, a place in an episode -
+            # names a title by its key, and folding the big one into a stray broke that.
+            # (Reading a twelve-hex id as a number threw, so nothing merged at all.)
+            ids = [str(r["id"]) for r in con.execute(
+                """SELECT i.id, COUNT(f.id) AS files FROM item i
+                   LEFT JOIN file f ON f.item_id = i.id
+                   WHERE i.type=? AND i.tmdb_id=?
+                   GROUP BY i.id
+                   ORDER BY files DESC, COALESCE(i.added, 0) ASC, i.id ASC""",
+                (row["type"], row["tmdb_id"])).fetchall()]
+            if len(ids) < 2:
+                continue
             keep, rest = ids[0], ids[1:]
             for other in rest:
+                # what named the dropped key has to be told where it went
+                moved["titles"][other] = keep
                 # episodes first: the same season/number may exist on both sides
                 for ep in con.execute("SELECT * FROM episode WHERE item_id=?", (other,)).fetchall():
                     existing = con.execute("""SELECT id FROM episode WHERE item_id=? AND
                                               season=? AND number=?""",
                                            (keep, ep["season"], ep["number"])).fetchone()
+                    if existing and existing["id"] != ep["id"]:
+                        moved["episodes"]["e" + str(ep["id"])] = "e" + str(existing["id"])
                     if existing:
                         con.execute("UPDATE file SET episode_id=?, item_id=? WHERE episode_id=?",
                                     (existing["id"], keep, ep["id"]))
@@ -1217,9 +1676,29 @@ class Library:
                 con.execute("UPDATE file SET item_id=? WHERE item_id=?", (keep, other))
                 con.execute("DELETE FROM item WHERE id=?", (other,))
                 merged += 1
+        # places and the watch log follow here; the settings are the server's to carry,
+        # and it reads this afterwards
+        if moved["titles"] or moved["episodes"]:
+            self._carry_places(con, moved)
+        Library.moved_keys = moved
         con.commit()
         con.close()
+        if CARRY and (moved["titles"] or moved["episodes"]):
+            try:
+                CARRY(moved)
+            except Exception:
+                pass                      # a settings file is not worth a failed scan
         return merged
+
+    @staticmethod
+    def note_clash(key, had, had_year, wants, wants_year):
+        """Two titles, one key. Written down and said once, not once per file."""
+        said = "%s: %s (%s) and %s (%s)" % (key, had, had_year or "?",
+                                            wants, wants_year or "?")
+        if said in CLASHES:
+            return
+        CLASHES.append(said)
+        del CLASHES[:-40]
 
     # ---- artwork ------------------------------------------------------------
     def artwork(self, tmdb_path, size="w500"):
@@ -1253,4 +1732,7 @@ class Library:
             out[key] = con.execute(sql).fetchone()["c"]
         con.close()
         out["scan"] = self.scan_state
+        # two titles that came out as one key: worth a line on the page, because the
+        # cure is somebody correcting a year
+        out["clashes"] = list(CLASHES)
         return out

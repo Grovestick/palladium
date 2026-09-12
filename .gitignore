@@ -3,6 +3,8 @@
 config.json
 invites.json
 library.json
+# what was fetched from a pack, and who asked: keys in it, and nobody else's business
+torrents.json
 
 # The library itself, and what it collected: someone else's copy is meaningless, and
 # it records what has been watched and how far.
@@ -73,3 +75,6 @@ pd_built.py
 # made from what is already in this repository.
 site/server.json
 site/tools/
+
+# the key that opens the fault page; never in the repository
+.faults-key

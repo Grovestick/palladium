@@ -15,6 +15,7 @@ Key space (the client only ever passes these back to us):
 import json
 import os
 import re
+from pd_library import is_episode, is_title
 import threading
 import time
 
@@ -157,9 +158,17 @@ def subtitle_verified(key, language=None):
     return next(iter(marked.values()), "")
 
 
+def episode_named(episode_id):
+    """An episode's key from its row. The row holds the whole key now, e and all; an e
+    put in front of it again looked up a key that does not exist, and every verified
+    subtitle read as unverified."""
+    k = str(episode_id or "")
+    return k if k.startswith("e") else "e" + k
+
+
 def subtitle_confirmed(episode_id):
     """The same question, asked the way an episode row asks it."""
-    return subtitle_verified("e%s" % episode_id)
+    return subtitle_verified(episode_named(episode_id))
 
 
 _ORDINARY = {"the", "web", "dvd", "bluray", "brrip", "webrip", "hdtv", "srt",
@@ -317,7 +326,7 @@ def best_first(rows):
     """
     # Size first. Height put a trailer beside the film it came with at the top of the
     # list - a 1080p two-minute extra outranks a 720p feature on picture, and it is
-    # the copy that got played. Nothing in a film folder is bigger than the film.
+    # the cache that got played. Nothing in a film folder is bigger than the film.
     ordered = sorted(rows, key=lambda r: ((r["size"] or 0), (r["height"] or 0),
                                           (r["bitrate"] or 0)),
                      reverse=True)
@@ -387,7 +396,7 @@ def media_block(rows, key_prefix="/parts/", aside="", picked="", proved="",
         out_of_sight = hidden_tracks(r["id"])
         # what is verified for this title, by language: read once, before the tracks
         # that ask about it. An episode knows its own; a film is told by the caller.
-        marked = (verified_records("e%s" % r["episode_id"]) if r["episode_id"]
+        marked = (verified_records(episode_named(r["episode_id"])) if r["episode_id"]
                   else verified_records(proved))
         for s in subs:
             if (s.get("index") or 0) in out_of_sight:
@@ -451,7 +460,7 @@ def media_block(rows, key_prefix="/parts/", aside="", picked="", proved="",
         height = r["height"] or 0
         out.append({
             "id": r["id"],
-            # the copy this viewer settled on, if it is this one
+            # the cache this viewer settled on, if it is this one
             "picked": bool(copy) and r["path"] == copy,
             "container": container_of(r),
             "videoCodec": r["vcodec"], "audioCodec": r["acodec"],
@@ -506,25 +515,47 @@ class LocalAPI:
     def aside(self, value):
         self._asking.aside = value
 
-    # Where a casual playing has got to, per title. Set by the server before it hands
-    # anything over, and written back through `casual_note` - the library's own record
-    # of what has been watched is left alone, because putting something on is not
-    # watching it.
+    # The shelves this viewer is shuffling, and what those shelves are called. Set by
+    # the server the same way, and read the same way - a plain attribute on the api
+    # object is written to one thing and read from another, which is why Continue
+    # watching had no row for a shelf that plainly had a place in it.
     @property
-    def casual_at(self):
-        return self._mine("casual_at", {})
+    def shuffles(self):
+        return self._mine("shuffles", {})
 
-    @casual_at.setter
-    def casual_at(self, value):
-        self._asking.casual_at = value
+    @shuffles.setter
+    def shuffles(self, value):
+        self._asking.shuffles = value
 
     @property
-    def casual_note(self):
-        return self._mine("casual_note", None)
+    def shelf_names(self):
+        return self._mine("shelf_names", {})
 
-    @casual_note.setter
-    def casual_note(self, value):
-        self._asking.casual_note = value
+    @shelf_names.setter
+    def shelf_names(self, value):
+        self._asking.shelf_names = value
+
+    #: Set by the server before it hands anything over: where a shuffled playing on
+    #: one shelf has got to. The library's own record of what has been watched is left
+    #: alone, because putting something on is not watching it.
+    @property
+    def shelf_note(self):
+        return self._mine("shelf_note", None)
+
+    @shelf_note.setter
+    def shelf_note(self, value):
+        self._asking.shelf_note = value
+
+    #: Set by the server: drop one title's place from every shelf keeping it. What
+    #: a shelf keeps is where a playing got to, and only a playing off that shelf says
+    #: which shelf it was - so finishing one any other way left the place standing.
+    @property
+    def shelf_forget(self):
+        return self._mine("shelf_forget", None)
+
+    @shelf_forget.setter
+    def shelf_forget(self, value):
+        self._asking.shelf_forget = value
 
     #: what the client asking calls itself, set per request by the server
     @property
@@ -628,7 +659,8 @@ class LocalAPI:
         """
         row = con.execute(
             "SELECT position, duration, COALESCE(marked, 0) marked FROM progress "
-            "WHERE key=? AND who=?", (str(key), self.who)).fetchone()
+            "WHERE key=? AND who=? AND COALESCE(casual, 0) = 0",
+            (str(key), self.who)).fetchone()
         if row and row["marked"]:
             return True                    # said by hand, which settles it
         if not (row and row["duration"] and
@@ -695,15 +727,15 @@ class LocalAPI:
         key = str(key)
         if key.startswith("e"):
             return [key]
-        m = re.match(r"^(\d+)-s(\d+)$", key)
+        m = re.match(r"^([0-9a-f]{12})-s(\d+)$", key)
         if m:
             rows = con.execute("SELECT id FROM episode WHERE item_id=? AND season=?",
-                               (int(m.group(1)), int(m.group(2)))).fetchall()
-            return ["e%d" % r["id"] for r in rows]
-        if key.isdigit():
+                               (m.group(1), int(m.group(2)))).fetchall()
+            return [str(r["id"]) for r in rows]
+        if is_title(key):
             rows = con.execute("SELECT id FROM episode WHERE item_id=?",
-                               (int(key),)).fetchall()
-            return ["e%d" % r["id"] for r in rows] or [key]      # a film is itself
+                               (str(key),)).fetchall()
+            return [str(r["id"]) for r in rows] or [key]      # a film is itself
         return [key]
 
     def _set_watched(self, con, key, watched):
@@ -735,10 +767,10 @@ class LocalAPI:
         try:
             if key.startswith("e"):
                 row = con.execute("SELECT duration FROM file WHERE episode_id=?",
-                                  (int(key[1:]),)).fetchone()
+                                  (key,)).fetchone()
             else:
                 row = con.execute("SELECT duration FROM file WHERE item_id=? "
-                                  "AND episode_id IS NULL", (int(key),)).fetchone()
+                                  "AND episode_id IS NULL", (str(key),)).fetchone()
         except (TypeError, ValueError):
             return 1.0
         return float(row["duration"]) if row and row["duration"] else 1.0
@@ -755,6 +787,7 @@ class LocalAPI:
         out = {
             "ratingKey": str(row["id"]), "type": "movie", "title": row["title"],
             "titleSort": row["sort_title"], "year": row["year"],
+            "genres": [g.strip() for g in (row["genres"] or "").split(",") if g.strip()],
             "summary": row["overview"] or "", "rating": row["rating"],
             "duration": dur or ((row["runtime"] or 0) * 60000),
             "thumb": f"/art/{row['id']}/poster" if row["poster"] else None,
@@ -788,7 +821,7 @@ class LocalAPI:
         # how much of the series this viewer has finished, for the tick on the poster
         seen = sum(1 for r in con.execute("SELECT id FROM episode WHERE item_id=?",
                                           (row["id"],)).fetchall()
-                   if self._watched(con, "e%d" % r["id"]))
+                   if self._watched(con, str(r["id"])))
         return {
             # nothing rather than null: a client that reads it as text writes the word
             "originallyAvailableAt": aired or (
@@ -796,6 +829,7 @@ class LocalAPI:
             "ratingKey": str(row["id"]), "type": "show", "title": row["title"],
             "titleSort": row["sort_title"], "year": row["year"],
             "summary": row["overview"] or "", "leafCount": eps, "childCount": seasons,
+            "genres": [g.strip() for g in (row["genres"] or "").split(",") if g.strip()],
             "thumb": f"/art/{row['id']}/poster" if row["poster"] else None,
             "guid": f"imdb://{row['imdb_id']}" if row["imdb_id"] else None,
             "addedAt": row["added"],
@@ -827,19 +861,20 @@ class LocalAPI:
         show = show or con.execute("SELECT * FROM item WHERE id=?", (row["item_id"],)).fetchone()
         files = self._files(con, episode_id=row["id"])
         dur = int((files[0]["duration"] or 0) * 1000) if files else 0
-        prog = self._progress(con, "e%d" % row["id"])
+        prog = self._progress(con, str(row["id"]))
         out = {
-            "ratingKey": "e%d" % row["id"], "type": "episode",
+            "ratingKey": str(row["id"]), "type": "episode",
             "title": row["title"] or ("Episode %d" % row["number"]),
             "summary": row["overview"] or "", "index": row["number"],
             "parentIndex": row["season"], "duration": dur,
             "grandparentTitle": show["title"] if show else "",
             "grandparentRatingKey": str(row["item_id"]),
-            "parentRatingKey": "%d-s%d" % (row["item_id"], row["season"]),
+            "genres": [g.strip() for g in ((show["genres"] if show else "") or "").split(",") if g.strip()],
+            "parentRatingKey": "%s-s%d" % (row["item_id"], row["season"]),
             "grandparentThumb": f"/art/{row['item_id']}/poster" if show and show["poster"] else None,
             "thumb": f"/art/{row['item_id']}/poster" if show and show["poster"] else None,
             "originallyAvailableAt": row["aired"],
-            "viewCount": 1 if self._watched(con, "e%d" % row["id"]) else 0,
+            "viewCount": 1 if self._watched(con, str(row["id"])) else 0,
             "maxHeight": max([self.frame_lines(f) for f in files] or [0]),
             # what the file calls this episode, against what the season does: a
             # release one ahead is filed by title rather than by number, and the
@@ -859,8 +894,8 @@ class LocalAPI:
             out["Media"] = media_block(
                 files,
                 aside=((show["title"] if show else "") + " " + (row["title"] or "")),
-                picked=self.picked_subtitle("e%d" % row["id"]),
-                copy=self.picked_copy("e%d" % row["id"]))
+                picked=self.picked_subtitle(str(row["id"])),
+                copy=self.picked_copy(str(row["id"])))
         return out
 
     # ---- endpoints ----------------------------------------------------------
@@ -883,7 +918,7 @@ class LocalAPI:
         if path == "/library/sections":
             return {"size": len(SECTIONS), "Directory": SECTIONS}
 
-        m = re.match(r"^/library/matches/(\d+)$", path)
+        m = re.match(r"^/library/matches/([0-9a-f]{12})$", path)
         if m:
             # what else this title could be, for somebody to choose from when the
             # first answer TMDB gave was the wrong programme
@@ -907,6 +942,22 @@ class LocalAPI:
                         tally[g] = tally.get(g, 0) + 1
             listed = [{"title": g, "count": n} for g, n in
                       sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
+            return {"size": len(listed), "Directory": listed}
+
+        if path == "/library/decades":
+            # which decades the shelves actually hold, newest first. A decade nobody
+            # has anything from is not worth offering, and a title with no year is
+            # from no decade rather than from the first one.
+            kind = one("type", "movie")
+            rows = con.execute("SELECT year, COUNT(*) c FROM item "
+                               "WHERE type=? AND year > 0 GROUP BY year",
+                               (kind,)).fetchall()
+            tally = {}
+            for r in rows:
+                era = (r["year"] // 10) * 10
+                tally[era] = tally.get(era, 0) + r["c"]
+            listed = [{"title": "%ds" % era, "decade": era, "count": n}
+                      for era, n in sorted(tally.items(), reverse=True)]
             return {"size": len(listed), "Directory": listed}
 
         m = re.match(r"^/library/sections/(\d+)/all$", path)
@@ -962,12 +1013,28 @@ class LocalAPI:
             # one genre at a time: the lists are short enough to sift here, and it
             # keeps the ordering above from having to know about it
             want = one("genre", "").strip().lower()
-            if want:
+            # several genres, comma-joined: a title carrying all of them (sci-fi and comedy)
+            wants = {g.strip() for g in want.split(",") if g.strip()}
+            if wants:
                 rows = [r for r in rows
-                        if want in [g.strip().lower()
-                                    for g in (r["genres"] or "").split(",")]]
+                        if wants <= {g.strip().lower()
+                                     for g in (r["genres"] or "").split(",")}]
+            # and one decade at a time, read the way people say it: 80 or 1980 both
+            # mean the eighties. A title with no year is in no decade rather than in
+            # the first one - a nought is what an unidentified film is written down
+            # as, not a claim about when it was made.
+            era = one("decade", "").strip()
+            if era.isdigit():
+                first = int(era)
+                if first < 100:
+                    first += 1900 if first >= 30 else 2000
+                first -= first % 10
+                rows = [r for r in rows
+                        if (r["year"] or 0) and first <= r["year"] <= first + 9]
             items = [self._movie(con, r, brief=True) if kind == "movie" else self._show(con, r)
                      for r in rows]
+            if kind == "movie" and not sort.startswith("quality:"):
+                items = self._with_offered(items, sort, want, era)
             return self._page(items, q)
 
         m = re.match(r"^/library/sections/(\d+)/recentlyReleased$", path)
@@ -986,6 +1053,17 @@ class LocalAPI:
                 rows = con.execute("SELECT * FROM item WHERE type='movie' ORDER BY added DESC "
                                    "LIMIT 100").fetchall()
                 items = [self._movie(con, r, brief=True) for r in rows]
+                # a film from a torrent pack is added the moment somebody asks for it, and
+                # stays at the top once it has been scanned in
+                try:
+                    import pd_torrents
+                    coming = [o for o in pd_torrents.offered()
+                              if (o.get("offer") or {}).get("state") in ("queued", "downloading", "done")]
+                except Exception:
+                    coming = []
+                if coming:
+                    items = sorted(items + coming, key=lambda x: int(x.get("addedAt") or 0),
+                                   reverse=True)[:100]
             else:
                 # A season at a time. Adding a series used to put one card on the shelf
                 # per episode - twenty-two of the same programme, pushing everything
@@ -1017,7 +1095,7 @@ class LocalAPI:
                         "ON i.id=e.item_id WHERE e.season=? AND e.number=?",
                         (season, number)):
                     if flatten_title(row["title"]) == show:
-                        return {"key": "e%d" % row["id"]}
+                        return {"key": str(row["id"])}
                 return {"key": ""}
             plain = flatten_title(one("title") or "")
             year = one("year") or ""
@@ -1029,51 +1107,6 @@ class LocalAPI:
                     continue
                 return {"key": str(row["id"])}
             return {"key": ""}
-
-        if path == "/library/casual/pool":
-            # Everything the marked titles amount to: a film is one thing, a series is
-            # all of its episodes. Keys only - this is the hat, not the shelf.
-            keys = [k for k in (q.get("keys", [""])[0] or "").split(",") if k]
-            out = []
-            # the same thing grouped by where it came from, so a rotation can take one
-            # episode of each programme in turn rather than one thing at random
-            groups = []
-            for key in keys:
-                before = len(out)
-                if key.startswith("e"):
-                    out.append(key)
-                    groups.append([key])
-                    continue
-                # a season, marked from a television: its own episodes, in order. The
-                # pool understood films, programmes and single episodes, so a season
-                # marked for the shuffle quietly contributed nothing at all.
-                season = re.match(r"^(\d+)-s(\d+)$", key)
-                if season:
-                    got = ["e%d" % r["id"] for r in con.execute(
-                        "SELECT id FROM episode WHERE item_id=? AND season=? "
-                        "ORDER BY number",
-                        (int(season.group(1)), int(season.group(2)))).fetchall()]
-                    if got:
-                        out += got
-                        groups.append(got)
-                    continue
-                if not key.isdigit():
-                    continue
-                row = con.execute("SELECT type FROM item WHERE id=?",
-                                  (int(key),)).fetchone()
-                if not row:
-                    continue
-                if row["type"] == "movie":
-                    out.append(key)
-                else:
-                    # a programme brings its episodes, so one with two hundred of them
-                    # is not as likely to come up as a single film
-                    out += ["e%d" % r["id"] for r in con.execute(
-                        "SELECT id FROM episode WHERE item_id=? ORDER BY season, number",
-                        (int(key),)).fetchall()]
-                if len(out) > before:
-                    groups.append(out[before:])
-            return {"size": len(out), "keys": out, "groups": groups}
 
         if path == "/library/watchlist":
             # the keys come from the caller's own settings; this only turns them into
@@ -1099,7 +1132,8 @@ class LocalAPI:
             # window is about how far back to look, not how much to show.
             rows = con.execute(
                 "SELECT key, position, duration, updated, COALESCE(marked, 0) marked "
-                "FROM progress WHERE who=? ORDER BY updated DESC LIMIT 600",
+                "FROM progress WHERE who=? AND COALESCE(casual, 0) = 0 "
+                "ORDER BY updated DESC LIMIT 600",
                 (self.who,)).fetchall()
             items, seen, households = [], set(), set()
             for r in rows:
@@ -1143,7 +1177,64 @@ class LocalAPI:
                 if family in households:
                     continue
                 households.add(family)
-                items.append(self.metadata_for(con, key, brief=True))
+                row = self.metadata_for(con, key, brief=True)
+                if row:
+                    # when it was last watched, which is what the shelf is ordered by.
+                    # Only the shuffled rows said, so everything else sorted as nought
+                    # and the thing watched five minutes ago landed anywhere.
+                    row["lastViewedAt"] = int(r["updated"] or 0)
+                items.append(row)
+
+            # A shelf being shuffled gets one row, and one row is the whole point: a
+            # hat of two hundred episodes putting each one it touched onto the shelf
+            # is what made Continue watching unreadable in the first place. What the
+            # row shows is what somebody would press play on - whatever was left
+            # part-way, and otherwise whatever the hat has drawn next.
+            for cid, round_now in (self._mine("shuffles", {}) or {}).items():
+                if not isinstance(round_now, dict):
+                    continue
+                places = round_now.get("at") or {}
+
+                def when(value):
+                    return int(value.get("when") or 0) if isinstance(value, dict) else 0
+
+                def seconds(value):
+                    return (int(value.get("at") or 0) if isinstance(value, dict)
+                            else int(value or 0))
+
+                key, at = "", 0
+                # the title the round is on - the last drawn, until it is finished - and
+                # where it was left. Other titles left part-way on the shelf are not it.
+                played = [str(k) for k in (round_now.get("played") or [])]
+                if played and played[-1] != str(round_now.get("done") or ""):
+                    key = played[-1]
+                    at = seconds(places[key]) if key in places else 0
+                if not key:
+                    ahead = round_now.get("queue") or []
+                    key = str(ahead[0]) if ahead else ""
+                if not key:
+                    continue
+                name = (self._mine("shelf_names", {}) or {}).get(str(cid)) or "Shuffle"
+                # The shelf's own place stands beside an ordinary one for the same
+                # film rather than replacing it. Putting something on and later
+                # choosing it are two viewings of one title at two different seconds,
+                # and collapsing them into one row is what made it impossible to see
+                # which was which. Both stand; the badge says which is the shelf's.
+                one = self.metadata_for(con, str(key), brief=True)
+                if not one:
+                    continue
+                # what the card says across its poster, and where pressing it starts
+                one["shuffle"] = name
+                one["shuffleId"] = str(cid)
+                if at > 30:
+                    one["viewOffset"] = int(at) * 1000
+                # when the shelf was last played, so the row sorts among the others by
+                # how recent it is. Without it the row had no date at all: a client
+                # ordering the shelf by when things were last watched put it at the
+                # very end, where a page of a dozen cards cuts it off - it appeared
+                # for as long as the first answer was on screen and then went.
+                one["lastViewedAt"] = int(when(places.get(key)) if places else 0) or                     int(time.time())
+                items.append(one)
             return self._page([i for i in items if i], q)
 
         if path == "/prev":
@@ -1164,42 +1255,51 @@ class LocalAPI:
             # opening one title is the moment to find out what soundtracks it has,
             # for anything indexed before the library recorded them
             key = m.group(1)
+            if key.startswith("o"):
+                # a film on offer from a torrent pack - and once it has come in, the film
+                # itself, so a page left open on the offer turns into the film's own
+                import pd_torrents
+                here = pd_torrents.arrived(key)
+                if not here:
+                    offer = pd_torrents.metadata(key)
+                    return {"size": 1, "Metadata": [offer]} if offer else None
+                key = here
             try:
                 if key.startswith("e"):
                     files = con.execute("SELECT * FROM file WHERE episode_id=?",
-                                        (int(key[1:]),)).fetchall()
-                elif key.isdigit():
+                                        (key,)).fetchall()
+                elif is_title(key):
                     files = con.execute("SELECT * FROM file WHERE item_id=? AND "
-                                        "episode_id IS NULL", (int(key),)).fetchall()
+                                        "episode_id IS NULL", (str(key),)).fetchall()
                 else:
                     files = []
                 self.learn_audio(con, files)
             except Exception:
                 pass                       # a soundtrack list is not worth a failure
-            item = self.metadata_for(con, m.group(1))
+            item = self.metadata_for(con, key)
             return {"size": 1, "Metadata": [item]} if item else None
 
         m = re.match(r"^/library/metadata/([^/]+)/children$", path)
         if m:
             key = m.group(1)
-            season = re.match(r"^(\d+)-s(\d+)$", key)
+            season = re.match(r"^([0-9a-f]{12})-s(\d+)$", key)
             if season:                                   # a season: its episodes
                 rows = con.execute("""SELECT * FROM episode WHERE item_id=? AND season=?
                                       ORDER BY number""",
-                                   (int(season.group(1)), int(season.group(2)))).fetchall()
+                                   (season.group(1), int(season.group(2)))).fetchall()
                 return {"size": len(rows),
                         "Metadata": [self._episode(con, r, brief=True) for r in rows]}
-            if key.isdigit():                            # a show: its seasons
-                show = con.execute("SELECT * FROM item WHERE id=?", (int(key),)).fetchone()
+            if is_title(key):                            # a show: its seasons
+                show = con.execute("SELECT * FROM item WHERE id=?", (str(key),)).fetchone()
                 rows = con.execute("""SELECT season, COUNT(*) c FROM episode WHERE item_id=?
-                                      GROUP BY season ORDER BY season""", (int(key),)).fetchall()
+                                      GROUP BY season ORDER BY season""", (str(key),)).fetchall()
                 return {"size": len(rows), "Metadata": [{
                     "ratingKey": "%s-s%d" % (key, r["season"]), "type": "season",
                     "viewedLeafCount": sum(
                         1 for e in con.execute(
                             "SELECT id FROM episode WHERE item_id=? AND season=?",
-                            (int(key), r["season"])).fetchall()
-                        if self._watched(con, "e%d" % e["id"])),
+                            (str(key), r["season"])).fetchall()
+                        if self._watched(con, str(e["id"]))),
                     "title": "Season %d" % r["season"], "index": r["season"],
                     "leafCount": r["c"], "parentRatingKey": key,
                     "thumb": f"/art/{key}/poster" if show and show["poster"] else None,
@@ -1296,6 +1396,24 @@ class LocalAPI:
             # put the titles that carry them there
             if not place:
                 hubs.sort(key=lambda h: ("movie", "show", "episode").index(h["type"]))
+            # films on offer from a torrent pack, among what is already here
+            if spelt and len(spelt.strip()) >= 2:
+                try:
+                    import pd_torrents
+                    low = spelt.strip().lower()
+                    found = [o for o in pd_torrents.offered()
+                             if low in (o.get("title") or "").lower()][:40]
+                except Exception:
+                    found = []
+                if found:
+                    # among the films, greyed, rather than on a shelf of their own: the list
+                    # is sorted and filtered as one
+                    films = next((h for h in hubs if h["type"] == "movie"), None)
+                    if films:
+                        films["Metadata"].extend(found)
+                    else:
+                        hubs.insert(len(hubs) if place else 0,
+                                    {"type": "movie", "title": "Films", "Metadata": found})
             # and under those, what the word means rather than what it spells
             listed = lambda rows: [self._movie(con, r, brief=True) if r["type"] == "movie"
                                    else self._show(con, r) for r in rows]
@@ -1307,10 +1425,25 @@ class LocalAPI:
                              "Metadata": listed(dated)})
             return {"size": len(hubs), "Hub": hubs}
 
-        m = re.match(r"^/art/(\d+)/(poster|backdrop)$", path)
+        m = re.match(r"^/art/(o[0-9a-f]{12})/(poster|backdrop)$", path)
+        if m:
+            # a film on offer from a torrent pack: its picture from TMDB, kept like any
+            import pd_torrents
+            local = self.lib.artwork(pd_torrents.art_of(m.group(1), m.group(2)),
+                                     "w500" if m.group(2) == "poster" else "w780")
+            if not local:
+                return None
+            want = int(one("w", "0") or 0)
+            if want:
+                sized = self._resized(local, want)
+                if sized:
+                    local = sized
+            with open(local, "rb") as f:
+                return ("image/jpeg", f.read())
+        m = re.match(r"^/art/([0-9a-f]{12})/(poster|backdrop)$", path)
         if m:
             row = con.execute("SELECT poster, backdrop FROM item WHERE id=?",
-                              (int(m.group(1)),)).fetchone()
+                              (m.group(1),)).fetchone()
             tmdb_path = row[m.group(2)] if row else None
             local = self.lib.artwork(tmdb_path, "w500" if m.group(2) == "poster" else "w780")
             if not local:
@@ -1328,12 +1461,19 @@ class LocalAPI:
             key = one("key") or one("ratingKey")
             if key:
                 self._set_watched(con, key, path.endswith("/:/scrobble"))
+                if path.endswith("/:/scrobble") and self.shelf_forget:
+                    self.shelf_forget(key)
             return {"size": 0}
 
         if path == "/:/timeline":                        # the client reports progress here
             key = one("ratingKey")
             pos = float(one("time", "0") or 0) / 1000.0
             dur = float(one("duration", "0") or 0) / 1000.0
+            # Near the end is finished, whoever was playing it and from wherever. The
+            # shelf's own rule only ran for a playing that named the shelf, so an
+            # episode watched from its page stayed on the shelf as half-watched.
+            if key and dur and pos / dur > 0.95 and self.shelf_forget:
+                self.shelf_forget(key)
             if key and one("state", "playing") != "stopped":
                 self.log_watch(con, key, pos, dur, one("device", "") or "",
                                one("client", ""),
@@ -1344,15 +1484,36 @@ class LocalAPI:
             # server's side would hide the truth from the watch log and from Now
             # playing, which are the two places it has to be right.
             if key and one("casual", "") in ("1", "true", "yes"):
-                # Watched state is not touched: no progress row, so nothing appears in
-                # Continue watching, nothing is marked seen, and no series is moved on.
-                # The place is kept in the shuffle's own notes instead, which is the
-                # only thing that can resume it.
-                if self.casual_note:
-                    self.casual_note(key, pos, dur)
+                # Watched state is not touched: nothing is marked seen and no series is
+                # moved on. The place is kept in two places answering two questions -
+                # the shuffle's own notes, which resume Casual play, and a progress row
+                # marked casual, which resumes the film if it is opened by name. The
+                # mark keeps it off Continue watching and out of the cache queue.
+                shelf = one("shelf", "")
+                if shelf and self.shelf_note:
+                    # a shelf keeps its own place: it is what Carry on reads, and what
+                    # the one row on Continue watching is built out of
+                    self.shelf_note(shelf, key, pos, dur)
+                if (dur and pos / dur > 0.95) or pos < 30:
+                    # the rule the shuffle's own notes keep: near the end is finished,
+                    # and the first half minute is not a place worth coming back to.
+                    # Only a casual row - a film somebody chose is not touched here.
+                    con.execute("DELETE FROM progress WHERE who=? AND key=? "
+                                "AND COALESCE(casual, 0) = 1", (self.who, key))
+                else:
+                    con.execute(
+                        """INSERT INTO progress (key, position, duration, updated,
+                                                 who, casual)
+                           VALUES (?,?,?,?,?,1)
+                           ON CONFLICT(who, key) DO UPDATE SET
+                           position=excluded.position, duration=excluded.duration,
+                           updated=excluded.updated, casual=1
+                           WHERE COALESCE(progress.marked, 0) = 0""",
+                        (key, pos, dur, int(time.time()), self.who))
+                con.commit()
                 self.note_playing(key, pos, dur, one("state", "playing"),
                                   one("device", "") or "", one("client", ""),
-                                  one("client", ""))
+                                  one("client", ""), casual=True, shelf=shelf)
                 return {"size": 0}
             if key:
                 # A "stopped" on its own does not put something in Continue watching.
@@ -1367,11 +1528,27 @@ class LocalAPI:
                 if not (stopping and not known):
                     self.note_uncasual(con, key, one("device", "") or "",
                                        one("client", ""), one("state", "playing"))
-                    con.execute("""INSERT INTO progress (key, position, duration, updated, who)
-                                   VALUES (?,?,?,?,?)
+                    # casual back to nought: whatever the shuffle left there,
+                    # somebody has chosen this one and it belongs on the shelf
+                    # A mark made earlier gives way to a viewing that is really under
+                    # way: a minute after the mark, past the first half minute, short of
+                    # the watched line. Left as it was, a film marked watched stayed off
+                    # Continue watching however far into it somebody got the next time.
+                    # The minute keeps a player that is closing as the mark is made from
+                    # taking it straight back.
+                    con.execute("""INSERT INTO progress (key, position, duration,
+                                                         updated, who, casual)
+                                   VALUES (?,?,?,?,?,0)
                                    ON CONFLICT(who, key) DO UPDATE SET
+                                   marked=CASE
+                                       WHEN COALESCE(progress.marked, 0) = 1
+                                        AND excluded.updated - progress.updated > 60
+                                        AND excluded.position > 30
+                                        AND (excluded.duration <= 0
+                                             OR excluded.position < 0.95 * excluded.duration)
+                                       THEN 0 ELSE progress.marked END,
                                    position=excluded.position, duration=excluded.duration,
-                                   updated=excluded.updated""",
+                                   updated=excluded.updated, casual=0""",
                                 (key, pos, dur, int(time.time()), self.who))
                     con.commit()
                 # the same post tells the panel what is on screen: state and device are
@@ -1475,7 +1652,7 @@ class LocalAPI:
         con.commit()
 
     def note_playing(self, key, position, duration, state, device, client="",
-                     kind=""):
+                     kind="", casual=False, shelf=""):
         """Remember what one client is doing. Keyed by device, so two do not fight."""
         who = device or "player"
         if state == "stopped":
@@ -1509,6 +1686,12 @@ class LocalAPI:
                     "client": client or "",
                     # and which build of it, and what sort of thing it is running on
                     "app": self.app_now or "", "kind": kind or "",
+                    # Whose it is, and whether they chose it. Putting something on is
+                    # not a reason to copy the rest of the series, and the copy queue
+                    # is the only thing that reads either of these.
+                    "who": self.who, "casual": bool(casual),
+                    # which shelf it was drawn from, so the place can be kept there
+                    "shelf": str(shelf or ""),
                     "began": began or time.time(),
                     "updated": time.time()}
 
@@ -1532,7 +1715,9 @@ class LocalAPI:
                     "title": row.get("title") or "", "began": int(row.get("began") or 0),
                     "key": str(row.get("key") or ""),
                     # which build is playing it, and what sort of thing it is
-                    "app": row.get("app") or "", "kind": row.get("kind") or ""}
+                    "app": row.get("app") or "", "kind": row.get("kind") or "",
+                    "who": row.get("who") or "",
+                    "casual": bool(row.get("casual"))}
             # by key where the client gave one, and by title as well, since an older
             # client says only what it is watching
             if row.get("key"):
@@ -1564,7 +1749,7 @@ class LocalAPI:
         out, seen = [], set()
         # which season each marked episode belongs to, in one question rather than one
         # per episode
-        ids = [int(k[1:]) for k in keys if k.startswith("e") and k[1:].isdigit()]
+        ids = [k for k in keys if is_episode(k)]
         home = {}
         if ids:
             marks = ",".join("?" * len(ids))
@@ -1580,13 +1765,13 @@ class LocalAPI:
                 (item_id, season)).fetchone()["c"]
         held = {}
         for key in keys:
-            if key.startswith("e") and key[1:].isdigit():
-                where = home.get(int(key[1:]))
+            if is_episode(key):
+                where = home.get(key)
                 if where:
                     held.setdefault(where, []).append(key)
         for key in keys:
-            if key.startswith("e") and key[1:].isdigit():
-                where = home.get(int(key[1:]))
+            if is_episode(key):
+                where = home.get(key)
                 if where and where in held:
                     if where in seen:
                         continue
@@ -1608,16 +1793,25 @@ class LocalAPI:
                         where).fetchone()
                     card = self._season_card(con, row) if row else None
                     if card:
-                        card["ratingKey"] = "%d-s%d" % where
+                        card["ratingKey"] = "%s-s%d" % where
                         whole = counted.get(where, len(mine))
                         card["leafCount"] = whole
                         card["title"] = card.get("title") or "Season %d" % where[1]
                         # what is actually on the shelf, when it is not the whole thing
                         if len(mine) < whole:
                             card["shelfCount"] = len(mine)
+                        # and which episodes it stands for, in order. A season card is
+                        # a way of reading the shelf; playing one has to play these.
+                        # Asking the library for the season answers with the
+                        # programme, so Play opened the show and started nothing.
+                        card["holds"] = sorted(
+                            mine,
+                            key=lambda k: (con.execute(
+                                "SELECT number FROM episode WHERE id=?",
+                                (k,)).fetchone() or [0])[0] or 0)
                         out.append(card)
                     continue
-            if key.isdigit():
+            if is_title(key):
                 # marked before a whole programme was kept as its episodes: the shelf
                 # still holds the show itself, and it reads as seasons too
                 seasons = con.execute(
@@ -1625,7 +1819,7 @@ class LocalAPI:
                               MAX(COALESCE(f.ctime, f.mtime)) added
                        FROM episode e JOIN file f ON f.episode_id=e.id
                        WHERE e.item_id=? GROUP BY e.season ORDER BY e.season""",
-                    (int(key),)).fetchall()
+                    (str(key),)).fetchall()
                 if seasons:
                     for row in seasons:
                         card = self._season_card(con, row)
@@ -1650,7 +1844,7 @@ class LocalAPI:
         watched = sum(1 for e in con.execute(
             "SELECT id FROM episode WHERE item_id=? AND season=?",
             (row["item_id"], row["season"])).fetchall()
-            if self._watched(con, "e%d" % e["id"]))
+            if self._watched(con, str(e["id"])))
         return {
             "ratingKey": "%s-s%d" % (key, row["season"]), "type": "season",
             "title": "Season %d" % (row["season"] or 0),
@@ -1663,6 +1857,7 @@ class LocalAPI:
             "parentRatingKey": key, "grandparentRatingKey": key,
             "addedAt": int(row["added"] or 0),
             "year": show["year"],
+            "genres": [g.strip() for g in (show["genres"] or "").split(",") if g.strip()],
             "thumb": "/art/%s/poster" % key if show["poster"] else None,
         }
 
@@ -1678,7 +1873,9 @@ class LocalAPI:
         from pd_gpu import FFMPEG
         ffprobe = FFMPEG.replace("ffmpeg.exe", "ffprobe.exe")
         for r in rows:
-            if r["atracks"] is not None:
+            # never asked, which an empty list also means: it is what a probe
+            # that knew nothing about soundtracks wrote for every file it touched
+            if r["atracks"] not in (None, "", "[]"):
                 continue
             info = pd_library.Library.probe(ffprobe, r["path"])
             tracks = (info or {}).get("atracks") or []
@@ -1726,6 +1923,37 @@ class LocalAPI:
         best.pop("moved", None)          # bookkeeping, not something to show
         return {k: v for k, v in best.items() if v is not None}
 
+    def _with_offered(self, items, sort, genre, era):
+        """Films on offer from torrent packs, among the library's own in its order."""
+        try:
+            import pd_torrents
+            offers = pd_torrents.offered()
+        except Exception:
+            return items
+        if not offers:
+            return items
+        wants = {g.strip().lower() for g in str(genre or "").split(",") if g.strip()}
+        if wants:
+            offers = [o for o in offers
+                      if wants <= {g.strip().lower() for g in o.get("genres") or []}]
+        if era.isdigit():
+            first = int(era)
+            if first < 100:
+                first += 1900 if first >= 30 else 2000
+            first -= first % 10
+            offers = [o for o in offers if o.get("year") and first <= o["year"] <= first + 9]
+        field, _, way = sort.partition(":")
+        back = way == "desc"
+        named = lambda x: (x.get("titleSort") or x.get("title") or "").lower()
+        both = items + offers
+        if field in ("year", "originallyAvailableAt"):
+            return sorted(both, key=lambda x: (not x.get("year"),
+                                               -(x.get("year") or 0) if back
+                                               else (x.get("year") or 0), named(x)))
+        if field == "addedAt":
+            return sorted(both, key=lambda x: x.get("addedAt") or 0, reverse=back)
+        return sorted(both, key=named, reverse=back)
+
     def _page(self, items, q):
         # A window into a long list. An older app that asks in the older way gets the
         # whole list rather than a page of it, which is heavier and still correct.
@@ -1737,15 +1965,23 @@ class LocalAPI:
                 "Metadata": items[start:start + size]}
 
     def metadata_for(self, con, key, brief=False):
+        if str(key).startswith("o"):
+            # a film on offer from a torrent pack, wherever a title is asked for - and once
+            # it has come in, the film itself: a page left open on the offer turns into it
+            import pd_torrents
+            here = pd_torrents.arrived(str(key))
+            if here:
+                return self.metadata_for(con, here, brief)
+            return pd_torrents.metadata(str(key))
         if key.startswith("e"):
-            row = con.execute("SELECT * FROM episode WHERE id=?", (int(key[1:]),)).fetchone()
+            row = con.execute("SELECT * FROM episode WHERE id=?", (key,)).fetchone()
             return self._episode(con, row, brief=brief) if row else None
-        season = re.match(r"^(\d+)-s(\d+)$", key)
+        season = re.match(r"^([0-9a-f]{12})-s(\d+)$", key)
         if season:
-            show = con.execute("SELECT * FROM item WHERE id=?", (int(season.group(1)),)).fetchone()
+            show = con.execute("SELECT * FROM item WHERE id=?", (season.group(1),)).fetchone()
             return self._show(con, show) if show else None
-        if key.isdigit():
-            row = con.execute("SELECT * FROM item WHERE id=?", (int(key),)).fetchone()
+        if is_title(key):
+            row = con.execute("SELECT * FROM item WHERE id=?", (str(key),)).fetchone()
             if not row:
                 return None
             return self._movie(con, row, brief=brief) if row["type"] == "movie" \
@@ -1760,15 +1996,18 @@ class LocalAPI:
         empty string is a question with no answer rather than something to fall over.
         """
         key = str(key or "")
-        if not (key[1:] if key.startswith("e") else key).isdigit():
+        # hex, of the length keys are made in - and an e in front of an episode's.
+        # Anything else came from somewhere that does not know what a key is.
+        body = key[1:] if is_episode(key) else key
+        if len(body) != 12 or any(c not in "0123456789abcdef" for c in body):
             return None
         con = self.lib.db()
         try:
             if key.startswith("e"):
-                rows = con.execute("SELECT * FROM file WHERE episode_id=?", (int(key[1:]),)).fetchall()
+                rows = con.execute("SELECT * FROM file WHERE episode_id=?", (key,)).fetchall()
             else:
                 rows = con.execute("SELECT * FROM file WHERE item_id=? AND episode_id IS NULL",
-                                   (int(key),)).fetchall()
+                                   (str(key),)).fetchall()
             if not rows:
                 return None
             # the same order the client was given, or version 1 of two means one file
@@ -1794,7 +2033,9 @@ class LocalAPI:
                     # ffmpeg would take the first, which on a dubbed release is wrong
                     "audio": (auds[pick_audio(auds)].get("index")
                               if auds else None),
-                    "title": os.path.basename(r["path"])}
+                    "title": os.path.basename(r["path"]),
+                    # the row, which is the part the file is read by over the network
+                    "part": r["id"]}
         finally:
             con.close()
 
@@ -1812,7 +2053,7 @@ class LocalAPI:
                     "SELECT e.title AS ep, e.season, e.number, i.id AS show_id, "
                     "i.title AS show, i.poster AS poster "
                     "FROM episode e JOIN item i ON i.id = e.item_id WHERE e.id=?",
-                    (int(str(key)[1:]),)).fetchone()
+                    (str(key),)).fetchone()
                 if not row:
                     return None, None, None
                 return (row["ep"] or row["show"],
@@ -1820,15 +2061,15 @@ class LocalAPI:
                                             row["number"] or 0),
                         # 320 wide: the panel can only halve or quarter an image, so a
                         # 500-wide poster would land at 250 in a 320-wide slot
-                        "/local/art/%d/poster?w=320" % row["show_id"] if row["poster"]
+                        "/local/art/%s/poster?w=320" % row["show_id"] if row["poster"]
                         else None)
             row = con.execute("SELECT id, title, year, poster FROM item WHERE id=?",
-                              (int(key),)).fetchone()
+                              (str(key),)).fetchone()
             if not row:
                 return None, None, None
             return (row["title"],
                     str(row["year"]) if row["year"] else None,
-                    "/local/art/%d/poster?w=320" % row["id"] if row["poster"] else None)
+                    "/local/art/%s/poster?w=320" % row["id"] if row["poster"] else None)
         except Exception:
             return None, None, None
         finally:
@@ -1842,7 +2083,7 @@ class LocalAPI:
         """
         try:
             here = con.execute("SELECT item_id, season, number FROM episode WHERE id=?",
-                               (int(str(key)[1:]),)).fetchone()
+                               (str(key),)).fetchone()
         except (TypeError, ValueError):
             return None
         if not here:
@@ -1853,7 +2094,7 @@ class LocalAPI:
                  AND (e.season < ? OR (e.season = ? AND e.number < ?))
                ORDER BY e.season DESC, e.number DESC LIMIT 1""",
             (here["item_id"], here["season"], here["season"], here["number"])).fetchone()
-        return "e%d" % row["id"] if row else None
+        return str(row["id"]) if row else None
 
     def deck_family(self, con, key):
         """What a Continue watching row belongs to: its programme, or the film itself.
@@ -1866,7 +2107,7 @@ class LocalAPI:
             return key
         try:
             row = con.execute("SELECT item_id FROM episode WHERE id=?",
-                              (int(key[1:]),)).fetchone()
+                              (key,)).fetchone()
         except (TypeError, ValueError):
             return key
         return str(row["item_id"]) if row else key
@@ -1879,7 +2120,7 @@ class LocalAPI:
         """
         try:
             here = con.execute("SELECT item_id, season, number FROM episode WHERE id=?",
-                               (int(str(key)[1:]),)).fetchone()
+                               (str(key),)).fetchone()
         except (TypeError, ValueError):
             return None
         if not here:
@@ -1890,7 +2131,7 @@ class LocalAPI:
                  AND (e.season > ? OR (e.season = ? AND e.number > ?))
                ORDER BY e.season, e.number LIMIT 1""",
             (here["item_id"], here["season"], here["season"], here["number"])).fetchone()
-        return ("e%d" % nxt["id"]) if nxt else None
+        return (str(nxt["id"])) if nxt else None
 
     def title_for(self, key):
         """A title a person would recognise, for the list of what is being watched."""
@@ -1900,20 +2141,36 @@ class LocalAPI:
                 row = con.execute(
                     "SELECT e.title AS ep, e.season, e.number, i.title AS show "
                     "FROM episode e JOIN item i ON i.id = e.item_id WHERE e.id=?",
-                    (int(str(key)[1:]),)).fetchone()
+                    (str(key),)).fetchone()
                 if not row:
                     return "something"
-                return "%s S%dE%d - %s" % (row["show"], row["season"] or 0,
-                                           row["number"] or 0, row["ep"] or "")
+                # a season or a number kept as text passes "or 0" and then
+                # fails %d, which took the whole answer down rather than one title
+                def num(v):
+                    try:
+                        return int(v)
+                    except (TypeError, ValueError):
+                        return 0
+                return "%s S%dE%d - %s" % (row["show"], num(row["season"]),
+                                           num(row["number"]), row["ep"] or "")
             row = con.execute("SELECT title, year FROM item WHERE id=?",
-                              (int(key),)).fetchone()
+                              (str(key),)).fetchone()
             if not row:
                 return "something"
-            return row["title"] + (" (%d)" % row["year"] if row["year"] else "")
+            try:
+                year = int(row["year"] or 0)
+            except (TypeError, ValueError):
+                year = 0
+            return row["title"] + ((" (%d)" % year) if year else "")
         except Exception:
             return "something"
         finally:
             con.close()
+
+    def round_in_words(self, con, one):
+        """One viewer's watchlist, described so another library can place it."""
+        return {"watchlistIs": [w for w in (self.what_it_is(con, k)
+                                            for k in (one.get("watchlist") or [])) if w]}
 
     def what_it_is(self, con, key):
         """What a key is, in words another library would recognise.
@@ -1926,14 +2183,14 @@ class LocalAPI:
             row = con.execute(
                 "SELECT e.season, e.number, i.title FROM episode e "
                 "JOIN item i ON i.id = e.item_id WHERE e.id=?",
-                (int(key[1:]),)).fetchone() if key[1:].isdigit() else None
+                (key,)).fetchone() if is_episode(key) else None
             if not row:
                 return None
             return {"type": "episode", "show": row["title"],
                     "season": row["season"] or 0, "episode": row["number"] or 0}
-        if key.isdigit():
+        if is_title(key):
             row = con.execute("SELECT title, year FROM item WHERE id=?",
-                              (int(key),)).fetchone()
+                              (str(key),)).fetchone()
             if not row:
                 return None
             return {"type": "movie", "title": row["title"], "year": row["year"] or 0}
@@ -1956,7 +2213,7 @@ class LocalAPI:
                     "ON i.id=e.item_id WHERE e.season=? AND e.number=?",
                     (season, number)):
                 if flatten_title(row["title"]) == show:
-                    return "e%d" % row["id"]
+                    return str(row["id"])
             return ""
         plain = flatten_title(said.get("title") or "")
         year = str(said.get("year") or "")
@@ -1990,13 +2247,15 @@ class LocalAPI:
                 if had and int(had["updated"] or 0) >= when:
                     continue
                 con.execute(
-                    """INSERT INTO progress (key, position, duration, updated, who)
-                       VALUES (?,?,?,?,?)
+                    """INSERT INTO progress (key, position, duration, updated, who,
+                                             casual)
+                       VALUES (?,?,?,?,?,?)
                        ON CONFLICT(who, key) DO UPDATE SET
                        position=excluded.position, duration=excluded.duration,
-                       updated=excluded.updated""",
+                       updated=excluded.updated, casual=excluded.casual""",
                     (key, int(row.get("position") or 0),
-                     int(row.get("duration") or 0), when, who))
+                     int(row.get("duration") or 0), when, who,
+                     1 if row.get("casual") else 0))
                 taken += 1
             con.commit()
         finally:
@@ -2010,7 +2269,8 @@ class LocalAPI:
         try:
             for who in who_list or []:
                 for row in con.execute(
-                        """SELECT key, position, duration, updated FROM progress
+                        """SELECT key, position, duration, updated,
+                                  COALESCE(casual, 0) casual FROM progress
                            WHERE who = ? AND updated > ? AND position > 30
                              AND position < duration * 0.95
                            ORDER BY updated DESC LIMIT ?""",
@@ -2021,6 +2281,7 @@ class LocalAPI:
                     out.append({"who": who, "is": said,
                                 "position": int(row["position"] or 0),
                                 "duration": int(row["duration"] or 0),
+                                "casual": int(row["casual"] or 0),
                                 "updated": int(row["updated"] or 0)})
         finally:
             con.close()
@@ -2038,7 +2299,7 @@ class LocalAPI:
             con.close()
         if not row:
             return ""
-        return ("e%d" % row["episode_id"]) if row["episode_id"] else str(row["item_id"])
+        return str(row["episode_id"]) if row["episode_id"] else str(row["item_id"])
 
     def title_for_file(self, file_id):
         """The same, for a file being read directly rather than encoded."""
@@ -2052,7 +2313,7 @@ class LocalAPI:
             con.close()
         if not row:
             return "something"
-        return self.title_for("e%d" % row["episode_id"] if row["episode_id"]
+        return self.title_for(str(row["episode_id"]) if row["episode_id"]
                               else str(row["item_id"]))
 
     def file_facts(self, file_id):

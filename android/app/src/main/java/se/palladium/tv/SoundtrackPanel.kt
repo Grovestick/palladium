@@ -54,18 +54,21 @@ fun SoundtrackPanel(
             usePlatformDefaultWidth = false),
         modifier = Modifier.fillMaxWidth(0.8f),
         containerColor = Skin.Panel,
-        title = { Text("Soundtrack", color = Skin.Fg, fontSize = 22.sp) },
+        title = { Text("Soundtrack", color = Skin.Fg,
+                       fontSize = if (Api.device == "tv") 22.sp else 18.sp) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (tracks.isEmpty()) {
                     Text("Nothing is known about this film's sound.",
-                         color = Skin.Dim, fontSize = 17.sp)
+                         color = Skin.Dim,
+                         fontSize = if (Api.device == "tv") 17.sp else 14.sp)
                 }
                 if (tracks.size == 1) {
                     // it still opens: "which soundtrack am I hearing" is a fair
                     // question when the answer is "the only one there is"
                     Text("This film has one soundtrack.",
-                         color = Skin.Dim, fontSize = 16.sp,
+                         color = Skin.Dim,
+                         fontSize = if (Api.device == "tv") 16.sp else 13.sp,
                          modifier = Modifier.padding(bottom = 10.dp))
                 }
                 tracks.forEach { t ->
@@ -93,14 +96,17 @@ private fun SoundRow(track: AudioTrack, on: Boolean, onPick: () -> Unit) {
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onPick)
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .padding(horizontal = if (Api.device == "tv") 20.dp else 14.dp,
+                     vertical = if (Api.device == "tv") 16.dp else 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(track.label, color = if (on) Skin.Accent else Skin.Fg, fontSize = 19.sp,
+        Text(track.label, color = if (on) Skin.Accent else Skin.Fg,
+             fontSize = if (Api.device == "tv") 19.sp else 15.sp,
              modifier = Modifier.weight(1f))
         if (on) {
             Spacer(Modifier.width(10.dp))
-            Text("playing", color = Skin.Accent, fontSize = 15.sp)
+            Text("playing", color = Skin.Accent,
+                 fontSize = if (Api.device == "tv") 15.sp else 12.sp)
         }
     }
 }

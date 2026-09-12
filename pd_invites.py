@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sharing Palladium with someone outside the house.
+"""Sharing Palladium with someone outside the main server.
 
 A guest gets one link carrying a token. That token is the whole key, so the rules are
 deliberately narrow:
@@ -40,6 +40,10 @@ PUBLIC_PREFIXES = (
 GUEST_PREFIXES = (
     "/local/",          # browse the library and its artwork
     "/gpu/stream",      # play
+    "/gpu/begins",      # where that play will start, asked first
+    "/torrents/get",    # one film from a torrent pack, within their week's limit
+    "/torrents/active", # how far their own download has got: the handler already
+                        # answers a guest with their own rows and nobody else's
     "/gpu/hls",         # the same, in segments, for Safari
     "/gpu/subs",
     "/app",             # the install page and the version check
@@ -47,6 +51,13 @@ GUEST_PREFIXES = (
     "/s/",              # the landing page the invite link opens
     "/invite.png",      # the picture in a chat app's preview card
     "/feedback",        # report a fault, or ask for something
+    # A player saying what it is doing - which machines it found, what it chose, why
+    # it stopped. It was listed among what a guest may write and not among what makes
+    # somebody a guest at all, so every one of these was refused: the only people
+    # whose players could report anything were the ones sitting at the machine, and
+    # the trouble is nearly always somewhere else.
+    "/trace",
+    "/applog",          # and a crash, for the same reason
     "/changes",         # what has been added lately: everyone's business
     "/mood",            # how the screen should be dressed, which is not a secret
     "/where",           # both ways in to this machine, to whoever already has one
@@ -67,7 +78,7 @@ GUEST_PREFIXES = (
     "/casual",          # and which of those are for putting on without choosing
     "/ondeck",          # and what they have put aside from Continue watching
     "/collections",     # their own shelves: made by them, seen by them, like the list
-    "/build",           # which build drew this page. It says nothing about the house:
+    "/build",           # which build drew this page. It says nothing about the main server:
                         # "lan" is already false for anybody reading it from outside
     "/setup.js", "/tizen.js",   # page code the browser loads before it knows who it is
     "/party",           # the watch party: a guest is somebody to watch with
@@ -259,9 +270,16 @@ class Invites:
                 return row
         return None
 
+    #: Whole paths a guest may reach, matched exactly. "/update" says what build a
+    #: machine is running, which is worth showing on any screen; "/update/install"
+    #: replaces the program and is the owner's, so this cannot be a prefix.
+    GUEST_EXACT = ("/update",)
+
     @staticmethod
     def allowed(path):
-        return path == "/" or path.startswith(GUEST_PREFIXES)
+        bare = path.split("?", 1)[0]
+        return (path == "/" or bare in Invites.GUEST_EXACT
+                or path.startswith(GUEST_PREFIXES))
 
     #: whole paths rather than beginnings: "/app" is the install page, and matching it
     #: as a prefix would also have opened /app.js and /applog to anybody

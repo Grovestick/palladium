@@ -46,6 +46,15 @@ GETS = [
     "/settings?device=phone",
     "/nowplaying",
     "/watching",
+    # the pages about the machine that keeps copies. The queue answered 500 for a
+    # day - a name left behind by something that was taken out - and nothing here
+    # asked it, so nothing said so.
+    "/follow",
+    "/follow/queue",
+    "/standby",
+    "/copies",
+    "/copying",
+    "/traffic",
     "/watchlog?limit=5",
     "/marks",
     "/invites",

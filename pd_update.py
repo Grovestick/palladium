@@ -17,6 +17,7 @@ replace, and the copy on disk is somebody's working tree.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -126,6 +127,14 @@ def install(path):
         f.write("@echo off\r\n")
         # let the reply out of the socket before the socket goes
         f.write("ping -n 3 127.0.0.1 >nul\r\n")
+        # Asked to close before being killed. A program killed outright never
+        # tells Windows to take its tray icon away, and Windows leaves the icon
+        # sitting there until somebody happens to hover over it - so every
+        # update left another dead P in the tray, and after a run of updates
+        # there were ten of them. /F stays, a moment later, for one that will
+        # not go on its own.
+        f.write("taskkill /IM palladium.exe >nul 2>&1\r\n")
+        f.write("ping -n 4 127.0.0.1 >nul\r\n")
         f.write("taskkill /F /IM palladium.exe >nul 2>&1\r\n")
         f.write("taskkill /F /IM palladium-server.exe >nul 2>&1\r\n")
         f.write("ping -n 3 127.0.0.1 >nul\r\n")
@@ -169,6 +178,12 @@ def beside(here_version, folders):
             if not (low.startswith("palladium-setup") and low.endswith(".exe")):
                 continue
             version = name[len("Palladium-Setup-"):-len(".exe")]
+            # and it has to look like a version. A build that fails part way leaves a
+            # file named by the clock, and ten digits read as a version number beat
+            # every real one - so the machine installed a stale build over a newer
+            # one and called it an update.
+            if not re.match(r"^\d{1,3}(\.\d{1,4}){1,3}$", version):
+                continue
             if newer(version, here_version) and newer(version, best[0]):
                 best = (version, os.path.join(where, name))
     return best

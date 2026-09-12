@@ -7,6 +7,7 @@ average since the start, because the interesting number is what the line is carr
 this minute - a paused film still has a large total and a rate of zero.
 """
 import itertools
+import os
 import threading
 import time
 
@@ -29,8 +30,16 @@ class Watching:
         self.live = {}
         # the last state of viewings whose sockets have closed, by who and what
         self.gone = {}
+        # bytes per viewing across all its requests, sampled for the rate: a direct
+        # play reads in chunks, and one chunk over its own short life measured
+        # several times the film's bitrate
+        self.flows = {}
 
-    def start(self, who, title, quality, how, address, key="", app="", device=""):
+    def start(self, who, title, quality, how, address, key="", app="", device="",
+              # why this file is being sent and whose watching asked for it. A log of
+              # what moved says nothing about why it moved, and the reason is three
+              # functions away by the time the bytes are going out.
+              why="", asked_for="", path=""):
         sid = next(_next_id)
         with self.lock:
             self.live[sid] = {
@@ -43,9 +52,25 @@ class Watching:
                 # which title this is, so the player's own reports - where it is, and
                 # whether it is running - can be matched to it
                 "key": str(key or ""),
+                # the file itself, so a machine keeping copies can be told which of
+                # them are being read this minute
+                "path": str(path or ""),
+                "why": str(why or ""), "for": str(asked_for or ""),
                 "bytes": 0, "marks": [(time.time(), 0)], "peak": 0.0,
             }
         return sid
+
+    def paths(self):
+        """Every file being watched now, however briefly nothing is open on it.
+
+        A player reads a stretch, closes the connection and comes back a moment
+        later, so for most of a film there is no handle on the file at all - which is
+        why a sweep that trusted the lock to refuse it deleted a film somebody was
+        watching, between two of its requests.
+        """
+        with self.lock:
+            return {os.path.normcase(s.get("path") or "")
+                    for s in self.live.values() if s.get("path")}
 
     @staticmethod
     def joined(parts):
@@ -73,6 +98,22 @@ class Watching:
                 return
             s["bytes"] += n
             now = time.time()
+            mark = self._same(s)
+            f = self.flows.get(mark)
+            if f is None or now - f["marks"][-1][0] > LINGER + WINDOW:
+                f = self.flows[mark] = {"first": now, "bytes": 0, "peak": 0.0,
+                                        "marks": [(now, 0)]}
+            f["bytes"] += n
+            if now - f["marks"][-1][0] >= 0.25:
+                f["marks"].append((now, f["bytes"]))
+                # one mark at or before the cut stays, so the rate spans the window
+                cut = now - WINDOW
+                while len(f["marks"]) > 2 and f["marks"][1][0] <= cut:
+                    f["marks"].pop(0)
+                recent = [m for m in f["marks"] if now - m[0] <= PEAK_WINDOW]
+                if len(recent) > 1 and now - recent[0][0] >= 1.0:
+                    f["peak"] = max(f["peak"], (f["bytes"] - recent[0][1])
+                                    / (now - recent[0][0]) / 1048576.0)
             # four times a second: a burst that lasts two seconds is then several
             # points rather than one, and the rate it implies is a real number
             if now - s["marks"][-1][0] >= 0.25:
@@ -129,15 +170,29 @@ class Watching:
                     del self.gone[mark]
                 elif mark not in groups:
                     groups[mark] = [s]        # held, until it has been quiet a while
-            for parts in groups.values():
+            for mark in list(self.flows):
+                if mark not in groups:
+                    del self.flows[mark]
+            for mark, parts in groups.items():
                 s = self.joined(parts)
-                first_t, first_b = s["marks"][0]
-                span = max(0.5, now - first_t)
-                rate = (s["bytes"] - first_b) / span / 1048576.0
-                # the average since it opened, which is what a bursty direct play is
-                # really doing when the last few seconds happen to be quiet
-                lived = max(1.0, now - s["started"])
-                average = s["bytes"] / lived / 1048576.0
+                f = self.flows.get(mark)
+                if f:
+                    # the viewing over the window, gaps between its requests included
+                    first_t, first_b = f["marks"][0]
+                    rate = (f["bytes"] - first_b) / max(1.0, now - first_t) / 1048576.0
+                    lived = max(1.0, now - f["first"])
+                    average = f["bytes"] / lived / 1048576.0
+                    s = dict(s, started=min(s["started"], f["first"]),
+                             bytes=max(s["bytes"], f["bytes"]),
+                             peak=max(s["peak"], f["peak"]))
+                else:
+                    first_t, first_b = s["marks"][0]
+                    span = max(0.5, now - first_t)
+                    rate = (s["bytes"] - first_b) / span / 1048576.0
+                    # the average since it opened, which is what a bursty direct play
+                    # is really doing when the last few seconds happen to be quiet
+                    lived = max(1.0, now - s["started"])
+                    average = s["bytes"] / lived / 1048576.0
                 out.append({
                     "who": s["who"], "title": s["title"], "quality": s["quality"],
                     "how": s["how"], "address": s["address"],

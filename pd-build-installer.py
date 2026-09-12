@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import time
+import atexit
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -143,6 +144,9 @@ def check():
 def compile_one(script, name, console):
     """One executable, with CPython compiled into it."""
     cmd = [sys.executable, "-m", "nuitka", "--standalone", "--assume-yes-for-downloads",
+           # every core: this is hundreds of C files and it was compiling them one
+           # after another
+           "--jobs=%d" % (os.cpu_count() or 4),
            "--output-dir=" + OUT, "--output-filename=" + name,
            "--company-name=Grovestick Studios", "--product-name=Palladium",
            "--file-version=" + VERSION, "--product-version=" + VERSION,
@@ -154,30 +158,80 @@ def compile_one(script, name, console):
            "--include-module=pd_upnp", "--include-module=pd_watching", "--include-module=pd_follow",
            "--include-module=pd_traffic", "--include-module=pd_built",
            "--include-module=pd_faults", "--include-module=pd_skins",
-           "--include-module=pd_ai_subs"]
+           "--include-module=pd_ai_subs", "--include-module=pd_tray",
+           "--include-module=pd_torrents", "--include-module=pd_machine"]
     if not console:
         cmd.append("--windows-console-mode=disable")
     cmd.append(os.path.join(HERE, script))
     run(cmd, cwd=HERE)
 
 
+#: Held for as long as a build runs. Two builds share this folder, and the second
+#: one deletes files the first is halfway through writing - which fails both and
+#: leaves no installer at all.
+ALONE = os.path.join(HERE, ".building")
+
+
+def only_one_build():
+    """Refuse to start beside another build, and say which one."""
+    os.makedirs(OUT, exist_ok=True)
+    try:
+        with open(ALONE, "x", encoding="utf-8") as f:
+            f.write("%d at %s" % (os.getpid(), time.strftime("%H:%M:%S")))
+        return
+    except FileExistsError:
+        pass
+    try:
+        with open(ALONE, encoding="utf-8") as f:
+            said = f.read().strip()
+        old = int(said.split()[0])
+    except (OSError, ValueError):
+        old, said = 0, "?"
+    alive = False
+    if old:
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, old)
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                alive = True
+        except Exception:
+            alive = False
+    if alive:
+        raise SystemExit("another build is running (%s). Wait for it, or stop it."
+                         % said)
+    # the one that held it is gone: its half-written files are ours to replace
+    os.remove(ALONE)
+    only_one_build()
+
+
+def let_go():
+    """Release the build lock, however the build ended."""
+    try:
+        os.remove(ALONE)
+    except OSError:
+        pass
+
+
 def compile_all():
+    only_one_build()
+    atexit.register(let_go)
     check()
-    if os.path.exists(OUT):
-        shutil.rmtree(OUT)
+    # what is left of an earlier build, but not its cache: emptying this folder was
+    # costing a full recompile every time, which is ten minutes of the same work
+    for name in ("Palladium",):
+        if os.path.exists(os.path.join(OUT, name)):
+            shutil.rmtree(os.path.join(OUT, name))
     compile_one("pd-server.py", "palladium-server.exe", console=False)
-    compile_one("pd-tray.py", "palladium.exe", console=False)
-    # Nuitka writes one folder per script; the tray and the server share everything
+    # No separate tray program: the server shows the icon. A windowless launcher that
+    # starts a hidden server at sign-in is what Defender's machine learning quarantined.
+    # One program now: the server, which shows the tray icon itself. A tray folder
+    # left by an earlier build is not merged in - its palladium.exe is what Defender
+    # quarantines, and reading it aborts the installer.
     server = os.path.join(OUT, "pd-server.dist")
-    tray = os.path.join(OUT, "pd-tray.dist")
     if os.path.exists(DIST):
         shutil.rmtree(DIST)
     shutil.copytree(server, DIST)
-    for name in os.listdir(tray):
-        target = os.path.join(DIST, name)
-        if not os.path.exists(target):
-            source = os.path.join(tray, name)
-            (shutil.copytree if os.path.isdir(source) else shutil.copy2)(source, target)
     for name in CARRIED:
         source = os.path.join(HERE, name)
         if not os.path.exists(source):

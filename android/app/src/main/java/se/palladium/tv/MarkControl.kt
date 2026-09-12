@@ -23,24 +23,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/**
- * The two marks as one control: the watchlist on the left, the casual shelf on the right.
- *
- * They are one decision about a title taken in two steps - "I mean to watch this", and
- * "I would put this on without choosing" - so they are one control rather than two
- * buttons saying nearly the same word. The colour is the whole answer: yellow for the
- * list, green for the shuffle, grey for neither.
- *
- * The shuffle only draws from things on the list, so the right half puts a title on
- * both; taking it off the list takes it out of the shuffle with it. That rule lives in
- * the callers, which are the ones talking to the server.
- */
+/** The watchlist button - off, on the watchlist, a favorite - and the collections. */
 @Composable
 fun MarkControl(
     listed: Boolean,
-    casual: Boolean,
     onList: () -> Unit,
-    onCasual: () -> Unit,
+    /** a favorite: on the watchlist, kept when watched, drawn as a red heart */
+    favorite: Boolean = false,
+    inCollection: Boolean = false,
+    onCollection: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
@@ -48,17 +39,22 @@ fun MarkControl(
             .clip(RoundedCornerShape(9.dp))
             .background(Skin.Panel2),
     ) {
-        Half(mark = if (listed) "★" else "☆", on = listed,
-             colour = Skin.Accent, onPress = onList)
-        Box(Modifier.width(1.dp).background(Skin.Bg).padding(vertical = 2.dp)) {}
-        Half(mark = "↻", on = casual, colour = Color(0xFF5FD08A),
-             onPress = onCasual)
+        Half(mark = if (favorite) "♥" else if (listed) "★" else "☆", on = listed || favorite,
+             colour = Skin.Accent, onPress = onList,
+             // a favorite: the heart red, on the ground every chosen button has
+             markColour = if (favorite) Color(0xFFFF4D5E) else null)
+        if (onCollection != null) {
+            Box(Modifier.width(1.dp).background(Skin.Bg).padding(vertical = 2.dp)) {}
+            Half(mark = "↻", on = inCollection, colour = Color(0xFF8AB4F8),
+                 onPress = onCollection)
+        }
     }
 }
 
 /** One half of it. The white ring says where the remote is, as everywhere else. */
 @Composable
-private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit) {
+private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit,
+                 markColour: Color? = null) {
     var focused by remember { mutableStateOf(false) }
     Box(
         Modifier
@@ -73,6 +69,6 @@ private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit) 
         contentAlignment = Alignment.Center,
     ) {
         Text(mark, fontSize = 17.sp,
-             color = if (on) Color(0xFF111111) else Skin.Dim)
+             color = markColour ?: if (on) Color(0xFF111111) else Skin.Dim)
     }
 }

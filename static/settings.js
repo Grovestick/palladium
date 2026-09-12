@@ -13,20 +13,24 @@
 
 (function () {
   const $ = (s) => document.querySelector(s);
+  //: a newline for the questions asked before anything irreversible happens
+  const BR = String.fromCharCode(10);
   let cfg = null;
   let picking = null;          // which list the folder picker is adding to
-  let tab = "library";
+  let tab = "quality";          // Settings: the first tab, and the one most opened
 
-  const OWNER_TABS = [["library", "Library"], ["subs", "Subtitles"],
-                      ["quality", "Quality"], ["people", "Users"],
-                      ["now", "Now playing"], ["load", "Performance"],
-                      ["log", "Watch log"], ["reports", "Reports"],
-                      ["machine", "This computer"],
+  const OWNER_TABS = [["quality", "Settings"],
+                      ["library", "Library"],
+                      ["people", "Users"], ["subs", "Subtitles"],
+                      ["now", "Now playing"], ["log", "Log"],
+                      ["reports", "Reports"],
                       ["remote", "Remote computer"]];
   // a guest is a visitor, not an administrator: no folders, nobody to invite, and no
   // friends of ours to browse - only the two screens that are theirs
-  const GUEST_TABS = [["subs", "Subtitles"], ["quality", "Quality"],
-                      ["reports", "Reports"], ["copy", "Night server"]];
+  // The other server has no tab of its own: what it is and what it holds is a box
+  // under Settings, beside everything else about how films reach a screen.
+  const GUEST_TABS = [["quality", "Settings"], ["subs", "Subtitles"],
+                      ["reports", "Reports"]];
   const tabs = () => (CFG && CFG.guest ? GUEST_TABS : OWNER_TABS);
 
   /* Two kinds of setting, and only one of them belongs to a machine.
@@ -169,39 +173,6 @@
 
   /* Which library opens by default, and which machine does the work when a file
      cannot be played as it is. Both used to sit in the top bar. */
-  /**
-   * Whether this viewer takes part in watch parties.
-   *
-   * Their own answer: a box in the corner while they are watching is a thing to be
-   * able to say no to, and no means nothing arrives rather than nothing shown. The
-   * server can still put a notice on the screen - that is the house speaking, not a
-   * room of people.
-   */
-  function partyBlock(main, data) {
-    const box = block("Watch parties");
-    box.innerHTML +=
-      "<div class='note'>The lobby, the party and what is said in them. With this " +
-      "off nothing from anybody else reaches this screen; the server can still show " +
-      "a notice.</div>";
-    const row = document.createElement("div");
-    row.className = "addrow subrow";
-    row.innerHTML = "<span class='sublabel'>For me</span>";
-    [[true, "On"], [false, "Off"]].forEach(([value, text]) => {
-      const b = document.createElement("button");
-      b.className = "btn ghost kind" +
-                    ((data.watchParty !== false) === value ? " on" : "");
-      b.textContent = text;
-      b.onclick = async () => {
-        await post("/settings", { watchParty: value });
-        toast(value ? "Watch parties on" : "Watch parties off");
-        render();
-      };
-      row.appendChild(b);
-    });
-    box.appendChild(row);
-    main.appendChild(box);
-  }
-
   async function panePlayback(main) {
     const playback = await get("/settings");
     const box = block("Playback");
@@ -260,12 +231,6 @@
       };
       clock.appendChild(b);
     });
-    row("Decoder", ENGINES, engine(),
-        "ffmpeg on this machine - on the graphics card where there is one, on the "
-        + "processor where there is not. Only used for what a screen cannot play "
-        + "as it stands.",
-        (v) => setPref("engine", v));
-
     box.appendChild(auto);
     box.appendChild(clock);
 
@@ -495,9 +460,162 @@
     main.appendChild(box);
   }
 
+  /* Films offered from torrent packs, fetched through qBittorrent one at a time. */
+  async function downloadsBlock() {
+    const box = block("Torrents");
+    let said = {};
+    try {
+      said = await get("/torrents");
+    } catch (e) {
+      said = {};
+    }
+    const cfg = said.config || {};
+    const qb = said.qbittorrent || {};
+    box.innerHTML += "<div class='note'>Films from a torrent pack are shown in Films, " +
+      "greyed, before they are here. Download on one fetches that film alone through " +
+      "qBittorrent; the rest of the pack is left alone. Every download is under Log, " +
+      "Downloads, with who asked for it.</div>" ;
+    const field = (label, value, hint, key, secret) => {
+      const r = document.createElement("div");
+      r.className = "addrow subrow";
+      r.innerHTML = "<span class='sublabel'>" + label + "</span>";
+      const input = document.createElement("input");
+      input.type = secret ? "password" : "text";
+      input.value = value || "";
+      input.placeholder = hint || "";
+      input.onchange = async () => {
+        await post("/torrents/config", { [key]: input.value.trim() });
+        toast(label + " saved");
+        render();
+      };
+      r.appendChild(input);
+      box.appendChild(r);
+    };
+    field("qBittorrent", cfg.url, "http://127.0.0.1:8080", "url");
+    field("User", cfg.user, "empty when qBittorrent trusts this machine", "user");
+    field("Password", "", cfg.hasPassword ? "saved - type to change" : "", "password", true);
+    const saveRow = document.createElement("div");
+    saveRow.className = "addrow subrow";
+    saveRow.innerHTML = "<span class='sublabel'>Save into</span>";
+    const pick = document.createElement("select");
+    const folders = (said.folders || []).slice();
+    if (cfg.saveTo && folders.indexOf(cfg.saveTo) < 0) folders.unshift(cfg.saveTo);
+    folders.forEach((f) => {
+      const o = document.createElement("option");
+      o.value = f;
+      o.textContent = f;
+      o.selected = f === cfg.saveTo;
+      pick.appendChild(o);
+    });
+    pick.onchange = async () => {
+      await post("/torrents/config", { saveTo: pick.value });
+      toast("Saving into " + pick.value);
+    };
+    saveRow.appendChild(pick);
+    box.appendChild(saveRow);
+    if (said.free !== null && said.free !== undefined) {
+      const room = document.createElement("div");
+      room.className = "note";
+      room.textContent = said.free + " GB free on " + (cfg.saveTo || "that drive") + ".";
+      box.appendChild(room);
+    }
+    // connected or not, at a glance: a green dot while Palladium reaches qBittorrent
+    const state = document.createElement("div");
+    state.className = "qbstate " + (qb.ok ? "on" : "off");
+    state.innerHTML = "<i class='qbdot'></i><span></span>";
+    state.querySelector("span").textContent = qb.ok
+      ? "Connected to qBittorrent " + qb.version
+      : "Not connected to qBittorrent: " + (qb.why || "no reply");
+    box.appendChild(state);
+    // the packs, in the same box: add one, what has come of each, and take one away
+    const packsHead = document.createElement("div");
+    packsHead.className = "sublabel addinhead";
+    packsHead.textContent = "Packs";
+    box.appendChild(packsHead);
+
+    // a pack: its .torrent file, by its path on this computer or uploaded
+    const addRow = document.createElement("div");
+    addRow.className = "addrow subrow";
+    addRow.innerHTML = "<span class='sublabel'>Add a pack</span>";
+    const pathBox = document.createElement("input");
+    pathBox.type = "text";
+    pathBox.placeholder = "C:\\Users\\...\\pack.torrent";
+    const addPath = document.createElement("button");
+    addPath.className = "btn ghost";
+    addPath.textContent = "Add";
+    const upload = document.createElement("input");
+    upload.type = "file";
+    upload.accept = ".torrent";
+    upload.style.display = "none";
+    const choose = document.createElement("button");
+    choose.className = "btn ghost";
+    choose.textContent = "Upload\u2026";
+    const added = (r) => {
+      toast(r && r.ok
+        ? (r.already ? "That pack is already here"
+           : r.films + " films from " + r.name +
+             (r.refused ? " - but qBittorrent cannot load it: " + r.refused : ""))
+        : (r && r.why) || "Could not add it");
+      render();
+    };
+    addPath.onclick = async () => {
+      if (!pathBox.value.trim()) return;
+      added(await post("/torrents/add", { path: pathBox.value.trim() }));
+    };
+    choose.onclick = () => upload.click();
+    upload.onchange = () => {
+      const f = upload.files && upload.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = async () => added(await post("/torrents/add", { data: String(reader.result) }));
+      reader.readAsDataURL(f);
+    };
+    addRow.append(pathBox, addPath, choose, upload);
+    box.appendChild(addRow);
+
+    (said.packs || []).forEach((p) => {
+      const r = document.createElement("div");
+      r.className = "addrow";
+      r.style.alignItems = "center";
+      const what = document.createElement("span");
+      what.style.flex = "1 1 auto";
+      what.style.whiteSpace = "pre-line";
+      what.textContent = p.name + "\n" +
+        p.downloaded + " / " + p.films + " downloaded  \u00b7  " + p.downloadedGb + " GB" +
+        (p.downloading ? "  \u00b7  " + p.downloading + " downloading" : "") + "\n" +
+        p.offered + " on offer  \u00b7  " + p.held + " already in the library  \u00b7  " +
+        p.gb + " GB in the pack\n" +
+        p.matched + " matched" + (p.waiting ? ", " + p.waiting + " still to look up" : "") +
+        (p.unmatched ? ", " + p.unmatched + " not found" : "");
+      if (p.refused) {
+        const bad = document.createElement("div");
+        bad.className = "note bad";
+        bad.textContent = "qBittorrent cannot load this pack: " + p.refused +
+          ". Its films cannot be downloaded from it.";
+        what.appendChild(bad);
+      }
+      const rm = document.createElement("button");
+      rm.className = "btn ghost bad";
+      rm.textContent = "Remove";
+      rm.onclick = async () => {
+        if (!confirm("Stop offering the films in " + p.name + "? What was downloaded stays.")) return;
+        await post("/torrents/remove", { hash: p.hash });
+        render();
+      };
+      r.append(what, rm);
+      box.appendChild(r);
+    });
+    if ((said.packs || []).length) {
+      const n = document.createElement("div");
+      n.className = "note";
+      n.textContent = (said.offered || 0) + " films on offer that the library does not hold.";
+      box.appendChild(n);
+    }
+    return box;
+  }
+
   async function paneLibrary(main) {
     await panePlayback(main);
-    partyBlock(main, await get("/settings").catch(() => ({})));
     await numberingBlock(main);
     accentBlock(main, await get("/settings"));
     const stats = await get("/library/status");
@@ -506,9 +624,19 @@
     bar.innerHTML += "<div class='statgrid'>" +
       [["Films", stats.movies], ["Shows", stats.shows], ["Episodes", stats.episodes],
        ["Files", stats.files], ["Probed", stats.probed],
-       ["Identified", stats.identified]]
+       ["Identified", stats.identified], ["Downloadable", stats.offered || 0]]
         .map(([k, v]) => "<div><b>" + v + "</b><span>" + k + "</span></div>").join("") +
       "</div>";
+    /* Two different titles that came out with the same key. One poster then stands
+       for both, which is not something a number in the grid above can show. The cure
+       is correcting a year, so the titles are named. */
+    (stats.clashes || []).slice(0, 6).forEach((said) => {
+      const row = document.createElement("div");
+      row.className = "note";
+      row.textContent = "Two titles under one key - " + said +
+        ". Correct a year on one of them and scan again.";
+      bar.appendChild(row);
+    });
     main.appendChild(bar);
 
     /* What a folder is in decides what its files are: a film folder yields films, a
@@ -525,6 +653,8 @@
       "One list per folder. <b>Film</b> folders give films, <b>series</b> folders give " +
       "episodes, <b>mixed</b> reads the filename. An inner folder beats an outer one.";
     main.appendChild(rule);
+    // how qBittorrent is reached and where films go; the packs are on the Torrents tab
+    main.appendChild(await downloadsBlock());
 
     const key = block("Metadata");
     key.innerHTML +=
@@ -564,9 +694,8 @@
     const box = block("What is kept for whom");
     box.innerHTML +=
       "<div class='note'>When another server follows this one, these say whose " +
-      "half-watched films it keeps a copy of, whose watchlist, and whose shuffle - " +
-      "the next few things casual play would put on. Nothing is kept for a person " +
-      "with all three off.<br>Owner marks whoever sits at this machine: their " +
+      "half-watched films it keeps a copy of and whose watchlist. Nothing is kept " +
+      "for a person with both off.<br>Owner marks whoever sits at this machine: their " +
       "viewing is what its own screens file, so one person is not a guest in a " +
       "browser and the machine itself on their own network.</div>";
     const list = document.createElement("div");
@@ -575,11 +704,164 @@
     // and a second one called "You" would be the same person twice
     if (!(data.me || {}).token) {
       list.appendChild(cacheRow(Object.assign(
-        { name: "You", token: "me" }, data.me || {})));
+        { name: data.ownerName || "You", token: "me" }, data.me || {})));
     }
-    (data.people || []).forEach((w) => list.appendChild(cacheRow(w)));
+    // Every key, in one list, each saying what it is for. Splitting them into three
+    // lists put the same question in three places; a key is one thing with a role on
+    // it, and the role is what somebody sets.
+    // Grouped by what a key is for and alphabetical inside each group: a list of a
+    // dozen is read by looking for a name, not by remembering what was made when.
+    const RANK = ["owner", "cache", "admin", "user"];
+    const GROUP = { owner: "Owner", admin: "Admin", user: "Users", cache: "Cache" };
+    const place = (w) => {
+      const at = RANK.indexOf(w.role || "user");
+      return at < 0 ? RANK.length : at;
+    };
+    const people = (data.people || []).slice().sort((a, b) =>
+      place(a) - place(b) ||
+      String(a.name || "").localeCompare(String(b.name || "")));
+    let group = null;
+    people.forEach((w) => {
+      const role = w.role || "user";
+      if (role !== group) {
+        group = role;
+        const head = document.createElement("div");
+        head.className = "note";
+        // space above each group but the first. No rule of its own: every row
+        // already carries one underneath it, and the two drew as a double line.
+        head.style.cssText = "letter-spacing:.08em;text-transform:uppercase;" +
+          (list.children.length ? "margin:20px 0 4px" : "margin:4px 0 4px");
+        head.textContent = GROUP[role] || role;
+        list.appendChild(head);
+      }
+      // a person is a person whatever they may do here: only a key for a machine
+      // wears the machine row, with its gigabyte ceiling and its "may copy"
+      const machine = role === "cache";
+      const row = machine ? machineRow(w) : cacheRow(w);
+      row.appendChild(roleBox(w));
+      list.appendChild(row);
+    });
     box.appendChild(list);
     main.appendChild(box);
+
+    // and a way to make a key for a machine from the same page the keys are read on
+    const make = block("A key for another server");
+    const makeRow = document.createElement("div");
+    makeRow.className = "addrow";
+    makeRow.style.alignItems = "center";
+    const named = document.createElement("input");
+    named.type = "text";
+    named.placeholder = "what that machine is called";
+    named.style.flex = "1 1 auto";
+    makeRow.appendChild(named);
+    {
+      const b = document.createElement("button");
+      b.className = "btn ghost";
+      b.textContent = "Keeps copies";
+      b.onclick = async () => {
+        const who = named.value.trim();
+        if (!who) { toast("Give the machine a name first"); return; }
+        await post("/invites", { name: who, kind: "machine" });
+        toast("A key for " + who);
+        named.value = "";
+        render();
+      };
+      makeRow.appendChild(b);
+    }
+    make.appendChild(makeRow);
+    make.innerHTML += "<div class='note'>Keeps copies: that machine reads this " +
+      "library and holds copies of it, so it can answer while this server is off.</div>";
+    main.appendChild(make);
+  }
+
+  /* What a key is for: a viewer, somebody with the run of the place, or a server
+     that keeps copies. */
+  function roleBox(who) {
+    const sel = document.createElement("select");
+    sel.className = "btn ghost";
+    // hard against the right edge and one width, so it lands in the same place on
+    // a row for a person and a row for a machine - they carry different controls
+    // before it, and the select was sizing itself to its longest word
+    sel.style.marginLeft = "auto";
+    sel.style.width = "8.4em";
+    [["user", "User"], ["owner", "Owner"], ["admin", "Admin"], ["cache", "Cache"]]
+      .forEach(([id, label]) => {
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = label;
+        if ((who.role || "user") === id) o.selected = true;
+        sel.appendChild(o);
+      });
+    sel.onchange = async () => {
+      if (sel.value === "owner" &&
+          !confirm("Give " + (who.name || "that key") + " the run of this server? " +
+                   "It could then change the library and the keys, this one " +
+                   "included.")) {
+        sel.value = who.role || "user";
+        return;
+      }
+      await post("/invites/role", { token: who.token, role: sel.value });
+      render();
+    };
+    return sel;
+  }
+
+  /* A key belonging to a server rather than to a person: what it may hold, whether
+     it may copy at all, and a way to take it back. */
+  function machineRow(who) {
+    // Built like a person's row - the same name column, the same note under it, the
+    // same boxes - because a list where one row is laid out differently reads as a
+    // different kind of thing altogether.
+    const el = document.createElement("div");
+    el.className = "person";
+    el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>';
+    el.querySelector("b").textContent = who.name || "a machine";
+    el.querySelector(".note").textContent =
+      (who.mayCopy === false ? "may read, no cache" : "may keep a cache");
+
+    // a person's row carries three buttons before its first box and this one has
+    // two, so a gap makes up the difference and the boxes share a column
+    const gap = document.createElement("span");
+    gap.style.cssText = "flex:0 0 250px";
+    el.appendChild(gap);
+
+    const cap = document.createElement("label");
+    cap.className = "note capgb";
+    cap.textContent = "Keep ";
+    const gb = document.createElement("input");
+    gb.type = "text";
+    gb.inputMode = "numeric";
+    gb.value = who.cap ? String(who.cap) : "";
+    gb.placeholder = "no limit";
+    gb.onchange = async () => {
+      const n = Math.max(0, parseFloat(gb.value.replace(",", ".")) || 0);
+      await post("/follow/key", { set: who.token, cap: n });
+      render();
+    };
+    cap.appendChild(gb);
+    cap.appendChild(document.createTextNode(" GB"));
+
+    const may = document.createElement("button");
+    may.className = "btn ghost kind" + (who.mayCopy === false ? "" : " on");
+    may.textContent = who.mayCopy === false ? "Read only" : "May cache";
+    may.onclick = async () => {
+      await post("/follow/key", { set: who.token, mayCopy: who.mayCopy === false });
+      render();
+    };
+    el.appendChild(may);
+    el.appendChild(cap);
+
+    const off = document.createElement("button");
+    off.className = "btn ghost bad";
+    off.textContent = "Revoke";
+    off.onclick = async () => {
+      if (!confirm("Revoke the key for " + (who.name || "that machine") +
+                   "? It keeps what it has already and can take no more.")) return;
+      await post("/follow/key", { remove: true, only: who.token });
+      render();
+    };
+    el.appendChild(off);
+    return el;
   }
 
   function cacheRow(who) {
@@ -590,55 +872,35 @@
       // setting and looked exactly the same afterwards
       '<button class="btn ghost kind cdeck">Continue watching</button>' +
       '<button class="btn ghost kind clist">Watchlist</button>' +
-      '<button class="btn ghost kind ccas">Casual</button>' +
       // whether this person is handed the address this machine answers to on its
       // own network. They always have the way in from outside, which is the one
       // that works from where they are; the other is inside somebody's house.
       '<button class="btn ghost kind clan" title="Tell them the address this ' +
       'server answers to on the home network">Home address</button>' +
-      // who the person at this machine is. Not what they may change - that is still
-      // a matter of which network a request comes from - but whose viewing the
-      // machine's own screens are filing.
-      (who.token === "me" ? ""
-        : '<button class="btn ghost kind cown">Owner</button>');
+      // gigabytes a week: copied to the other machine for them, and downloaded by them
+      '<label class="note capgb">Sync <input class="csync" type="text" ' +
+      'inputmode="decimal" placeholder="no limit"> GB a week</label>' +
+      '<label class="note capgb">Download <input class="cdown" type="text" ' +
+      'inputmode="decimal" placeholder="no limit"> GB a week</label>' +
+      '';
     const cost = who.cost || {};
     // what this person costs the other server, so the dear ones can be turned off
     const bill = cost.files
       ? cost.files + " files, " + cost.gb + " GB (" + cost.deck +
         " half-watched, " + cost.list + " on the list" +
-        (cost.casual ? ", " + cost.casual + " in the shuffle" : "") + ")"
+        ")"
       : "nothing to keep";
-    el.querySelector("b").textContent = who.name + (who.you ? "  (you)" : "");
+    // the name on the key, and the one they go by if they have chosen one
+    el.querySelector("b").textContent = who.name +
+      (who.shown && who.shown !== who.name ? "  ·  goes by " + who.shown : "") +
+      (who.you ? "  (you)" : "");
     el.querySelector(".note").textContent = (who.token === "me" || who.you
       ? "this machine's owner"
       : (who.lastSeen
           ? "last watched " + new Date(who.lastSeen * 1000).toLocaleDateString()
           : "not used yet")) + " · " + bill;
-    const own = el.querySelector(".cown");
-    if (own) {
-      if (who.you) own.classList.add("good");
-      own.onclick = async () => {
-        if (who.you) {
-          if (!confirm("Stop treating " + who.name + " as the person at this " +
-                       "machine? What they have watched stays theirs.")) return;
-        } else if (!confirm("Treat " + who.name + " as the person at this machine? " +
-                            "Anything watched here under no name at all moves to " +
-                            "them, and from now on this machine's screens are them.")) {
-          return;
-        }
-        own.disabled = true;
-        const back = await post("/invites/owner",
-                                { token: who.you ? "" : who.token });
-        if (back && back.error) toast(back.error);
-        else if (back && back.moved) {
-          toast(back.moved.rows + " viewings and " + back.moved.places +
-                " places moved");
-        }
-        render();
-      };
-    }
     [["cdeck", "cacheDeck"], ["clist", "cacheList"],
-     ["ccas", "cacheCasual"], ["clan", "shareLan"]].forEach(([css, name]) => {
+     ["clan", "shareLan"]].forEach(([css, name]) => {
       const b = el.querySelector("." + css);
       if (who[name]) b.classList.add("on");
       b.onclick = async () => {
@@ -655,7 +917,50 @@
         b.classList.toggle("on", !!who[name]);
       };
     });
+    [["csync", "syncGbWeek", "copied to the other machine"],
+     ["cdown", "downloadGbWeek", "downloaded"]].forEach(([css, name, what]) => {
+      const box = el.querySelector("." + css);
+      box.value = Number(who[name]) > 0 ? String(who[name]) : "";
+      // and what they have had of it this week, beside the limit
+      if (name === "downloadGbWeek") {
+        const used = document.createElement("span");
+        used.className = "capused";
+        box.parentNode.appendChild(used);
+        weekDownloads().then((by) => {
+          const gb = by[String(who.name || "").trim().toLowerCase()] || 0;
+          used.textContent = "\u00b7 " + gb.toFixed(1) + " GB this week";
+        });
+      }
+      box.onchange = async () => {
+        const body = { token: who.token || "me" };
+        body[name] = Math.max(0, parseFloat(box.value.replace(",", ".")) || 0);
+        await post("/invites/cache", body);
+        who[name] = body[name];
+        toast(body[name] ? who.name + ": " + body[name] + " GB a week " + what
+                         : who.name + ": no limit on what is " + what);
+      };
+    });
     return el;
+  }
+
+  /* What each person has downloaded in the last seven days, by name, counted the way the
+     weekly limit counts it: whole films asked for, failed and cancelled ones aside. */
+  let weekBook = null;
+  function weekDownloads() {
+    if (!weekBook) {
+      weekBook = get("/torrents/log").then((said) => {
+        const since = Date.now() / 1000 - 7 * 86400;
+        const by = {};
+        (said.downloads || []).forEach((d) => {
+          if ((d.when || 0) < since || d.state === "failed" || d.state === "cancelled") return;
+          const who = String(d.who || "").trim().toLowerCase();
+          by[who] = (by[who] || 0) + (d.size || 0) / 1e9;
+        });
+        return by;
+      }).catch(() => ({}));
+      setTimeout(() => { weekBook = null; }, 30000);
+    }
+    return weekBook;
   }
 
   function personRow(who, refresh) {
@@ -672,7 +977,10 @@
       '<button class="btn ghost copy">Copy</button>' +
       '<button class="btn ghost rm" title="Revoke">&#10005;</button>';
     // the person at this machine is one of these rows, and it is worth saying which
-    el.querySelector("b").textContent = who.name + (who.you ? "  (you)" : "");
+    // the name on the key, and the one they go by if they have chosen one
+    el.querySelector("b").textContent = who.name +
+      (who.shown && who.shown !== who.name ? "  ·  goes by " + who.shown : "") +
+      (who.you ? "  (you)" : "");
     if (who.you) el.querySelector("b").classList.add("isyou");
     el.querySelector(".note").textContent = [
       who.you ? "the person at this machine" : "",
@@ -762,7 +1070,14 @@
   }
 
   //: which half of the Users tab is showing: the links, or what is kept for whom
-  let whoTab = "invite";
+  let whoTab = "users";       // the list of people: what this tab is opened for
+  //: Remote computer has two directions in it: another machine keeping a copy of
+  //: this library, and this machine keeping a copy of another. They are not the
+  //: same subject and were read as one long page.
+  let remoteTab = "server";
+  //: which cache's settings are showing. A house may keep more than one, and
+  //: all of them at once was one long page with no seam in it.
+  let cacheOn = "";
 
   /* What this machine is doing that anybody would feel, and the switch that stops
      the parts of it that can wait. */
@@ -879,7 +1194,7 @@
     const data = await get("/invites");
     const bar = document.createElement("div");
     bar.className = "sortbar collbar";
-    [["invite", "Invite"], ["users", "Users"],
+    [["users", "Users"], ["invite", "Invite"],
      ["friends", "Friends"]].forEach(([id, label]) => {
       const b = document.createElement("button");
       b.className = "btn ghost kind" + (whoTab === id ? " on" : "");
@@ -888,7 +1203,7 @@
       bar.appendChild(b);
     });
     main.appendChild(bar);
-    if (whoTab === "users") return paneUsers(main, data);
+    if (whoTab !== "invite" && whoTab !== "friends") return paneUsers(main, data);
     // libraries of other people's servers: the other direction of the same subject
     if (whoTab === "friends") return paneFriends(main);
     const box = block("Invite someone");
@@ -898,10 +1213,15 @@
       "is the only key, so send it only to people you mean to let in.<br>" +
       "Each also has a five-character code, for a television with no keyboard or a " +
       "line read out over the telephone: <code>&lt;address&gt;/i/CODE/open</code> " +
-      "opens the library, <code>/i/CODE.apk</code> fetches the app. The code stands " +
+      "opens the library, <code>/i/CODE</code> fetches the app. The code stands " +
       "for the link and is worth as much.</div>";
     const list = document.createElement("div");
-    (data.people || []).forEach((w) => list.appendChild(personRow(w, render)));
+    // the owner first, then everybody else by name: a list of a dozen is read by
+    // looking for somebody, not by remembering when their key was made
+    const invited = (data.people || []).slice().sort((a, b) =>
+      ((b.role === "owner") - (a.role === "owner")) ||
+      String(a.name || "").localeCompare(String(b.name || "")));
+    invited.forEach((w) => list.appendChild(personRow(w, render)));
     if (!(data.people || []).length) {
       const none = document.createElement("div");
       none.className = "note";
@@ -1027,10 +1347,57 @@
     clearTimeout(liveTimer);
     if (!document.body.contains(into)) return;     // left the screen
     let data = { live: [] };
-    try { data = await get("/watching"); } catch (e) { /* server restarting */ }
+    // Both machines, folded into one row per viewing. A film read off two machines is
+    // served by both and reported to one, so asking only the machine this page is
+    // pointed at showed a row with no position - or nothing at all, on the machine
+    // that was only carrying lumps, while somebody was plainly watching.
+    let copy = null;
+    try {
+      const c = await get("/standby");
+      copy = c && c.where ? c.where.replace(/\/$/, "") : null;
+    } catch (e) { copy = null; }
+    const asked = [get("/watching").catch(() => ({ live: [] }))];
+    if (copy) {
+      asked.push(fetch(copy + "/watching" + (CFG && CFG.key ? "?t=" + CFG.key : ""))
+                   .then((r) => r.json()).catch(() => ({ live: [] })));
+    }
+    try {
+      const answers = await Promise.all(asked);
+      const byViewing = new Map();
+      answers.forEach((one) => {
+        ((one && one.live) || []).forEach((w) => {
+          // On the film, not on the name: the row a stream raises is named for the
+          // viewer and the row a player's report raises is named for the device, so
+          // one person watching one thing arrived as "Olof" with no position and
+          // "Streamer" with one, and neither row said what was happening.
+          const name = (w.key || w.title || "") + "|" + (w.episode || "");
+          const had = byViewing.get(name);
+          if (!had) { byViewing.set(name, Object.assign({}, w)); return; }
+          // both are carrying it, so both rates are real and they add up
+          had.mbit = (had.mbit || 0) + (w.mbit || 0);
+          had.mb = (had.mb || 0) + (w.mb || 0);
+          // where the film has got to comes from the machine the player reports to
+          if (!had.position && w.position) {
+            had.position = w.position;
+            had.duration = w.duration || had.duration;
+            had.state = w.state || had.state;
+            had.client = w.client || had.client;
+          }
+          // and the name from the row that is a stream rather than a waiting report,
+          // because that one is named for the person and this is a list of people
+          if (had.how === "waiting" && w.how && w.how !== "waiting") {
+            had.who = w.who || had.who;
+            had.how = w.how;
+          } else if (w.how === "waiting" && had.how && had.how !== "waiting") {
+            had.state = had.state || w.state;
+          }
+        });
+      });
+      data = { live: Array.from(byViewing.values()) };
+    } catch (e) { /* server restarting */ }
     into.innerHTML = "";
     if (totals) {
-      /* What the house is using altogether. One viewer's rate says whether that
+      /* What the main server is using altogether. One viewer's rate says whether that
          viewer will stutter; the total says whether the line is full, which is the
          question when the fourth person complains. */
       const rate = data.live.reduce((n, w) => n + (w.mbit || 0), 0);
@@ -1117,6 +1484,38 @@
         (w.mbit || w.mbps * 8).toFixed(1);
       into.appendChild(el);
     });
+    // films on their way in from a torrent pack: who asked, how far, how fast, how long
+    try {
+      const book = await get("/torrents/log");
+      const coming = (book.downloads || []).filter(
+        (d) => d.state === "queued" || d.state === "downloading");
+      if (coming.length) {
+        const head = document.createElement("div");
+        head.className = "note";
+        head.style.margin = "18px 0 6px";
+        head.textContent = "Downloading";
+        into.appendChild(head);
+        coming.forEach((d) => {
+          const el = document.createElement("div");
+          el.className = "person live";
+          el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
+            '<div class="rate"><b></b><span>Mbit/s</span></div>';
+          el.querySelector("b").textContent =
+            (d.title || "a film") + (d.year ? " (" + d.year + ")" : "");
+          const eta = d.eta != null && d.eta >= 0
+            ? (d.eta < 60 ? d.eta + " s left" : d.eta < 3600 ? Math.round(d.eta / 60) + " min left"
+               : Math.floor(d.eta / 3600) + " h " + Math.round((d.eta % 3600) / 60) + " min left")
+            : "";
+          el.querySelector(".pmeta .note").textContent = [
+            d.who ? "asked for by " + d.who : "",
+            d.state === "queued" ? "queued" : Math.round((d.progress || 0) * 100) + "%",
+            ((d.size || 0) / 1e9).toFixed(1) + " GB",
+            eta].filter(Boolean).join(" \u00b7 ");
+          el.querySelector(".rate b").textContent = (d.mbit || 0).toFixed(1);
+          into.appendChild(el);
+        });
+      }
+    } catch (e) { /* a server with no torrents, or not the owner's page */ }
     liveTimer = setTimeout(() => drawLive(into, totals), 2000);
   }
 
@@ -1323,7 +1722,7 @@
   /* What this machine may say about itself to palladium.video.
    *
    * Its own card rather than a line in another one: it is the only setting on the
-   * page that sends anything out of the house, and a question like that should be
+   * page that sends anything out of the main server, and a question like that should be
    * asked plainly rather than come across while reading about something else.
    */
   async function drawFaults(box) {
@@ -1370,239 +1769,261 @@
    * follow this server, and what this server needs to follow another. They are drawn
    * into two cards, and both are filled from the one answer.
    */
-  async function drawServers(codeBox, followBox, keyBox) {
+  async function drawServers(keyBox, followBox, listBox, place) {
     let said = {};
     try {
       said = await get("/follow");
     } catch (e) { return; }
-    const one = said.follow || {};
-    const state = said.state || {};
     const mine = said.mine || {};
     // the machine following this one, as it last announced itself: the button above
     // and the note below both read it, so it is settled before either
     const other = said.standby || {};
-    const again = () => drawServers(codeBox, followBox, keyBox);
-    const put = async (what) => { await post("/follow", what); };
-
-    /* ---- what this machine is called, and where it answers ---- */
-    // The code another server needs is on Remote computer now, with the rest of what
-    // is about another machine. What stays here is what this one is: its name and the
-    // port it answers on.
-    codeBox.innerHTML = "<h3>Name and port</h3>";
+    const again = () => drawServers(keyBox, followBox, listBox, place);
     keyBox.innerHTML = "";
 
-    // What this machine is called, wherever it is named: the drawing, the server
-    // list on a phone, the row a guest sees. The computer's own name unless
-    // somebody would rather it were called something else.
-    const nameRow = document.createElement("div");
-    nameRow.className = "addrow subrow";
-    nameRow.innerHTML = "<span class='sublabel'>Name</span>";
-    const nameBox = document.createElement("input");
-    nameBox.type = "text";
-    // The computer's own name stands in the box, so it can be read and edited
-    // rather than guessed at; emptying it puts that name back.
-    nameBox.value = said.name || "";
-    nameBox.placeholder = said.hostname || "this computer's own name";
-    nameBox.onchange = async () => {
-      await post("/library/config", { serverName: nameBox.value.trim() });
-      toast(nameBox.value.trim() ? "Called " + nameBox.value.trim()
-                                 : "Back to the computer's own name");
-      again();
-    };
-    nameRow.appendChild(nameBox);
-    codeBox.appendChild(nameRow);
-    const nameNote = document.createElement("div");
-    nameNote.className = "note";
-    nameNote.textContent = said.hostname
-      ? "Empty means this computer's own name, which is " + said.hostname + "."
-      : "Leave it empty to use the computer's own name.";
-    codeBox.appendChild(nameNote);
-
-    const portrow = document.createElement("div");
-    portrow.className = "addrow subrow";
-    portrow.innerHTML = "<span class='sublabel'>Port</span>";
-    const portbox = document.createElement("input");
-    portbox.type = "text";
-    portbox.value = String(said.portWanted || said.port || "");
-    portbox.placeholder = "8765";
-    portbox.onchange = async () => {
-      const back = await post("/machine/port", { port: portbox.value.trim() });
-      if (back && back.error) return toast(back.error);
-      toast(back && back.restart
-        ? "Port " + back.port + " - from the next time this server starts"
-        : "Port " + back.port);
-      again();
-    };
-    portrow.appendChild(portbox);
-    codeBox.appendChild(portrow);
-    if (said.portWanted && said.port && said.portWanted !== said.port) {
-      const wait = document.createElement("div");
-      wait.className = "note";
-      wait.textContent = "Answering on " + said.port +
-        " until this server is started again.";
-      codeBox.appendChild(wait);
-    }
-
-    // The line another machine is given: this address and this key together. Shown
-    // rather than hidden behind a button - somebody setting a second server up wants
-    // to read it off the screen, not go looking for it.
-    const codeRow = document.createElement("div");
-    codeRow.className = "addrow subrow";
-    codeRow.innerHTML = "<span class='sublabel'>Setup line</span>";
-    const codeField = document.createElement("input");
-    codeField.type = "text";
-    codeField.readOnly = true;
-    codeField.value = mine.key ? (mine.where + "#" + mine.key) : "";
-    codeField.placeholder = "no key made yet";
-    codeField.onclick = () => codeField.select();
-    codeRow.appendChild(codeField);
-    keyBox.appendChild(codeRow);
-
-    const codeButtons = document.createElement("div");
-    codeButtons.className = "addrow";
-    const copy = document.createElement("button");
-    copy.className = "btn ghost";
-    copy.textContent = "Copy";
-    copy.onclick = () => {
-      if (!codeField.value) return toast("There is no key yet");
-      copyLine(codeField, "Copied - paste it into the other server");
-    };
-    codeButtons.appendChild(copy);
-    const make = document.createElement("button");
-    make.className = "btn ghost";
-    make.textContent = mine.key ? "New key" : "Make a key";
-    make.onclick = async () => {
-      if (mine.key &&
-          !confirm("A new key stops the machine using the old one. Carry on?")) return;
-      const back = await post("/follow/key", { again: !!mine.key });
-      if (!back || !back.key) return toast("Could not make a key");
-      again();
-    };
-    codeButtons.appendChild(make);
-    // and a knock on the machine that follows this one, which is the only way to
-    // find out that it is there before somebody's evening depends on it
-    const tryIt = document.createElement("button");
-    // green when the other machine has been heard from lately: a state of the world
-    // shown without anybody having to press anything
-    const heard = other.seen && (Date.now() / 1000 - other.seen) < 300;
-    tryIt.className = "btn ghost" + (heard ? " good" : "");
-    tryIt.textContent = "Test";
-    const tried = document.createElement("div");
-    tried.className = "note";
-    tryIt.onclick = async () => {
-      tryIt.disabled = true;
-      tried.textContent = "Knocking…";
-      let back = {};
-      try {
-        back = await get("/follow/test");
-      } catch (e) {
-        back = { follower: { ok: false, said: "This server did not answer." } };
-      }
-      tryIt.disabled = false;
-      const how = back.follower || {};
-      tryIt.className = "btn ghost" + (how.ok ? " good" : " bad");
-      tried.textContent = how.said || "Nothing to test.";
-    };
-    codeButtons.appendChild(tryIt);
-    keyBox.appendChild(codeButtons);
-    keyBox.appendChild(tried);
-
-    const codeNote = document.createElement("div");
-    codeNote.className = "note";
-    codeNote.textContent = mine.key
-      ? "Paste it into the other computer under This computer, Follow another server. "
-        + "That machine may then read this library and keep copies of it, so it can "
-        + "answer while this one is off. Anybody holding this line can do that, so "
-        + "hand it over the way you would a key - and New key stops the old one."
-      : "Another computer can keep copies of this library and answer while this one "
-        + "is off. It needs a key of yours to do it: make one, and paste the line "
-        + "into that machine.";
-    keyBox.appendChild(codeNote);
-
-    // How much of this library that machine may hold. Lending somebody a copy is not
-    // lending them the whole disk, and the machine doing the copying should not be
-    // the only one with a say in how much it takes.
-    const capRow = document.createElement("div");
-    capRow.className = "addrow subrow";
-    capRow.innerHTML = "<span class='sublabel'>Most it may use</span>";
-    const capBox = document.createElement("input");
-    capBox.type = "text";
-    capBox.inputMode = "numeric";
-    capBox.value = mine.cap ? String(mine.cap) : "";
-    capBox.placeholder = "no limit from here";
-    capBox.onchange = async () => {
-      const gb = Math.max(0, parseFloat(capBox.value.replace(",", ".")) || 0);
-      await post("/library/config", { followerCap: gb });
-      toast(gb ? "That machine may use " + gb + " GB"
-               : "No limit from this end");
-      again();
-    };
-    capRow.appendChild(capBox);
-    keyBox.appendChild(capRow);
-    const capNote = document.createElement("div");
-    capNote.className = "note";
-    capNote.textContent = "Gigabytes. The other machine has a limit of its own, and " +
-      "the smaller of the two is what it keeps to - so this one can only ever make " +
-      "it take less. Empty means it decides for itself.";
-    keyBox.appendChild(capNote);
-
-    // Which machines are actually following this one, and the way to stop one of
-    // them. Stopping is about a machine, not about the key: rotating the key would
-    // stop every follower at once, and this stops the one named.
+    // Every key made for a machine, with what that key allows - the way an
+    // invitation for a person carries what that person may do. There was one key for
+    // the main server and one ceiling for whoever held it, so lending a library to a second
+    // machine re-lent the first one's allowance and taking it away took it from all
+    // of them.
     const stopped = said.blocked || [];
     const seen = said.followers || [];
-    if (seen.length || stopped.length) {
-      const head = document.createElement("div");
-      head.className = "note";
-      head.style.margin = "16px 0 4px";
-      head.textContent = "Machines following this one";
-      keyBox.appendChild(head);
-    }
-    const draw = (f, isStopped) => {
+    const isOut = (w) => stopped.some((x) => String(x).replace(/\/+$/, "") ===
+                                             String(w || "").replace(/\/+$/, ""));
+    const keyList = document.createElement("div");
+
+    /* One machine, known by its key, by the fact that it is announcing itself, or by
+       both. Two lists meant a machine with a key that was also announcing itself was
+       drawn twice, once with what it may do and once with what it was doing. */
+    const machine = (k, f) => {
       const row = document.createElement("div");
       row.className = "addrow";
       row.style.alignItems = "center";
       const who = document.createElement("span");
       who.style.flex = "1 1 auto";
-      const heard = f.ago === undefined ? ""
+      who.style.whiteSpace = "pre-line";
+      const out = f ? isOut(f.where) : false;
+      const heard = !f || f.ago === undefined ? ""
         : f.ago < 90 ? "just now"
         : f.ago < 3600 ? Math.round(f.ago / 60) + " min ago"
         : Math.round(f.ago / 3600) + " h ago";
-      who.textContent = (f.name || "a server") + "  ·  " + (f.where || "") +
-        (heard ? "  ·  heard " + heard : "") +
-        (isStopped ? "  ·  stopped" : "");
+      const room = (f && f.room) || {};
+      const bits = [];
+      bits.push(k && k.cap ? k.cap + " GB at most" : "no limit from here");
+      if (k) bits.push(k.mayCopy === false ? "may read, no cache" : "may keep a cache");
+      if (f && f.kept) bits.push(f.kept + " files");
+      if (room.gb) bits.push(Math.round(room.gb) + " GB used");
+      if (room.free) bits.push(Math.round(room.free) + " GB free");
+      if (f && f.bad) bits.push(f.bad + " would not come");
+      const sent = Object.keys((f && f.sent) || {}).map(
+        (n) => n === "tmdb_key" ? "catalogue" : "subtitles");
+      if (f) {
+        bits.push(sent.length ? "has this house's " + sent.join(" and ") + " key"
+                              : "no keys of its own");
+      }
+      if (f && f.build) bits.push(f.build);
+      if (!f && k) {
+        bits.push(k.lastSeen
+          ? "used " + new Date(k.lastSeen * 1000)
+              .toLocaleString([], { dateStyle: "short", timeStyle: "short" })
+          : "never used");
+      }
+      who.textContent = ((k && k.name) || (f && f.name) || "a machine") +
+        (f && f.where ? "  \u00b7  " + f.where : "") +
+        (f && f.outside ? "  \u00b7  outside " + f.outside : "") +
+        (heard ? "  \u00b7  heard " + heard : "") +
+        (f && f.managed ? "  \u00b7  managed from here" : "") +
+        (f && f.revoked ? "  \u00b7  key revoked" : "") +
+        (out ? "  \u00b7  stopped" : "") +
+        (bits.length ? "\n" + bits.join("  \u00b7  ") : "");
       row.appendChild(who);
-      const act = document.createElement("button");
-      act.className = "btn ghost" + (isStopped ? "" : " bad");
-      act.textContent = isStopped ? "Let it back in" : "Stop it";
-      act.onclick = async () => {
-        if (!isStopped &&
-            !confirm("Stop " + (f.name || "that machine") +
-                     "? It keeps its key but is refused until you let it back in.")) {
-          return;
+      // the row is how a cache is chosen; the controls on it are not
+      if (f && f.where) {
+        row.style.cursor = "pointer";
+        if (cacheOn === f.where) {
+          row.style.borderLeft = "3px solid var(--accent)";
+          row.style.paddingLeft = "9px";
         }
-        act.disabled = true;
-        await post("/follow/stop", { where: f.where, allow: !!isStopped });
-        toast(isStopped ? "Let back in" : "Stopped");
-        again();
-      };
-      row.appendChild(act);
-      keyBox.appendChild(row);
+        row.onclick = (e) => {
+          if (e.target.closest("button, input, select, label")) return;
+          cacheOn = f.where;
+          render();
+        };
+      }
+
+      if (k) {
+        const gb = document.createElement("input");
+        gb.type = "text";
+        gb.inputMode = "numeric";
+        gb.style.width = "7em";
+        gb.value = k.cap ? String(k.cap) : "";
+        gb.placeholder = "unlimited";
+        gb.onchange = async () => {
+          const n = Math.max(0, parseFloat(gb.value.replace(",", ".")) || 0);
+          await post("/follow/key", { set: k.token, cap: n });
+          toast(n ? (k.name || "That machine") + " may use " + n + " GB"
+                  : "No limit for " + (k.name || "that machine"));
+          again();
+        };
+        row.appendChild(gb);
+
+        const may = document.createElement("button");
+        may.className = "btn ghost kind" + (k.mayCopy === false ? "" : " on");
+        may.textContent = k.mayCopy === false ? "Read only" : "May cache";
+        may.onclick = async () => {
+          await post("/follow/key", { set: k.token, mayCopy: k.mayCopy === false });
+          again();
+        };
+        row.appendChild(may);
+      }
+
+      if (f || out) {
+        const act = document.createElement("button");
+        act.className = "btn ghost" + (out ? "" : " bad");
+        act.textContent = out ? "Let it back in" : "Stop it";
+        act.onclick = async () => {
+          const called = (k && k.name) || (f && f.name) || "that machine";
+          if (!out && !confirm("Stop " + called +
+                "? It keeps its key but is refused until you let it back in.")) return;
+          act.disabled = true;
+          await post("/follow/stop", { where: (f && f.where) || "", allow: !!out });
+          toast(out ? "Let back in" : "Stopped");
+          again();
+        };
+        row.appendChild(act);
+      }
+
+      if (k) {
+        const off = document.createElement("button");
+        off.className = "btn ghost bad";
+        off.textContent = "Revoke";
+        off.onclick = async () => {
+          if (!confirm("Revoke the key for " + (k.name || "that machine") +
+                       "? It keeps what it has already copied and can take no more.")) {
+            return;
+          }
+          await post("/follow/key", { remove: true, only: k.token });
+          again();
+        };
+        row.appendChild(off);
+      }
+      if (place) place(row, f);
+      else keyList.appendChild(row);
     };
-    const isOut = (w) => stopped.some((b) => String(b).replace(/\/+$/, "") ===
-                                             String(w || "").replace(/\/+$/, ""));
-    seen.forEach((f) => draw(f, isOut(f.where)));
-    // one that has been stopped and has given up announcing itself still needs a way
-    // back in, so it is listed from the block list alone
-    stopped.filter((w) => !seen.some((f) => isOut(f.where) && f.where === w))
-           .forEach((w) => draw({ where: w, name: "" }, true));
+
+    const paired = [];
+    (said.keys || []).forEach((k) => {
+      const f = seen.filter((one) => k.token && one.token === k.token)[0] || null;
+      if (f) paired.push(f);
+      machine(k, f);
+    });
+    // announcing itself with no key of ours: worth showing, and worth stopping
+    seen.filter((f) => paired.indexOf(f) < 0).forEach((f) => machine(null, f));
+    // stopped, and given up announcing: still needs a way back in
+    stopped.filter((w) => !seen.some((f) => f.where === w))
+           .forEach((w) => machine(null, { where: w, name: "" }));
+    // the machines themselves belong to the list card, not to the general one
+    const into = listBox || keyBox;
+    if (keyList.children.length) into.appendChild(keyList);
+    const capNote = document.createElement("div");
+    capNote.className = "note";
+    capNote.textContent = "Gigabytes. The other machine has a limit of its own, and " +
+      "the smaller of the two is what it keeps to - so this one can only ever make " +
+      "it take less. Empty means it decides for itself.";
+    into.appendChild(capNote);
 
     // Who is following this one, and what has gone to them, are both on Now
     // playing: they are what this server is doing, not how it is set up. What is
     // left here is the setting-up.
 
-    /* ---- and this server following another ---- */
-    followBox.innerHTML = "<h3>Follow another server</h3>";
+    if (followBox) drawFollow(followBox, { get: get, post: post }, { said: said });
+  }
+
+  /**
+   * One machine copying another: its settings, what it is doing, and its tests.
+   * Drawn for this machine, or on the main server for a cache that lets the main server set
+   * how it copies (opts.remote), read and written through /follow/managed.
+   *
+   * Rows tagged local are set on the machine itself only, manage is the permission
+   * for the main server, status is what it is doing. Every other row is a setting the
+   * house takes over while it manages the machine.
+   */
+  async function drawFollow(followBox, api, opts) {
+    opts = opts || {};
+    const get = api.get;
+    const post = api.post;
+    let said = opts.said;
+    if (!said) {
+      try {
+        said = await get("/follow");
+      } catch (e) {
+        said = {};
+      }
+    }
+    const again = () => drawFollow(followBox, api,
+                                   Object.assign({}, opts, { said: null }));
+    const title = opts.remote ? (opts.name || "The cache") : "Follow another server";
+    if (!said || !said.follow) {
+      followBox.innerHTML = "<h3>" + esc(title) + "</h3>";
+      const gone = document.createElement("div");
+      gone.className = "note";
+      gone.textContent = (said && said.error) || "No answer.";
+      followBox.appendChild(gone);
+      return;
+    }
+    const one = said.follow || {};
+    const state = said.state || {};
+    const put = async (what) => { await post("/follow", what); };
+    const tagRow = (el, what) => { el.dataset.side = what; return el; };
+    const sleepRow = (el, why) => {
+      el.classList.add("asleep");
+      if (why) el.title = why;
+      el.querySelectorAll("input, button, select").forEach((c) => { c.disabled = true; });
+    };
+    followBox.innerHTML = "<h3>" + esc(title) + "</h3>";
+    tagRow(followBox.firstChild, "status");
+    if (opts.remote) {
+      const how = document.createElement("div");
+      how.className = "note";
+      how.textContent = (opts.name || "That machine") + " is managed from here: what " +
+        "it copies is set on this page. Its address, its key and that permission are " +
+        "set on it.";
+      followBox.appendChild(tagRow(how, "status"));
+
+      // and whether that is true this minute: the permission lives on that machine and
+      // can be turned off there, which reads here as settings that quietly do nothing
+      const askRow = document.createElement("div");
+      askRow.className = "addrow subrow";
+      askRow.innerHTML = "<span class='sublabel'>Remotely managed</span>";
+      const ask = document.createElement("button");
+      ask.className = "btn ghost";
+      ask.textContent = "Check";
+      const heard = document.createElement("span");
+      heard.className = "note";
+      ask.onclick = async () => {
+        ask.disabled = true;
+        heard.textContent = "Asking " + (opts.name || "that machine") + "…";
+        let back = {};
+        try {
+          back = await api.get("/follow");
+        } catch (e) {
+          back = { error: String(e && e.message ? e.message : e) };
+        }
+        ask.disabled = false;
+        const ok = !!(back && back.follow && !back.error);
+        heard.textContent = ok
+          ? "Yes - it answered, and what is set here reaches it."
+          : ((back && back.error) ||
+             "No answer. Turn Managed from the main server on over there.");
+        heard.className = "note" + (ok ? " good" : " bad");
+      };
+      askRow.appendChild(ask);
+      askRow.appendChild(heard);
+      followBox.appendChild(tagRow(askRow, "status"));
+    }
+    // where Test and Sync now go: at the top, where somebody looks first
+    const topSlot = document.createElement("div");
+    followBox.appendChild(topSlot);
 
     const row = (label, value, hint, save) => {
       const line = document.createElement("div");
@@ -1615,27 +2036,51 @@
       input.onchange = async () => { await save(input.value.trim()); again(); };
       line.appendChild(input);
       followBox.appendChild(line);
+      return line;
     };
 
-    // One line carries both halves: the other server's address and its key.
+    // An ordinary invitation from the other server, the same one a person is given:
+    // its link, or its address and five-character code. Mark that key Cache under
+    // Users there and it is a key for a machine rather than a person.
     const paste = document.createElement("div");
     paste.className = "addrow subrow";
-    paste.innerHTML = "<span class='sublabel'>Paste setup line</span>";
+    paste.innerHTML = "<span class='sublabel'>Invitation</span>";
     const pbox = document.createElement("input");
     pbox.type = "text";
-    pbox.placeholder = "http://192.168.1.20:8765#key";
+    pbox.placeholder = "the invite link, or 192.168.1.20:8765 AB12C";
     pbox.onchange = async () => {
       const line = pbox.value.trim();
       if (!line) return;
-      const cut = line.indexOf("#") >= 0 ? line.indexOf("#") : line.indexOf(" ");
-      if (cut < 0) return toast("That line has no key on it");
-      await put({ master: line.slice(0, cut).trim().replace(/\/$/, ""),
-                  key: line.slice(cut + 1).trim() });
+      const withHttp = (a) => (/^https?:\/\//.test(a) ? a : "http://" + a).replace(/\/$/, "");
+      // the link a guest is sent: the token is the last part of it
+      const link = line.match(/^(https?:\/\/[^\s/]+)\/s\/([A-Za-z0-9_-]{8,})$/);
+      if (link) {
+        await put({ master: link[1], key: link[2] });
+      } else {
+        // an address and the five characters the other server shows, in either order
+        const bits = line.replace(/\/i\//g, " ").split(/[\s#]+/).filter(Boolean);
+        const code = bits.filter((b) => /^[A-Za-z0-9]{5}$/.test(b))[0] || "";
+        const where = bits.filter((b) => b !== code)[0] || "";
+        if (!where) return toast("That is not an invitation");
+        if (!code) {
+          // an address and a whole key, as the setup line used to carry
+          const key = bits.filter((b) => b !== where)[0] || "";
+          if (!key) return toast("That has no code on it");
+          await put({ master: withHttp(where), key: key });
+        } else {
+          let said = {};
+          try {
+            said = await (await fetch(withHttp(where) + "/i/" + code + "/setup")).json();
+          } catch (e) { said = {}; }
+          if (!said.token) return toast("That server did not know that code");
+          await put({ master: withHttp(where), key: said.token });
+        }
+      }
       pbox.value = "";
       again();
     };
     paste.appendChild(pbox);
-    followBox.appendChild(paste);
+    followBox.appendChild(tagRow(paste, "local"));
 
     const onoff = document.createElement("div");
     onoff.className = "addrow subrow";
@@ -1645,10 +2090,10 @@
     b.textContent = one.on ? "On" : "Off";
     b.onclick = async () => { await put({ on: !one.on }); again(); };
     onoff.appendChild(b);
-    followBox.appendChild(onoff);
+    followBox.appendChild(tagRow(onoff, "local"));
 
-    row("Its address", one.master, "http://192.168.1.20:8765",
-        (v) => put({ master: v }));
+    tagRow(row("Its address", one.master, "http://192.168.1.20:8765",
+               (v) => put({ master: v })), "local");
     // and whether this machine replaces itself when that one moves on: a copy two
     // months behind the server it copies is a different program
     const grow = document.createElement("div");
@@ -1667,8 +2112,8 @@
     // Either kind of key works. One made by "Make a key" on that server keeps what
     // that whole house watches; an ordinary invitation - your own, on somebody else's
     // server - keeps what you watch there and nothing of anybody else's.
-    row("Its key", one.key, "a key from that server, or your own invitation",
-        (v) => put({ key: v }));
+    tagRow(row("Its key", one.key, "a key from that server, or your own invitation",
+               (v) => put({ key: v })), "local");
     row("Keep copies in", one.folder, "D:\\Palladium cache",
         (v) => put({ folder: v }));
 
@@ -1682,9 +2127,33 @@
     row("Hours ahead, at most", String(one.hours), "4", (v) => put({ hours: v }));
     // the shuffle is a shelf rather than a series: this is how much of it to keep
     // for the people who asked for it
-    row("Hours of casual play", String(one.casualHours), "2",
-        (v) => put({ casualHours: v }));
-    row("Disk to use, GB", String(one.cap), "200", (v) => put({ cap: v }));
+    // The shuffle is what somebody puts on without choosing; copying what it would
+    // have chosen means guessing an evening in advance and spending the night on it.
+    // Off unless somebody asks, and then it is hours like everything else.
+    const casualRow = document.createElement("div");
+    casualRow.className = "addrow subrow";
+    casualRow.innerHTML = "<span class='sublabel'>Collection shuffle</span>";
+    [[false, "Do not copy"], [true, "Keep ahead"]].forEach(([value, text]) => {
+      const b = document.createElement("button");
+      const on = Number(one.casualHours || 0) > 0;
+      b.className = "btn ghost kind" + (on === value ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => put({ casualHours: value ? 2 : 0 });
+      casualRow.appendChild(b);
+    });
+    followBox.appendChild(casualRow);
+    // drawn either way, asleep while the shuffle is not copied
+    const casualHoursRow = row("Hours of shuffle", String(one.casualHours || 0), "2",
+                               (v) => put({ casualHours: v }));
+    if (!(Number(one.casualHours || 0) > 0)) {
+      sleepRow(casualHoursRow, "The shuffle is not copied");
+    }
+    const capRow = row("Disk to use, GB", String(one.cap), "200", (v) => put({ cap: v }));
+    // the key the main server handed over may allow less; the smaller of the two is used
+    if (Number(said.houseCap) > 0) {
+      capRow.title = (said.houseName || "The main server") + " allows " + said.houseCap +
+        " GB on its key; the smaller of the two is used.";
+    }
 
     const dark = document.createElement("div");
     dark.className = "sublabel addinhead";
@@ -1706,6 +2175,215 @@
         wholeRow.appendChild(b);
       });
     followBox.appendChild(wholeRow);
+
+    // Whose evening this disk is for. A machine in one person's room that fills
+    // with the rest of the main server's viewing is using their disk for somebody else.
+    const forRow = document.createElement("div");
+    forRow.className = "addrow subrow";
+    forRow.innerHTML = "<span class='sublabel'>What it keeps</span>";
+    [["user", "This user"], ["server", "The whole house"]].forEach(([id, label]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" +
+        ((one.cacheFor || "user") === id ? " on" : "");
+      b.textContent = label;
+      b.onclick = async () => { await put({ cacheFor: id }); again(); };
+      forRow.appendChild(b);
+    });
+    followBox.appendChild(forRow);
+    {
+      const whoRow = document.createElement("div");
+      whoRow.className = "addrow subrow";
+      whoRow.innerHTML = "<span class='sublabel'>For</span>";
+      const pick = document.createElement("select");
+      const names = (state.house || []).slice();
+      const now = one.cacheWho || state.forWhom || "";
+      if (now && names.indexOf(now) < 0) names.unshift(now);
+      if (!names.length) names.push(now || "the owner");
+      names.forEach((n) => {
+        const o = document.createElement("option");
+        o.value = n;
+        o.textContent = n;
+        o.selected = n === now;
+        pick.appendChild(o);
+      });
+      pick.onchange = async () => { await put({ cacheWho: pick.value }); again(); };
+      whoRow.appendChild(pick);
+      followBox.appendChild(whoRow);
+      if ((one.cacheFor || "user") !== "user") sleepRow(whoRow, "The whole house is kept");
+    }
+    const forNote = document.createElement("div");
+    forNote.className = "note";
+    forNote.textContent = "A user cache holds what one person is watching and has " +
+      "on a list. The whole house is for a machine standing in for the library " +
+      "itself, and fills with everybody's evening.";
+    followBox.appendChild(forNote);
+
+    // Whether the cap may delete on its own, and the folder it would be deleting
+    // in. Manual unless somebody says otherwise, and never switched on without
+    // showing the folder and naming what the first clear would take.
+    const asList = (rows, count) => rows.slice(0, 12).map(
+      (f) => "  " + f.name + "  (" + (f.bytes / 1e9).toFixed(1) + " GB)").join(BR) +
+      (count > 12 ? BR + "  and " + (count - 12) + " more" : "");
+    const clearHead = document.createElement("div");
+    clearHead.className = "sublabel addinhead";
+    clearHead.textContent = "Clearing the cache";
+    followBox.appendChild(clearHead);
+    const room = await post("/follow/clear", {}).catch(() => null);
+    const here = document.createElement("div");
+    here.className = "note";
+    here.style.wordBreak = "break-all";
+    here.textContent = room && room.folder
+      ? "Folder: " + room.folder + "  ·  " + (room.used || 0) +
+        " GB in it, cap " + (room.cap || 0) + " GB"
+      : "No folder set, so nothing is kept and nothing is deleted.";
+    followBox.appendChild(here);
+    const clearRow = document.createElement("div");
+    clearRow.className = "addrow subrow";
+    clearRow.innerHTML = "<span class='sublabel'>When it is over the cap</span>";
+    [["manual", "I clear it"], ["auto", "Clear it for me"]].forEach(([id, label]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" +
+        ((one.clearBy || "manual") === id ? " on" : "");
+      b.textContent = label;
+      b.onclick = async () => {
+        if (id === "auto" && (one.clearBy || "manual") !== "auto") {
+          // what it would take, named, before it is ever allowed to take anything
+          const would = await post("/follow/clear", {}).catch(() => null);
+          if (!would || !would.sane) {
+            return toast("That folder is not one this program will delete in");
+          }
+          if (!confirm(
+            "Palladium will delete files in:" + BR + BR + "  " + would.folder +
+            BR + BR + "to keep it under " + would.cap + " GB. Right now that is " +
+            would.files + " files, " + would.gb + " GB:" + BR + BR +
+            asList(would.rows || [], would.files) + BR + BR +
+            "Only files this machine fetched are ever deleted, and never anything " +
+            "on the list for tonight. Carry on?")) return;
+        }
+        await put({ clearBy: id });
+        again();
+      };
+      clearRow.appendChild(b);
+    });
+    followBox.appendChild(clearRow);
+    if (room && room.sane) {
+      const now = document.createElement("div");
+      now.className = "addrow subrow";
+      now.innerHTML = "<span class='sublabel'>Over the cap now</span>";
+      const what = document.createElement("span");
+      what.className = "note";
+      what.textContent = room.files
+        ? room.files + " files, " + room.gb + " GB could go"
+        : "Nothing to clear";
+      now.appendChild(what);
+      if (room.files) {
+        const go = document.createElement("button");
+        go.className = "btn ghost bad";
+        go.textContent = "Clear now";
+        go.onclick = async () => {
+          if (!confirm("Delete " + room.files + " files, " + room.gb + " GB, from:" +
+                       BR + BR + "  " + room.folder + BR + BR +
+                       asList(room.rows || [], room.files) + BR + BR +
+                       "Carry on?")) return;
+          const said = await post("/follow/clear", { now: true });
+          toast(said && said.cleared ? said.cleared + " GB cleared"
+                                     : "Nothing was cleared");
+          again();
+        };
+        now.appendChild(go);
+      }
+      followBox.appendChild(now);
+      if (!room.ready) {
+        const wait = document.createElement("div");
+        wait.className = "note";
+        wait.textContent = "Nothing has been asked for yet since this server " +
+          "started, so what is wanted tonight is not known. Clearing waits for " +
+          "one pass rather than guessing at it.";
+        followBox.appendChild(wait);
+      }
+    }
+
+    // What is in that folder that this machine did not put there. It cannot be
+    // deleted by this program - only what it fetched can be - so this is a heads-up
+    // and nothing else: a folder full of files it does not know is a folder that
+    // probably belongs to something else.
+    const strangers = await post("/follow/extras", {}).catch(() => null);
+    if (strangers && (one.folder || "").trim()) {
+      const shead = document.createElement("div");
+      shead.className = "sublabel addinhead";
+      shead.textContent = "Files in that folder this machine did not fetch";
+      followBox.appendChild(shead);
+      if (!strangers.sane) {
+        const bad = document.createElement("div");
+        bad.className = "note bad";
+        bad.textContent = "That folder is not one this program will keep copies in " +
+          "or delete anything in: it is a drive root, a profile, or a folder of " +
+          "somebody's own. Give the cache a folder of its own.";
+        followBox.appendChild(bad);
+      } else if (!strangers.count) {
+        const none = document.createElement("div");
+        none.className = "note";
+        none.textContent = "None. Everything in that folder came from the other " +
+          "server.";
+        followBox.appendChild(none);
+      } else {
+        // a folder with a lot in it that this machine did not put there is very
+        // likely somebody's own folder, pointed at by a setting typed by hand
+        const loud = strangers.count >= 20 || strangers.gb >= 20;
+        const note = document.createElement("div");
+        note.className = "note" + (loud ? " bad" : "");
+        note.textContent = (loud
+          ? "Warning: " + strangers.count + " files, " + strangers.gb + " GB in " +
+            "that folder did not come from the other server. That is a lot, and it " +
+            "usually means the folder belongs to something else - give the cache a " +
+            "folder of its own. "
+          : strangers.count + " files, " + strangers.gb + " GB. ") +
+          "Palladium will not delete any of them: it deletes only files it fetched " +
+          "itself. Remove them yourself if they should not be there.";
+        followBox.appendChild(note);
+        const list = document.createElement("div");
+        list.className = "note";
+        list.style.cssText = "max-height:160px;overflow:auto;white-space:pre-line";
+        list.textContent = strangers.extras.slice(0, 40).map(
+          (f) => f.name + "  ·  " + (f.bytes / 1e9 >= 1
+                                     ? (f.bytes / 1e9).toFixed(1) + " GB"
+                                     : Math.round(f.bytes / 1e6) + " MB")).join(BR);
+        followBox.appendChild(list);
+        // The one way back for copies made before there was a record of them.
+        // Asked for by hand, once, with the folder named - and it takes films and
+        // subtitles only, so a folder of archives cannot be claimed at all.
+        const films = strangers.extras.filter(
+          (f) => /\.(mkv|mp4|m4v|avi|mov|ts|m2ts|webm|mpg|mpeg|wmv|flv|srt|ass|vtt|sub|idx)$/i
+            .test(f.name));
+        if (films.length) {
+          const claimRow = document.createElement("div");
+          claimRow.className = "addrow subrow";
+          const claim = document.createElement("button");
+          claim.className = "btn ghost";
+          claim.textContent = "This folder is Palladium's cache";
+          claim.onclick = async () => {
+            const gb = films.reduce((n, f) => n + f.bytes, 0) / 1e9;
+            const rest = strangers.count - films.length;
+            if (!confirm(
+              "Treat everything already in:" + BR + BR + "  " + strangers.folder +
+              BR + BR + "as copies this machine fetched - " + films.length +
+              " files, " + gb.toFixed(1) + " GB. The cap may then delete them like " +
+              "anything else it copied." + BR + BR +
+              (rest ? rest + " other files are not films or subtitles. They are " +
+                      "left alone and can never be deleted from here." + BR + BR
+                    : "") +
+              "Do this only if this folder is Palladium's own cache and nothing " +
+              "else. Carry on?")) return;
+            const said = await post("/follow/claim", { confirm: true });
+            toast(said && said.taken ? said.taken + " files are now the cache's"
+                                     : (said && said.why) || "Nothing was taken");
+            again();
+          };
+          claimRow.appendChild(claim);
+          followBox.appendChild(claimRow);
+        }
+      }
+    }
 
     // And what goes when there is no room left under the cap. Never anything on the
     // list; the choice is only about the rest.
@@ -1754,7 +2432,7 @@
     // there, so nobody has to walk to a computer in a cupboard.
     const mgmtRow = document.createElement("div");
     mgmtRow.className = "addrow subrow";
-    mgmtRow.innerHTML = "<span class='sublabel'>Managed from the house</span>";
+    mgmtRow.innerHTML = "<span class='sublabel'>Managed from the main server</span>";
     const mgmt = document.createElement("button");
     mgmt.className = "btn ghost kind" + (one.allowRemote ? " on" : "");
     mgmt.textContent = one.allowRemote ? "Allowed" : "Not allowed";
@@ -1763,19 +2441,20 @@
       again();
     };
     mgmtRow.appendChild(mgmt);
-    followBox.appendChild(mgmtRow);
+    followBox.appendChild(tagRow(mgmtRow, "manage"));
     const mgmtNote = document.createElement("div");
     mgmtNote.className = "note";
     mgmtNote.textContent = "The server this machine follows may then change these " +
       "settings without anybody walking to it. Only that machine, and only by its " +
       "address.";
-    followBox.appendChild(mgmtNote);
-    // An hour before the other machine sleeps, and through the night, it takes copies
-    // of everything anybody is in the middle of - not only what is playing.
+    followBox.appendChild(tagRow(mgmtNote, "manage"));
+    // Inside these hours it takes copies of everything anybody is in the middle of -
+    // not only what is playing.
     row("Night from, hour", String(one.nightFrom), "22",
         (v) => put({ nightFrom: v }));
     row("Night until, hour", String(one.nightTo), "8", (v) => put({ nightTo: v }));
-    // What the other server hands to viewers outside the house. Empty is right when
+    if (opts.house) followBox.appendChild(opts.house.tonight(opts.name || "the cache"));
+    // What the other server hands to viewers outside the main server. Empty is right when
     // both servers sit behind the one router.
     row("This machine from outside", one.outside, "http://203.0.113.7:8764",
         (v) => put({ outside: v }));
@@ -1792,9 +2471,9 @@
         (state.why ? " - last trouble: " + state.why : "");
     note.textContent = state.on ? doing
       : "Off. With this on, whatever that server plays is copied here; a series is " +
-        "copied ahead; and from an hour before it sleeps, everything anybody is " +
-        "half-way through.";
-    followBox.appendChild(note);
+        "copied ahead; and in the night hours, everything anybody is half-way " +
+        "through.";
+    followBox.appendChild(tagRow(note, "status"));
 
     // what the cache holds, against what it was allowed
     const kept = said.kept || {};
@@ -1803,14 +2482,14 @@
     const fill = document.createElement("span");
     fill.style.width = Math.round((kept.share || 0) * 100) + "%";
     bar.appendChild(fill);
-    followBox.appendChild(bar);
+    followBox.appendChild(tagRow(bar, "status"));
     const held = document.createElement("div");
     held.className = "note";
     held.textContent = (kept.gb || 0) + " of " + (kept.cap || 0) + " GB kept (" +
       Math.round((kept.share || 0) * 100) + "%)  ·  " + (kept.files || 0) +
       " file" + ((kept.files === 1) ? "" : "s") +
       (kept.free ? "  ·  " + kept.free + " GB free on that disk" : "");
-    followBox.appendChild(held);
+    followBox.appendChild(tagRow(held, "status"));
 
     // and whether the other server can be reached with the address and key above
     const testRow = document.createElement("div");
@@ -1854,11 +2533,97 @@
       }
       now.disabled = false;
       result.textContent = back.said || "";
-      setTimeout(() => drawServers(codeBox, followBox, keyBox), 4000);
+      setTimeout(again, 4000);
     };
     testRow.appendChild(now);
-    followBox.appendChild(testRow);
-    followBox.appendChild(result);
+
+    topSlot.appendChild(tagRow(testRow, "status"));
+    topSlot.appendChild(tagRow(result, "status"));
+
+    // Until this machine follows something its copying settings are about a copy
+    // nobody keeps: asleep, with what it takes to start following left live. While
+    // the main server manages it, what the main server sets is asleep here with where it is set;
+    // on the main server, only what the main server may set is drawn.
+    if (opts.house) {
+      followBox.appendChild(opts.house.share(opts.name || "the cache"));
+      followBox.appendChild(opts.house.keys(opts.name || "the cache"));
+    }
+
+    const kids = Array.from(followBox.children);
+    if (opts.remote) {
+      kids.filter((el) => el.dataset.side === "local" || el.dataset.side === "manage")
+          .forEach((el) => el.remove());
+    } else if (!one.on) {
+      kids.filter((el) => !el.dataset.side || el.dataset.side === "manage")
+          .forEach((el) => sleepRow(el, "Follow is off"));
+    } else if (one.allowRemote && !said.fromHouse) {
+      const house = said.houseName ||
+        (one.master || "").replace(/^https?:\/\//, "") || "the server it follows";
+      kids.filter((el) => !el.dataset.side).forEach((el) => sleepRow(el,
+        house + " sets this, under Remote computer there. Turn Managed from the " +
+        "house off to set it here."));
+    }
+  }
+
+  /* What this machine is called, and the port it answers on. */
+  async function drawNameAndPort(into) {
+    let said = {};
+    try {
+      said = await get("/follow");
+    } catch (e) { return; }
+    const again = () => { into.innerHTML = ""; drawNameAndPort(into); };
+    // What this machine is called, wherever it is named: the drawing, the server
+    // list on a phone, the row a guest sees. The computer's own name unless
+    // somebody would rather it were called something else.
+    const nameRow = document.createElement("div");
+    nameRow.className = "addrow subrow";
+    nameRow.innerHTML = "<span class='sublabel'>Name</span>";
+    const nameBox = document.createElement("input");
+    nameBox.type = "text";
+    // The computer's own name stands in the box, so it can be read and edited
+    // rather than guessed at; emptying it puts that name back.
+    nameBox.value = said.name || "";
+    nameBox.placeholder = said.hostname || "this computer's own name";
+    nameBox.onchange = async () => {
+      await post("/library/config", { serverName: nameBox.value.trim() });
+      toast(nameBox.value.trim() ? "Called " + nameBox.value.trim()
+                                 : "Back to the computer's own name");
+      again();
+    };
+    nameRow.appendChild(nameBox);
+    into.appendChild(nameRow);
+    const nameNote = document.createElement("div");
+    nameNote.className = "note";
+    nameNote.textContent = said.hostname
+      ? "Empty means this computer's own name, which is " + said.hostname + "."
+      : "Leave it empty to use the computer's own name.";
+    into.appendChild(nameNote);
+
+    const portrow = document.createElement("div");
+    portrow.className = "addrow subrow";
+    portrow.innerHTML = "<span class='sublabel'>Port</span>";
+    const portbox = document.createElement("input");
+    portbox.type = "text";
+    portbox.value = String(said.portWanted || said.port || "");
+    portbox.placeholder = "8765";
+    portbox.onchange = async () => {
+      const back = await post("/machine/port", { port: portbox.value.trim() });
+      if (back && back.error) return toast(back.error);
+      toast(back && back.restart
+        ? "Port " + back.port + " - from the next time this server starts"
+        : "Port " + back.port);
+      again();
+    };
+    portrow.appendChild(portbox);
+    into.appendChild(portrow);
+    if (said.portWanted && said.port && said.portWanted !== said.port) {
+      const wait = document.createElement("div");
+      wait.className = "note";
+      wait.textContent = "Answering on " + said.port +
+        " until this server is started again.";
+      into.appendChild(wait);
+    }
+
   }
 
   /* What can be added to this server, and what it costs to have it. */
@@ -1919,6 +2684,89 @@
       row.appendChild(act);
       into.appendChild(row);
     });
+    // ffmpeg, which is what converts anything a screen cannot play as it stands. It
+    // is fetched in the first-run wizard, and a server that got past that screen
+    // without it had no way to ask for it afterwards - which is a machine that can
+    // only ever hand over files exactly as they are.
+    let tools = {};
+    try {
+      tools = await get("/setup/state");
+    } catch (e) { tools = {}; }
+    // Always shown, fetched or not. A row that vanished the moment it worked left
+    // nowhere to say where it came from, and no way to let go of it again.
+    {
+      const row = document.createElement("div");
+      row.className = "addin";
+      const words = document.createElement("div");
+      words.className = "addinwords";
+      words.innerHTML = "<b>ffmpeg</b><span class='note'>Converts what a screen " +
+        "cannot play as it stands, and reads what is inside a file. Without it this " +
+        "server can only hand over files exactly as they are. About 80 MB, fetched " +
+        "from the people who build it." +
+        (tools.ffmpegFrom ? "<br>Source: <code>" + esc(tools.ffmpegFrom) + "</code>"
+                          : "") +
+        (tools.ffmpegHave ? "<br>On this disk: <code>" + esc(tools.ffmpegHave) +
+                            "</code>" : "") +
+        "</span>";
+      const state = document.createElement("div");
+      state.className = "addinstate";
+      const act = document.createElement("button");
+      act.className = "btn ghost";
+      const busy = (tools.fetching || {}).busy;
+      const fetchIt = async (overwrite) => {
+        const said = await post("/setup/ffmpeg", overwrite ? { overwrite: true } : {});
+        if (said && said.ask) {
+          if (!confirm("There is already a copy of ffmpeg on this disk:" + BR + BR +
+                       "  " + said.have + BR + BR +
+                       "Fetching again downloads about 80 MB from" + BR +
+                       "  " + (said.where || "the people who build it") + BR +
+                       "and writes over it. Carry on?")) {
+            return drawAddins(into);
+          }
+          await post("/setup/ffmpeg", { overwrite: true });
+        }
+        setTimeout(() => drawAddins(into), 3000);
+      };
+      if (busy) {
+        const f = tools.fetching || {};
+        state.textContent = f.said || "fetching…";
+        act.textContent = "fetching";
+        act.disabled = true;
+        setTimeout(() => drawAddins(into), 2000);
+      } else if (tools.ffmpeg) {
+        state.textContent = "in use";
+        act.textContent = "Remove";
+        act.onclick = async () => {
+          if (!confirm("Stop using ffmpeg. The files stay on the disk and it can be " +
+                       "taken up again without downloading anything. Until then " +
+                       "this server hands files over exactly as they are. Carry " +
+                       "on?")) return;
+          await post("/setup/ffmpeg", { off: true });
+          drawAddins(into);
+        };
+      } else if (tools.ffmpegHave) {
+        state.textContent = "here, not in use";
+        act.textContent = "Use it";
+        act.onclick = async () => {
+          await post("/setup/ffmpeg", { on: true });
+          drawAddins(into);
+        };
+      } else {
+        state.textContent = "not here";
+        act.textContent = "Fetch it";
+        act.onclick = async () => {
+          act.disabled = true;
+          act.textContent = "fetching…";
+          await fetchIt(false);
+        };
+      }
+      row.appendChild(document.createElement("div"));
+      row.appendChild(words);
+      row.appendChild(state);
+      row.appendChild(act);
+      into.appendChild(row);
+    }
+
     // The app itself, for a server that has none beside it. An installed server
     // carries it; one built from source does not, because an APK is not source. It
     // can be fetched - but only because somebody here says so, which is why this is
@@ -1927,39 +2775,71 @@
     try {
       app = await get("/app/version");
     } catch (e) { app = {}; }
-    if (!app.here) {
+    {
       const row = document.createElement("div");
       row.className = "addin";
       const words = document.createElement("div");
       words.className = "addinwords";
-      words.innerHTML = "<b>The Android app</b><span class='note'>This server has no " +
-        "copy of the app, so it cannot hand one to a phone or a television. An " +
-        "installed server carries it; one built from source does not, because an APK " +
-        "is not source and does not belong in a repository.<br><br>" +
-        "Two ways to give it one. <b>Fetch it</b> takes the published build from " +
-        "palladium.video - about 17 MB, and nothing about this machine goes with the " +
-        "request. Or build it yourself from the source at " +
-        "<a href='https://github.com/grovestick/palladium' target='_blank' " +
-        "rel='noopener'>github.com/grovestick/palladium</a> and put " +
-        "<code>palladium.apk</code> beside the program, which is the answer if you " +
-        "would rather this machine asked nobody for anything.</span>";
+      words.innerHTML = "<b>The Android app</b><span class='note'>The cache this " +
+        "server hands to a phone or a television. An installed server carries it; " +
+        "one built from source does not, because an APK is not source and does not " +
+        "belong in a repository.<br><br>" +
+        "<b>Fetch it</b> takes the published build from palladium.video - about 17 " +
+        "MB, and nothing about this machine goes with the request. Or put " +
+        "<code>palladium.apk</code> beside the program yourself, which is the answer " +
+        "if you would rather this machine asked nobody for anything." +
+        (app.from ? "<br>Source: <code>" + esc(app.from) + "</code>" : "") +
+        (app.have && app.versionName ? "<br>On this disk: " + esc(app.versionName) +
+                                       " (" + (app.sizeMb || 0) + " MB)" : "") +
+        "</span>";
       const state = document.createElement("div");
       state.className = "addinstate";
       const act = document.createElement("button");
       act.className = "btn ghost";
       if (app.getting) {
-        state.textContent = "fetching…";
+        state.textContent = app.size
+          ? "fetching — " + Math.round(100 * (app.part || 0)) + "% of " +
+            Math.round(app.size / 1e6) + " MB"
+          : "fetching…";
         act.textContent = "fetching";
         act.disabled = true;
-        setTimeout(() => drawAddins(into), 5000);
+        setTimeout(() => drawAddins(into), 2000);
+      } else if (app.here) {
+        state.textContent = "handed out";
+        act.textContent = "Remove";
+        act.onclick = async () => {
+          if (!confirm("Stop handing the app out. The file stays on the disk and " +
+                       "can be offered again without downloading anything. Until " +
+                       "then a phone asking this server for the app is told there " +
+                       "is none. Carry on?")) return;
+          await post("/app/fetch", { off: true });
+          drawAddins(into);
+        };
+      } else if (app.have) {
+        state.textContent = "here, not handed out";
+        act.textContent = "Hand it out";
+        act.onclick = async () => {
+          await post("/app/fetch", { on: true });
+          drawAddins(into);
+        };
       } else {
         state.textContent = "not here";
         act.textContent = "Fetch it";
         act.onclick = async () => {
           act.disabled = true;
           act.textContent = "fetching…";
-          await post("/app/fetch", {});
-          setTimeout(() => drawAddins(into), 3000);
+          const said = await post("/app/fetch", {});
+          if (said && said.ask) {
+            if (!confirm("There is already a copy of the app on this disk" +
+                         (said.version ? " (" + said.version + ")" : "") + "." + BR +
+                         BR + "Fetching again downloads about 17 MB from" + BR +
+                         "  " + (said.where || "palladium.video") + BR +
+                         "and writes over it. Carry on?")) {
+              return drawAddins(into);
+            }
+            await post("/app/fetch", { overwrite: true });
+          }
+          setTimeout(() => drawAddins(into), 2000);
         };
       }
       row.appendChild(document.createElement("div"));
@@ -1983,6 +2863,7 @@
     ks.className = "addinstate";
     const ka = document.createElement("button");
     ka.className = "btn ghost";
+    let letGo = null;
     const newer = t.latest && t.version !== t.latest;
     if (t.getting) {
       ks.textContent = "fetching…";
@@ -1992,20 +2873,46 @@
     } else {
       ks.textContent = t.version ? ("version " + t.version + (newer ?
         " · " + t.latest + " is out" : ""))
-        : t.here ? "the copy that came with the server" : "not here";
+        : t.here ? "the cache that came with the server" : "not here";
       ka.textContent = t.version ? (newer ? "Update" : "Fetch again") : "Get them";
       ka.onclick = async () => {
         ka.disabled = true;
         ka.textContent = "fetching…";
-        const back = await post("/machine/addons", { tools: "fetch" });
+        let back = await post("/machine/addons", { tools: "fetch" });
+        if (back && back.ask) {
+          if (!confirm("There is already a copy of the subtitle tools on this disk " +
+                       "(" + back.have + ")." + BR + BR + "Fetching again downloads " +
+                       "them from " + (back.where || "palladium.video") +
+                       " and writes over that copy. Carry on?")) {
+            return drawAddins(into);
+          }
+          back = await post("/machine/addons", { tools: "fetch", overwrite: true });
+        }
         if (back && back.error) toast(back.error);
         setTimeout(() => drawAddins(into), 1500);
       };
+      // and letting go of them, which is not deleting them: the scripts stay and
+      // are taken up again without asking anybody for anything
+      if (t.version || t.here) {
+        const off = letGo = document.createElement("button");
+        off.className = "btn ghost";
+        off.textContent = said.toolsOff ? "Use them" : "Remove";
+        off.onclick = async () => {
+          if (!said.toolsOff &&
+              !confirm("Stop using the subtitle tools. The scripts stay on the " +
+                       "disk and can be taken up again without downloading " +
+                       "anything. Carry on?")) return;
+          await post("/machine/addons", { tools: said.toolsOff ? "on" : "off" });
+          drawAddins(into);
+        };
+        if (said.toolsOff) ks.textContent = "here, not in use";
+      }
     }
     kit.appendChild(document.createElement("div"));   // where a tick would be
     kit.appendChild(kw);
     kit.appendChild(ks);
     kit.appendChild(ka);
+    if (letGo) kit.appendChild(letGo);
     into.appendChild(kit);
     if (t.why) {
       const bad = document.createElement("div");
@@ -2026,7 +2933,7 @@
   /* ---- where everything goes ----
    *
    * The same question is asked every evening in three different ways: is the other
-   * machine up, is anybody watching, and can the house be reached from outside. Three
+   * machine up, is anybody watching, and can the main server be reached from outside. Three
    * lists answered it in words. A drawing answers it at a glance - a box is lit or it
    * is not, and a line carries moving dashes or it is still.
    *
@@ -2076,7 +2983,7 @@
       colour + "'><title>" + esc(title) + "</title>" + esc(named) + "</text>";
     // Cut to the box rather than run out of it. The lines are addresses and builds,
     // and one long enough to leave its panel used to write itself across whatever
-    // was beside it - a drawing of the house with the text loose over the top.
+    // was beside it - a drawing of the main server with the text loose over the top.
     const fits = Math.max(6, Math.floor((w - 26) / 7.05));
     lines.forEach((l, i) => {
       const one = String(l == null ? "" : l);
@@ -2115,6 +3022,31 @@
       : ago < 86400 ? Math.round(ago / 3600) + " h" : Math.round(ago / 86400) + " d";
   };
 
+  //: Which row each screen sits on, kept between drawings. The list was sorted
+  //: freshest first, so every card moved whenever anything else started or stopped
+  //: and the drawing could not be read while it was being watched. A screen keeps
+  //: the row it was given until it goes quiet; a new one takes the lowest free row.
+  const SEATS = new Map();
+
+  /* A film coming in, as lines for a machine's box: what, how far, how fast, how long. */
+  function downloadLines(rows) {
+    const d = rows[0];
+    if (!d) return [];
+    const name = String(d.title || "a film").replace(/[<>&]/g, "");
+    const short = name.length > 28 ? name.slice(0, 27) + "\u2026" : name;
+    const eta = d.eta != null && d.eta >= 0
+      ? (d.eta < 60 ? d.eta + " s" : d.eta < 3600 ? Math.round(d.eta / 60) + " min"
+         : Math.floor(d.eta / 3600) + " h " + Math.round((d.eta % 3600) / 60) + " min")
+      : "";
+    return [
+      "downloading " + short,
+      d.state === "queued" ? "queued"
+        : Math.round((d.progress || 0) * 100) + "% - " + Number(d.mbit || 0).toFixed(1) +
+          " Mbit/s" + (eta ? " - " + eta + " left" : ""),
+      rows.length > 1 ? (rows.length - 1) + " more waiting" : "",
+    ];
+  }
+
   async function drawWiring(into) {
     // One answer for the whole drawing. It used to be three, every five seconds,
     // which on a machine at the end of a slow link is three round trips for one
@@ -2129,7 +3061,8 @@
       ? [Object.assign({}, said.machine || {}, { name: said.name }),
          { standby: said.standby, state: said.state, follows: said.follows },
          { live: (said.live || []).concat(
-             Array((said.syncing || 0)).fill({ how: "syncing" })) }]
+             Array((said.syncing || 0)).fill({ how: "syncing" })),
+           syncingMbit: Number(said.syncingMbit) || 0 }]
       : await Promise.all([
           get("/machine").catch(() => ({})),
           get("/follow").catch(() => ({})),
@@ -2140,10 +3073,13 @@
     const live = all.filter((r) => r.how !== "syncing");
     const sync = all.filter((r) => r.how === "syncing");
     // The other machine in the pair. On the house server that is whatever follows
-    // it; on the machine that keeps copies it is the house - which had been drawn as
-    // "night server, none, not answering", a box describing a follower it does not
+    // it; on the machine that keeps copies it is the main server - which had been drawn as
+    // "night server, none, not answering", a box describing a cache it does not
     // have and will never have.
-    let other = (follow && follow.standby) || {};
+    // ...under the name the answer actually uses. One endpoint replaced three and
+    // calls it "standby"; this went on reading "cache", found nothing either way,
+    // and drew a live machine as "no second machine - not answering".
+    let other = (follow && (follow.standby || follow.cache)) || {};
     const upstream = (follow && follow.follows) || {};
     const followingUp = !other.where && !!(upstream.lan || upstream.outside);
     if (followingUp) {
@@ -2159,29 +3095,65 @@
     // knows is named; the rest carry the address they came from.
     const screens = ((machine && machine.clients) || [])
       .filter((c) => now - (c.when || 0) < 120)
-      .filter((c) => !/following/i.test(String(c.said || c.kind || "")))
+      // A machine that copies from this one is not a screen: it has a box of its
+      // own. The test was for "following" and the machine calls itself a "cache",
+      // so it slipped through and was drawn twice - once as itself and once as
+      // somebody watching. Matched on any of the three words it might use, and on
+      // its address, which is the one thing it cannot describe itself out of.
+      .filter((c) => !/follow/i.test(String(c.said || "") + " " +
+                                    String(c.kind || "") + " " + String(c.name || "")))
+      .filter((c) => {
+        const at = String(c.where || "");
+        return !at || [other.where, other.outside, standbyWhere, standbyOut]
+          .filter(Boolean)
+          .every((u) => String(u).replace(/^https?:\/\//, "").split(":")[0] !== at);
+      })
       .sort((a, b) => (b.when || 0) - (a.when || 0))
       .slice(0, 4)
       .map((c) => Object.assign({}, c, {
         shown: c.name || (c.where === "127.0.0.1" ? "this computer" : c.where),
       }));
+    // a screen keeps its row for as long as it is there; one that has gone quiet
+    // gives its row up and the next new screen takes it
+    {
+      const here = new Set(screens.map((c) => String(c.where)));
+      Array.from(SEATS.keys()).forEach((k) => {
+        if (!here.has(k)) SEATS.delete(k);
+      });
+      screens.forEach((c) => {
+        const key = String(c.where);
+        if (SEATS.has(key)) return;
+        const taken = new Set(SEATS.values());
+        let row = 0;
+        while (taken.has(row)) row += 1;
+        SEATS.set(key, row);
+      });
+    }
     const mbit = live.reduce((n, r) => n + (r.mbit || 0), 0);
+    const syncMbit = Number(watching && watching.syncingMbit) || 0;
     const door = !!other.outside;
 
-    // The house as it is actually wired. Everything hangs off the router - both
+    // The main server as it is actually wired. Everything hangs off the router - both
     // machines and every screen - so it sits in the middle with room around it, and
     // the way in from outside comes down into it. The line between the two servers
     // is the only one that is not the router's doing: it is one machine copying from
     // the other, and it is drawn because that is the thing worth watching.
-    const rows = Math.max(screens.length, 1);
-    const W = 820;
-    const H = Math.max(300, 150 + rows * 58);
+    // Read left to right, the way the film travels: the way in from outside, the
+    // router it arrives at, the machines the films are on, and the screens watching
+    // them. It used to be laid out as the main server is wired - the router in the middle
+    // with everything hanging off it - which is a true picture of the cables and
+    // says nothing about where a film goes.
+    const rows = Math.max(1, ...Array.from(SEATS.values()).map((n) => n + 1),
+                          screens.length);
+    const W = 900;
+    const H = Math.max(320, 90 + rows * 72);
     const gate = (machine && machine.gateway) || "";
-    const box = [318, 100, 194, 52];         // the router, in the middle of it all
+    const box = [14, 130, 170, 52];          // the router, on the left
     const gx = box[0] + box[2] / 2;
     const gy = box[1] + box[3] / 2;
-    const heart = [286, 214, 232, 74];       // this machine, below the router
-    const copyBox = [592, 214, 214, 74];     // and the one that keeps copies
+    const heart = [230, 60, 232, 74];        // this machine
+    const copyBox = [230, 196, 232, 74];     // and the one that keeps copies, below it
+    const seatX = 560;                       // and the screens they feed
     let g = "";
 
     // The way in from outside, straight down into the router. Both machines are
@@ -2195,71 +3167,127 @@
     // drawn from the same number - one worked out here and one worked out there is
     // how a line came to start inside a box and end short of the next.
     const outLines = outs.length ? outs : ["no way in"];
-    const outY = 4;
+    const outY = 14;
     const outH = Math.max(30 + outLines.length * 15, 44);
-    g += node(316, outY, 198, outH, "OUTSIDE", outLines, !!(mine || theirs));
+    g += node(box[0], outY, box[2], outH, "WAN", outLines, !!(mine || theirs));
     g += wire([gx, outY + outH], [gx, box[1]], !!(mine || theirs), "");
 
-    g += "<g class='wclick' data-open='" + (gate ? "http://" + gate : "") + "'>" +
+    // A real link rather than a box with a handler hung on it. The drawing is made
+    // again every few seconds and the handlers went with the old one, so pressing it
+    // in the moment between two drawings did nothing at all.
+    g += (gate
+          ? "<a class='wclick' href='http://" + gate + "' target='_blank' " +
+            "rel='noopener'>"
+          : "<g>") +
          node(box[0], box[1], box[2], box[3], "ROUTER",
-              [gate || "not found", "press to open"], !!gate) +
-         "</g>";
+              [gate || "not found", gate ? "press to open" : ""], !!gate) +
+         (gate ? "</a>" : "</g>");
 
     // both machines hang off it
     g += node(heart[0], heart[1], heart[2], heart[3],
-              (machine && machine.name) || "THIS SERVER", [
+              (machine && machine.name) || "THIS SERVER", [].concat([
       ((machine && machine.lan) || "").replace(/^https?:\/\//, "") ||
         ("port " + ((machine && machine.port) || "?")),
       "build " + ((machine && machine.server) || "?") +
         "   " + ((machine && machine.network) || "?"),
-      live.length ? live.length + " watching - " + mbit.toFixed(1) + " Mbit"
-                  : "nobody watching",
-    ], true);
+      // Watching on one line and copying on the next, and each only while it is
+      // happening. They were added together on one line, where a machine sending a
+      // film and a machine filling the other one read as the same thing.
+      live.length ? live.length + " watching - " + mbit.toFixed(1) + " Mbit" : "",
+      sync.length ? sync.length + " copying - " + syncMbit.toFixed(1) + " Mbit" : "",
+      // and a film coming in from a torrent pack, with how many wait behind it
+      ...downloadLines((said && said.downloads) || []),
+      (!live.length && !sync.length && !((said && said.downloads) || []).length)
+        ? "nothing going out" : "",
+    ].filter(Boolean)), true);
     const copying = !!state.copying || sync.length > 0;
+    // which screens are reading a film off the cache this minute, as the cache
+    // itself reports - by address, so a line can be drawn to the right screen
+    // what the cache is feeding, by screen: address and megabits, as it reports
+    // them about itself. This machine cannot see any of it - a player reading part
+    // of a film off the cache talks to the cache.
+    const busyRows = Array.isArray(other.busy) ? other.busy : [];
+    const busyFor = (where) => busyRows.find(
+      (r) => String((r && r.address) || r) === String(where));
+    const busy = busyRows.length;
+    const busyMbit = busyRows.reduce((n, r) => n + (Number(r && r.mbit) || 0), 0);
     g += node(copyBox[0], copyBox[1], copyBox[2], copyBox[3],
-              other.name || (followingUp ? "the house" : "night server"), [
+              other.name || (other.where
+                               ? other.where.replace(/^https?:\/\//, "")
+                               : (followingUp ? "the main server" : "no second machine")), [
       other.where ? other.where.replace(/^https?:\/\//, "") : "none",
       (other.build ? "build " + other.build + "   " : "") +
         (other.alive ? "seen " + shortly(other.seen) : "not answering"),
+      // "Standing by" was said of a machine carrying half of a film. A player
+      // reading part of a film off the cache talks to the cache and says nothing here,
+      // so this machine has to ask it - and now does.
       copying ? (followingUp ? "taking a copy from it" : "taking a copy")
+              : busy ? (busy + " split" +
+                        (busyMbit > 0 ? "   " + busyMbit.toFixed(1) + " Mbit" : ""))
               : (followingUp ? "the library is there" : "standing by"),
     ], other.where ? !!other.alive : 0);
 
-    // Down into this machine, and across into the one that keeps copies - to the
-    // short side of it, which is the edge facing the router.
-    // Drawn from this machine up to the router, because that is the way the film
-    // travels: the house sends, the router passes it on. The dashes ran the other
-    // way, which read as the router feeding the server.
-    g += wire([heart[0] + heart[2] / 2, heart[1]], [gx - 30, box[1] + box[3]],
-              live.length > 0, "", true);
-    g += wire([box[0] + box[2], gy], [copyBox[0], copyBox[1] + 22],
+    // Out of the router into each machine. Left to right, which is the way a film
+    // travels on this drawing.
+    g += wire([box[0] + box[2], gy], [heart[0], heart[1] + heart[3] / 2], true, "");
+    g += wire([box[0] + box[2], gy], [copyBox[0], copyBox[1] + copyBox[3] / 2],
               !!other.alive, "");
 
     // one machine filling the other, which is the only line the router did not make
-    // and the dashes run the way the film travels: out of the house into the copy,
+    // and the dashes run the way the film travels: out of the main server into the cache,
     // whichever of the two this drawing was made on
+    // The dashes run the way the film travels. Filling the cache runs one way and
+    // reading a film off it runs the other, and only the first was ever drawn - so a
+    // machine handing out half a film was shown being fed by the machine it was
+    // feeding.
+    const fromCopy = busy > 0 && !copying;
+    // between the two machines, one above the other: filling the cache runs down,
+    // and a film being read off it runs back up
+    const midX = heart[0] + heart[2] / 2;
+    const atHere = [midX, heart[1] + heart[3]];
+    const atCopy = [midX, copyBox[1]];
+    // No word on the line itself. The line is already dashed and moving while a copy
+    // is going, and the box at the end of it says "taking a copy" - so the word sat
+    // outside both boxes saying a third time what the drawing had said twice.
     g += followingUp
-      ? wire([copyBox[0], copyBox[1] + copyBox[3] - 18],
-             [heart[0] + heart[2], heart[1] + heart[3] - 18], copying,
-             copying ? "copying" : "", true)
-      : wire([heart[0] + heart[2], heart[1] + heart[3] - 18],
-             [copyBox[0], copyBox[1] + copyBox[3] - 18], copying,
-             copying ? "copying" : "");
+      ? wire(atCopy, atHere, copying, "", true)
+      : wire(atHere, atCopy, copying, "");
 
-    // and the screens, which reach the house the same way everything else does
+    // and the screens on the right, with a line from every machine feeding them.
+    // Both machines can be carrying one film at once - the app fetches from each of
+    // them - and only one line was ever drawn, so the second machine appeared to be
+    // doing nothing while it carried half the picture.
+    const fromHere = [heart[0] + heart[2], heart[1] + heart[3] / 2];
+    const copyOut = [copyBox[0] + copyBox[2], copyBox[1] + copyBox[3] / 2];
     if (screens.length) {
-      screens.forEach((c, i) => {
-        const y = 26 + i * 58;
+      screens.forEach((c) => {
+        const y = 20 + (SEATS.get(String(c.where)) || 0) * 72;
         const row = live.find((r) => r.address === c.where);
-        g += node(14, y, 190, 44, c.shown || c.kind || "screen",
-                  [(c.kind || "") + (c.version ? "  " + c.version : "")],
+        // what a screen is taking, written in the screen's own box. It sat on the
+        // line instead, where with two machines feeding one screen there are two
+        // lines and only one of them could carry the figure.
+        g += node(seatX, y, 200, 44, c.shown || c.kind || "screen",
+                  [(c.kind || "") + (c.version ? "  " + c.version : ""),
+                   (function () {
+                     const mine = row ? (row.mbit || 0) : 0;
+                     const alsoFrom = busyFor(c.where);
+                     const theirs = alsoFrom ? (Number(alsoFrom.mbit) || 0) : 0;
+                     if (!row && !theirs) return "nothing playing";
+                     return (mine + theirs).toFixed(1) + " Mbit   " +
+                            ((row && row.how) || "");
+                   })()],
                   row ? true : 0);
-        g += wire([204, y + 22], [box[0], gy], !!row,
-                  row ? (row.mbit || 0).toFixed(1) + " Mbit" : "", true);
+        // a line from a machine only to the screen it is actually feeding. Every
+        // screen used to get a line from every machine, which drew a copy that was
+        // carrying one film as though it were carrying all of them.
+        if (row) g += wire(fromHere, [seatX, y + 22], true, "");
+        // The rate belongs in the screen's box, not on the line into it: figures
+        // written along the wires crossed each other and the boxes both.
+        if (busyFor(c.where)) g += wire(copyOut, [seatX, y + 22], true, "");
       });
     } else {
-      g += node(14, 100, 190, 44, "no screens", ["nothing is on"], 0);
-      g += wire([204, 122], [box[0], gy], false, "", true);
+      g += node(seatX, 120, 200, 44, "no screens", ["nothing is on"], 0);
+      g += wire(fromHere, [seatX, 142], false, "");
     }
 
     into.innerHTML =
@@ -2268,126 +3296,337 @@
       "<rect width='" + W + "' height='" + H + "' fill='#06080b'/>" +
       g + "</svg>";
     // the one box in the drawing that is not this software: pressing it opens the
-    // page it serves, which is where a port forward is set and where it is undone
-    into.querySelectorAll(".wclick[data-open]").forEach((el) => {
-      const to = el.getAttribute("data-open");
-      if (!to) return;
-      el.style.cursor = "pointer";
-      el.onclick = () => window.open(to, "_blank", "noopener");
-    });
+    // page it serves, which is where a port forward is set and where it is undone.
+    // It is an anchor now, so the browser opens it whether or not this has run.
   }
 
   /* The other machine: the one this server follows, or the one that follows it.
    *
-   * Everything here is about a computer that is not this one - the address it is
-   * reached at, what it is asked to keep, the keys it needs to do that, and the
-   * build it is running. They were mixed in with this machine's own settings, where
-   * the two kinds of thing read as one long list of switches.
+   * Both halves are drawn whether or not they are in use - what this server lends to
+   * another machine, and what it copies from one - and what does not apply here is
+   * asleep. Each setting is drawn in one place.
    */
   async function paneRemote(main) {
-    // Two halves of one subject, and they are opposites: what this server lends to
-    // another machine, and what it borrows from one. A rule between them, so nobody
-    // reads a setting from the wrong side of the arrangement.
-    // What this machine is called and where it answers: it is the half of the
-    // arrangement the other computer has to be told, so it reads here rather than
-    // among this machine's own switches.
-    const codeCard = block("");
-    main.appendChild(codeCard);
-
-    const lend = document.createElement("div");
-    lend.className = "note";
-    lend.style.cssText = "margin:0 0 8px;letter-spacing:.08em;text-transform:uppercase";
-    lend.textContent = "Another computer copies from this one";
-    main.appendChild(lend);
-
-    const keyCard = block("Let another computer keep copies");
-    const keyBox = document.createElement("div");
-    keyCard.appendChild(keyBox);
-    main.appendChild(keyCard);
-
-    const rule = document.createElement("div");
-    rule.style.cssText =
-      "border-top:1px solid var(--line);margin:26px 0 14px";
-    main.appendChild(rule);
-    const borrow = document.createElement("div");
-    borrow.className = "note";
-    borrow.style.cssText = "margin:0 0 8px;letter-spacing:.08em;text-transform:uppercase";
-    borrow.textContent = "This computer copies from another";
-    main.appendChild(borrow);
-
-    const followBox = block("");
-    main.appendChild(followBox);
-    drawServers(codeCard, followBox, keyBox);
-
-    // the keys it needs of its own: subtitles it fetches itself, and the catalogue
-    // it looks posters up in when this machine cannot be reached
-    let copy = {};
+    let said = {};
     try {
-      copy = await get("/standby");
+      said = await get("/follow");
     } catch (e) {
-      copy = {};
+      said = {};
     }
-    if (copy && copy.where) {
-      const keys = block("What it needs of its own");
-      keys.innerHTML += "<div class='note'>It fetches subtitles for what it takes " +
-        "and looks titles up for itself when this machine cannot be reached. " +
-        "Without keys of its own it holds films half the house cannot read, on a " +
-        "shelf of grey rectangles.</div>";
-      const row = document.createElement("div");
-      row.className = "addrow subrow";
-      row.innerHTML = "<span class='sublabel'>" + esc(copy.name || "The copy") +
-        "</span>";
-      [["Send both keys", {}],
-       ["Subtitles only", { only: "opensubtitles_key" }],
-       ["Catalogue only", { only: "tmdb_key" }]].forEach(([label, body]) => {
-        const b = document.createElement("button");
-        b.className = "btn ghost";
-        b.textContent = label;
-        b.onclick = async () => {
-          b.disabled = true;
+    // machines heard from in the last day; an address silent longer has gone
+    const caches = (said.followers || [])
+      .filter((f) => !f.revoked && (f.ago === undefined || f.ago < 86400));
+    const heading = (text) => {
+      const el = document.createElement("div");
+      el.className = "note";
+      el.style.cssText = "margin:0 0 8px;letter-spacing:.08em;text-transform:uppercase";
+      el.textContent = text;
+      main.appendChild(el);
+    };
+
+    const bar = document.createElement("div");
+    bar.className = "sortbar collbar";
+    [["server", "Cache"], ["cache", "Server"]].forEach(([id, label]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (remoteTab === id ? " on" : "");
+      b.textContent = label;
+      b.onclick = () => { remoteTab = id; render(); };
+      bar.appendChild(b);
+    });
+    main.appendChild(bar);
+
+    /* ---- this computer copies from another ---- */
+    if (remoteTab === "cache") {
+      // the other direction, and just as easy to open by mistake: this machine
+      // keeping copies of somebody else's library rather than lending its own
+      const why = document.createElement("div");
+      why.className = "note";
+      why.style.cssText = "margin:2px 0 14px";
+      why.textContent =
+        "The other way round: this computer keeping copies of another server's " +
+        "library, so it can answer when that one is off. Ask whoever runs it for an " +
+        "invitation - they make it under Users and set its role to Cache - then " +
+        "paste the link, or its address and five-character code, below. What is " +
+        "copied and how much of the disk it may use are set here; how much that " +
+        "server lets this one take is set there.";
+      main.appendChild(why);
+      const followBox = block("");
+      main.appendChild(followBox);
+      drawFollow(followBox, { get: get, post: post }, {});
+      return;
+    }
+
+    // What the half is for, before any of it: somebody meeting this page has a
+    // second computer and no idea what to do with it.
+    const what = document.createElement("div");
+    what.className = "note";
+    what.style.cssText = "margin:2px 0 14px";
+    what.textContent =
+      "A cache is another computer that keeps copies of this library and answers " +
+      "when this one is off - what anybody is part-way through, their watchlist, " +
+      "and the next few of a shuffle. Set one up in three steps: invite it under " +
+      "Users as though it were a person, set that key's role to Cache, and give the " +
+      "invitation to that machine - it asks for one under Remote computer, Server. " +
+      "It appears here once it announces itself, with what it holds and what it is " +
+      "set to copy.";
+    main.appendChild(what);
+
+    /* ---- another computer copies from this one ---- */
+    // A box for each machine that keeps a copy. With one, it stands open; with
+    // several, the others are a row apiece until one is pressed.
+    // What this server does with its copy - how much of the reading it hands over,
+    // starting the night early, the keys it sends - sits in that machine's own box,
+    // beside its night hours. Built fresh on every draw: the box redraws itself after
+    // each change. These talk to this server, not through the cache.
+    const mine = await get("/library/config").catch(() => ({}));
+    const subrow = (label) => {
+      const r = document.createElement("div");
+      r.className = "addrow subrow";
+      r.innerHTML = "<span class='sublabel'>" + label + "</span>";
+      return r;
+    };
+    const noteOf = (text) => {
+      const n = document.createElement("div");
+      n.className = "note";
+      n.textContent = text;
+      return n;
+    };
+    const house = {
+      // going to bed early: the cache's night hours begin now and last as long as a night
+      tonight: (name) => {
+        const wrap = document.createElement("div");
+        const r = subrow("Tonight");
+        const early = document.createElement("button");
+        early.className = "btn ghost";
+        early.textContent = "Start the night now";
+        const said = noteOf("");
+        early.onclick = async () => {
+          early.disabled = true;
+          said.textContent = "Telling " + name + " to take tonight's copies\u2026";
           try {
-            const said = await post("/follow/keys", body);
-            toast(said && said.ok
-                  ? "Sent: " + ((said.sent || []).join(", ") || "done")
-                  : (said && said.why) || "Could not send");
+            const back = await post("/follow/tonight", {});
+            said.textContent = back && back.said ? back.said : "The night has started early.";
           } catch (e) {
-            toast("Could not send");
+            said.textContent = "Could not reach " + name + ".";
           }
-          b.disabled = false;
+          early.disabled = false;
         };
-        row.appendChild(b);
-      });
-      keys.appendChild(row);
-      main.appendChild(keys);
-    }
+        r.appendChild(early);
+        wrap.append(r, said);
+        return wrap;
+      },
+      // One film read off both machines, for a browser. Off unless somebody sets a
+      // share: only whoever knows both machines can say it is worth it.
+      share: (name) => {
+        const wrap = document.createElement("div");
+        const r = subrow("Share reading");
+        const pc = document.createElement("input");
+        pc.type = "text";
+        pc.inputMode = "numeric";
+        pc.value = mine.shareWithCopy ? String(mine.shareWithCopy) : "";
+        pc.placeholder = "0";
+        pc.onchange = async () => {
+          const n = Math.max(0, Math.min(90,
+            parseInt(pc.value.replace(/[^0-9]/g, ""), 10) || 0));
+          await post("/library/config", { shareWithCopy: n });
+          mine.shareWithCopy = n;
+          toast(n ? n + " parts in every hundred are asked of " + name
+                  : "Everything is read from this machine");
+        };
+        r.appendChild(pc);
+        wrap.append(r, noteOf(
+          "When a browser plays a film both machines hold, this server can fetch part " +
+          "of it from " + name + " so a busy disk here does not stall the picture. The " +
+          "number is the most it may take from there, out of every 100 parts; 0 reads " +
+          "everything here. The app does not use this: it always reads from every " +
+          "machine that has the film."));
+        return wrap;
+      },
+      // the keys it needs of its own: subtitles it fetches itself, and the catalogue it
+      // looks titles up in while this server is off. Only keys this server holds.
+      keys: (name) => {
+        const wrap = document.createElement("div");
+        const r = subrow("Send keys");
+        const choices = [];
+        if (mine.opensubtitles_key && mine.tmdb_key) choices.push(["Both", {}]);
+        if (mine.opensubtitles_key) {
+          choices.push(["Subtitles only", { only: "opensubtitles_key" }]);
+        }
+        if (mine.tmdb_key) choices.push(["Catalogue only", { only: "tmdb_key" }]);
+        choices.forEach(([label, body]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost";
+          b.textContent = label;
+          b.onclick = async () => {
+            b.disabled = true;
+            try {
+              const said = await post("/follow/keys", body);
+              toast(said && said.ok
+                    ? "Sent: " + ((said.sent || []).join(", ") || "done")
+                    : (said && said.why) || "Could not send");
+            } catch (e) {
+              toast("Could not send");
+            }
+            b.disabled = false;
+          };
+          r.appendChild(b);
+        });
+        wrap.append(r, noteOf("Without keys of its own, " + name + " cannot fetch " +
+          "subtitles for what it copies, or look titles up while this server is off."));
+        return wrap;
+      },
+    };
+
+    const keyBox = document.createElement("div");
+    const listBox = document.createElement("div");
+    const openWhere = cacheOn ||
+      ((caches[0] && caches[0].where) || "");
+    const followBox = block("");
+    drawServers(keyBox, followBox, listBox, (row, f) => {
+      const card = block("");
+      card.appendChild(row);
+      main.appendChild(card);
+      if (!f || !f.where || f.where !== openWhere) return;   // shut: the row, and no more
+      const inside = document.createElement("div");
+      card.appendChild(inside);
+      // this server's own side of caching, beside the machine it is about
+      const called = f.name || "the cache";
+      inside.appendChild(house.share(called));
+      inside.appendChild(house.keys(called));
+      inside.appendChild(house.tonight(called));
+      if (f.managed) {
+        drawFollow(inside, remoteApi(f.where), { remote: true, name: called });
+        return;
+      }
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = "How it copies is set on " + called +
+        ". Turn Managed from the main server on there to set it from here.";
+      inside.appendChild(note);
+    });
+
+    // what that machine is taking now, and what is next
+    const copying = document.createElement("div");
+    main.appendChild(copying);
+    const drawCopying = async () => {
+      if (!document.body.contains(copying)) return;      // the tab was left
+      const next = document.createElement("div");
+      await nowCopying(next);
+      if (!document.body.contains(copying)) return;
+      copying.replaceChildren(...next.childNodes);
+      setTimeout(drawCopying, 5000);
+    };
+    setTimeout(drawCopying, 300);
+
+
+    // a cache that lets this server set how it copies has those settings here,
+    // and asleep on that machine
+  }
+
+  /* A cache's own copying settings, read and written through this server. */
+  function remoteApi(whereTo) {
+    return {
+      get: (path) => post("/follow/managed", { where: whereTo, path: path, method: "GET" }),
+      post: (path, body) => post("/follow/managed",
+                                 { where: whereTo, path: path, method: "POST",
+                                   body: body || {} }),
+    };
   }
 
   /* What this computer is set to do about Palladium, as several cards rather than
    * one: the machine itself, the code another server needs, the following of one,
    * the add-ins, and a word to the screens in the house. They were one box with five
    * subjects in it, which read as a list of unrelated switches. */
-  async function machinePanel() {
+  async function machinePanel(part) {
     const all = document.createDocumentFragment();
+    // "machine" is the card about this computer itself; everything else about what
+    // this machine does belongs with the rest of the settings
+    const chosen = (frag) => {
+      if (!part) return frag;                 // all of it, which is the usual answer
+      Array.prototype.slice.call(frag.children).forEach((el) => {
+        const itself = el.dataset && el.dataset.card === "thisComputer";
+        if ((part === "machine") !== itself) el.remove();
+      });
+      return frag;
+    };
     // Everything here is drawn from one answer, so it is asked for once - but the
     // page is put together first. A card that is waiting looks like a card; a tab
     // that is waiting looks broken.
     const said = await get("/machine").catch(() => ({}));
-    // the drawing goes first: what is on, and what is talking to what
-    const map = block("Where it all goes");
-    const canvas = document.createElement("div");
-    canvas.className = "wirebox";
-    map.appendChild(canvas);
-    all.appendChild(map);
-    drawWiring(canvas);
-    const beat = setInterval(() => {
-      if (!document.body.contains(canvas)) return clearInterval(beat);
-      drawWiring(canvas);
-    }, 12000);
+    // what this machine answers about itself is not what it was told to be: the hour
+    // it sleeps at and whether it may ask the site for anything live in the library's
+    // own settings, and the box for the first of them has been empty all along
+    const mine = await get("/library/config").catch(() => ({}));
+    // What this machine encodes with. It sat under Quality, among settings about
+    // how a film should look; it is a fact about this computer and belongs here.
+    const enc = block("Encoding");
+    {
+      const r = document.createElement("div");
+      r.className = "addrow subrow";
+      r.innerHTML = "<span class='sublabel'>Decoder</span>";
+      ENGINES.forEach(([value, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (engine() === value ? " on" : "");
+        b.textContent = text;
+        b.onclick = () => { setPref("engine", value); render(); };
+        r.appendChild(b);
+      });
+      enc.appendChild(r);
+      const n = document.createElement("div");
+      n.className = "note";
+      n.textContent = "Only used for what a screen cannot play as it stands. The " +
+        "card is quicker and is what this uses; the processor is slower and always " +
+        "there, which is the answer for a card that is full, busy, or making a mess " +
+        "of one particular file.";
+      enc.appendChild(n);
+
+      // where encodes are made: here, or on the connected computer while it answers
+      const link = await get("/follow").catch(() => ({}));
+      const other = (link.follow && link.follow.on && link.follow.master)
+        ? (link.follow.master || "") : ((link.cache || {}).where || "");
+      const onRow = document.createElement("div");
+      onRow.className = "addrow subrow";
+      onRow.innerHTML = "<span class='sublabel'>Encode on</span>";
+      const encodeOn = (mine && mine.encodeOn) === "connected" ? "connected" : "here";
+      [["here", "This computer"], ["connected", "Connected computer"]].forEach(([value, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (encodeOn === value ? " on" : "");
+        b.textContent = text;
+        b.onclick = async () => {
+          await post("/library/config", { encodeOn: value });
+          render();
+        };
+        onRow.appendChild(b);
+      });
+      enc.appendChild(onRow);
+      const onNote = document.createElement("div");
+      onNote.className = "note";
+      onNote.textContent = "Connected computer sends each encode to the computer this " +
+        "one copies from, or the one copying from it" +
+        (other ? " (" + other.replace(/^https?:\/\//, "") + ")" : "") +
+        ". When it does not answer, this computer encodes. Subtitles are cut here.";
+      enc.appendChild(onNote);
+      if (!other && encodeOn === "here") {
+        onRow.classList.add("asleep");
+        onRow.title = "No computer is connected";
+        onRow.querySelectorAll("button").forEach((c) => { c.disabled = true; });
+      }
+    }
+    all.appendChild(enc);
+
+
     const box = block("This computer");
+    box.dataset.card = "thisComputer";
     all.appendChild(box);
+    const naming = document.createElement("div");
+    box.appendChild(naming);
+    drawNameAndPort(naming);
     if (!said.windows) {
-      box.innerHTML += "<div class='note'>These settings are for Windows.</div>";
-      return all;
+      const only = document.createElement("div");
+      only.className = "note";
+      only.textContent = "These settings are for Windows.";
+      box.appendChild(only);
+      return chosen(all);
     }
     // `good` is the difference between a switch that is on and a switch that is
     // working: a firewall rule for a network Windows calls public is both.
@@ -2425,7 +3664,7 @@
     // public is shut whatever the rule says
     const homely = !said.network ||
       said.network === "Private" || said.network === "Domain";
-    line("Reach it from the house", said.firewall,
+    line("Reach it from the main server", said.firewall,
          (v) => ({ firewall: v }),
          "A firewall rule for port " + said.port + " on private networks, so a phone " +
          "or a television on your own network can reach this server. Windows asks " +
@@ -2456,21 +3695,188 @@
       box.appendChild(fix);
     }
 
-    // When this machine goes off at night. A follower asks for it and starts an hour
-    // before, so that what anybody is half-way through is on the other server before
-    // this one stops answering.
-    const sleeps = document.createElement("div");
-    sleeps.className = "addrow subrow";
-    sleeps.innerHTML = "<span class='sublabel'>Goes to sleep at</span>";
-    const when = document.createElement("input");
-    when.type = "text";
-    when.placeholder = "23:00";
-    when.value = (said && said.sleepAt) || "";
-    when.onchange = async () => {
-      await post("/library/config", { sleepAt: when.value.trim() });
+
+    // Whether this machine may ask palladium.video for anything at all: the server
+    // it updates itself with, and the app it hands to a phone. A machine that follows
+    // another can take both from that one instead, over the network they share.
+    const siteRow = document.createElement("div");
+    siteRow.className = "addrow subrow";
+    siteRow.innerHTML = "<span class='sublabel'>Fetch from palladium.video</span>";
+    [[true, "Allowed"], [false, "Never"]].forEach(([value, text]) => {
+      const b = document.createElement("button");
+      const now = (mine && mine.fetchFromSite) !== false;
+      b.className = "btn ghost kind" + (now === value ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/library/config", { fetchFromSite: value });
+        toast(value ? "May fetch from palladium.video"
+                    : "Nothing is fetched from palladium.video");
+        render();
+      };
+      siteRow.appendChild(b);
+    });
+    box.appendChild(siteRow);
+    const siteNote = document.createElement("div");
+    siteNote.className = "note";
+    siteNote.textContent = "The new server and the Android app. With this off, a " +
+      "machine that follows another takes both from that machine instead - which is " +
+      "faster on one network, and keeps the two on the same build. A machine that " +
+      "follows nothing and has this off updates by hand.";
+    box.appendChild(siteNote);
+
+    /* The way in from outside. The plain one is the default and needs nothing here:
+       the port this server listens on, forwarded in the router. The other fetches
+       Caddy, which takes 443, gets a certificate for a name you own, and hands what
+       it receives to this server - so a link from away is https and a name rather
+       than an address and a port. */
+    const out = block("Reach from outside");
+    all.appendChild(out);
+    const drawProxy = async () => {
+      let p = {};
+      try {
+        p = await get("/proxy");
+      } catch (e) {
+        return;                          // an older server, or not the owner
+      }
+      out.innerHTML = "<h3>Reach from outside</h3>";
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = "Forwarding the port is the plain way and the one in use. " +
+        "Caddy is the other: it answers on 443 for a name you own, with a certificate, " +
+        "and passes what it gets to this server.";
+      out.appendChild(note);
+
+      const howRow = document.createElement("div");
+      howRow.className = "addrow subrow";
+      howRow.innerHTML = "<span class='sublabel'>How</span>";
+      [["port", "Open the port"], ["caddy", "Caddy, with a name"]].forEach(([value, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (p.how === value ? " on" : "");
+        b.textContent = text;
+        b.onclick = async () => {
+          await post("/proxy/config", { how: value });
+          drawProxy();
+        };
+        howRow.appendChild(b);
+      });
+      out.appendChild(howRow);
+
+      if (p.how !== "caddy") {
+        const plain = document.createElement("div");
+        plain.className = "note";
+        plain.style.margin = "2px 0 10px 82px";
+        plain.textContent = "Port " + p.port + " forwarded to this machine in the " +
+          "router. Nothing else runs.";
+        out.appendChild(plain);
+        return;
+      }
+
+      // Caddy itself: fetched on request, kept beside the library, no installer
+      const state = document.createElement("div");
+      state.className = "note";
+      state.style.margin = "2px 0 10px 82px";
+      state.textContent = !p.here
+        ? "Caddy is not here yet - about 50 MB, fetched once."
+        : p.running ? "Caddy is running." : "Caddy is here but not running.";
+      out.appendChild(state);
+
+      const fetching = (p.fetching || {}).busy;
+      const actions = document.createElement("div");
+      actions.className = "addrow";
+      actions.style.margin = "0 0 10px 82px";
+      const act = (text, what, ghost) => {
+        const b = document.createElement("button");
+        b.className = ghost ? "btn ghost" : "btn";
+        b.textContent = text;
+        b.onclick = async () => {
+          b.disabled = true;
+          const back = await post(what, {});
+          if (back && back.why) toast(back.why);
+          drawProxy();
+        };
+        actions.appendChild(b);
+        return b;
+      };
+      if (!p.here) {
+        const b = act(fetching ? (p.fetching.said || "Fetching…") : "Download Caddy",
+                      "/proxy/fetch");
+        b.disabled = !!fetching;
+        if (fetching) setTimeout(drawProxy, 1500);
+      } else if (p.running) {
+        act("Stop", "/proxy/stop", true);
+      } else {
+        act("Start", "/proxy/run");
+      }
+      out.appendChild(actions);
+
+      const field = (label, name, value, hint) => {
+        const row = document.createElement("div");
+        row.className = "addrow subrow";
+        row.innerHTML = "<span class='sublabel'>" + label + "</span>";
+        const i = document.createElement("input");
+        i.type = "text";
+        i.value = value || "";
+        i.placeholder = hint || "";
+        i.onchange = async () => {
+          const body = {};
+          body[name] = i.value.trim();
+          await post("/proxy/config", body);
+          drawProxy();
+        };
+        row.appendChild(i);
+        out.appendChild(row);
+      };
+      field("Name", "name", p.name, "home.palladium.video");
+      const nameNote = document.createElement("div");
+      nameNote.className = "note";
+      nameNote.style.margin = "2px 0 10px 82px";
+      nameNote.textContent = "A certificate is issued for a name, never for an " +
+        "address, so this name has to point at this house before it will work.";
+      out.appendChild(nameNote);
+
+      const proveRow = document.createElement("div");
+      proveRow.className = "addrow subrow";
+      proveRow.innerHTML = "<span class='sublabel'>Prove it</span>";
+      [["open", "Ports 80 and 443 open"], ["dns", "A DNS token"]].forEach(([value, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (p.prove === value ? " on" : "");
+        b.textContent = text;
+        b.onclick = async () => {
+          await post("/proxy/config", { prove: value });
+          drawProxy();
+        };
+        proveRow.appendChild(b);
+      });
+      out.appendChild(proveRow);
+      if (p.prove === "dns") {
+        field("DNS at", "dnsProvider", p.dnsProvider, "cloudflare");
+        field("Token", "dnsToken", p.dnsSet ? "••••••" : "", "the account's API token");
+        const why = document.createElement("div");
+        why.className = "note";
+        why.style.margin = "2px 0 10px 82px";
+        why.textContent = "The certificate is proved through the name's own DNS, so " +
+          "nothing needs opening in the router.";
+        out.appendChild(why);
+      }
+      field("The other machine", "follower", p.follower, "miner.palladium.video");
+      field("and where it answers", "followerAt", p.followerAt, "192.0.2.25:8764");
+
+      const atLogin = document.createElement("div");
+      atLogin.className = "addrow subrow";
+      atLogin.innerHTML = "<span class='sublabel'>At sign-in</span>";
+      const lb = document.createElement("button");
+      lb.className = "btn ghost kind" + (p.startsAtLogin ? " good" : "");
+      lb.textContent = p.startsAtLogin ? "On" : "Off";
+      lb.onclick = async () => {
+        lb.disabled = true;
+        const back = await post("/proxy/login", { on: !p.startsAtLogin });
+        if (back && back.why) toast(back.why);
+        drawProxy();
+      };
+      atLogin.appendChild(lb);
+      out.appendChild(atLogin);
     };
-    sleeps.appendChild(when);
-    box.appendChild(sleeps);
+    drawProxy();
 
     // What this machine is called, where it answers, and the code another computer
     // needs: all three are about an arrangement with another machine, so all three
@@ -2495,7 +3901,7 @@
 
     // A word to the screens in the house: it appears across the top of the app and
     // stands for ten minutes, or until somebody presses it away.
-    const talk = block("A word to the house");
+    const talk = block("A word to the main server");
     const say = document.createElement("div");
     say.className = "addrow subrow";
     say.innerHTML = "<span class='sublabel'>Say something</span>";
@@ -2504,7 +3910,7 @@
     words.placeholder = "Dinner in ten minutes";
     words.title = "Shown across the top of Palladium on every screen in the house";
     say.appendChild(words);
-    // and who to: the house by default, or one screen by its address, which is how a
+    // and who to: the main server by default, or one screen by its address, which is how a
     // test reaches the television without landing on everybody's phone
     const whom = document.createElement("select");
     [["", "Everyone in the house"], ["all", "Everyone, here and away"]]
@@ -2536,7 +3942,7 @@
     say.appendChild(send);
     talk.appendChild(say);
     all.appendChild(talk);
-    return all;
+    return chosen(all);
   }
 
   /* Which of two version numbers is the later one. Each place is a number, so
@@ -2636,10 +4042,11 @@
           note.textContent = answer.why || "It could not be fetched.";
           return;
         }
-        take.textContent = "Installing";
+        take.textContent = "Restarting";
         note.textContent = "Version " + (answer.version || said.latest) +
-          " is installing. This page will lose the server for a moment and the " +
-          "program will come back on its own.";
+          " is installing and this server is restarting. Anything playing from it " +
+          "stops for a moment; the page will lose the server and both come back on " +
+          "their own.";
         // and it is worth watching for: the server is away about ten seconds, and
         // without this the page sat on "installing" until somebody left the tab and
         // came back
@@ -2671,6 +4078,9 @@
    * On the reports page because that is where somebody goes to say something is
    * missing, and half of what is missing has just arrived.
    */
+  //: minor versions expanded in What is new; null until one is toggled (newest open)
+  let newOpen = null;
+
   async function whatsNew() {
     const box = block("What is new");
     let data = { changes: [] };
@@ -2684,21 +4094,47 @@
     }
     box.innerHTML += "<div class='note'>The app is at " + esc(data.app || "?") +
       ". Newest first.</div>";
-    list.forEach((entry, n) => {
-      const el = document.createElement("div");
-      el.className = "release" + (n ? " older" : "");
-      el.innerHTML = "<div class='rhead'><b></b><span class='kind'></span>" +
-        "<span class='note when'></span></div><ul></ul>";
-      el.querySelector("b").textContent = entry.title || entry.version;
-      el.querySelector(".kind").textContent = entry.version || "";
-      el.querySelector(".when").textContent = entry.when || "";
-      const ul = el.querySelector("ul");
-      (entry.items || []).forEach((line) => {
-        const li = document.createElement("li");
-        li.textContent = line;
-        ul.appendChild(li);
+    // grouped by minor version (0.18, 0.17): one group of hundreds of releases was one long scroll
+    const groups = [];
+    list.forEach((entry) => {
+      const minor = String(entry.version || "").split(".").slice(0, 2).join(".");
+      const last = groups[groups.length - 1];
+      if (last && last.minor === minor) last.entries.push(entry);
+      else groups.push({ minor: minor, entries: [entry] });
+    });
+    let n = 0;
+    groups.forEach((g, gi) => {
+      const head = document.createElement("button");
+      head.className = "btn ghost kind relgroup";
+      const body = document.createElement("div");
+      body.hidden = !(newOpen ? newOpen.has(g.minor) : gi === 0);
+      const label = () => (body.hidden ? "▸ " : "▾ ") + g.minor + " · " +
+        g.entries.length + (g.entries.length === 1 ? " release" : " releases");
+      head.textContent = label();
+      head.onclick = () => {
+        if (!newOpen) newOpen = new Set(groups.length ? [groups[0].minor] : []);
+        body.hidden = !body.hidden;
+        if (body.hidden) newOpen.delete(g.minor); else newOpen.add(g.minor);
+        head.textContent = label();
+      };
+      g.entries.forEach((entry) => {
+        const el = document.createElement("div");
+        el.className = "release" + (n++ ? " older" : "");
+        el.innerHTML = "<div class='rhead'><b></b><span class='kind'></span>" +
+          "<span class='note when'></span></div><ul></ul>";
+        el.querySelector("b").textContent = entry.title || entry.version;
+        el.querySelector(".kind").textContent = entry.version || "";
+        el.querySelector(".when").textContent = entry.when || "";
+        const ul = el.querySelector("ul");
+        (entry.items || []).forEach((line) => {
+          const li = document.createElement("li");
+          li.textContent = line;
+          ul.appendChild(li);
+        });
+        body.appendChild(el);
       });
-      box.appendChild(el);
+      box.appendChild(head);
+      box.appendChild(body);
     });
     return box;
   }
@@ -2779,6 +4215,44 @@
       });
     box.appendChild(filters);
 
+    if (data.owner && reportTab === "errors") {
+      /* A machine told to send faults that had no way out keeps them, and they are
+         worth nothing sitting here. One press hands over everything not yet taken. */
+      const waiting = everything.filter(
+        (r) => (r.source === "auto" || r.kind === "error" || r.kind === "crash") &&
+               !r.sentAway && !r.hidden);
+      const going = (data.sending && data.sending.busy) ? data.sending : null;
+      if (waiting.length || going) {
+        const send = document.createElement("div");
+        send.className = "addrow";
+        const b = document.createElement("button");
+        b.className = "btn ghost";
+        b.textContent = going ? "Sending - " + going.left + " left"
+                              : "Send the unsent (" + waiting.length + ")";
+        b.disabled = !!going;
+        b.onclick = async () => {
+          if (!confirm("Send " + waiting.length + " fault" +
+                       (waiting.length === 1 ? "" : "s") +
+                       " to palladium.video?\n\nTitles, file paths, addresses, " +
+                       "keys and the names of everybody here are taken out first. " +
+                       "They go one a second, so this takes a while.")) return;
+          const said = await post("/feedback/sendall", {});
+          toast(said && said.already ? "Already going"
+                : "Sending " + ((said && said.queued) || 0));
+          setTimeout(viewReports, 1500);
+        };
+        send.appendChild(b);
+        const note = document.createElement("span");
+        note.className = "note";
+        note.textContent = going
+          ? going.sent + " sent, " + going.failed + " would not go" +
+            (going.why ? " (" + going.why + ")" : "")
+          : "Faults this machine has not handed over yet.";
+        send.appendChild(note);
+        box.appendChild(send);
+      }
+    }
+
     const list = document.createElement("div");
     everything
       .filter((r) => passes(r, reportFilter))
@@ -2833,34 +4307,52 @@
       /* Hand this one to palladium.video.
        *
        * There whether or not this machine sends anything of its own accord: reading
-       * a fault, deciding it is worth passing on and pressing send is a different
+       * a report, deciding it is worth passing on and pressing send is a different
        * act from a machine reporting on itself, and it is asked for rather than
        * assumed. Everything identifying is taken out on the way, the same as always.
+       *
+       * On a request as well as on a fault. A request is the one report somebody
+       * sat down and wrote, and it was the one kind that could not be passed on.
        */
-      if (data.owner && (r.kind === "error" || r.kind === "crash")) {
+      if (data.owner) {
+        const asking = !(r.kind === "error" || r.kind === "crash");
         const away = document.createElement("button");
         away.className = "btn ghost sendaway" + (r.sentAway ? " on" : "");
-        away.textContent = r.sentAway ? "Sent" : "Send to Palladium";
+        away.textContent = r.sentAway ? "Sent"
+          : r.sendWhy ? "Would not send"
+          : asking ? "Send this request" : "Send to Palladium";
         away.title = r.sentAway
           ? "Already sent"
+          : r.sendWhy ? r.sendWhy + " - click to try again"
+          : asking ? "Send this request to palladium.video"
           : "Send this one fault to palladium.video";
         away.onclick = async () => {
           if (r.sentAway) return;
           const yes = window.confirm(
-            "Send this fault to palladium.video?" + String.fromCharCode(10, 10) +
-
+            (asking ? "Send this request to palladium.video?"
+                    : "Send this fault to palladium.video?") +
+            String.fromCharCode(10, 10) +
             "The text goes with titles, file paths, addresses, keys and the names " +
             "of everybody here taken out, along with what build this is and what " +
-            "kind of computer it happened on.");
+            "kind of computer it happened on." +
+            (asking ? String.fromCharCode(10, 10) +
+                      "It is read as a request for the program, not as a message " +
+                      "anybody will answer." : ""));
           if (!yes) return;
           away.disabled = true;
           const said = await post("/feedback/send", { id: r.id });
           away.disabled = false;
           toast(said && said.ok ? "Sent"
                 : (said && said.why) || "Could not send it");
-          if (said && said.ok) viewReports();
+          viewReports();
         };
         (el.querySelector(".rfix") || el).appendChild(away);
+        if (!r.sentAway && r.sendWhy) {
+          const why = document.createElement("div");
+          why.className = "note";
+          why.textContent = "Not sent: " + r.sendWhy;
+          (el.querySelector(".rfix") || el).appendChild(why);
+        }
       }
 
       /* Two lines worth keeping: what caused it, and what was done about it. The
@@ -3040,6 +4532,25 @@
     const data = await get("/settings");
     const guest = CFG && CFG.guest;
 
+    // the language first: it is what most people come to this tab to change
+    const lang = block("Subtitle language");
+    lang.innerHTML +=
+      "<div class='note'>Which language to pick automatically when a title has one.</div>" +
+      '<div class="addrow"><select id="setlang"></select></div>';
+    const sel = lang.querySelector("#setlang");
+    LANGS.forEach((l) => sel.add(new Option(l[1], l[0])));
+    // the server's answer when this browser has never been asked
+    sel.value = "subLang" in prefs() ? prefs().subLang
+                                     : (data.language || "");
+    sel.onchange = () => {
+      setPref("subLang", sel.value);
+      // and on the server, so a television and a second browser agree with this one
+      if (window.saveLanguage) saveLanguage(sel.value);
+      const name = (LANGS.filter((l) => l[0] === sel.value)[0] || ["", "Off"])[1];
+      toast(sel.value ? "Default subtitles: " + name : "Subtitles off by default");
+    };
+    main.appendChild(lang);
+
     /* The OpenSubtitles key, where subtitles are set rather than buried in Library.
      *
      * It is also what the machine that keeps copies needs: it fetches subtitles for
@@ -3048,9 +4559,9 @@
      */
     if (!guest) {
       const keyBox = block("OpenSubtitles key");
-      keyBox.innerHTML += "<div class='note'>What this server searches with. The " +
-        "machine that keeps copies needs the same key to fetch subtitles for what " +
-        "it takes.</div>";
+      keyBox.innerHTML += "<div class='note'>What this server searches with. A " +
+        "server that copies from this one needs the same key to fetch subtitles for " +
+        "what it takes.</div>";
       const keyRow = document.createElement("div");
       keyRow.className = "addrow subrow";
       keyRow.innerHTML = "<span class='sublabel'>Key</span>";
@@ -3087,7 +4598,7 @@
       };
       keyRow.appendChild(grab);
       keyBox.appendChild(keyRow);
-      // and the copy, if there is one
+      // and the cache, if there is one
       let copy = {};
       try {
         copy = await get("/standby");
@@ -3097,7 +4608,7 @@
       if (copy && copy.where) {
         const send = document.createElement("div");
         send.className = "addrow subrow";
-        send.innerHTML = "<span class='sublabel'>" + esc(copy.name || "The copy") +
+        send.innerHTML = "<span class='sublabel'>" + esc(copy.name || "The cache") +
           "</span>";
         const b = document.createElement("button");
         b.className = "btn ghost";
@@ -3114,7 +4625,7 @@
         };
         send.appendChild(b);
         // and the catalogue key, which is what puts posters on its shelves rather
-        // than a grid of grey rectangles when the house cannot be reached
+        // than a grid of grey rectangles when the main server cannot be reached
         const both = document.createElement("button");
         both.className = "btn ghost";
         both.textContent = "Send both keys";
@@ -3229,24 +4740,6 @@
       burn.appendChild(row);
       main.appendChild(burn);
     }
-
-    const lang = block("Subtitle language");
-    lang.innerHTML +=
-      "<div class='note'>Which language to pick automatically when a title has one.</div>" +
-      '<div class="addrow"><select id="setlang"></select></div>';
-    const sel = lang.querySelector("#setlang");
-    LANGS.forEach((l) => sel.add(new Option(l[1], l[0])));
-    // the server's answer when this browser has never been asked
-    sel.value = "subLang" in prefs() ? prefs().subLang
-                                     : (data.language || "");
-    sel.onchange = () => {
-      setPref("subLang", sel.value);
-      // and on the server, so a television and a second browser agree with this one
-      if (window.saveLanguage) saveLanguage(sel.value);
-      const name = (LANGS.filter((l) => l[0] === sel.value)[0] || ["", "Off"])[1];
-      toast(sel.value ? "Default subtitles: " + name : "Subtitles off by default");
-    };
-    main.appendChild(lang);
 
     /* One block per kind of screen. The same text at the same fraction of the picture
        is comfortable on one and wrong on the others, so each keeps its own size. */
@@ -3381,72 +4874,20 @@
     else if (tab === "quality") await paneQuality(main);
     else if (tab === "people") await panePeople(main);
     else if (tab === "now") await paneNow(main);
-    else if (tab === "load") await paneLoad(main);
     else if (tab === "log") await paneLog(main);
-    else if (tab === "machine") {
-      // the build this machine is running and how to change it, then what it is set
-      // to do about itself. Neither waits for the other: asking the site how old
-      // this build is takes a second, and there is no reason for the rest of the
-      // tab to sit blank while it happens
-      main.appendChild(await serverUpdate());
-      const spot = document.createElement("div");
-      main.appendChild(spot);
-      machinePanel().then((box) => spot.replaceWith(box)).catch(() => {});
-    }
     else if (tab === "remote") await paneRemote(main);
     else if (tab === "reports") await paneReports(main);
-    else if (tab === "copy") await paneCopy(main);
     else paneSubs(main);
   }
 
   /* The other machine, for whoever is watching from away.
    *
-   * This server sleeps; the copy does not. A guest cannot be expected to know there
+   * This server sleeps; the cache does not. A guest cannot be expected to know there
    * is a second address, and a page cannot fetch its way out of a server that is
    * off - so the address is given while this one is still answering, with a link
    * that carries their own key. */
-  async function paneCopy(main) {
-    const box = block("Night server");
-    let said = {};
-    try {
-      said = await get("/standby");
-    } catch (e) {
-      said = {};
-    }
-    const where = said.link || said.outside || said.where || "";
-    if (!where) {
-      box.innerHTML += "<div class='note'>This server keeps no copy of itself. When " +
-        "it is off, it is off.</div>";
-      main.appendChild(box);
-      return;
-    }
-    box.innerHTML += "<div class='note'>" + esc(said.name || "Another machine") +
-      " holds what you were part-way through and your watchlist, and answers when " +
-      "this server does not. It is " + (said.alive ? "awake now" : "not answering " +
-      "at the moment") + ".<br>Keep this address - a page cannot find it once this " +
-      "server is off.</div>";
-    const row = document.createElement("div");
-    row.className = "addrow subrow";
-    const field = document.createElement("input");
-    field.type = "text";
-    field.readOnly = true;
-    field.className = "plink";
-    field.value = where;
-    field.onclick = () => field.select();
-    row.appendChild(field);
-    const copy = document.createElement("button");
-    copy.className = "btn ghost";
-    copy.textContent = "Copy";
-    copy.onclick = () => copyLine(field, "Copied - keep it somewhere");
-    row.appendChild(copy);
-    const open = document.createElement("button");
-    open.className = "btn";
-    open.textContent = "Open it";
-    open.onclick = () => window.open(where, "_blank", "noopener");
-    row.appendChild(open);
-    box.appendChild(row);
-    main.appendChild(box);
-  }
+  /* The other server, as a box under Settings rather than a tab of its own: what it
+     is, whether it is awake, and what it is holding. */
 
   /* ---------------- quality ---------------- */
 
@@ -3520,7 +4961,7 @@
    *
    * Nothing here knows what a skin is called or what colour it is: the server holds
    * the palettes, so adding one is an entry in a file and every screen wears it the
-   * next time it asks. A machine that has put a look on by itself - the copy after
+   * next time it asks. A machine that has put a look on by itself - the cache after
    * dark, a card handed to a game - says so, and what is chosen here waits its turn.
    */
   async function skinBlock(main) {
@@ -3562,11 +5003,127 @@
     main.appendChild(box);
   }
 
+  /* How a film is fetched for this viewer: off one machine or several, and
+     whether it may carry on from another when one stops. */
+  /* What to call you, shown as it stands. A name was something only whoever wrote
+     the invitation could give, so everybody wore whatever they were christened at
+     the moment they were invited - the owner included, as "me". */
+  function yourName(main, data) {
+    // What to call you. A name was something only whoever wrote the invitation could
+    // give, so everybody wore whatever they were christened at the moment they were
+    // invited - and the owner wore "me", which is what a server calls whoever
+    // installed it before anybody has said who that is.
+    const who = block("Your name");
+    const row = document.createElement("div");
+    row.className = "addrow subrow";
+    row.innerHTML = "<span class='sublabel'>Called</span>";
+    const box = document.createElement("input");
+    box.type = "text";
+    box.style.flex = "1 1 auto";
+    box.value = (data.myName && data.myName !== "me") ? data.myName : "";
+    box.placeholder = "what to call you";
+    box.onchange = async () => {
+      const called = box.value.trim();
+      if (!called) return;
+      await post("/settings", { myName: called });
+      toast("You are " + called + " from now on");
+      render();
+    };
+    row.appendChild(box);
+    who.appendChild(row);
+    who.innerHTML += "<div class='note'>What shows against whatever you are " +
+      "watching. Yours to change; the name on the key you were given stays as it " +
+      "was written, so whoever gave it to you still knows whose it is.</div>";
+    main.appendChild(who);
+  }
+
+  function howFetched(main, data) {
+    // Both belong to the person watching rather than to the machine: one house may
+    // want a film read off every machine that has it, and somebody on a thin line
+    // would rather it came off one and stayed there.
+    const how = block("How films are fetched");
+    [["splitPlay", "Read off several machines",
+      "A film held on more than one machine is read from all of them at once, so " +
+      "losing one of them does not stop the picture."],
+     ["failover", "Move to another machine",
+      "If the machine serving a film stops answering, the film carries on from " +
+      "another that holds it, at the same moment."]]
+      .forEach(([name, label, note]) => {
+        const row = document.createElement("div");
+        row.className = "addrow subrow";
+        row.innerHTML = "<span class='sublabel'>" + label + "</span>";
+        [[true, "On"], [false, "Off"]].forEach(([val, text]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" +
+            ((data[name] !== false) === val ? " on" : "");
+          b.textContent = text;
+          b.onclick = async () => {
+            await post("/settings", { [name]: val });
+            render();
+          };
+          row.appendChild(b);
+        });
+        how.appendChild(row);
+        const n = document.createElement("div");
+        n.className = "note";
+        n.textContent = note;
+        how.appendChild(n);
+      });
+    main.appendChild(how);
+  }
+
+  /* A poster behind the shelves: the title last opened, or the one somebody
+     stopped. Theirs rather than the machine's, so it follows them to the phone and
+     the television. */
+  function backdropBlock(main, s) {
+    const box = block("Backdrop");
+    box.innerHTML += "<div class='note'>Artwork behind what is on screen. Always " +
+      "puts it behind the shelves too - whatever was opened last, or the newest thing " +
+      "in Continue watching. Title page only keeps it to a film or series' own page. " +
+      "Yours, and set for each kind of screen: a television across the room is not a " +
+      "phone held at arm's length.</div>";
+    const said = (s.backdrop && typeof s.backdrop === "object") ? s.backdrop : {};
+    const word = (v) => v === true || v === undefined || v === null ? "on"
+      : v === false ? "off"
+      : ["on", "poster", "off"].indexOf(String(v)) >= 0 ? String(v) : "on";
+    SUB_DEVICES.forEach(([device, title]) => {
+      const row = document.createElement("div");
+      row.className = "addrow subrow";
+      row.innerHTML = "<span class='sublabel'>" + title + "</span>";
+      const on = word(said[device]);
+      [["on", "Always"], ["poster", "Title page only"], ["off", "Off"]].forEach(([value, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (on === value ? " on" : "");
+        b.textContent = text;
+        b.onclick = async () => {
+          await post("/settings", { backdrop: value, device: device });
+          if (device === "web" && window.backdropWanted) window.backdropWanted(value);
+          render();
+        };
+        row.appendChild(b);
+      });
+      box.appendChild(row);
+    });
+    main.appendChild(box);
+  }
+
   async function paneQuality(main) {
     const s = await get("/settings");
     await skinBlock(main);
+    backdropBlock(main, s);
+    yourName(main, s);
     yourQuality(main, s);
+    howFetched(main, s);
     if (CFG && CFG.guest) return;      // the ceilings below are the owner's business
+    // what this machine is set to do about itself, and the build it is running: the
+    // machine tab keeps the card about the computer, the rest of it reads as settings
+    main.appendChild(await serverUpdate());
+    const rest = document.createElement("div");
+    main.appendChild(rest);
+    machinePanel().then((box) => rest.replaceWith(box)).catch(() => {});
+    // what the computer is doing now, and the switch that holds back the parts of it
+    // that can wait: one machine's load, beside the rest of what that machine is set to
+    await paneLoad(main);
     const caps = s.quality || { home: { height: 0, mbit: 0 },
                                 away: { height: 0, mbit: 0 } };
     const save = async (where, what) => {
@@ -3664,7 +5221,7 @@
    * The pane is the same one; only where it hangs has changed.
    */
   /**
-   * Who is watching, right now, and what the house is using altogether.
+   * Who is watching, right now, and what the main server is using altogether.
    *
    * Its own page rather than the tail of the invitations screen: this is the thing
    * somebody opens when a film stutters, and nobody looks for that under People.
@@ -3673,7 +5230,7 @@
   // which viewer the log is filtered to; empty for everyone
   let logWho = "";
 
-  /* What the house has watched, over three windows.
+  /* What the main server has watched, over three windows.
 
      Above the log rather than inside it: the log answers "what did somebody put on
      last Tuesday", and this answers "how much is this thing used", which is the
@@ -3760,17 +5317,121 @@
   /** Who watched what, and when. */
   //: which of the two screens under Watch log is showing
   let logTab = "log";
+  /* whose downloads the Downloads log shows; empty for everyone's */
+  let downloadsWho = "";
   //: whether the whole book was asked for rather than the newest few hundred
   let logAll = false;
   //: showing only what the machine that keeps copies is holding
   let logCopy = false;
 
+  /* Every download from a torrent pack: who asked for which film, and when. */
+  async function paneDownloads(main) {
+    const box = block("Downloads");
+    let said = {};
+    try {
+      said = await get("/torrents/log");
+    } catch (e) {
+      said = {};
+    }
+    const rows = said.downloads || [];
+    const people = Array.from(new Set(rows.map((r) => r.who || "someone"))).sort();
+    const bar = document.createElement("div");
+    bar.className = "addrow subrow";
+    bar.innerHTML = "<span class='sublabel'>Who</span>";
+    const pick = document.createElement("select");
+    [["", "Everyone"]].concat(people.map((p) => [p, p])).forEach(([v, t]) => {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = t;
+      o.selected = v === downloadsWho;
+      pick.appendChild(o);
+    });
+    pick.onchange = () => { downloadsWho = pick.value; render(); };
+    bar.appendChild(pick);
+    box.appendChild(bar);
+    const list = document.createElement("div");
+    list.className = "traffic";
+    const head = document.createElement("div");
+    head.className = "trow thead";
+    head.innerHTML = "<span>Film</span><b>Who</b><b>GB</b><b>State</b>";
+    list.appendChild(head);
+    const shown = rows.filter((r) => !downloadsWho || (r.who || "someone") === downloadsWho);
+    // this week, this month and altogether, as the Watch log has for viewings: the last
+    // seven and thirty days, for everyone or for whoever is picked above the list
+    const sum = block("Downloaded");
+    sum.innerHTML += "<div class='note'>Counted when each film finished; a film still " +
+      "coming in counts as far as it has got.</div>";
+    const statrow = document.createElement("div");
+    statrow.className = "statrow";
+    const now = Date.now() / 1000;
+    const had = (r) => (r.size || 0) * (r.state === "done" ? 1 : (r.progress || 0)) / 1e9;
+    [["This week", now - 7 * 86400], ["This month", now - 30 * 86400], ["Altogether", 0]]
+      .forEach(([label, since]) => {
+        const got = shown.filter((r) => (r.state === "done" || r.state === "downloading") &&
+          ((r.state === "done" ? (r.done || r.when) : r.when) || 0) >= since);
+        const films = got.filter((r) => r.state === "done");
+        const coming = got.length - films.length;
+        const asked = shown.filter((r) => (r.when || 0) >= since).length;
+        const people = {};
+        got.forEach((r) => {
+          const who = r.who || "someone";
+          people[who] = (people[who] || 0) + had(r);
+        });
+        const largest = films.slice().sort((a, b) => (b.size || 0) - (a.size || 0))[0];
+        const cell = document.createElement("div");
+        cell.className = "statcell";
+        cell.innerHTML =
+          "<span class='statlabel'>" + label + "</span>" +
+          "<b>" + got.reduce((n, r) => n + had(r), 0).toFixed(1) + " GB</b>" +
+          "<span class='statunder'>" + films.length + (films.length === 1 ? " film" : " films") +
+            (coming ? " &middot; " + coming + " coming in" : "") +
+            " &middot; " + asked + " asked for</span>" +
+          (largest ? "<span class='statunder'>largest: " + esc(largest.title || "") + "</span>" : "") +
+          (Object.keys(people).length > 1
+            ? "<span class='statunder'>" + Object.keys(people)
+                .sort((a, b) => people[b] - people[a]).slice(0, 3)
+                .map((p) => esc(p) + " " + people[p].toFixed(1) + " GB").join(" &middot; ") +
+              "</span>"
+            : "");
+        statrow.appendChild(cell);
+      });
+    sum.appendChild(statrow);
+    main.appendChild(sum);
+    shown.forEach((r) => {
+      const el = document.createElement("div");
+      el.className = "trow";
+      const name = document.createElement("span");
+      name.style.whiteSpace = "pre-line";
+      name.textContent = (r.title || r.key) + (r.year ? " (" + r.year + ")" : "") + "\n" +
+        new Date((r.when || 0) * 1000).toLocaleString();
+      const who = document.createElement("b");
+      who.textContent = r.who || "someone";
+      const gb = document.createElement("b");
+      gb.textContent = ((r.size || 0) / 1e9).toFixed(1);
+      const st = document.createElement("b");
+      st.textContent = r.state === "downloading" ? Math.round((r.progress || 0) * 100) + "%"
+        : r.state === "failed" ? "failed" + (r.why ? ": " + r.why : "") : (r.state || "");
+      el.append(name, who, gb, st);
+      list.appendChild(el);
+    });
+    if (!shown.length) {
+      const none = document.createElement("div");
+      none.className = "note";
+      none.textContent = rows.length ? "Nothing downloaded by " + downloadsWho + "."
+                                     : "Nothing has been downloaded yet.";
+      list.appendChild(none);
+    }
+    box.appendChild(list);
+    main.appendChild(box);
+  }
+
   async function paneLog(main) {
-    // The log is what has been watched; Versions is what did the watching. Two
-    // screens of one question, and neither is big enough to be a tab of its own.
+    // What has been watched, what has been copied, and what did the watching.
+    // Three screens of one question, none of them a tab's worth on its own.
     const tabs = document.createElement("div");
     tabs.className = "addrow subrow";
-    [["log", "Watch log"], ["versions", "Versions"]].forEach(([id, label]) => {
+    [["log", "Watch log"], ["sent", "Transferred"], ["downloads", "Downloads"],
+     ["versions", "Versions"]].forEach(([id, label]) => {
       const b = document.createElement("button");
       b.className = "btn ghost kind" + (logTab === id ? " on" : "");
       b.textContent = label;
@@ -3782,9 +5443,18 @@
       main.appendChild(versionsBlock(await get("/machine").catch(() => ({}))));
       return;
     }
+    if (logTab === "downloads") {
+      await paneDownloads(main);
+      return;
+    }
+    if (logTab === "sent") {
+      await paneTransferred(main);
+      return;
+    }
     await statsBlock(main);
     const box = block("Watch log");
-    box.innerHTML += "<div class='note'>Every viewing, newest first. Written from the "
+    box.innerHTML += "<div class='note'>Every viewing and every download, newest first. " +
+      "Viewings are written from the "
       + "progress each client reports, so it covers the browser, the phone and the "
       + "television alike.</div>";
     let data = { watched: [] };
@@ -3795,9 +5465,19 @@
       main.appendChild(box);
       return;
     }
-    const all = data.watched || [];
+    // downloads among the viewings: who asked for which film, when, and how far it got
+    let fetched = [];
+    try {
+      fetched = ((await get("/torrents/log")).downloads || []).map((d) => ({
+        download: d, who: d.who || "someone", key: d.key, started: d.when || 0,
+        title: (d.title || d.key) + (d.year ? " (" + d.year + ")" : "") }));
+    } catch (e) {
+      fetched = [];                    // a server with no torrents
+    }
+    const all = (data.watched || []).concat(fetched)
+      .sort((a, b) => (b.started || 0) - (a.started || 0));
     // the newest few hundred, unless the whole book has been asked for
-    if ((data.held || 0) > all.length) {
+    if ((data.held || 0) > (data.watched || []).length) {
       const more = document.createElement("div");
       more.className = "addrow";
       const b = document.createElement("button");
@@ -3828,7 +5508,7 @@
     pick.onchange = () => { logWho = pick.value; render(); };
     who.appendChild(pick);
     // and what of it the other machine is holding. "Which of these could I still
-    // watch tonight" is the question this page is opened with once the house server
+    // watch tonight" is the question this page is opened with once the main server server
     // is off, and until now it could only be answered by going through the shelves.
     let copies = null;
     try {
@@ -3837,12 +5517,23 @@
       copies = null;                   // nothing follows this server
     }
     if (copies && copies.size) {
-      const onlyCopy = document.createElement("button");
-      onlyCopy.className = "btn ghost kind" + (logCopy ? " on" : "");
-      onlyCopy.textContent = "On the copy";
-      onlyCopy.title = "Only what the machine that keeps copies is holding";
-      onlyCopy.onclick = () => { logCopy = !logCopy; render(); };
-      who.appendChild(onlyCopy);
+      // Which machine, by name. It was a switch called "On the cache" - a job rather
+      // than a machine, and unanswerable on a screen with two servers on it. The
+      // names are this server's own and whichever one keeps copies of it.
+      const where = document.createElement("select");
+      where.className = "btn ghost";
+      const mine = (CFG && CFG.serverName) || "this server";
+      const theirs = standbyName || "the other server";
+      [["", "Anywhere"], ["here", "On " + mine], ["copy", "On " + theirs]]
+        .forEach(([id, label]) => {
+          const o = document.createElement("option");
+          o.value = id;
+          o.textContent = label;
+          if ((logCopy ? "copy" : "") === id) o.selected = true;
+          where.appendChild(o);
+        });
+      where.onchange = () => { logCopy = where.value === "copy"; render(); };
+      who.appendChild(where);
     }
     box.appendChild(who);
 
@@ -3861,7 +5552,7 @@
       const mins = Math.round((w.seconds || 0) / 60);
       const pos = w.duration ? Math.round(100 * (w.position || 0) / w.duration) : 0;
       const el = document.createElement("div");
-      el.className = "logrow";
+      el.className = "logrow" + (w.download ? " download" : "");
       el.innerHTML = "<span class='who'></span><span class='what'></span>" +
         "<span class='note when'></span><span class='note how'></span>";
       el.querySelector(".who").textContent = w.who;
@@ -3875,7 +5566,13 @@
         what.onclick = () => window.openKey(w.key);
       }
       el.querySelector(".when").textContent = stamp;
-      el.querySelector(".how").textContent = [
+      el.querySelector(".how").textContent = w.download ? [
+        "\u2913 " + (w.download.state === "downloading"
+          ? "downloading " + Math.round((w.download.progress || 0) * 100) + "%"
+          : w.download.state === "done" ? "downloaded" : (w.download.state || "asked for")),
+        ((w.download.size || 0) / 1e9).toFixed(1) + " GB",
+        w.download.why || "",
+      ].filter(Boolean).join("  \u00b7  ") : [
         mins ? mins + " min" : "under a minute",
         pos ? pos + "% in" : "",
         // what it was, then what it calls itself: "Google TV app - Streamer"
@@ -3897,82 +5594,55 @@
     } catch (e) { /* 24 is the answer for most of the world */ }
   })();
 
+  /* The drawing of what is talking to what. It opens Now playing, where the
+   * question is what is happening right now, and nothing else on the page
+   * answers that in one picture. */
+  function wiringBlock(into) {
+    // the drawing goes first: what is on, and what is talking to what
+    const map = block("Where it all goes");
+    const canvas = document.createElement("div");
+    canvas.className = "wirebox";
+    // Drawn again on request. It redraws itself every few seconds, which is right
+    // for watching something happen and no use at all when something has just
+    // changed and you want to see it now.
+    const again = document.createElement("button");
+    again.className = "btn ghost";
+    again.textContent = "Refresh";
+    again.onclick = () => {
+      again.disabled = true;
+      drawWiring(canvas).catch(() => {}).finally(() => { again.disabled = false; });
+    };
+    map.appendChild(again);
+    map.appendChild(canvas);
+    into.appendChild(map);
+    drawWiring(canvas);
+    const beat = setInterval(() => {
+      if (!document.body.contains(canvas)) return clearInterval(beat);
+      drawWiring(canvas);
+    }, 12000);
+  }
+
   async function paneNow(main) {
+    // what is talking to what, before anything else on the page
+    wiringBlock(main);
     const sum = document.createElement("div");
     sum.className = "livetotals";
     main.appendChild(sum);
     const live = document.createElement("div");
     main.appendChild(live);
     drawLive(live, sum);
-    // What the other machine is fetching belongs on this page too - it is the other
-    // half of "what is this server doing right now" - but under its own heading,
-    // because nobody is watching it.
-    await nowCopying(main);
-    await nowFollowers(main);
   }
 
   /* Who is following this server, and what has already gone to them. */
-  async function nowFollowers(into) {
-    let said = {};
-    try {
-      said = await get("/follow");
-    } catch (e) {
-      return;
-    }
-    const following = said.followers || [];
-    if (!following.length) return;
-    const box = block("The machine that keeps copies");
-    const list = document.createElement("div");
-    list.className = "traffic";
-    const head = document.createElement("div");
-    head.className = "trow thead";
-    head.innerHTML = "<span>Following this server</span><b>Heard</b><b>Build</b>";
-    list.appendChild(head);
-    const gb = (n) => (n || 0).toFixed(n && n < 10 ? 1 : 0) + " GB";
-    following.forEach((f) => {
-      const el = document.createElement("div");
-      el.className = "trow";
-      const name = document.createElement("span");
-      const dot = document.createElement("i");
-      dot.className = "onslave";
-      dot.style.position = "static";
-      dot.style.display = "inline-block";
-      dot.style.marginRight = "8px";
-      if (!f.alive) dot.style.background = "#7d2e2e";
-      name.appendChild(dot);
-      name.appendChild(document.createTextNode(
-        (f.name || "a server") + "  ·  lan " + f.where +
-        (f.outside ? "  ·  wan " + f.outside : "")));
-      // How full that machine is. It is the only one that can measure its own disk,
-      // and "is there room for tonight" is the question anybody looking at this row
-      // is actually asking.
-      const room = f.room || {};
-      if (room.cap || room.gb || room.free) {
-        const disk = document.createElement("div");
-        disk.className = "note";
-        disk.style.margin = "3px 0 0 17px";
-        disk.textContent =
-          gb(room.gb) + " kept" +
-          (room.files ? " in " + room.files + " files" : "") +
-          (room.cap ? "  ·  " + gb(room.cap) + " allowed" +
-                      (room.gb ? " (" + Math.round(100 * room.gb / room.cap) +
-                                 "% of it)" : "") : "") +
-          (room.free ? "  ·  " + gb(room.free) + " free on the disk" : "");
-        name.appendChild(disk);
-      }
-      const heard = document.createElement("b");
-      heard.textContent = f.ago < 90 ? "just now"
-        : f.ago < 3600 ? Math.round(f.ago / 60) + " min ago"
-        : Math.round(f.ago / 3600) + " h ago";
-      const build = document.createElement("b");
-      build.textContent = f.build || "";
-      el.appendChild(name);
-      el.appendChild(heard);
-      el.appendChild(build);
-      list.appendChild(el);
-    });
-    box.appendChild(list);
-
+  /* What the machine that keeps copies has fetched, newest first.
+   *
+   * Filed with the watch log rather than with the machine that fetched it: what
+   * was watched and what was copied are one question asked of two books, and
+   * reading either one alone is how a queue looks unaccountable.
+   */
+  async function paneTransferred(main) {
+    const box = block("Transferred");
+    box.innerHTML += "<div class='note'>Every file copied to the machine that keeps copies, newest first: why it was wanted, how big it was and how fast it went.</div>";
     const sent = document.createElement("div");
     sent.className = "traffic";
     box.appendChild(sent);
@@ -3993,19 +5663,32 @@
       sent.innerHTML = "";
       const h = document.createElement("div");
       h.className = "trow thead";
-      h.innerHTML = "<span>Transferred</span><b>GB</b><b>Where</b>";
+      h.innerHTML = "<span>Transferred</span><b>Why</b><b>GB</b><b>Where</b>";
       sent.appendChild(h);
       (log.copies || []).slice(0, many || 10).forEach((row) => {
         const el = document.createElement("div");
         el.className = "trow";
         const name = document.createElement("span");
-        name.textContent = (row.title || row.key || "a file") + "  ·  " +
-          when(row.when);
+        // The file and when it went; how fast it managed sits under it, since a
+        // number without the file it belongs to says nothing.
+        const rate = row.mbit ? row.mbit.toFixed(0) + " Mbit" +
+                     (row.peak && row.peak > row.mbit * 1.3
+                      ? " (peak " + row.peak.toFixed(0) + ")" : "") : "";
+        name.style.whiteSpace = "pre-line";
+        name.textContent = (row.title || row.key || "a file") + "\n" +
+          [when(row.when), rate].filter(Boolean).join("  ·  ");
+        // and why it went, in a column of its own: it is the question anybody
+        // reading this list is actually asking, and it was crowded onto the end of
+        // the file's own line where it read as part of the name.
+        const why = document.createElement("b");
+        why.textContent = [row.why || "", row["for"] || ""]
+          .filter(Boolean).join(" · ");
         const gb = document.createElement("b");
         gb.textContent = (row.gb || 0).toFixed(2);
         const to = document.createElement("b");
         to.textContent = row.to || row.address || "";
         el.appendChild(name);
+        el.appendChild(why);
         el.appendChild(gb);
         el.appendChild(to);
         sent.appendChild(el);
@@ -4020,7 +5703,7 @@
       sent.appendChild(foot);
     };
     drawSent(10);
-    into.appendChild(box);
+    main.appendChild(box);
   }
 
   /* What the machine that keeps copies is taking, and what is next. */
@@ -4031,15 +5714,42 @@
     } catch (e) {
       return;                            // nothing follows this server
     }
+    // block() appends to the page; here it belongs in the holder that is refilled
+    const page = into;
     // A subtitle is a few kilobytes travelling with its film, not a place in the
     // queue: three of them under one title made a numbered list read like a mess.
-    const rows = (said.queue || []).filter((r) => !r.here && !r.side);
+    const rows = (said.queue || []).filter((r) => r.now || (!r.here && !r.side));
     if (!rows.length) return;
     const sides = (said.queue || []).filter((r) => !r.here && r.side).length;
-    const box = block("Being copied");
-    box.innerHTML += "<div class='note'>What the machine that keeps copies is " +
-      "taking, in the order it will take it. Whoever is watching leads it; then " +
-      "anything moved up by hand." +
+    // whose queue this is, by name - and whether this machine has any business
+    // showing one at all. A server that follows another was answering the same
+    // question about itself: what it would hand to a machine copying from it, out of
+    // its own library. That is a real answer to a question nobody asked, and it reads
+    // as a second queue that disagrees with the first.
+    let takenBy = "";
+    let followsOne = null;
+    try {
+      const who = await get("/follow");
+      takenBy = ((who.followers || [])[0] || {}).name ||
+                ((who.cache || {}).name || "");
+      const mine = who.follow || {};
+      if (!(who.followers || []).length && mine.on && mine.master) {
+        followsOne = mine.master;
+      }
+    } catch (e) { takenBy = ""; }
+    if (followsOne) {
+      const note = block("Being copied");
+      note.innerHTML += "<div class='note'>This machine keeps copies for " +
+        esc(followsOne.replace(/^https?:\/\//, "")) + ". The queue is that " +
+        "server's - it decides the order, and this one works through it. Nothing " +
+        "copies from here.</div>";
+      into.appendChild(note);
+      return;
+    }
+    const box = block(takenBy ? "Being copied to " + takenBy : "Being copied");
+    box.innerHTML += "<div class='note'>What " + (takenBy || "the machine that keeps " +
+      "copies") + " is taking, in the order it will take it. Whoever is watching " +
+      "leads it; then anything moved up by hand." +
       (sides ? "  " + sides + " subtitle" + (sides > 1 ? "s" : "") +
                " travel with them." : "") + "</div>";
     // Full to the cap is not the same as broken, and it looks the same from here:
@@ -4095,12 +5805,14 @@
       box.appendChild(full);
     }
     const list = document.createElement("div");
-    list.className = "traffic";
+    list.className = "traffic queue";
     const head = document.createElement("div");
     head.className = "trow thead";
     head.innerHTML = "<span>Next</span><b>GB</b><b>Why</b>";
     list.appendChild(head);
-    rows.slice(0, 10).forEach((row, i) => {
+    // All of it. A queue shown ten rows deep is a queue nobody can check, and the far
+    // end is where a file sits for a day without anybody being able to see it there.
+    rows.forEach((row, i) => {
       const el = document.createElement("div");
       el.className = "trow";
       const name = document.createElement("span");
@@ -4108,7 +5820,15 @@
       const gb = document.createElement("b");
       gb.textContent = row.gb ? row.gb.toFixed(2) : "";
       const why = document.createElement("b");
-      why.textContent = row.hot ? "watching" : row.pinned ? "moved up" : "";
+      // Why it is here, and whose viewing put it there. A list of titles and sizes
+      // answers what and nothing else; when the order looks wrong it is the reason
+      // that is wrong, and it cannot be argued with unless it is on the screen.
+      // The one being fetched said only that it was being fetched, and dropped the
+      // reason it is wanted at all - which is the column's whole job, and the one
+      // row where somebody is most likely to be asking.
+      const reason = row.why || (row.hot ? "on a screen now" : "");
+      why.textContent = [row.now ? "being fetched" : "", reason, row.who]
+        .filter(Boolean).join("  ·  ");
       el.appendChild(name);
       el.appendChild(gb);
       el.appendChild(why);

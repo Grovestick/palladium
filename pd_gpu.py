@@ -342,7 +342,7 @@ class Engine:
 
     def command(self, src, offset, height, burn_index=None, audio_mode="aac",
                 sub_look=None, audio_index=None, mbit=0, channels=0, hevc=False,
-                dts=False):
+                dts=False, copy_video=False):
         # 10-bit HEVC has to come down to 8-bit: no h264 encoder on any of these
         # cards takes it. On Nvidia that happens on the card, in the same filter that
         # resizes; elsewhere the frames are in system memory and this is an ordinary
@@ -373,12 +373,20 @@ class Engine:
         # down as p010 (hwdownload rejects nv12 for 10-bit sources, which is most of this
         # library) and convert. That measured 11.6x realtime against 6.8x for decoding on
         # the CPU. Text tracks never come through here - they are extracted separately.
-        if HW_OK:
+        if HW_OK and not copy_video:
             cmd += list(ENCODER["hwaccel"])
+        if copy_video and offset:
+            # both tracks from the keyframe the seek lands on: an accurate seek starts
+            # the sound at the second asked for and the copied picture earlier, and
+            # fragmented MP4 loses the difference, so the sound ran ahead
+            cmd += ["-noaccurate_seek"]
         if offset:
             # to the fraction: the segment grid is not a whole number of seconds, and
             # rounding here would put a seek a second or two from where it was asked
             cmd += ["-ss", ("%.3f" % float(offset)).rstrip("0").rstrip(".")]
+        if str(src["file"]).startswith(("http://", "https://")):
+            # the house's file: a dropped connection is picked up where it broke
+            cmd += ["-reconnect", "1"]
         cmd += ["-i", src["file"]]
         # the soundtrack asked for, by its number in the file; the first one when
         # nobody has said otherwise
@@ -389,9 +397,20 @@ class Engine:
             cmd += ["-filter_complex",
                     self.burn_chain(burn_index, sub_look, height, src),
                     "-map", "[out]", "-map", sound]
-        # constant quality rather than a flat ceiling: sharper where it matters, and
-        # a ceiling only to stop a grainy scene running away with the LAN
-        ceiling = 40 if (src.get("height") or 1080) > 1080 else 24
+        # Constant quality rather than a flat ceiling - sharper where it matters -
+        # but never more than the film itself was made with.
+        #
+        # Re-encoding something already compressed at a high quality target spends far
+        # more than the original did: a 720p episode of six megabits went out at
+        # twenty and more, which is worse than the film it was made from and floods
+        # any line thinner than the house's own. The film's own bitrate is the ceiling
+        # unless somebody has asked for a number, with a little room above it for a
+        # busy scene and a floor so a very small file still has something to work with.
+        made = float(src.get("bitrate") or 0) / 1000.0        # kbit in the library
+        if made > 0:
+            ceiling = max(2, min(40, int(made * 1.2 + 0.5)))
+        else:
+            ceiling = 40 if (src.get("height") or 1080) > 1080 else 24
         # A number of megabits asked for by name is a different mode: quality drives
         # the picture until somebody says how much line there is, and then the line
         # does. -cq has to go, or NVENC treats the bitrate as advice and overruns it.
@@ -400,7 +419,12 @@ class Engine:
         # without hvc1 an HEVC track in MP4 is written as hev1, which several players
         # - the television's among them - will not open
         tag = ["-tag:v", "hvc1"] if hevc else []
-        if HW_OK and burn_index is not None:
+        if copy_video:
+            # the picture as it is: the device plays it, only the sound needed making
+            cmd += ["-c:v", "copy"] + (
+                ["-tag:v", "hvc1"]
+                if str(src.get("videoCodec") or "").lower() in ("hevc", "h265") else [])
+        elif HW_OK and burn_index is not None:
             # the overlay filter has already sized the picture
             cmd += ["-c:v", codec] + list(ENCODER["preset"]) + rate + tag
         elif HW_OK:
@@ -532,7 +556,8 @@ class Engine:
         # the library hands in the file; there is nowhere else to ask
         if not src:
             raise FileNotFoundError("no file was given to play")
-        if not os.path.exists(src["file"]):
+        if (not str(src["file"]).startswith(("http://", "https://"))
+                and not os.path.exists(src["file"])):
             raise FileNotFoundError(src["file"])
         recipe = json.dumps([src["file"], int(offset), int(height), int(media_index),
                              burn_index, audio_index, sub_look, int(mbit)],
@@ -776,7 +801,8 @@ class Engine:
         so cue times start at zero exactly like the stream this accompanies."""
         cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin"]
         if offset:
-            cmd += ["-ss", str(int(offset))]
+            # to the millisecond: a copied picture starts on a keyframe, not a second
+            cmd += ["-ss", ("%.3f" % float(offset)).rstrip("0").rstrip(".")]
         cmd += ["-i", src["file"], "-map", "0:%d" % int(stream_index),
                 "-vn", "-an", "-f", "webvtt", "pipe:1"]
         return cmd
@@ -789,25 +815,28 @@ class Engine:
 
     def start(self, rating_key, offset=0, height=0, media_index=0, burn_index=None,
               src=None, audio_mode="aac", sub_look=None, audio_index=None, mbit=0,
-              channels=0, hevc=False, dts=False):
+              channels=0, hevc=False, dts=False, copy_video=False):
         # the library hands in the file to play; there is nowhere else to ask
         if not src:
             raise FileNotFoundError("no file was given to play")
-        if not os.path.exists(src["file"]):
+        if (not str(src["file"]).startswith(("http://", "https://"))
+                and not os.path.exists(src["file"])):
             raise FileNotFoundError(src["file"])
         sid = "gpu%d" % int(time.time() * 1000)
         log = open(os.path.join(self.root, sid + ".log"), "wb")
         proc = subprocess.Popen(self.command(src, offset, height, burn_index, audio_mode,
                                              sub_look, audio_index, mbit, channels,
-                                             hevc, dts),
+                                             hevc, dts, copy_video),
                                 creationflags=NO_WINDOW,
                                 stdout=subprocess.PIPE, stderr=log, bufsize=0)
         info = {
             "id": sid,
             "engine": ENGINE_NAME,
             "hw": HW_OK,
-            "decoder": (("hardware + CPU overlay" if burn_index is not None
+            "decoder": ("copy" if copy_video else
+                        ("hardware + CPU overlay" if burn_index is not None
                          else "hardware") if HW_OK else "software"),
+            "copyVideo": bool(copy_video),
             "burn": burn_index,
             "source": "%s %sx%s" % (src.get("videoCodec"), src.get("width"), src.get("height")),
             "audioChannels": src.get("audioChannels"),

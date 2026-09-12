@@ -1,8 +1,3 @@
-# One page, four addresses: the tab a link opens is in the path, so a shared link
-# says what it opens. Rewrites rather than redirects - the address stays as typed.
-/features        /palladium  200
-/home-streaming  /palladium  200
-/download        /palladium  200
-/source          /palladium  200
-# what the page used to be called, kept so an old link still lands
-/beta            /palladium  200
+# /palladium was one page with tabs; its panes are pages of their own now
+/palladium       /features  301
+/download        /server    301

@@ -46,13 +46,13 @@ data class Server(
     /**
      * Which group of servers this one belongs to, if the shelves are kept in groups.
      *
-     * Empty is a group of its own. What a group is for: the house's two machines
+     * Empty is a group of its own. What a group is for: the main server's two machines
      * are one library seen twice over, while a friend's is somebody else's evening
      * and does not belong on the same shelf as yours.
      */
     val group: String = "",
     /**
-     * The same machine from outside the house, where it has a second address.
+     * The same machine from outside the main server, where it has a second address.
      *
      * A copy learned on the home network is remembered by its address there, and
      * that address means nothing from a train. One row, two doors, and whichever
@@ -114,7 +114,7 @@ object Servers {
      *
      * A server learned at home is filed under its network address; the same machine
      * reached from a train is filed under the one the router forwards. Both were
-     * added, so the list showed the house twice under two names and switching between
+     * added, so the list showed the main server twice under two names and switching between
      * them looked like switching machines. They carry the same id - that is what the
      * id is for - so they are folded here, the network address kept as the way in and
      * the other remembered beside it.
@@ -122,9 +122,16 @@ object Servers {
     fun folded(list: List<Server>): List<Server> {
         val out = ArrayList<Server>()
         list.forEach { srv ->
+            // Any address in common is the same machine. It used to ask whether one
+            // row's way in was the other's way out, which misses the plainest case of
+            // all - two rows written down with the same address - so the same
+            // computer stood on the list twice under the same name.
+            val ways = { one: Server ->
+                listOf(one.base, one.outside).map { it.trimEnd('/') }.filter { it.isNotEmpty() }
+            }
+            val mine = ways(srv)
             val same = out.indexOfFirst { had ->
-                (had.id.isNotEmpty() && had.id == srv.id) ||
-                had.base == srv.outside || srv.base == had.outside
+                (had.id.isNotEmpty() && had.id == srv.id) || ways(had).any { it in mine }
             }
             if (same < 0) {
                 out.add(srv)
@@ -140,6 +147,16 @@ object Servers {
                 outside = if (athome(away.base)) home.outside else away.base,
                 on = home.on || away.on,
                 copyOf = home.copyOf.ifBlank { away.copyOf },
+                // The key one of the two rows carries belongs to the machine, not to
+                // the address it was written under. A server typed in at home needs
+                // no key there and is saved without one; the invitation that arrived
+                // later is a second row with the key on it. Folding kept the row that
+                // was filed at home and dropped the other, key and all - so away from
+                // the main server the app held an invitation it never sent, and every
+                // request was refused for having no token.
+                token = home.token.ifBlank { away.token },
+                mine = home.mine || away.mine,
+                group = home.group.ifBlank { away.group },
                 id = home.id.ifBlank { away.id })
         }
         return out
@@ -168,10 +185,49 @@ object Servers {
         val list = all(ctx)
         if (list.isEmpty()) return null
         val want = prefs(ctx).getString("current", "") ?: ""
-        return list.firstOrNull { it.base == want } ?: list.first()
+        return withKey(list, list.firstOrNull { it.base == want } ?: list.first())
+    }
+
+    /**
+     * One row of a machine, carrying whatever key any of its rows has.
+     *
+     * A server typed in at home is saved without a key because none is needed there,
+     * and the invitation that arrives later is a second row for the same machine. The
+     * app opens the first, sends nothing, and is refused everything from outside the
+     * house - which reads as the server being empty rather than as the app being
+     * nobody. Every way of choosing a server comes through here.
+     */
+    fun withKey(list: List<Server>, s: Server): Server =
+        if (s.token.isNotEmpty()) s
+        else list.firstOrNull { it.token.isNotEmpty() && sameMachine(it, s) }
+                 ?.let { s.copy(token = it.token) } ?: s
+
+    /**
+     * The machine actually answering, which is not always the one that was chosen.
+     *
+     * A film that runs out of server carries on from the machine that keeps copies,
+     * and the choice is deliberately left alone so the evening can come back. But
+     * every screen went on naming the machine that was chosen while every request
+     * went to the other one - and on two machines serving the same pages, being told
+     * the wrong name is the whole difficulty.
+     */
+    fun inUse(ctx: Context): Server? {
+        val at = Api.base.trimEnd('/')
+        if (at.isEmpty()) return current(ctx)
+        return all(ctx).firstOrNull { one ->
+            listOf(one.base, one.outside).map { it.trimEnd('/') }.contains(at)
+        } ?: current(ctx)
     }
 
     fun use(ctx: Context, s: Server) {
+        // and the key, from whichever row of this machine has one. The row being
+        // opened may be the one that was typed in at home, where no key is needed;
+        // the invitation is on another row for the same machine, and without this
+        // it is never sent.
+        return using(ctx, withKey(all(ctx), s))
+    }
+
+    private fun using(ctx: Context, s: Server) {
         prefs(ctx).edit().putString("current", s.base).apply()
         // Opening a server shows it. The machine that keeps copies is added hidden,
         // so its shelf does not stand beside the same films from the server it
@@ -208,10 +264,13 @@ object Servers {
             .firstOrNull { it.isNotEmpty() && it != at } ?: ""
         val list = all(ctx)
         val had = list.firstOrNull { it.base.trimEnd('/') == at } ?: return
-        // and what the machine calls itself, when the row is only calling it by its
-        // address. A computer has a name and it is better than four numbers.
-        val callIt = if (named.isNotEmpty() && had.name == hostOf(had.base)) named
-                     else had.name
+        // and what the machine calls itself, which is the only authority on the
+        // matter. This took the name only while the row was still called after its
+        // own address, so a row that had picked up a name - the main server's name, on a
+        // link handed on, or on a copy that answered for the main server while the main server
+        // was off - kept it for ever. The list then stood there calling the cache
+        // by the main server's name, and every screen believed it.
+        val callIt = named.ifEmpty { had.name }
         if (had.outside.trimEnd('/') == other && callIt == had.name) return
         save(ctx, list.map {
             if (it.base == had.base)
@@ -263,6 +322,12 @@ object Servers {
         if (elsewhere != null) {
             val swapped = elsewhere.copy(base = where, outside = elsewhere.base,
                                          copyOf = of,
+                                         // The id belongs to the machine that
+                                         // answered with it, not to the row. Carried
+                                         // across a retarget it made two machines
+                                         // read as one, and folding then dropped a
+                                         // server the app could no longer get back to.
+                                         id = "",
                                          // a name that was only the old address
                                          // written out follows the address
                                          name = if (elsewhere.name ==
@@ -302,9 +367,35 @@ object Servers {
      * way from a train, and the row is the same row.
      */
     suspend fun doorThatOpens(s: Server): String {
+        // The address on this network first, whichever of the two the row happens to
+        // be filed under. A row that had been re-filed under its way in from outside
+        // was opened there while standing in the same house as the machine - so the
+        // film came out through the router and back in over the same wireless, and
+        // what was left to play ran down to nothing.
+        val home = listOf(s.base, s.outside)
+            .map { it.trimEnd('/') }
+            .firstOrNull { it.isNotEmpty() && athome(it) }
+        if (home != null && itselfAt(s, home)) return home
         if (Api.answering(s.base, s.token)) return s.base
         if (s.outside.isNotEmpty() && Api.answering(s.outside, s.token)) return s.outside
         return s.base
+    }
+
+    /**
+     * Whether the machine answering at that address is this one and not a namesake.
+     *
+     * An address on this network is the near way in when it belongs to the machine we
+     * mean, and something else entirely when it does not: two houses number their
+     * machines from the same small range, so a server whose home address is
+     * 192.168.0.25 is somebody else's television from anywhere but its own house.
+     * Asked by id, which is what the id is for; a server too old to give one is taken
+     * at its word.
+     */
+    private suspend fun itselfAt(s: Server, where: String): Boolean {
+        if (!Api.answering(where, s.token)) return false
+        if (s.id.isEmpty()) return true
+        val said = hello(where, s.token)?.optString("serverId").orEmpty()
+        return said.isEmpty() || said == s.id
     }
 
     /**
@@ -320,17 +411,38 @@ object Servers {
         val said = describe(s.base, s.token)
             ?: (if (s.outside.isNotEmpty()) describe(s.outside, s.token) else null)
             ?: return
-        if (said.second == s.mine) return
-        save(ctx, all(ctx).map { if (it.base == s.base) it.copy(mine = said.second)
-                                 else it })
+        // And what it is called. A row keeps the name it was added under, and an
+        // address can come to belong to another machine - a link handed on, a copy
+        // answering for the main server while the main server was off. Each address is asked what
+        // it is every time this screen opens, and the answer was used to say whose it
+        // was and not to name it: so the list stood there with two rows called
+        // under the main server's name, one of which was the cache.
+        val name = said.first.trim()
+        val rename = name.isNotEmpty() && name != s.name
+        if (said.second == s.mine && !rename) return
+        save(ctx, all(ctx).map {
+            if (it.base == s.base) it.copy(mine = said.second,
+                                           name = if (rename) name else it.name)
+            else it
+        })
     }
 
     /** Write down which machine an address turned out to be. */
     fun learnt(ctx: Context, base: String, id: String) {
         if (id.isEmpty()) return
         val list = all(ctx)
-        if (list.none { it.base == base && it.id != id }) return
-        save(ctx, list.map { if (it.base == base) it.copy(id = id) else it })
+        val wrong = list.any { it.base != base && it.id == id }
+        if (!wrong && list.none { it.base == base && it.id != id }) return
+        // Only the row whose address answered with this id keeps it. A row that holds
+        // the same id was written from a copy of another and never asked: leaving it
+        // there is what let folding read two machines as one.
+        save(ctx, list.map {
+            when {
+                it.base == base -> it.copy(id = id)
+                it.id == id -> it.copy(id = "")
+                else -> it
+            }
+        })
     }
 
     fun remove(ctx: Context, s: Server) {
@@ -359,7 +471,7 @@ object Servers {
      *
      * "together" is what this always did. "one" is for somebody who thinks of a
      * friend's library as a place they visit rather than part of theirs. "groups"
-     * is both: the house's machines on one shelf, a friend's on another.
+     * is both: the main server's machines on one shelf, a friend's on another.
      */
     fun shelves(ctx: Context): String =
         prefs(ctx).getString("shelves", "together") ?: "together"
@@ -507,7 +619,9 @@ object Servers {
      * asking one server twice under two names.
      */
     suspend fun identify(ctx: Context) {
-        all(ctx).filter { it.id.isEmpty() }.forEach { srv ->
+        // Every row, not only the ones with no id: an id that arrived on the wrong
+        // row is never empty, so asking only the empty ones left it there for ever.
+        all(ctx).forEach { srv ->
             val id = hello(srv.base, srv.token)?.optString("serverId") ?: ""
             if (id.isNotEmpty()) learnt(ctx, srv.base, id)
         }

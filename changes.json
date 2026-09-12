@@ -1,5 +1,2180 @@
 [
   {
+    "version": "0.18.23",
+    "when": "2026-09-12",
+    "title": "The copy stops deleting what somebody is watching",
+    "items": [
+      "A machine keeping copies never sweeps a file it is serving. It was meant to be safe because a file being read cannot be deleted - but a player reads a stretch, closes the connection and comes back a moment later, so for most of a film there is no handle on it at all. The sweep found one of those gaps and deleted a film being watched, which ended the pair carrying it and left one machine reading alone.",
+      "Every viewing writes down which file it is reading, which is how the sweep knows."
+    ]
+  },
+  {
+    "version": "0.18.22",
+    "when": "2026-09-12",
+    "title": "A film that moved to the copy comes back",
+    "items": [
+      "A film reading from the machine that keeps copies moves back to the main server once that one is answering again, instead of staying there for the rest of the evening with the whole app following it onto a machine that holds a fraction of the library. The same move that took it there, the other way round - and only from a picture with fifteen seconds in hand, because a move costs a second of black and paying that to leave a machine that is coping is not worth it."
+    ]
+  },
+  {
+    "version": "0.18.21",
+    "when": "2026-09-12",
+    "title": "Both machines carrying one film again",
+    "items": [
+      "A film held on both machines is read off both again. The two are paired by the name of the file, and the player took a shelf row with the title and the year on it as enough to go on - a row that carries no file name. So it matched on a name it did not have, found nothing, and settled for one machine while the other sat there holding the same copy."
+    ]
+  },
+  {
+    "version": "0.18.20",
+    "when": "2026-09-12",
+    "title": "Coming back to the main server, properly this time",
+    "items": [
+      "A film listed while the machine keeping copies was answering is played from the main server once that one is back - by asking it for its own key for the title first, rather than handing it a key from somewhere else. If it does not know the title, nothing moves and the copy answers as before.",
+      "A stream that stops mid-film says which program was fetching it. One arrived from a machine with nothing but an address against it and there was no way to tell what had asked for it.",
+      "Two titles that come out under one key say so on the Index, with both names. A key is worked out from what a title is, so two different films that flatten to the same name and share a year land on the same one - the second was filed under the first without a word, one poster standing for both. The key stays as it is, because both machines work it out for themselves; what was missing was being told.",
+      "A title folded into another takes what was written down about it: places, the watch log, watchlists, shuffle queues. A merge dropped a key and everything naming it was left pointing at nothing."
+    ]
+  },
+  {
+    "version": "0.18.19",
+    "when": "2026-09-12",
+    "title": "A film is read from the machine that listed it",
+    "items": [
+      "Playing a film no longer sends one machine's key to another. The last build moved playback back to the main server as soon as it was answering, using the key the title was listed under - and two machines hold the same film under different keys of their own, so the main server was asked for whatever that key meant there and played some other film under the right title. Taken out; coming back to the main server has to ask it for its own key first."
+    ]
+  },
+  {
+    "version": "0.18.18",
+    "when": "2026-09-12",
+    "title": "A film comes back to the main server",
+    "items": [
+      "A film opened while the machine that keeps copies was answering is played from the main server again as soon as that one is back. The address a title was listed from is kept inside it, so a shelf read during a restart went on being played from the copy long after everything else had come home - until the app was started again.",
+      "The container carries every module. The list in its recipe was written out in full and fell behind the server twice; a module added after it was written is imported by name at startup, so the container restarted for ever, saying only which one it could not find.",
+      "A server in a container can be set up. Only somebody sitting at the machine could do it, and in a container nobody ever is - every request arrives off the network, so a new one refused the first page it was ever asked for and there was no way in at all. Until it has been set up, being on the same network is enough; finishing the wizard closes it again."
+    ]
+  },
+  {
+    "version": "0.18.17",
+    "when": "2026-09-12",
+    "title": "The app stops freezing on a download",
+    "items": [
+      "A download's numbers move while the page is open instead of standing still until the app is started again. The reading was made with the thirty seconds any other question gets, and a reading that slow holds everything behind it - the wait cannot be cut short from outside, because it is the socket that is waiting. It asks for four seconds now, and reaches for three.",
+      "Settings answers at once on a machine Palladium has just been installed on. The firewall rule and what Windows calls this network were two separate starts of PowerShell, and on a machine that has never run it each one is seconds - so the first page a new owner opens sat there and then gave up. Asked together now.",
+      "A server that has been set up starts when the machine does. It was a switch nobody had been shown, so the first restart looked like the program had gone. Arranged once, when the setting up is finished; the switch is still in Settings, This computer, for anybody who wants it off."
+    ]
+  },
+  {
+    "version": "0.18.16",
+    "when": "2026-09-12",
+    "title": "Asking a finished torrent for one more film",
+    "items": [
+      "A film asked for from a pack whose other films are all in now arrives instead of being cancelled a minute later. qBittorrent takes no notice of a file being asked for while it reads the torrent as finished - the request answers as though it worked and the file stays off - which read here as somebody having turned it off by hand. The asking is read back now, and anything that did not take is asked for again with the torrent stopped, which is when it listens."
+    ]
+  },
+  {
+    "version": "0.18.15",
+    "when": "2026-09-12",
+    "title": "A film that came in while nothing was looking",
+    "items": [
+      "A finished download asks to be read into the library again if it never got there. The asking happened once, when the download finished; a restart during the minutes that scan takes lost it, and the film sat on the disk with its page saying \"arriving\" for as long as anybody cared to look. Asked again at most twice an hour.",
+      "The address that starts a scan refuses while one is running. Opening it twice started two walks of the same folders writing to one index, which is where a locked database comes from."
+    ]
+  },
+  {
+    "version": "0.18.14",
+    "when": "2026-09-12",
+    "title": "A download that keeps its numbers",
+    "items": [
+      "The app kept the percentage, the time left and the rate of a download it could not reach for a moment. A poll that missed was written down as nothing downloading, so every minute or so the line under the tabs vanished and the poster fell back to the snapshot it was drawn with - which carries no time left at all, which is why there never seemed to be one.",
+      "It asks every two seconds rather than every second. A second poll against a server already converting a film is where the missed ones came from, and the numbers move no less for it.",
+      "The time left is worked out from the rate as it settles rather than from the moment it was read. A swarm handing out quarter-gigabyte pieces reads 200 Mbit one second and 3 the next, so the same download said three minutes and then three hours. The rate shown is still the live one."
+    ]
+  },
+  {
+    "version": "0.18.13",
+    "when": "2026-09-12",
+    "title": "The second machine is drawn again",
+    "items": [
+      "The drawing on Now playing showed a live second machine as \"no second machine - not answering\". One answer replaced three there and names it differently; the drawing was still reading the old name and finding nothing."
+    ]
+  },
+  {
+    "version": "0.18.12",
+    "when": "2026-09-12",
+    "title": "Reports reach palladium.video, requests included",
+    "items": [
+      "A report now says what program it is when it hands itself over. It went out under the name the library it is written with uses, which is turned away at the door as a robot - so every fault a server thought it had sent was refused before it got anywhere near being read.",
+      "A request can be sent to palladium.video as well as a fault, one at a time, by the person running the server. It was the one kind of report somebody actually sat down and wrote, and it was the one kind that could not leave.",
+      "Faults and requests are read in two tabs where they land, gathered by the machine that sent them."
+    ]
+  },
+  {
+    "version": "0.18.11",
+    "when": "2026-09-12",
+    "title": "Faults that were never sent say so",
+    "items": [
+      "A fault is marked sent when palladium.video has taken it. It used to be marked as soon as the sending started, and whatever happened after that was thrown away - so a machine could show a fault as sent at a time when it had never left the house, and nobody went looking for it again.",
+      "A report that would not go keeps the reason and says it on the row, and the button offers to try again.",
+      "Everything a machine has not managed to hand over can be sent in one press, oldest first. A server that was told to report faults but had no way out keeps them, and they are worth nothing sitting there."
+    ]
+  },
+  {
+    "version": "0.18.10",
+    "when": "2026-09-12",
+    "title": "A restart nobody sees, and a cache that can update itself",
+    "items": [
+      "A film being read straight from the server carries on through a restart: a broken read is asked again every second for up to a minute while what is already buffered plays, so a server being replaced never reaches the screen. Three tries across three seconds was less than a restart takes, and the picture stopped and started again at the same second.",
+      "A machine that keeps copies can fetch a build from the one it follows again. Being on the same network stopped counting as a key, and its own key opened only its copying - so following the other machine's build was refused at the door.",
+      "A machine keeping copies is written down as copying again, not as somebody watching: it calls itself a follower and the test asked whether it called itself a cache, so its files were listed as viewings at the speed of a copy and never gave way to a real viewer.",
+      "Mesh is gone. A meshed server could be added and a film could be read through this one, but no list ever carried the other library's titles - so it was a door with no catalogue behind it. The key kind and the setting go with it."
+    ]
+  },
+  {
+    "version": "0.18.9",
+    "when": "2026-09-12",
+    "title": "A way in from outside, and a poster behind a title",
+    "items": [
+      "Settings - This computer - Reach from outside: forwarding the port stays the way it works and is the default. The other way fetches Caddy, which answers on 443 for a name you own, gets its certificate and hands what it receives to this server; a second name can point at the machine that keeps copies.",
+      "Caddy is fetched on request like ffmpeg, kept beside the library rather than installed, and started at sign-in if asked. Its configuration is written from the settings, with the timeouts and buffering a film needs.",
+      "A poster stands behind a title's own page and nowhere else unless asked: what used to be behind the shelves as well is now a choice rather than the default.",
+      "Two titles the library had under one match are folded together again: an item's key is twelve hex digits, reading it as a number threw, and duplicates had never merged. The one holding the most files keeps its key, so watchlists and places in an episode still point at it.",
+      "The site says again what the licence is: AGPL-3.0 in the footers, the licence in full on the server page, and the repository linked from both."
+    ]
+  },
+  {
+    "version": "0.18.8",
+    "when": "2026-09-12",
+    "title": "Keys, roles and what stands behind the page",
+    "items": [
+      "Web: the genre menu has no checkboxes; a marked genre's name is drawn in the accent colour on a tinted row.",
+      "Web: each genre press redraws Films, TV, search or the watchlist at once, with the menu kept open at its scroll position; the old page stays up until the new list arrives, and a slower earlier load no longer draws over a newer one.",
+      "Settings: Subtitle language is the first box on the Subtitles tab.",
+      "Remote computer: Tonight sits under the night hours in the cache's own box, and the reading share and key buttons moved into that box too; the share is explained in five lines instead of eleven.",
+      "Web: a poster stands behind the page - the newest thing in Continue watching when it loads, and the title last opened after that. Dim behind the shelves, full on the title's own page.",
+      "Fixed: with no titles matching the marked genres, the genre menu was cut off at the header; the page clips sideways overflow with overflow-x: clip instead of hidden, which had made it a scroll box.",
+      "Users: every key in one list, grouped by what it is for - owner, admin, user, cache, mesh - and alphabetical inside each group. The tab opens on that list rather than on the invitation form.",
+      "Users: a key's role is set in one place, the dropdown on its row. The separate Owner button is gone.",
+      "New role, admin: a key that reads whatever the owner reads and writes nothing. For a panel on a wall rather than a person.",
+      "Keys are made under Users and nowhere else. The Remote computer tab no longer makes or revokes them.",
+      "A machine that keeps copies is set up with an ordinary invitation - its link, or an address and the five-character code - instead of a pasted setup line. Mark that key Cache under Users.",
+      "Fixed: a guest's own download showed no progress in the app. Asking how far it had got was refused as something a guest may not read, so the line stayed empty and nothing said why.",
+      "App: a poster stands behind the shelves - the title last opened, or failing that the newest thing in Continue watching, which is the film somebody stopped.",
+      "Two servers, two words: the one with the library on it is the main server and the one keeping copies is the cache, everywhere either is written about. Names on the wire are untouched, so an older app and a machine on an older build go on talking to this one.",
+      "Settings: Background poster - Always, Title page only, or Off. Always puts it behind the shelves as well; Title page only keeps it to a film or series' own page. Yours rather than the machine's, so the browser, the phone and the television agree.",
+      "Users: the Casual button is gone from each person's row - the casual shelf is a collection shuffle now, and what is kept for somebody is their half-watched films and their watchlist.",
+      "Fixed: every /follow call answered 500 and the machine keeping copies could not check in, copy, or take the invitations - it had been unable to reach any of them since the rename earlier in this release. The record of which machines follow this one was also being written to a file nobody read, so the list came back empty after a restart.",
+      "A key may only be marked Cache once a server has used it: the machine has to have announced itself here first. A person's key cannot be turned into a machine's by mistake.",
+      "Settings: Backdrop is set per screen - television, computer, phone - and per person, like the subtitle look. A television across the room is not a phone at arm's length.",
+      "Settings: This computer is no longer a tab of its own; the computer, its encoding, the add-ins, fault reporting and a word to the screens all read as settings.",
+      "Users: the invitation list is sorted with the owner first and the rest by name, and a rule separates each group of keys.",
+      "The cache's own box calls the shuffle by its name rather than casual watching.",
+      "Remote computer has two halves, Server and Cache: what another machine keeps of this library, and what this machine keeps of another. They were one long page reading as a single subject.",
+      "Under Server: one card for caching in general - how much of the reading is handed over, the keys sent, starting the night early - and one listing the machines that keep a cache, each with its own settings. A machine with a key that was also announcing itself used to be drawn twice.",
+      "Users: a key for a machine is laid out like a key for a person - the same name column, the same note under it, the same boxes and the same rule beneath - and every role dropdown sits in the same place, wide enough for the word in it.",
+      "Every key that is marked Cache is listed as a machine, whether or not the flag underneath it was ever set.",
+      "Fixed: a season or an episode number kept as text took a whole answer down rather than one title - \"Season\" and the year are read as numbers now, and fall back to nothing when they are not.",
+      "Remote computer: Test and Sync now sit at the top of the machine's own box, and there is one of each rather than two. The box says it is managed from here, with a button that asks the machine whether that is still true.",
+      "A key is needed on the home network too. Being on the same network is no longer a credential: the machine itself still needs none, and every other screen carries an invitation, whether it is in the kitchen or on a train.",
+      "App: the themes sit under the row rather than beside it and wrap onto as many lines as they need - five of them never fitted across a phone.",
+      "App: Settings has the same Background poster choice under Appearance, for the kind of screen it is running on.",
+      "Settings: Performance is no longer a tab of its own - what the computer is doing and game mode sit under Settings, with the rest of what that machine is set to.",
+      "Fixed: App - the poster behind the shelves was stretched to fill the screen, so only the middle of it was left and what somebody had stopped watching was unrecognisable. It keeps its shape and stands at the height it has.",
+      "App: the Theme row no longer names the theme above the pills that already show it, which is a shorter box on a phone held upright.",
+      "Remote computer: the caches are a list. Press one to see what it is set to copy; with one cache it reads as it always did.",
+      "Downloads are asked after every second while anything is arriving, in the browser and in the app alike, so the percentage, the rate and the time left move as they happen. Nothing arriving, and it goes back to asking every ten seconds.",
+      "Fixed: a new episode of a programme the catalogue already knows started a second, unidentified programme of its own - a season on its own, with no air date and nothing in Recently released. An episode's filename carries no year and the catalogue's row does, and the two were only ever compared when the years matched.",
+      "Fixed: asking every screen for a key stopped the machine that keeps copies as well. It was owner here only because it sat on the same network, so its own rounds were turned away at the door and caching halted. A key marked Cache reaches the copying endpoints again, which check for themselves that it follows this server and has not been stopped.",
+      "Settings: the box giving the other server's address is gone, and the Android app note no longer points at a source repository.",
+      "Remote computer: both halves say what they are for - one computer keeping copies of this library, and this computer keeping copies of another - and how to set each up."
+    ]
+  },
+  {
+    "version": "0.18.7",
+    "when": "2026-09-11",
+    "title": "Several genres in the browser",
+    "items": [
+      "Web: Films, TV, search, the watchlist and collections take several genres from a checkbox menu with Clear; a title must carry all of them, and with two or more marked the button shows the match count.",
+      "Collections: a rule's genre may list several, comma-joined, matched the same way.",
+      "Settings: Library > Index shows Downloadable, the films on offer from torrent packs that the library does not hold.",
+      "Followers: a machine announcing with the same key from a new port on the same host replaces its old row; a cache that moved port was listed twice."
+    ]
+  },
+  {
+    "version": "0.18.6",
+    "when": "2026-09-11",
+    "title": "Download refresh reports what it gets",
+    "items": [
+      "App: the download list is asked of each server separately, and the app writes a trace line to the server log whenever the list or a server's error changes; a failed refresh used to leave the list empty with nothing logged.",
+      "Fixed: Back and a title page's own Back could both close the page, and the second one crashed on an empty page stack (IndexOutOfBoundsException, index -1).",
+      "App: a poster or film page showing Arriving re-reads that film every 10 s and turns into the library's own entry once it has come in, on every screen that shows it."
+    ]
+  },
+  {
+    "version": "0.18.5",
+    "when": "2026-09-11",
+    "title": "Live download progress",
+    "items": [
+      "App: download progress is refreshed app-wide, every 3 s while something downloads and every 10 s otherwise, on every screen; the film page, its poster badge, shelf posters and the download line all read that list. The refresh ran inside the home screen's download line, so a film page kept the 0% it opened with.",
+      "App: poster download badges show Mbit/s beside % and ETA."
+    ]
+  },
+  {
+    "version": "0.18.4",
+    "when": "2026-09-11",
+    "title": "Genre match count, download progress",
+    "items": [
+      "Genre filter in the app: with several genres marked the button shows how many titles carry all of them (Genres · 66), not how many genres are marked. Films and TV take the server's totalSize; watchlists and collections count the filtered list.",
+      "App: the download line shows progress and ETA before the title; beside search on a television the title took the width and the numbers were clipped.",
+      "App: the download badge on a poster reads the live download list (refreshed every 10 s) instead of the shelf snapshot, which kept showing Queued or 0% while the film came in."
+    ]
+  },
+  {
+    "version": "0.18.3",
+    "when": "2026-09-11",
+    "title": "Several genres narrow the shelf",
+    "items": [
+      "Genre filter: with several genres marked, a title has to carry all of them (science fiction and comedy together), not any one; on the server's shelves and in the app's watchlist and collection filter."
+    ]
+  },
+  {
+    "version": "0.18.2",
+    "when": "2026-09-11",
+    "title": "Back exits from Home",
+    "items": [
+      "Fixed: Back on Home exits with two presses from the tabs again. The list's Back handler was enabled while the list was scrolled as well as while it had focus, so a scrolled list kept moving focus to the tab and never reached the exit."
+    ]
+  },
+  {
+    "version": "0.18.1",
+    "when": "2026-09-11",
+    "title": "Grouped changelog, several genres, copy window per series",
+    "items": [
+      "Reports: What is new is grouped by minor version (0.18, 0.17), newest group open; web and app.",
+      "App: on a television or a phone on its side the download line sits beside search instead of on a row of its own.",
+      "App: Up from the download line moves focus to the current tab; it had no target and held the focus.",
+      "Genre filter in the app: several genres can be marked, and a title in any of them is shown; Clear at the top of the menu.",
+      "Fixed: episodes kept ahead on the copy follow Episodes ahead and Hours ahead once per series and viewer. Each source a series was reached from (on screen, watched lately, part-way) walked its own window, and a watchlist added every marked episode with Whole list off; Episodes ahead 10 queued 21 and 32."
+    ]
+  },
+  {
+    "version": "0.18.0",
+    "when": "2026-09-11",
+    "title": "Moved files and back focus",
+    "items": [
+      "Fixed: a file moved to another folder or drive keeps its title's added date; it is re-indexed and re-probed but does not reappear in Recently added.",
+      "App: back from a title page puts focus on the poster it was opened from, in the Films and TV grids and in the home rows, with each home row keeping its scroll."
+    ]
+  },
+  {
+    "version": "0.17.380",
+    "when": "2026-09-11",
+    "title": "One download at a time, and downloads in the log",
+    "items": [
+      "Downloads go one at a time: a film asked for while another is coming in waits its turn with its file off in qBittorrent, and starts when the one before it finishes or is cancelled; its page and the download line say how many are ahead.",
+      "The download line says how fast the film is coming in, in Mbit/s, beside how far and how long. In the app it has a row of its own under the tabs and says who asked; at the end of the tabs it was off the side of a phone.",
+      "Where it all goes shows the server downloading - the film, how far, how fast, how long and how many wait behind it - instead of nothing going out.",
+      "The Watch log lists downloads among the viewings: who asked for which film, when, and how far it got.",
+      "Editing a collection puts its sort, genre and decade in the edit box, set as the collection has them, instead of showing them above the list as well; a change of genre or decade is tested at once.",
+      "A collection's genre is found in the genre list whatever case it was saved in.",
+      "A film whose download has finished turns into its own page once it has come into the library, in the web and the app, rather than staying on Downloaded - arriving; its offer opens the film from then on.",
+      "In the Users tab, each person's weekly download limit shows what they have downloaded this week.",
+      "The boxes in the Users tab are drawn dark like the rest of the page rather than white.",
+      "Log > Downloads opens with what was downloaded this week, this month and altogether - gigabytes, films, what is still coming in, the largest, and who took most - for everyone or the person picked, as the Watch log does for viewings.",
+      "In Settings the Log tab sits beside Now playing.",
+      "In the web, back from a title opened inside a collection returns to the collection, scrolled to that title, rather than to the list of collections."
+    ]
+  },
+  {
+    "version": "0.17.379",
+    "when": "2026-09-11",
+    "title": "A pack downloads only the films asked for",
+    "items": [
+      "A pack already in qBittorrent - picked up by its own watched folder, or added by hand - downloads only the films asked for in Palladium. Every other file is set to not download; before, Download turned the one film on and left the rest of the pack on with it.",
+      "A pack in qBittorrent that nobody has asked for anything from is stopped with all of its files off, and packs are checked every twenty seconds so one qBittorrent picks up by itself is turned down before it has taken much.",
+      "The watchlist button on a title page in the web steps through three states, as in the app: off, on the watchlist, and a favorite with a red heart.",
+      "Back from a title lands on it in the list it was opened from - Films, TV, a category or the watchlist - in the web and in the app, rather than at the top.",
+      "Now playing shows films downloading from a torrent pack: who asked, how far, the size, the speed and the time left.",
+      "A downloaded film takes the TMDB match it was offered under, so its poster, summary and genres arrive with it.",
+      "The app's poster badge on a downloading film shows the time left beside the percent.",
+      "Fix match works with the library's hex keys; it kept only the digits and named a different title, or none.",
+      "A film still downloading is left out of the library until it has finished, and one indexed halfway is taken out again; indexed, it would not play and its title page showed no progress.",
+      "A film its torrent pack carries more than once (a restored cut, a second disc, its trailers) shows as one poster; its page, in the web and the app, lists the releases to choose from before Download.",
+      "Pack films are matched to TMDB by first release year, so a remake no longer takes the original's poster; films matched to another year are matched again.",
+      "The Films count says how many of its films are there to download.",
+      "A film being downloaded shows its progress and time left across the poster on its own page, as on its card, in the web and the app.",
+      "A download can be cancelled from the film's page by the owner or whoever asked for it: its file is turned off in qBittorrent and the film is offered again.",
+      "A download whose file is turned off in qBittorrent, or whose torrent is removed from it, is reset: the film is offered again and waits for the next request.",
+      "A film asked for from a torrent pack joins Recently added at once and stays there once scanned in; cancelled, it leaves.",
+      "While something downloads, a line beside the tabs says what, how far and how long, in the web and the app; it opens the film. The owner sees every download, a guest their own.",
+      "A follower takes its house's torrent packs and matches, and offers those films itself while the house is off, fetching with its own qBittorrent into its own library.",
+      "Downloads go into a folder the library scans: a save folder outside the library's folders is added to its film folders.",
+      "While a collection is being edited, the genre and decade picked above its list become its rule's genre and years, shown in the form; saved, the collection holds only those titles and opens in the sort chosen.",
+      "Search lists films to download among the films, greyed, and follows the sort, genre and decade of the Films or TV tab, which can be changed from the search itself.",
+      "The favorite button keeps the highlight every chosen button has, with the heart in red, in the web and the app.",
+      "Changing the sort or a filter while a collection is being edited no longer closes the edit form.",
+      "In the app, back from a title opened from a grid of posters returns to the exact place the grid was scrolled to; a list drawn again differently scrolls to the poster.",
+      "In the app, back from a title page no longer jumps to the top of Home: a return to the front was taken to have happened again every time the library was drawn after a title page."
+    ]
+  },
+  {
+    "version": "0.17.378",
+    "when": "2026-09-11",
+    "title": "Torrents in one box, and the piece limit asked of qBittorrent",
+    "items": [
+      "Settings, Library has one Torrents box: how qBittorrent is reached, where films are saved, the room there and whether it is connected, then the packs - add one, each pack's stats (downloaded of how many, gigabytes fetched, on offer, already in the library) and remove it.",
+      "The watchlist button on a title page in the app steps through three states: off, on the watchlist, and a favorite with a red heart, which stays on the watchlist when watched.",
+      "A pack is refused only when its pieces are larger than the connected qBittorrent's own limit, asked of it each time: just under 256 MiB on qBittorrent built with libtorrent 1.2, just under 512 MiB on libtorrent 2.0. It was fixed at 128 MiB and written down, so a pack stayed refused after qBittorrent was updated.",
+      "The refusal says which libtorrent the qBittorrent runs, its limit, and that the libtorrent 2.0 build takes up to 512 MiB."
+    ]
+  },
+  {
+    "version": "0.17.377",
+    "when": "2026-09-11",
+    "title": "Films on offer in collections, torrent stats, and room on the download drive",
+    "items": [
+      "A film on offer from a torrent pack joins any collection whose filters match it - words, genre, years - greyed until it is here, and can be put on a collection by hand.",
+      "A shuffle never draws a film on offer, Play in order starts with the first film that is here, and a collection's cover is a film that is here.",
+      "Free space on the drive downloads go to is shown in the torrent settings, on a film on offer's page and on Download in the app. A film that does not fit is refused before anything starts.",
+      "A green dot says Palladium is connected to qBittorrent; a red one says it is not.",
+      "A pack cut into pieces larger than 128 MiB is marked as one qBittorrent cannot load as soon as it is added. Download on its films says so, instead of failing on every press.",
+      "qBittorrent's refusal of a torrent file is reported in words rather than as HTTP error 415.",
+      "While a film downloads, its page in the web and in the app shows how far it has got, its speed in Mbit/s and the time left, read again every few seconds."
+    ]
+  },
+  {
+    "version": "0.17.376",
+    "when": "2026-09-11",
+    "title": "Favorites in the watchlist, films to download, the tray inside the server",
+    "items": [
+      "Favorites live in the watchlist: hold a poster there, or right-click it in the web, to make it a favorite. Favorites have their own row under the watchlist and a red heart on the poster, above the copy dot.",
+      "The heart button on title pages and the Favorites tab are gone.",
+      "A watched title leaves the watchlist unless it is a favorite. The Remove what is watched setting is gone.",
+      "A favorite that was also watched lately is copied to the other machine again; the first reason reached won and dropped it as watched.",
+      "A shuffled collection resumes only the title its round is on and starts the next title from the beginning. Continue watching shows that title, not whichever title on the shelf was left part-way most recently.",
+      "Users: a weekly limit per person, in gigabytes, for what is copied to the other machine for them and for what they download.",
+      "Torrent packs: add a pack's .torrent under Settings, Library, Downloads. Its films are matched to TMDB and shown greyed in Films and in search until they are here.",
+      "A film on offer has a page with Download. Download fetches that film alone through qBittorrent: every other file in the pack is set to not download, and the film lands in a library film folder.",
+      "Log, Downloads lists every download with who asked for it and when, and can be narrowed to one person.",
+      "The tray icon is shown by the server itself and no palladium.exe is built. Windows Defender took the separate launcher for malware and quarantined it on every install, which left the server stopped.",
+      "Start at sign-in, the Start menu entry and the installer start palladium-server.exe.",
+      "The player's sources line no longer shows the previous film's split share on a stream from one machine."
+    ]
+  },
+  {
+    "version": "0.17.375",
+    "when": "2026-09-11",
+    "title": "Only the sound is made when the picture plays as it is",
+    "items": [
+      "A film whose picture the device plays but whose sound it cannot, such as DTS on a phone, is sent with the picture untouched and only the sound encoded, instead of the whole film re-encoded.",
+      "The app asks where such a stream starts: a copied picture begins on the keyframe before the second asked for, and the timeline and subtitles count from there.",
+      "Subtitles for an encoded stream are cut to the millisecond, not the second.",
+      "Now playing says direct video, sound encoded for these streams.",
+      "A collection saved in edit mode keeps the sort, genre and decade showing, and opens with them in the web and in the app.",
+      "Settings: This computer holds this machine's own settings, name and port included; Remote computer holds everything about the other machine. Each setting is shown in one place.",
+      "Settings that do not apply are greyed out instead of hidden or repeated, with a tooltip saying why.",
+      "A copy with Managed from the house on has its copying settings on the house's Remote computer tab, set through the house. On the copy they are greyed out with a tooltip naming where they are set.",
+      "Managed from the house read its switch from the wrong settings file and never took effect.",
+      "Now playing measures a viewing's rate over the last 20 seconds across all its requests. A direct play read in chunks showed several times its bitrate.",
+      "A copy asked to play a title it holds no file for encodes it with its own encoder, reading the file from the house. Subtitles for it are cut by the house. An app that had moved to the copy got an error for every title not copied.",
+      "Settings, This computer, Encoding: Encode on This computer or Connected computer. Connected computer sends encodes to the computer this one copies from, or the one copying from it, and encodes here when it does not answer.",
+      "Holding a Continue watching poster on the television opens its menu when the button is let go. It opened while the button was still down, and the release pressed Go to title.",
+      "The app's title page and the line over the picture say Direct video, sound encoded when only the sound is encoded.",
+      "On a title page in the app, Play, Mark watched and Go to show are the same height and line up; Mark watched was drawn smaller than Play when there was nothing to resume."
+    ]
+  },
+  {
+    "version": "0.17.374",
+    "when": "2026-09-11",
+    "title": "Watchlist, favorite and collections as three buttons",
+    "items": [
+      "A title page has three buttons in one control: watchlist, favorite and collections, with no words beside them, in the app and in the web.",
+      "The collections button lights when the title is on any collection.",
+      "Play on a title page keeps its full size when there is nothing to resume; it was shrunk as if From start stood beside it."
+    ]
+  },
+  {
+    "version": "0.17.373",
+    "when": "2026-09-11",
+    "title": "Hold a poster to open its title",
+    "items": [
+      "Holding any poster in the app opens its title page, and an episode opens its programme; a long press of the remote select button counts as a hold on the television.",
+      "Continue watching keeps a menu when held: Go to title, Watched and Not watched, and End this shuffle on a shuffle row.",
+      "A title page has a Collection button, in the app and in the web; the hold menu no longer lists collections."
+    ]
+  },
+  {
+    "version": "0.17.372",
+    "when": "2026-09-11",
+    "title": "Genre and decade on watchlists and collections",
+    "items": [
+      "Watchlist, Favorites and an open collection have Genre and Decade, built from what is on the list, beside the sort, in the web and in the app.",
+      "Films, programmes, seasons and episodes carry their genres in every list, so a list can be narrowed without asking again.",
+      "A title leaves the watchlist once watched, and stops being copied, unless Remove what is watched is turned off. Favorites are copied whether watched or not.",
+      "Holding a poster in the app offers Go to title: the page of a film or a programme, and for an episode its programme."
+    ]
+  },
+  {
+    "version": "0.17.371",
+    "when": "2026-09-11",
+    "title": "Favorites: kept on both machines",
+    "items": [
+      "The poster and title-page button is a favourite heart: a favourite is copied to the other machine whether or not it has been watched, so it plays from either and reads from both.",
+      "Watchlist has two lists, Watchlist and Favorites, in the web and in the app.",
+      "Adding a title to a collection moved to the hold menu in the app and to a right-click on posters, hearts and episode rows in the web."
+    ]
+  },
+  {
+    "version": "0.17.370",
+    "when": "2026-09-11",
+    "title": "Collections by genre and year, and watchlists kept on the copy",
+    "items": [
+      "The Casual collection page opened with an error: a season card turned a title key into a number.",
+      "The copy checks whether a title is watched against the person it is kept for. The owner having seen a film dropped it from a guest part-way through it.",
+      "Everything on a watchlist is copied, watched or not.",
+      "A setting removes a title from your watchlist when you finish it or mark it watched; off unless turned on.",
+      "The collection editor has Holds, Genre and Years at the top, ahead of the title words, for Save and for Test filter."
+    ]
+  },
+  {
+    "version": "0.17.369",
+    "when": "2026-09-10",
+    "title": "Per-title subtitle looks stick, and the copy keeps its settings",
+    "items": [
+      "A per-title subtitle look keeps its height and its placement together. One saved with only a height took its placement from the default, so changing the default moved it.",
+      "Very bottom is kept as chosen; the server cut every height above 0.4 down to 0.4.",
+      "A look set on a programme page applies to its episodes; it was filed under the programme and never read.",
+      "The copy no longer empties its settings file when it reads it mid-write: an unreadable file is left alone, and what the house sends is laid over the file as it is now.",
+      "The player shows how much each machine carried only while two are connected; with one dropped it read 95/5 beside one source.",
+      "Playing an episode off a shelf counts it as drawn however it was started, so the next draw cannot hand the same episode back.",
+      "The shuffle row on Continue watching offers an episode only when it was left past the first half minute; otherwise it offers the next draw.",
+      "Removed Goes to sleep at: it only set the extra hour before the house sleeps, which is gone."
+    ]
+  },
+  {
+    "version": "0.17.368",
+    "when": "2026-09-10",
+    "title": "The collection button asks which collection",
+    "items": [
+      "The shuffle button on titles, seasons and episodes opens your collections, each marked for holding all or part of the title; picking one adds or removes it, and a new collection can be made from the same list.",
+      "Taking a title off a filter collection strikes it out, and putting it back lifts the strike, instead of pinning it.",
+      "Removed the Casual-only mark: /casual, its green poster badge and the casual field in /marks.",
+      "The copy takes what is on a screen only in its set night hours or after Start the night now; the extra hour before the house sleeps is gone."
+    ]
+  },
+  {
+    "version": "0.17.367",
+    "when": "2026-09-10",
+    "title": "Old casual round removed; the shuffle mark edits the Casual shelf",
+    "items": [
+      "The shuffle mark on titles, seasons and episodes adds to and removes from the Casual shelf; since casual became a shelf it wrote a list nothing played from.",
+      "Removed the old casual round: /casual/next, /peek, /back, /reset and /queue, the casual watchlist tab with its Casual play and Start over, and the settings they kept.",
+      "During a shelf shuffle the next-up name and the next subtitle fetch read that shelf's round; they peeked the old casual round.",
+      "The copy keeps what shelf shuffles have queued or left part-way; it read the old round's fields, which no longer move.",
+      "Shelf shuffle rounds sync between the house and the copy per shelf, newest wins, both ways; they were copied once and never updated.",
+      "Playing a title again more than a minute after it was marked watched clears the mark once past 30 seconds, so it shows on Continue watching.",
+      "A shuffled playing that restarted itself - a source switch, a subtitle or a quality change - lost which shelf it came off, so the next draw failed.",
+      "The copy files its titles under the house keys. A copy keeps no year, so its programmes had keys of their own and shelves, shuffle rounds and progress did not match between the machines.",
+      "Per-title subtitle looks follow a key move; they were all left on the old row numbers and no longer applied.",
+      "The app draws subtitles as the server says whenever the server answers. A look kept on the device won over a changed setting, so a television kept yellow subtitles after they were set back to white."
+    ]
+  },
+  {
+    "version": "0.17.366",
+    "when": "2026-09-10",
+    "title": "Verified subtitles show as verified again",
+    "items": [
+      "Verification was saved under the episode key but read back with a second e in front of it, so every verified subtitle - track or file - showed as unverified, and verifying by hand looked like it did nothing."
+    ]
+  },
+  {
+    "version": "0.17.365",
+    "when": "2026-09-10",
+    "title": "Title-key conversion fixes, and reaching the house past a downed copy",
+    "items": [
+      "Conversion looked episodes up first, so a film sharing a row number with an episode moved onto it; on the copy two such rows collided and the conversion rolled back. Old keys now move by kind, seasons with their programme.",
+      "Each viewer's subtitle picks, put-aside cards, casual places and subSince are converted; only the top-level copies were.",
+      "A failed conversion is written to debug.log instead of lost on stderr.",
+      "Update install reads library.json directly, so a server whose library will not open can still update itself.",
+      "App: away from home, a server filed under its LAN address is tried on the copy's outside address with its own port before falling back to the copy, and the row is saved there so posters load.",
+      "Making subtitles from the soundtrack found no file for a title key; fixed."
+    ]
+  },
+  {
+    "version": "0.17.364",
+    "when": "2026-09-10",
+    "title": "Converting the library to title keys is all or nothing",
+    "items": [
+      "The conversion ran as a series of separate statements, and sqlite commits a CREATE TABLE on its own. On the copy a lock stopped it after the first new table was made, and every start after that fell over trying to make it again, so the copy answered no library request at all. It now takes the write lock before touching anything, clears anything a stopped attempt left behind, and rolls back on failure to try again next start.",
+      "Seasons, posters, matches and renumbering read a title key as hex. A season is a title key with -s and a number after it, and eight places still took the title half as digits: a programme opened onto seasons with nothing in them, and every poster fell back to the plain P. Choosing another match for a title and renumbering a season passed the key through int() and would have failed too."
+    ]
+  },
+  {
+    "version": "0.17.363",
+    "when": "2026-09-10",
+    "title": "The e on an episode's key is not added twice",
+    "items": [
+      "An episode's key is stored whole now, the letter with it, and two dozen places still put another one in front - so Continue watching, the seasons of a programme and the artwork behind them asked for keys that were not there. A season and a poster address were built with %d as well, which a key made of hex is not."
+    ]
+  },
+  {
+    "version": "0.17.362",
+    "when": "2026-09-10",
+    "title": "Keys come from the title, not from the order things were scanned",
+    "items": [
+      "A key was a row number, so it meant whatever that machine happened to insert first: key 3 was one film here and a different film on the copy. Anything falling back to the copy asked for a key it had no business asking for and got silence, or somebody else's film. Keys are now twelve hex digits worked out from the title and the year - an episode from its programme, season and number - so both machines arrive at the same key without asking each other.",
+      "The library, the watchlist, the shelves, every shuffle round, what has been watched and where each viewing got to were all rewritten in one pass. A key is never shown in the interface; it appears in fault reports and logs."
+    ]
+  },
+  {
+    "version": "0.17.361",
+    "when": "2026-09-10",
+    "title": "What the copy holds can go down as well as up",
+    "items": [
+      "The copy sends two reports - one built by looking at the files on its disk, which is the whole truth, and a short one when copying starts so the queue reads right from the first minute. The house could not tell them apart and added both to what it already knew, so nothing was ever taken away: a film swept out of the cache stayed on the list for good, the dot stayed on its poster, and with the house switched off somebody chose it and there was nothing at the other end. The whole report now says so, and replaces."
+    ]
+  },
+  {
+    "version": "0.17.360",
+    "when": "2026-09-09",
+    "title": "No grey box behind a card",
+    "items": [
+      "Resuming from Continue watching in the app asks for the film in full first. A row on that shelf is brief - no codecs, no part, nothing about the file - and a film that cannot say what it is cannot be played as it is, so every resume from there went through the encoder. Choosing a subtitle made the player fetch the details and rebuild the stream, which is why turning subtitles on turned the encoder off.",
+      "Giving a card something to do on a long press brought the default press highlight with it, and that is drawn over the whole card - poster, title and the line under it - so it came up as a grey square larger than the poster. The white ring already says where the remote is.",
+      "And the two buttons on a shuffle row in the browser say what they do there: the tick marks the episode the hat drew and the shelf moves on, the cross ends the round. The cross already did that and still called itself \"forget where I was\"."
+    ]
+  },
+  {
+    "version": "0.17.359",
+    "when": "2026-09-09",
+    "title": "The app says which condition sent a film to the encoder",
+    "items": [
+      "A film that could have been played as it is comes back re-encoded and says nothing about why. There are six conditions and any one of them decides it; the one that refused is now written to the log, with the track numbers it was given."
+    ]
+  },
+  {
+    "version": "0.17.358",
+    "when": "2026-09-09",
+    "title": "The shuffle badge is the word, not a sticker",
+    "items": [
+      "It was set on a filled rounded box, which over a bright poster reads as a grey square somebody has left there. The artwork is what is being covered and the badge only has to be legible over it, so the word carries itself now, with a shadow heavy enough to hold on a pale poster as well as a dark one. Both the app and the browser."
+    ]
+  },
+  {
+    "version": "0.17.357",
+    "when": "2026-09-09",
+    "title": "The line and Now playing say what is connected",
+    "items": [
+      "The line counts the machines connected to this film: two of them reads 2/2, one reads 1/1. It counted machines that hold the file against machines that had brought something in the last ten seconds - two different questions, neither of them the one being asked - so on an easy film, where the quick machine keeps up alone and the slow one is left out of the near work on purpose, it read 1/2 and back while nothing was wrong.",
+      "Now playing asks both machines and folds the answers into one row per viewing. It asked whichever machine the page was pointed at; a film read off two is served by both and reported to one, so the page showed a row with no position, or nothing at all while somebody was plainly watching. The megabits of both are added up, because both are carrying it.",
+      "And it folds those rows on the film rather than on the name. A stream raises a row named for the viewer; a player's report raises one named for the device - so one person watching one thing arrived twice, as a viewer with no position and a device with one, and the viewer's row was drawn greyed out while nine megabits were going to it."
+    ]
+  },
+  {
+    "version": "0.17.356",
+    "when": "2026-09-09",
+    "title": "Backing out of a film shows where it actually got to",
+    "items": [
+      "The closing report went out on the player's own scope and the player was being torn down as it went, so the last and most accurate position was the one least likely to arrive. It is sent on a scope that belongs to the process instead, and draws nothing, because there is no screen left to draw on.",
+      "And the shelves are read after it lands rather than at the same moment. Both happen at once when somebody backs out and the read was winning, so Continue watching was drawn from what the server knew a moment before the film ended - faithfully drawn, and the old position. It waits up to two seconds."
+    ]
+  },
+  {
+    "version": "0.17.355",
+    "when": "2026-09-09",
+    "title": "The line counts the machines feeding the film",
+    "items": [
+      "It said \"sources 1/2\" on a film being encoded, which reads as a split that has half failed. There was never a second half: an encode is one machine's ffmpeg with its own position, the pipe cannot be read in stretches, and two machines encoding the same film do not produce the same bytes. The second number was a fact about who holds the file, not about the stream. The pair is now shown only while the film is actually being read off more than one machine; otherwise it says one source, and why."
+    ]
+  },
+  {
+    "version": "0.17.354",
+    "when": "2026-09-09",
+    "title": "Two faults off the reports page",
+    "items": [
+      "The copy's settings pane read a variable declared in two other functions and none of them this one, so opening it threw and everything below the line went undrawn. It reads the keys this house holds from the library's own config, where the rest of the page reads them.",
+      "Pressing previous on the casual shelf threw: the run counter is kept per order now, like the history beside it, and one line still read it as a number and handed a dict to int()."
+    ]
+  },
+  {
+    "version": "0.17.353",
+    "when": "2026-09-09",
+    "title": "Continue watching is in the order things were watched",
+    "items": [
+      "Every row now says when it was last watched. Only the shuffled shelves carried that, and both the browser and the app sort the shelf by it - so every ordinary row sorted as nought, the thing watched five minutes ago landed anywhere among them, and where the list is cut at forty it was arbitrary which forty. The server had the answer all along and was ordering correctly before the clients undid it."
+    ]
+  },
+  {
+    "version": "0.17.352",
+    "when": "2026-09-09",
+    "title": "Coming out of a film never shows the page from before it",
+    "items": [
+      "In the app the key that decides whether to read the lists again is built out of the tab and the filters, not out of having been away - so leaving a film back onto Home, which is where a film is nearly always started, changed nothing and the page stood as it was when the film began. Home is now read again on every return.",
+      "In the browser the back button stopped the film and left whatever was behind it on screen; it now draws the homepage again, as closing the player does.",
+      "The back arrow puts an episode on its own page rather than replaying it. Opening an episode sends it straight into play, so walking back into that entry started the film again at the position it had when the entry was made. Everything else on that stack is stored as a key and read again."
+    ]
+  },
+  {
+    "version": "0.17.351",
+    "when": "2026-09-09",
+    "title": "The cross on a shuffle row ends that shuffle",
+    "items": [
+      "A row for a shuffled shelf is the shelf, not the episode showing on it - that is only whatever the hat drew last. The cross put that episode aside, so the row came straight back under the next draw and could not be got rid of. It now ends the round: everything back in the hat and the row goes. The tick still means the episode was watched."
+    ]
+  },
+  {
+    "version": "0.17.350",
+    "when": "2026-09-09",
+    "title": "Hold a poster on Continue watching",
+    "items": [
+      "Holding a card on Continue watching offers what the browser already offers there: watched and off the shelf, or not watched and forget where I was. Both put it aside, because marking one episode watched otherwise hands the shelf to the next episode of the programme and looks like nothing happened.",
+      "Pressing that card resumes, so there was nowhere else in the app to say either.",
+      "A shuffle row there is the shelf, not the title showing on it, so holding one offers to end that shuffle: everything back in the hat and the row leaves Continue watching. Putting the title aside only brought the row back under whatever the hat drew next.",
+      "Finishing something now takes it off every shelf keeping its place. A shelf drops the place at 95%, but only when the report names the shelf, and only a playing started off that shelf does - so an episode watched from its own page stayed on Continue watching as half-watched for ever, and watching it again changed nothing. Marking it watched does the same."
+    ]
+  },
+  {
+    "version": "0.17.349",
+    "when": "2026-09-09",
+    "title": "Hold a poster on Watch later",
+    "items": [
+      "Holding a poster on the Watch later shelf offers the two things done with one: mark it watched, or take it off the list. Both meant opening the title's page, where the marks live - two screens and a scroll on a phone for a decision made in a second."
+    ]
+  },
+  {
+    "version": "0.17.348",
+    "when": "2026-09-09",
+    "title": "Back in a collection shuffle steps back through that shelf",
+    "items": [
+      "Next was moved to the shelf when the casual tab was replaced; Back was not. The browser still asked /casual/back, a different round on a shelf that is no longer there, so it answered about a shelf that does not exist. The app sent no direction at all, so Back drew a new title forwards.",
+      "The server has taken a back flag on /collections/shuffle all along; both clients now send it."
+    ]
+  },
+  {
+    "version": "0.17.347",
+    "when": "2026-09-09",
+    "title": "A guest may draw from a shelf again",
+    "items": [
+      "Drawing from a collection shuffle was refused for anybody who is not the owner, which includes the owner from outside the house: /collections/shuffle replaced /casual/next and was never added to the list a guest may post to. Pressing Next in a shuffle answered 403 and the player reported it as the server being unreachable.",
+      "That message now says the shelf could not be drawn from, and the reason is written to the log."
+    ]
+  },
+  {
+    "version": "0.17.346",
+    "when": "2026-09-09",
+    "title": "Continue watching resumes in the app instead of opening the page",
+    "items": [
+      "Every card on Home opened its page, so resuming took a second press and a shuffle lost its shelf on the way - the page carries no shelf, so Next handed over the next episode of the programme rather than drawing. The browser has resumed from that row for a while; the app now does the same."
+    ]
+  },
+  {
+    "version": "0.17.345",
+    "when": "2026-09-08",
+    "title": "The machine still answering is allowed to fetch the lump the picture is waiting on",
+    "items": [
+      "A machine stopped while holding one lump. The other fetched the six behind it, which filled the window, and the window then refused the one lump that would have emptied it. Nothing came in for ninety seconds while a live machine sat idle, and the picture ran on its buffer until the film moved house. That lump is now claimed whatever the window says.",
+      "A machine that has brought nothing in for five seconds no longer counts as the quick one, so the near work stops being left to a machine that has gone.",
+      "The reader has room for four machines and counted all four whether or not they were there, so two machines looked like four and one looked like three. Down to one machine that let the reader put aside the only machine carrying the film."
+    ]
+  },
+  {
+    "version": "0.17.344",
+    "when": "2026-09-08",
+    "title": "A film being read off two machines does not move house when one goes",
+    "items": [
+      "There are two things watching a stalled picture. The reader hands a dropped machine's work to whichever machine is left and takes the whole film off it, and the picture carries on. The other restarts the film on the other machine, which throws away everything in hand and fills from nothing - so what looks like a failover curing an empty buffer is the thing that emptied it.",
+      "While the reader still has a machine and film is still arriving, the film stays where it is. The mover was interrupting after fourteen seconds of a picture that had already stopped, which is exactly when the reader was in the middle of taking over.",
+      "It still moves when nothing has arrived at all for twenty-five seconds, because then there is nothing left to protect.",
+      "And a reader that has gone quiet says what it is waiting for, once a second: which stretch, which machine was given it, how much is in hand, and what each machine is thought to be doing. The only account of a reader going quiet was that the picture stopped, which says nothing about why."
+    ]
+  },
+  {
+    "version": "0.17.343",
+    "when": "2026-09-08",
+    "title": "The player's account of a server going away is not sent to that server",
+    "items": [
+      "What the player did when a machine went is the one thing worth having written down, and it was being written to the machine that had gone - so the whole account of the moment was lost every time. A trace goes to the house, and to the machine keeping copies when the house will not take it.",
+      "Nothing else changed. A share rule shipped earlier today was withdrawn after being measured: driving the same arithmetic with a four-hundred megabit machine and a forty megabit one carrying a nine megabit film gives ninety-seven to three either way, because one machine can carry the film several times over and there is nothing left for the second to do. The split is redundancy, not speed, and the stalls were the retrying and the guard rather than the share."
+    ]
+  },
+  {
+    "version": "0.17.342",
+    "when": "2026-09-08",
+    "title": "Answering about itself is not the same as sending a film",
+    "items": [
+      "A stalled picture asks the machine it is reading from whether it is still there, and stays put when it says yes. A server on its way out - one that has just been replaced, or is being shut down - answers that question cheerfully while sending nothing at all, so the picture stood still being reassured for the whole of the stall before it moved. It now has to have brought something in within the last twelve seconds as well.",
+      "Next on the television draws from the shelf the playing came off. It asked the old casual shelf instead, which drew a plausible title from somebody's marks and left the shelf's own round exactly where it was.",
+      "And a badged row played from a phone stays the shelf's: the row carries which shelf it belongs to, the title's page keeps it, and the film is told."
+    ]
+  },
+  {
+    "version": "0.17.341",
+    "when": "2026-09-08",
+    "title": "A shuffled row stays the shelf's when it is played from a phone",
+    "items": [
+      "Pressing a badged poster opens the title's own page, and playing from there wrote an ordinary place - so the shelf lost track of its evening and Next handed over the next episode of the programme rather than drawing. The row carries which shelf it belongs to, the page keeps it, and the film is told.",
+      "Down to one machine, the other is asked for every five seconds rather than at a wait that doubles to a minute. Backing off further and further suits a machine nobody needs; it is exactly wrong when the machine still answering has nothing behind it - which is how a restart of the second one cost twenty-three seconds of stopped picture."
+    ]
+  },
+  {
+    "version": "0.17.340",
+    "when": "2026-09-08",
+    "title": "A machine that has gone is asked whether it is back before it is let back in",
+    "items": [
+      "Reading a film off two machines survives one of them going: what it had taken on goes back to the other, which holds the whole film. What it did not survive was being asked again. A machine that has been switched off drops the packets rather than refusing them, so letting it straight back into the rotation handed it the very stretch the picture was waiting on and then spent five seconds finding out - over and over, ten seconds apart, while the machine that was answering sat there able to fetch it.",
+      "So the picture ran dry and the film moved house, with a live machine holding all of it. The side is asked whether it is there first, on a thread nobody is waiting on and with a second and a half to answer, and only let back in when it says yes."
+    ]
+  },
+  {
+    "version": "0.17.339",
+    "when": "2026-09-08",
+    "title": "Next draws from the shelf that is playing",
+    "items": [
+      "Next asked the old casual shelf for its next card, which is not where a collection's round lives - so even a playing that knew perfectly well which shelf it came off had nowhere to ask, and fell through to the next episode of whatever programme it happened to be. It draws from that shelf now.",
+      "And pressing a row on Continue watching says what it saw - the shelf, and whether it took the playing to be a shuffled one - because that is the whole question and it cannot be seen from outside the browser."
+    ]
+  },
+  {
+    "version": "0.17.338",
+    "when": "2026-09-08",
+    "title": "The shuffle badge sits over the poster rather than behind it",
+    "items": [
+      "It was drawn on the card, and a card is a poster with a title under it - the poster is painted with its own ground on top, so the badge went underneath and could not be seen at all. It is drawn inside the poster now, over the picture, and centred on the picture rather than on the picture and its title together.",
+      "And it shrinks with a small poster, so a phone shows the whole word instead of the middle of it."
+    ]
+  },
+  {
+    "version": "0.17.337",
+    "when": "2026-09-08",
+    "title": "The shuffle row stays put, and resuming one stays in the shuffle",
+    "items": [
+      "The row had no date on it. A shelf ordered by when things were last watched put it at the very end, where a page of a dozen cards cuts it off - so the badge showed for as long as the first answer was on screen and then went. It carries the moment the shelf was last played, and sorts among the rest by it.",
+      "Pressing a badged row carries on being the shelf's. Next then draws the next thing out of that hat rather than handing over the next episode of whatever programme it happens to be - resuming a shuffle and then being given a series in order is not a shuffle at all.",
+      "The television says which shelf a playing came off, the way the browser does, so the shelf keeps its place and Next means the same thing there."
+    ]
+  },
+  {
+    "version": "0.17.336",
+    "when": "2026-09-08",
+    "title": "Both places stand on Continue watching, and the badge says which is the shelf's",
+    "items": [
+      "Putting a film on with the shuffle and later choosing it by hand are two viewings of one title at two different seconds. Collapsing them into a single row made it impossible to see which was which, which is the one thing the badge is for. Both stand, and only the shelf's wears it.",
+      "So on Continue watching a poster with SHUFFLE across it is a place the hat is holding, and the same title without it is where somebody sat down with it. Nowhere else is marked - a title is not casual, a viewing is."
+    ]
+  },
+  {
+    "version": "0.17.335",
+    "when": "2026-09-08",
+    "title": "The shuffle badge is big, and it means what came out of a shuffle",
+    "items": [
+      "One film, one row. Putting something on with the shuffle and then choosing it by hand wrote an ordinary place beside the shuffle's own, and the shelf showed both - the same title twice, nine seconds apart, arguing with itself about where somebody had got to.",
+      "Whichever place is the newer one is what the viewing is. Started by the shuffle, it wears the badge; chosen by hand afterwards, it is an ordinary viewing and wears none - which is the difference between a title that is in a shuffle and one that came out of it.",
+      "And the badge is big enough to be told apart at a glance, in the browser and on the television. Small print across a poster is something to notice afterwards.",
+      "A shelf says where its round was left, so the button reads Resume with the second it would start at rather than Play."
+    ]
+  },
+  {
+    "version": "0.17.334",
+    "when": "2026-09-08",
+    "title": "Play works on a shelf without shuffling, and a film lets out onto the homepage",
+    "items": [
+      "The television reads a shelf through a different door than the browser does, and its season cards carried nothing but the season - so asking the library for one answered with the programme, and Play opened the show and started nothing. They carry the episodes they stand for now, in order.",
+      "Coming out of a film lands on the homepage, drawn again, in the browser and on the television both. Whatever was on screen when the film started is a page from before it: Continue watching still says the place it was at, a shelf still says what it said when the draw was made, and a shuffle that has moved on says nothing at all."
+    ]
+  },
+  {
+    "version": "0.17.333",
+    "when": "2026-09-08",
+    "title": "The Casual shelf is written into the settings that were changed",
+    "items": [
+      "It was written by reading the settings a second time, which fetches a fresh copy without the shelf in it - so the file kept being written exactly as it was. The shelf existed in every answer and in no file, and the row on Continue watching had no name to show for it and said only \"Shuffle\"."
+    ]
+  },
+  {
+    "version": "0.17.332",
+    "when": "2026-09-08",
+    "title": "Continue watching gets its row for a shelf being shuffled",
+    "items": [
+      "The row was written and never appeared. The shelves were handed to the library api as a plain attribute and read back through the accessor every other setting uses, which reads somewhere else - so the deck was always told there were no shelves, however plainly one had a place in it.",
+      "A season card on a shelf stands for the episodes under it, and those are what plays. Asking the library for the season answers with the programme, so Play opened the show and started nothing - in the browser and on the television both.",
+      "And the television says the shelf across the poster, the way the browser does: one row for the shelf, turned forty-five degrees, because the row otherwise reads as the episode it happens to be showing."
+    ]
+  },
+  {
+    "version": "0.17.331",
+    "when": "2026-09-08",
+    "title": "A shelf is known by either of its names",
+    "items": [
+      "The library numbers a shelf \"coll:f592640\" so that a shelf and a film cannot collide, and the shuffle was asked for one called \"f592640\". Being strict about which of its two names had been sent is how a television came to say there was nothing to play on a shelf full of films.",
+      "The server takes either now, and the app sends the plain one."
+    ]
+  },
+  {
+    "version": "0.17.330",
+    "when": "2026-09-08",
+    "title": "A shelf is asked of the server it belongs to",
+    "items": [
+      "Shelves are gathered from every server anybody has a key to, and the draw was asked of whichever server the app happened to be talking to - so a shelf from one machine, asked for by name on another, was a shelf that did not exist. It said there was nothing to play, which was true of the machine it asked.",
+      "On a phone the shelf's name takes one line and the controls take the next. Five things across three hundred and sixty points put the buttons off the edge, and a button off the edge cannot be pressed at all."
+    ]
+  },
+  {
+    "version": "0.17.329",
+    "when": "2026-09-08",
+    "title": "The buttons on a shelf fit a phone, and Shuffle there means the same thing",
+    "items": [
+      "A shelf's row holds a name, a count, two controls and the sort. At the full width of a phone the buttons were pushed off the edge, where nothing can press them - they are narrow on a narrow screen now.",
+      "One Play, and a Shuffle switch beside it, the same as in the browser. It drew a title at random before, which is a fresh evening every time it is pressed; it draws from the round the house keeps for that shelf and that person now - carrying on with whatever was left part-way, nothing twice until the hat is empty."
+    ]
+  },
+  {
+    "version": "0.17.328",
+    "when": "2026-09-08",
+    "title": "A shelf keeps the place of what it put on",
+    "items": [
+      "The round advanced and the place never did. Drawing marked something played, and nothing wrote down where it got to - the one thing that does needs to know which shelf is playing, and nobody was telling it. So there was nothing to resume, and Continue watching had nothing to show, because that row is built out of exactly that.",
+      "The player says which shelf it drew from on every report, the way it already says whether the playing was chosen. The shelf keeps the place; what has been watched is still left alone, because putting something on is not watching it.",
+      "Choosing a title by hand forgets the shelf, and so does playing a collection in order: a queue is not a round.",
+      "And a season card carries the episodes it stands for, so playing a shelf plays them. Playing the season's own key opened the programme's page instead - Play took somebody to the show."
+    ]
+  },
+  {
+    "version": "0.17.327",
+    "when": "2026-09-08",
+    "title": "One Play on a shelf, with a switch for how",
+    "items": [
+      "Two play buttons asked somebody to choose the way of playing before there was anything to play, and both of them said Play - so which was the ordinary one had to be worked out by reading. There is one, and a Shuffle switch beside it that stays as it was left for that shelf.",
+      "And shuffling now opens what it drew. The draw describes the title; the player wants the library's own answer with its files and its tracks on it, and being handed the first where it wanted the second is why pressing it did nothing anybody could see. It asks again by key, the way playing a collection in order already did."
+    ]
+  },
+  {
+    "version": "0.17.326",
+    "when": "2026-09-08",
+    "title": "A rolled-up card is the season, counted against the season",
+    "items": [
+      "The key for a season answers with the programme it belongs to, so nineteen cards all read as the same programme and counted their episodes against the whole of it: \"7 of 179\" for a season of twelve, nineteen times over. Each card says which season it is and counts against that season."
+    ]
+  },
+  {
+    "version": "0.17.325",
+    "when": "2026-09-08",
+    "title": "A shelf of episodes reads as seasons, and the copy opens rather than asking who you are",
+    "items": [
+      "Episodes on a shelf stand as the seasons they belong to. Four episodes of a fifty-six episode programme showed four episode cards and said nothing about the programme; one season card saying four of fifty-six is what somebody reading the shelf wants to know. The episodes are still what the shelf holds - this is how it is read, not what it is.",
+      "The way in to the other machine carries the viewer's own key. A cookie belongs to the machine that set it, so arriving at the copy with one for the house is arriving with nothing - which is why the owner, who has every right to be there, was shown the way in for a stranger.",
+      "The Casual shelf is written down rather than rebuilt for each answer. It existed in every reply and in no file, so anything reading the settings directly could not see it at all.",
+      "And a shuffle that draws something and then cannot start it says so. Failing silently on the way to playing is indistinguishable from a button that does nothing."
+    ]
+  },
+  {
+    "version": "0.17.324",
+    "when": "2026-09-08",
+    "title": "The other machine is offered by name, and only when it is there",
+    "items": [
+      "\"The machine that keeps copies\" is what it does, not what it is called. The line that offers it appears at the one moment somebody is anxious, which is the worst moment to be vague, so it says what that machine calls itself.",
+      "And it is asked whether it is there before being offered. Both machines restart during an update, so the line came up saying the copy was still there at the one moment it was not, with a button that opened a page which could not load. If neither answers it says so, and says they may both be restarting.",
+      "The button falls back to this window when a pop-up is blocked. A blocked pop-up is silence, and silence reads as a broken button."
+    ]
+  },
+  {
+    "version": "0.17.323",
+    "when": "2026-09-08",
+    "title": "One Shuffle on a shelf, and it is the one that remembers",
+    "items": [
+      "A second Shuffle was added to the heading of a shelf that already had one, so the page offered the same thing twice and meant something different by each.",
+      "The button that was already there does the remembered kind now. It used to shuffle the order of a playlist, which starts a fresh evening every time it is pressed; it keeps a round for this shelf and this person instead - carrying on with whatever was left part-way, never repeating until the hat is empty, and showing as one row on Continue watching rather than filling it."
+    ]
+  },
+  {
+    "version": "0.17.322",
+    "when": "2026-09-08",
+    "title": "Go to show stands on the episode it was sent to",
+    "items": [
+      "It scrolled the row to the episode and left the highlight where it had been, so the first press of a direction key took the row back to the start of the season - which is indistinguishable from never having gone there. The episode is stood on now as well as scrolled to.",
+      "A poster can be handed a modifier by whatever is drawing it, which is what lets one of them be the one focus lands on."
+    ]
+  },
+  {
+    "version": "0.17.321",
+    "when": "2026-09-08",
+    "title": "A collection played in shuffle, in place of a shelf of its own",
+    "items": [
+      "Casual watching was a second list beside the collections - marked a different way, drawn a different way, kept in its own corner of the settings - and it is the same idea: a set of titles and a hat. The hat moves onto the collections, where the sets already are, and putting something on becomes a way of playing one rather than a place to go.",
+      "A round belongs to one person and one shelf. Two people shuffling the same shelf are two evenings, and one person shuffling two shelves is two rounds - which the one shelf casual had could not say.",
+      "What was marked for casual watching becomes a shelf called Casual on the first run, carrying its hat, its history and everywhere it was left. Nobody is asked to mark a hundred and eighty episodes again because the idea was renamed.",
+      "And a shelf being shuffled has a row on Continue watching: what is being carried on with, or what the hat has drawn next, with the word said across the poster at forty-five degrees. One row for the shelf, per person - a hat of two hundred episodes putting each one it touched on the shelf is what made that list unreadable in the first place.",
+      "The Casual tab is gone from both the browser and the television. A shelf is shuffled by the button on its own page, which carries on with whatever was left part-way and otherwise draws - no page in between pressing it and something playing."
+    ]
+  },
+  {
+    "version": "0.17.320",
+    "when": "2026-09-08",
+    "title": "Casual play opens on a page, not straight into a film",
+    "items": [
+      "Pressing it started something playing at once, which is right when the answer is \"put anything on\" and wrong every other time: there was no way to see what was about to play, no way to carry on with the one left half-watched, and no way to look at what is in the hat without leaving for the watchlist.",
+      "It opens the way any other title does now - the poster, and a button that says what pressing it will do. Resume names the place it would start at, because the shuffle keeps that place and nothing else does.",
+      "Underneath it: the ten already drawn, in the order they will play, and what the hat has already used this round. The shelf itself is a button at the end of the row."
+    ]
+  },
+  {
+    "version": "0.17.319",
+    "when": "2026-09-08",
+    "title": "One evening, kept by the house",
+    "items": [
+      "Two machines each drawing from their own copy of a round are two evenings. Walking from the television to a phone gave a different episode and both machines were right locally, which is what a copy of a round always comes to mean. Reconciling faster narrows that window; it does not close it.",
+      "So the house owns it. A machine keeping copies puts the question there under the same person's key and hands the answer back untouched - a draw, a peek, going back, starting over, marking a title. It answers for itself only when the house cannot be reached, which is the night that copy exists for, and hands its round back when the house returns.",
+      "And a round can be looked at: what was left part-way, the ten already drawn, and what the hat has used this time round. The first of those is a shelf of its own - a casual playing writes no row Continue watching reads, so nothing else could ever offer to carry one on."
+    ]
+  },
+  {
+    "version": "0.17.318",
+    "when": "2026-09-08",
+    "title": "The shuffle can be carried on with when the house is off",
+    "items": [
+      "What the shuffle was in the middle of is copied, and it comes first. A casual playing writes no row that Continue watching reads - that is the point of it - so nothing ever put a half-watched shuffled episode on the other machine, and the one thing it could not do when the house went off was carry on with what was actually on.",
+      "How many are kept follows the two settings that govern everything else kept ahead - Episodes ahead, and Hours ahead at most - rather than a number of its own. A shelf of half-hour comedies and one of hour-long drama are not the same number of files, and the settings already say so. Ten is the ceiling whatever those say, because ten is all the shuffle knows: the queue is drawn ten deep and the eleventh has not been decided.",
+      "Hours of casual play is the shuffle's own limit and is used at last. It was asked for by the machine keeping the copies, sent over, and dropped on the floor - the hours that govern a series somebody is part-way through are about the night ahead, and an evening of putting something on is a different question.",
+      "Where the evening had got to travels both ways, and the shelf it was drawn from does not. The machine keeping copies knows only the part of the shelf that fits on its disk - sixty episodes of a hundred and eighty-two - so the first time it had the newer round it would have handed that back as the whole shelf.",
+      "It sends the round alone now, and the house refuses a shelf or a watchlist arriving that way in any case."
+    ]
+  },
+  {
+    "version": "0.17.317",
+    "when": "2026-09-07",
+    "title": "The words are read where both machines can reach them",
+    "items": [
+      "Describing a shuffle and reading one back were written on the server and called from the copy, which has no such thing - so every attempt failed quietly and the shelf arrived as numbers again. They live beside the rest of the translating now, where both machines use them.",
+      "And a shelf of numbers nobody can place is replaced whatever the stamps say. The two machines agreed about when the round last moved and disagreed about what it was, which comparing stamps would have left that way for ever."
+    ]
+  },
+  {
+    "version": "0.17.316",
+    "when": "2026-09-07",
+    "title": "A shuffle described in words, because a number means nothing on the other machine",
+    "items": [
+      "Every library numbers its own titles. The marks travelled as numbers, so a hundred and eighty-two episodes arrived at the other machine as a hundred and eighty-two numbers it could not place - and the shelf, which is those numbers looked up in the library, came out empty. A phone on the copy said nothing was marked for casual watching.",
+      "The shuffle now travels the way a viewing already did: a programme, a season and a number, which both libraries recognise. The marks, the queue, what has been played and where anything was left, all of it, in both directions.",
+      "The watchlist crossed the same water and was numbered too - nine titles on the copy, none of which it could place. It is described now as well. One made sitting at that machine is still left alone; one that is only numbers is replaced."
+    ]
+  },
+  {
+    "version": "0.17.315",
+    "when": "2026-09-07",
+    "title": "A shuffle belongs to the person, not to the machine it is played on",
+    "items": [
+      "The round went one way, house to copy, so an evening carried on properly until somebody picked up a phone - and then the copy played its own round and the house never heard about it.",
+      "It is stamped whenever it moves now, and the newer stamp wins in either direction. Taken whole or not at all: a queue half from one machine and half from the other is not a queue anybody drew.",
+      "The two machines compare rounds every two minutes rather than every ten, because where somebody is in an evening moves every twenty minutes and a watchlist does not."
+    ]
+  },
+  {
+    "version": "0.17.314",
+    "when": "2026-09-07",
+    "title": "The shuffle is kept as it was drawn, and travels to the other machine",
+    "items": [
+      "Ten episodes, which is the depth of the queue the shuffle actually keeps. It used to pad that list out of the marked pool until it had twenty, and the pool is in library order - so half of what was copied was the first episodes of a programme in sequence, which is the one thing a shuffle will not play.",
+      "And nothing is taken after a draw. Six episodes follow anything somebody is part-way through, because that is what they will want in twenty minutes; what follows a shuffled episode is whatever the shuffle draws next, and that is already on the list. Ten draws had become a hundred and forty files.",
+      "One person's shuffle is now ten files rather than a hundred and forty.",
+      "And the round travels with the marks. The other machine was given the shelf and none of the state - no queue, no history, nowhere anything was left - so a phone on the copy drew a fresh shuffle from the top instead of carrying on where the evening was, and could not resume an episode left part-way.",
+      "Where somebody is in a round is kept up to date on the copy rather than written once. A preference set on that machine is still theirs and is left alone; a place in a round is one moving thing both machines have to agree on."
+    ]
+  },
+  {
+    "version": "0.17.313",
+    "when": "2026-09-07",
+    "title": "The machine keeping the copies decides whether it keeps the shuffle",
+    "items": [
+      "It was asked and then overruled. The follower's own setting said keep two hours of the shuffle ahead, and the house threw the number away before answering - so the row on that machine's own page did nothing anybody could see, and there was no way to tell which of the two switches was the one that mattered.",
+      "One switch, on the machine whose disk it is: Casual watching, under Follow another server.",
+      "And no word on the line between the machines in the drawing. The line is already dashed and moving while a copy is going, and the box at the end of it says it is taking one."
+    ]
+  },
+  {
+    "version": "0.17.312",
+    "when": "2026-09-07",
+    "title": "Copying gives way to a film that is struggling",
+    "items": [
+      "Taking what the films are drawing away from what the line can carry is arithmetic, not watching. It assumes the line behaves, and a wireless one does not: the number it carried an hour ago is not the number it carries when somebody walks between the aerials.",
+      "So the allowance is steered by what the films are getting. A viewer whose rate has fallen away from its own running average, with a socket still open, is being starved - and the copy gives up nearly half of what it had, in one step. When everybody is comfortable it takes eight megabits more each time. Down in one step and up in small ones is the only way round that ends with the film winning.",
+      "Measured against each viewer's own average rather than the bitrate of what they are watching: a direct play reads in bursts and idles between them, so \"below what the film needs\" is true of a healthy one half the time. A viewer with nothing open is holding a full buffer, which is the opposite of starved."
+    ]
+  },
+  {
+    "version": "0.17.311",
+    "when": "2026-09-07",
+    "title": "Copying takes what the line has spare",
+    "items": [
+      "A number typed into a settings file knows nothing about the line it is on. Twenty megabits is slower than the film it is meant to have ready, so the copy loses the race it exists to win; no ceiling at all takes the line out from under whoever is watching.",
+      "So it is measured. The most this machine has been seen to shift at once is what the line can carry - nobody can ask a network how fast it is, and what it has actually carried is the only honest answer. What the films are drawing this second is what they need. A copy may have what is left, less a margin for the bursts a filling buffer asks in, and never less than four megabits.",
+      "The high-water mark halves after ten quiet minutes, so a line that has got slower is believed within the hour.",
+      "A number in the settings still wins, and nought still means no ceiling at all. What the line was seen to carry and what a copy is allowed against it are both on the traffic page."
+    ]
+  },
+  {
+    "version": "0.17.310",
+    "when": "2026-09-07",
+    "title": "No ceiling on copying means no ceiling",
+    "items": [
+      "Nought is how somebody says there should be no limit while a film is playing, and nought was read as twenty - the one value anybody sets on purpose was the one the setting could not hold. So a copy crawled at exactly twenty megabits and the film it was meant to have ready finished first.",
+      "Leaving it unset still means twenty."
+    ]
+  },
+  {
+    "version": "0.17.309",
+    "when": "2026-09-07",
+    "title": "The film being watched is never the one deleted",
+    "items": [
+      "Two changes met badly. The cache deletes what the house has no reason to hold, and a shuffled playing had just stopped being a reason for anything - so a film put on by the shuffle was deleted off the disk it was being read from, and playback stopped where it stood.",
+      "Nothing refused the deletion. A film is read in two-megabyte stretches, so the file is closed between them and there was no open handle to object.",
+      "What is on a screen is named on the list again, shuffled or not, and marked: keep this where it is, do not fetch it, and do not take the six episodes after it."
+    ]
+  },
+  {
+    "version": "0.17.308",
+    "when": "2026-09-07",
+    "title": "Taking something off Continue watching drops the place as well",
+    "items": [
+      "It used to be remembered behind a date: the shelf was told to ignore the row and the row stayed. So a film left at eighty-nine per cent went on drawing a bar across its poster, and went on being copied to the other machine as something somebody was part-way through - thirty titles of them.",
+      "The place is now cleared when the title is put aside, for the programme's episodes as well as the film. A tick made by hand says something else and is left alone.",
+      "The places already put aside were cleared once, where nothing had been played since.",
+      "Now playing opens with the drawing of what is talking to what. It is the one picture of what is happening this minute, and it was on the last tab anybody would look at for that.",
+      "The other machine's queue and its own row leave Now playing for Remote computer. Neither is somebody watching something, and between them they pushed what is on a screen below the fold."
+    ]
+  },
+  {
+    "version": "0.17.307",
+    "when": "2026-09-07",
+    "title": "A shuffled playing is on a screen without being a reason to copy",
+    "items": [
+      "What is on a screen now leads the copy queue and takes six episodes with it, and a shuffled playing was answering that. It is still in Now playing, which is what Now playing is for; the row says whether anybody chose it, and only the queue reads that.",
+      "That was the third way the shuffle reached the queue, after the progress row and the watch log.",
+      "And what is on a screen is named. It was the one reason in the list with a blank where every other one has a person.",
+      "The sweep runs before the fetching rather than after it. At the end of a pass it ran once a pass, and a pass with a backlog runs for hours - so on a busy night it never ran at all."
+    ]
+  },
+  {
+    "version": "0.17.306",
+    "when": "2026-09-07",
+    "title": "Adding a title to the casual shelf no longer starts the round over",
+    "items": [
+      "A title marked casual is unplayed because it is not in the history, and that is all it takes to reach it. Emptying the history made every episode already watched that evening eligible again, so the shelf repeated itself an hour later - and marking one title did it.",
+      "Starting the round over is what the reset button is for."
+    ]
+  },
+  {
+    "version": "0.17.305",
+    "when": "2026-09-07",
+    "title": "One tab called Log, with the watch log and the transfers under it",
+    "items": [
+      "What has been watched and what has been copied are one question asked of two books. The transfers were filed under Now playing, beside the machine that fetched them rather than beside the log they belong to. Log now carries Watch log, Transferred and Versions.",
+      "And the transfer log credits a person. Twenty entries said \"the house\", which was never anybody: they are the owner's, which is whose viewing they were."
+    ]
+  },
+  {
+    "version": "0.17.304",
+    "when": "2026-09-07",
+    "title": "The cache keeps what there is a reason to keep",
+    "items": [
+      "A copy is deleted when the house stops wanting it. The cap answered \"is there room\" and nothing answered \"is there a reason\", so a film copied because somebody was part-way through it stayed after they finished, and a season copied for a watchlist stayed after the list was cleared - until the cap reached it, which on a disk with room to spare is never.",
+      "What it tests against is what the house wants at all, taken before the hour decides what may move tonight. Testing against the night's list would empty the disk every morning.",
+      "It deletes only files this machine fetched, never a part-file arriving now, and never on an empty list from the other server. A file somebody is watching refuses to be deleted and stays.",
+      "The follow settings are greyed out on a machine that follows nothing. They write to whichever server the page is open on, so an hour typed on the machine with the library was accepted, stored where nothing reads it, and shown back as though it had been set."
+    ]
+  },
+  {
+    "version": "0.17.303",
+    "when": "2026-09-07",
+    "title": "The copy queue names who watched, and the night hours are kept when they are set",
+    "items": [
+      "The queue names whoever watched it. \"The house\" was standing in for a person: no filter could match it and no cache could be kept for it.",
+      "\"Night from\" is written down. The page has always offered the hour and the server dropped it, so an owner who typed 21 was left with 22 and nothing on screen to say so."
+    ]
+  },
+  {
+    "version": "0.17.302",
+    "when": "2026-09-07",
+    "title": "Nor does the shuffle count as the house having watched something",
+    "items": [
+      "The copy queue asks what the house watched lately and keeps the rest of the series behind it. A shuffled playing was answering that question. Five episodes of a season went to the other machine at twenty to nine in the evening for a programme nobody had chosen.",
+      "A casual playing still writes its line in the watch log - Now playing and the log would be wrong otherwise - but it is no longer a reason to copy anything."
+    ]
+  },
+  {
+    "version": "0.17.301",
+    "when": "2026-09-07",
+    "title": "A shuffled playing keeps its place without joining Continue watching",
+    "items": [
+      "Putting something on is not choosing it. A casual playing now writes down where it got to, marked as casual: it resumes, and Continue watching, the copy queue and watched state all pass over it.",
+      "Before this a casual playing wrote nothing, which left whatever row was already there. One episode sat at 341 seconds of 1297 while the shuffle carried it to the credits, and was copied to the other machine as something part-way through for a fortnight.",
+      "Choosing a film clears the mark. A tick made by hand is never overwritten.",
+      "The mark travels between servers with the row, and survives renaming a viewer."
+    ]
+  },
+  {
+    "version": "0.17.300",
+    "when": "2026-09-07",
+    "title": "A film being encoded is not read in stretches, and so no longer restarts for ever",
+    "items": [
+      "Reading a film off several machines works by asking for two megabytes at a time. Against a file that is exactly right. Against an encode, which is made as it is sent, every one of those asks starts the encoder again from that point - and starting it again stops the one before. So the picture waited for an encode that was replaced every two seconds, and waited for ever: two hundred and thirty encodes were begun for one episode that never played a frame.",
+      "The reader was handed the film before anything asked whether it was a file or an encode. It is asked first now."
+    ]
+  },
+  {
+    "version": "0.17.299",
+    "when": "2026-09-07",
+    "title": "A film is never re-encoded at more than it was made with",
+    "items": [
+      "Re-encoding something already compressed, at a quality target rather than a bitrate, spends far more than the original did: an episode made at six megabits was going out at forty-seven. That is worse than the film it came from, and it floods any line thinner than this house's own - which is what was stopping the picture.",
+      "The film's own bitrate is the ceiling now, with a fifth again for a busy scene, unless somebody asks for a particular number. A film with no bitrate recorded falls back to what it did before."
+    ]
+  },
+  {
+    "version": "0.17.298",
+    "when": "2026-09-07",
+    "title": "One file at a time to a machine taking copies",
+    "items": [
+      "The copy asks for one file at a time, but a fetch it gives up on left this side still sending - so two, three, four files went out at once, each taking its share of the line and the air, for a machine that had stopped listening to all but the last. Whoever asked last is the one still listening; anything older now stops.",
+      "That matters more than it sounds. A copy on the same wireless channel as a television is not using bandwidth beside it, it is taking airtime from it - and four transfers at once take four times as much."
+    ]
+  },
+  {
+    "version": "0.17.297",
+    "when": "2026-09-07",
+    "title": "A screen away from the house is told an address it can actually reach",
+    "items": [
+      "Asked where the other machine is, this server answered with its address on the home network - to anybody allowed that address, wherever they were standing. Somebody away from the house was handed 192.168.x, asked it, and waited for an answer that could never arrive: so from away the second machine had no version, no build and no way to be reached. Being allowed the address on this network and being able to use it are two questions, and only the first was being asked.",
+      "In the watch log, what to show is chosen by machine name rather than by a switch called \"On the copy\" - which is a job rather than a machine, and says nothing on a screen with two servers on it."
+    ]
+  },
+  {
+    "version": "0.17.296",
+    "when": "2026-09-07",
+    "title": "A key reaches the other machine at once instead of within the quarter-hour",
+    "items": [
+      "The machine that copies this library takes its invitations a quarter of an hour at a time. So a key handed to somebody was refused by that machine for up to fifteen minutes - and since it is the machine that answers when this one is off, that is exactly when a new key is most likely to be tried.",
+      "The house now says when its keys last changed, in an answer the copy already asks for every minute. When they have changed the copy comes back for them there and then."
+    ]
+  },
+  {
+    "version": "0.17.295",
+    "when": "2026-09-07",
+    "title": "What each machine is running can be seen from anywhere; replacing it cannot",
+    "items": [
+      "Asking a machine what build it is running was the owner's business, and owner means being in the same house as it. So a screen away from home was refused, and where the machines should have been listed there was nothing at all - not even the machine that screen was talking to. A version number is worth showing to anybody holding a key, and it is now shown.",
+      "Replacing the program stays exactly where it was: the owner, from the same house as the machine. The answer says which of the two the asker is, so a screen that may not press is not offered the button."
+    ]
+  },
+  {
+    "version": "0.17.294",
+    "when": "2026-09-07",
+    "title": "The other machine is asked of the server, not of the app's own notes",
+    "items": [
+      "A server names two things: the machine that copies from it, and the machine it copies from. On the house the first is filled and on the copy the second, so between them there is always an answer - and the app was reading only the first. From the copy there was nothing to read, so the house was missing from the list of machines to update.",
+      "The app was then made to fall back to the servers it had written down, which depends on it having written both down. It asks the server itself now, which knows, and keeps its own notes only as a last resort."
+    ]
+  },
+  {
+    "version": "0.17.293",
+    "when": "2026-09-07",
+    "title": "The second machine in the list is never the one already in the first",
+    "items": [
+      "Which machine to offer beside this one was taken from what the server had said about its copy, and that is remembered against each server and can be out of date. On the copy it pointed at the copy itself - so the second row named the machine already named in the first, and the other machine appeared nowhere. The machine offered is now one the app knows to be a different machine from the one it is standing on."
+    ]
+  },
+  {
+    "version": "0.17.292",
+    "when": "2026-09-07",
+    "title": "Both machines can be updated from the app, whichever one it is on",
+    "items": [
+      "The second row was found by asking the server for the machine that keeps copies of it. A copy keeps no copies of its own, so with the app on the copy there was no second row at all - and the house itself could not be updated from the app while the app was standing on the other machine. It now takes the other machine from the ones the app already knows, whichever way round the two are standing.",
+      "It is also asked with its own key rather than with this server's. A key belongs to the machine that issued it, so asking one machine with another's was refused - which is why a row that did appear could say nothing about what that machine was running."
+    ]
+  },
+  {
+    "version": "0.17.291",
+    "when": "2026-09-07",
+    "title": "Both servers are offered for updating under their own names",
+    "items": [
+      "They were \"The server\" and \"The other server\", which name nothing on a screen that has two of them on it - and which one is about to be stood down and replaced is exactly what somebody pressing Update needs to be sure of. Each row carries the machine's name, falling back to its address only where no name is known.",
+      "This app keeps its own row, as it had."
+    ]
+  },
+  {
+    "version": "0.17.290",
+    "when": "2026-09-07",
+    "title": "The name somebody goes by is theirs; the name on their key is the owner's record",
+    "items": [
+      "Renaming yourself rewrote the invitation, so the name the owner wrote when they made the key - which is how they know whose key it is - was quietly replaced by whatever the holder chose. The two are separate now. What somebody calls themselves is kept with their own settings and is what shows against whatever they are watching; the key keeps the name it was written with.",
+      "In the list of people, a key shows both: the name it was made under, and the name its holder goes by where those differ."
+    ]
+  },
+  {
+    "version": "0.17.289",
+    "when": "2026-09-07",
+    "title": "Settings is the first tab, and holds what a person actually changes",
+    "items": [
+      "Quality is called Settings and comes first, since it is where somebody goes. Under it: what you are called, shown as it stands; the picture size and megabits you watch at; how a film is fetched; and the other server.",
+      "The other server has no tab of its own any more. What it is, whether it is awake and what it is holding is a box under Settings, named after the machine rather than after the job it does."
+    ]
+  },
+  {
+    "version": "0.17.288",
+    "when": "2026-09-07",
+    "title": "How films are fetched sits under Quality",
+    "items": [
+      "Reading a film off several machines, and moving to another when one stops, are decisions about how a film reaches a screen - so they belong beside the picture size and the megabits rather than beside the subtitles."
+    ]
+  },
+  {
+    "version": "0.17.287",
+    "when": "2026-09-07",
+    "title": "The app names the machine even before it has found it",
+    "items": [
+      "A machine was named from the copy once one had been found, or from what the server had said about where its copy is. Both are empty for the first seconds of a film - and a message arriving in those seconds called a machine with a perfectly good name \"the other server\". The app falls back to the machines it already knows, which is where the name was all along."
+    ]
+  },
+  {
+    "version": "0.17.286",
+    "when": "2026-09-07",
+    "title": "Reading off several machines, and moving between them, are each a choice",
+    "items": [
+      "Two switches of your own, under Subtitles. Reading a film off every machine that holds it, so losing one does not stop the picture; and carrying on from another machine when the one serving it stops answering. Both on unless you say otherwise.",
+      "They belong to the person watching rather than to the machine: one house may want every machine used at once, and somebody on a thin line would rather a film came off one and stayed there."
+    ]
+  },
+  {
+    "version": "0.17.285",
+    "when": "2026-09-07",
+    "title": "Everyone is called what they say they are called",
+    "items": [
+      "A name was something only whoever wrote the invitation could give, so everybody wore whatever they were christened at the moment they were invited, for ever. Anybody can set their own now, under Subtitles, and it is written back onto their key - so what shows against what they are watching, and what the owner sees in the list of people, is the name they chose.",
+      "\"Me\" is what a server calls whoever installed it before anybody has said who that is. It is a placeholder, not a person, and it no longer appears on a screen: the owner's row wears their name."
+    ]
+  },
+  {
+    "version": "0.17.284",
+    "when": "2026-09-07",
+    "title": "A viewer's own watchlist follows them to the other machine",
+    "items": [
+      "A watchlist, the shelves somebody arranged, the collections they made: these live beside the library and were never copied. So the one moment a viewer needs the other machine - this one being off - was the moment their own list was empty and the shelves were somebody's defaults. What each viewer keeps is now copied along with the films, under the same key they watch by.",
+      "Only what a screen would show goes over - a list, a shelf, how their subtitles look. No password and no key travels with it.",
+      "What somebody set on the other machine, sitting at it, is theirs and is not written over by the house. And the house's own owner is known there by the same key, so the person who owns the library is not the one viewer it treats as a stranger."
+    ]
+  },
+  {
+    "version": "0.17.283",
+    "when": "2026-09-07",
+    "title": "Whoever sits at this machine is a person, not an address",
+    "items": [
+      "A guest is known by the name on their invitation, and everybody else was known by the address they came from - so the owner's own screens stood among named guests as bare numbers, which is the one person the server is certain of shown as the one thing nobody recognises. Anybody on this network with no key of their own is now shown under the owner's name, in the list of who is watching and in the drawing alike."
+    ]
+  },
+  {
+    "version": "0.17.282",
+    "when": "2026-09-07",
+    "title": "No machine is called by what it does for a living",
+    "items": [
+      "\"The machine that keeps copies\" is a job, not a name, and it named nothing on a screen with two servers on it. Every heading, note, tooltip and message that used it now says the machine's own name, and falls back to \"another server\" only where no name is known yet.",
+      "A copy going out is logged under the name of the machine taking it, or its address, rather than under the job."
+    ]
+  },
+  {
+    "version": "0.17.281",
+    "when": "2026-09-07",
+    "title": "A player away from the house can say what it is doing",
+    "items": [
+      "What a player reports - which machines it found, what it chose, why it stopped - was listed among the things a guest may write, and not among the things that make somebody a guest at all. So every report from anybody but the owner was refused. The only players whose word could be heard were the ones sitting at the machine, and the trouble is nearly always somewhere else. Crash reports were refused for the same reason and are allowed now too.",
+      "In the list of what was transferred, why a file went has a column of its own. It was crowded onto the end of the file's name, where it read as part of the name; how fast the file managed now sits under it."
+    ]
+  },
+  {
+    "version": "0.17.280",
+    "when": "2026-09-07",
+    "title": "A copy gives way to a film somebody is watching",
+    "items": [
+      "Copying to the other machine took its share of the disk, the line and the router from whatever was being watched at the time, and there was nothing to say which mattered more. A copy is never in a hurry - it is for an evening that has not happened yet - so while anybody is watching it goes at a walk rather than a run, and has the line to itself again the moment the last film ends. Nothing is stopped or dropped; it simply waits its turn.",
+      "Twenty megabits while somebody is watching, which leaves a 4K film its twenty-five and the rest of the line besides. Set it as syncMbitWhileWatching, or nought to let a copy run flat out as before."
+    ]
+  },
+  {
+    "version": "0.17.279",
+    "when": "2026-09-07",
+    "title": "Choosing a soundtrack no longer re-encodes the film",
+    "items": [
+      "Every soundtrack is already in the file, and the player can pick one out of it. Asking for the second one had the whole film made again to hand over something it already held - which costs the card a film's work, and turns a film that would have played untouched into one that cannot be read off two machines, cannot be seeked cheaply, and is sized by an encoder's guess.",
+      "The chosen track is matched by where it sits among the film's soundtracks rather than by the number the server gave it: those numbers count every stream in the file, pictures and subtitles included, and the player only ever sees the sound. It is chosen again whenever the film is opened afresh, since a seek makes new tracks of the same sound.",
+      "If the chosen track turns out to be one the device cannot decode, it asks for the film in AAC as it always did. Burning a subtitle into the picture, or asking for the sound in a particular coding, still needs an encode - those genuinely change what is in the film."
+    ]
+  },
+  {
+    "version": "0.17.278",
+    "when": "2026-09-07",
+    "title": "A film encoded for somebody outside the house is sized for the line they are on",
+    "items": [
+      "With no number asked for anywhere, the encoder was given a quality to hit and a ceiling meant for this network - twenty-four megabits, or forty from a 4K source - and it used them. An 800p picture went out at more megabits than the film it was made from, to a phone on mobile data, which is why the same film played straight through without trouble and stopped when it was encoded. Somebody outside the house now gets eight megabits unless they or the server has said otherwise; inside the house nothing changes.",
+      "The figure can be set, under the library's settings, as awayMbit."
+    ]
+  },
+  {
+    "version": "0.17.277",
+    "when": "2026-09-07",
+    "title": "A film that moves machines keeps the soundtrack it was asked for",
+    "items": [
+      "Only the picture was carried across. A phone that had asked for stereo AAC - because nothing passes through a Bluetooth pair, and the film's own track is Dolby Digital Plus - was handed the original by the machine that took over, and got sound it could not play. The soundtrack and the number of channels go with the film now, as the picture size and the megabits already did."
+    ]
+  },
+  {
+    "version": "0.17.276",
+    "when": "2026-09-07",
+    "title": "A film stays on the main server unless that server has actually gone",
+    "items": [
+      "A picture that has stopped was taken as proof the server was at fault, and the film was moved to the machine that keeps copies. It is not proof. The line to the screen stalls too - and then the trouble travels with the viewer, so moving cannot help and puts them on the slower of the two machines. The server is asked whether it is still there: if it answers, the film stays where it is.",
+      "A stall four times longer than that still moves it, without waiting to ask. By then nothing else explains it and there is nothing to lose by trying the other machine.",
+      "Coming back was already there and is unchanged: the way home is remembered, and the first request after the main server answers again goes to it."
+    ]
+  },
+  {
+    "version": "0.17.275",
+    "when": "2026-09-06",
+    "title": "One icon in the tray, not one per update",
+    "items": [
+      "Updating killed the program outright, and a program killed outright never tells Windows to take its tray icon away - Windows then leaves the icon sitting there until somebody happens to hover over it. Every update left another dead P behind, and after a run of them there were ten. It is asked to close first and takes its icon with it; being killed outright is still there a moment later for one that will not go.",
+      "The program answers being asked to close, by an update or by Windows shutting down, by taking the icon off the tray on its way out."
+    ]
+  },
+  {
+    "version": "0.17.274",
+    "when": "2026-09-06",
+    "title": "Every file copied says how fast it went",
+    "items": [
+      "A list of what moved and when cannot answer why a night was slow: the same file at eighty megabits and at seventeen looks identical in it, and which of the two it was is the whole question. Each copy now records the rate it managed and its best moment, and the list of what was transferred shows them beside the reason it was wanted."
+    ]
+  },
+  {
+    "version": "0.17.273",
+    "when": "2026-09-06",
+    "title": "The check that stops a server going backwards no longer stops it going forwards",
+    "items": [
+      "Refusing an older build was put at the door itself, and it asked the site what the current version was before deciding anything. The site is announcing a build from weeks ago, so every install was refused - including installers made on this machine, which are the ones that were newer. The check now sits on the one path that can go backwards: what is fetched from the site. An installer made here is judged where it is found, as it was."
+    ]
+  },
+  {
+    "version": "0.17.272",
+    "when": "2026-09-06",
+    "title": "Moving a film to another machine keeps the quality it was asked for",
+    "items": [
+      "Whatever picture size or megabits somebody had settled on was dropped at the moment of moving, so a viewer who had turned the quality down - usually because their line could not carry it - was handed the whole file by the machine that took over. The move asks for the film the way it was being asked for before."
+    ]
+  },
+  {
+    "version": "0.17.271",
+    "when": "2026-09-06",
+    "title": "A server will not replace itself with an older build",
+    "items": [
+      "What the site publishes is what it publishes, and a site left announcing an old build had this server replace itself with one from weeks ago. That is a working install of the wrong thing, so nothing afterwards notices: the program runs, the library opens, and every fault of the intervening month is back. Installing now refuses anything not newer than what is running, and says both numbers."
+    ]
+  },
+  {
+    "version": "0.17.270",
+    "when": "2026-09-06",
+    "title": "Somebody watching one film is not put on to another",
+    "items": [
+      "A number that names a film names it in one library only, and two machines number their own. A film that moved to the other machine and was asked for again by that machine's number was a different film here, so somebody watching was moved on to something else entirely, mid-evening, by the server. A number that comes back naming a different film is refused.",
+      "Moving a film to another machine checks it is the same film first. Splitting one has always checked that both machines hold the same file; moving one never did, so whatever had been found stood as the same film over there with nothing testing the claim.",
+      "A film being encoded is no longer moved for a thin buffer. An encode is made as it is sent and keeps a few seconds in front of itself however well it is going, so running out was true for the whole of every encoded film and a viewer was moved to another machine with nothing wrong. The picture actually stopping still moves it."
+    ]
+  },
+  {
+    "version": "0.17.269",
+    "when": "2026-09-06",
+    "title": "The router box opens the router",
+    "items": [
+      "It was a box with a press hung on it by hand, and the drawing is made again every few seconds - the box was replaced and the press went with it, so pressing between two drawings did nothing. It is a link now, and the browser opens it in a new tab whether or not anything else has run."
+    ]
+  },
+  {
+    "version": "0.17.268",
+    "when": "2026-09-06",
+    "title": "A film on a meshed server, handed on by this one",
+    "items": [
+      "A mesh is a catalogue made of several libraries rather than copies of one. Servers meshed with this one are added by pasting the line another server made with a Mesh key, and are asked who they are before being written down. Nothing is fetched and nothing is kept.",
+      "A film held on a meshed server is read from that server as it is asked for and passed straight out, ranges and all, so somebody watching holds one key to one server and never learns the film came from anywhere else. When the far server does not answer, the fault says which server it was, so a film that will not play is not blamed on the machine that was passing it on.",
+      "Still to come: the catalogue itself. What a meshed server holds does not yet appear in the shelves here, so today this carries films it cannot yet list."
+    ]
+  },
+  {
+    "version": "0.17.267",
+    "when": "2026-09-06",
+    "title": "One list of keys, each with what it is for",
+    "items": [
+      "Every key is an ordinary invitation with a role on it, chosen from the row it sits on: User watches; Owner has the run of the server, as though sitting at it; Cache is another server keeping copies of this library; Mesh is a cache meant to read both ways. A key for a machine was a different sort of thing in a different list, which put the same question in three places.",
+      "An Owner key is honoured as an owner from anywhere, not only from this network - and is asked for out loud before it is given, since it can change the library and the keys, that one included.",
+      "The flags underneath a key are kept in step with its role, so everything that asks whether a key follows this server goes on working. Keys made before this take the role their old flags imply."
+    ]
+  },
+  {
+    "version": "0.17.266",
+    "when": "2026-09-06",
+    "title": "Every key this server has given out, under Users, by what it is for",
+    "items": [
+      "Three kinds, three lists: people, machines that keep copies of this library, and machines meshed with it. Every key was drawn as a person, so a server sat in the list of viewers being asked whose half-watched films it ought to keep.",
+      "A machine's row carries what it may hold - a figure in gigabytes, or empty for no limit from this end - whether it may copy at all or only read, and a button to take the key back. One machine at a time, not all of them.",
+      "Keys for machines are made from the same page they are read on, named after the machine they are for.",
+      "Mesh keys can be made and revoked. They are meant to make two libraries read as one in both directions; the merging itself is not built, and a mesh key behaves as a copy key until it is. The page says so rather than implying otherwise."
+    ]
+  },
+  {
+    "version": "0.17.265",
+    "when": "2026-09-06",
+    "title": "A key for each machine that copies from here, on its own terms",
+    "items": [
+      "Keys for machines are listed the way invitations for people are: one row each, with how much of the library that machine may hold, whether it may copy at all or only read, when it was last used, and a button to revoke it. There was a single key for the house and a single ceiling for whoever held it - so lending a library to a second machine re-lent the first one's allowance, and taking the key away took it from every machine at once.",
+      "The ceiling belongs to the key. Empty means no limit from this end and the other machine's own setting stands. A library's old single figure still applies to keys made before this.",
+      "A key may be for reading only. A machine holding one still knows the library and still answers for it, and takes no copies of anything."
+    ]
+  },
+  {
+    "version": "0.17.264",
+    "when": "2026-09-06",
+    "title": "Watching and copying on a line each",
+    "items": [
+      "A machine's box gives what is being watched off it on one line and what is being copied off it on the next, each only while it is happening, and \"nothing going out\" when neither is. Added together on one line, a machine sending somebody a film and a machine filling the other one read as the same thing."
+    ]
+  },
+  {
+    "version": "0.17.263",
+    "when": "2026-09-06",
+    "title": "Copying counts towards what a machine is shifting, and the file being fetched says why",
+    "items": [
+      "The drawing counted only what people were watching. Copying to the other machine was left out of it, and on a night of copying that is most of what a machine shifts - so a server working hard read as idle. Its box now says how many are watching, how many files are going over, and the megabits of both together. Only the number of files being copied was sent to the page at all; the rate goes with it now.",
+      "In the copying queue, the file being fetched said \"being fetched\" and nothing else - dropping the reason it is wanted, which is that column's whole purpose and the one row somebody is most likely to be asking about. It says both."
+    ]
+  },
+  {
+    "version": "0.17.262",
+    "when": "2026-09-06",
+    "title": "A server that comes back appears without restarting the app",
+    "items": [
+      "The list of servers and the knocking on each of them were both done once, when the list was opened. So a machine switched off and switched on again was missing from it until the app itself was started again - nothing that happened afterwards could put it back on the screen. Both are done again every ten seconds while the list is open."
+    ]
+  },
+  {
+    "version": "0.17.261",
+    "when": "2026-09-06",
+    "title": "The server stops refusing connections it is perfectly able to answer",
+    "items": [
+      "Five connections could be waiting to be accepted, which is Python's own figure and was plenty while a film was one long connection. Reading a film off several machines asks for every two megabytes on a connection of its own - several a second from each screen for a 4K film - with a copy taking files and a settings page asking how things are going on top. Past five the rest were refused, and what the player saw was a machine that would not answer: it waited five seconds, gave up on it, and the picture stopped for that long, over and over, on a server that was perfectly well. A hundred and twenty-eight may wait now.",
+      "The count of machines carrying a film counts only machines that have brought something in the last ten seconds. A machine that has been switched off is still counted as there until whatever it was holding times out, so the line said two sources with one of them off."
+    ]
+  },
+  {
+    "version": "0.17.260",
+    "when": "2026-09-06",
+    "title": "The machine that copies from this one is not also drawn as a viewer",
+    "items": [
+      "It was drawn twice: once as its own machine and once as somebody watching, under the name of the key it uses. What keeps machines out of the list of screens tested for the word \"following\", and the machine calls itself a \"follower\" - so it went straight past. It is matched on any of the words it uses and on its address, which it cannot describe itself out of.",
+      "A key for a machine that copies from this one takes that machine's name as soon as the machine says what it is called. It was called \"a following server\" - made before anybody knew which computer would use it - and that is what the drawing and the list of keys then called the machine."
+    ]
+  },
+  {
+    "version": "0.17.259",
+    "when": "2026-09-06",
+    "title": "A machine sharing a film says how many, and what it is sending",
+    "items": [
+      "\"1 split\", with the megabits it is carrying, inside its own box - which is where a figure belongs and the one place it was missing."
+    ]
+  },
+  {
+    "version": "0.17.258",
+    "when": "2026-09-06",
+    "title": "Nothing is written outside a box, and the drawing can be asked to redraw",
+    "items": [
+      "A machine carrying part of a film says \"split 1\" - how many screens it is sharing, and nothing else.",
+      "No figures along the lines. They crossed each other and the boxes both, and a screen fed by two machines had a number on one line and not the other. The screen's own box gives what it is taking, both machines added together.",
+      "A Refresh button on the drawing. It redraws itself every few seconds, which suits watching something happen and is no use when something has just been changed and you want to see it now."
+    ]
+  },
+  {
+    "version": "0.17.257",
+    "when": "2026-09-06",
+    "title": "Screens keep their place in the drawing",
+    "items": [
+      "The screens were listed freshest first and the drawing is made again every few seconds, so every card moved whenever any other screen started or stopped - and the thing could not be read while it was being watched. A screen keeps the row it was given until it goes quiet, and a new one takes the lowest empty row."
+    ]
+  },
+  {
+    "version": "0.17.256",
+    "when": "2026-09-06",
+    "title": "A machine carrying part of a film says it is split",
+    "items": [
+      "The drawing called it \"second source for 1 screen\". It is a split, and that is the word used everywhere else for it."
+    ]
+  },
+  {
+    "version": "0.17.255",
+    "when": "2026-09-06",
+    "title": "A machine dropping out of a film says so",
+    "items": [
+      "A machine that stopped answering mid-film was set aside without a word, and asked again later without a word. So a film coming off one machine while two were holding it looked exactly like one where the other machine had never been asked - and a picture stopping now and then had nothing behind it to read. Both are written down now, with which machine, at what point in the film, and what went wrong."
+    ]
+  },
+  {
+    "version": "0.17.254",
+    "when": "2026-09-06",
+    "title": "What the second machine is carrying, in megabits",
+    "items": [
+      "A machine acting as a second source for a film says how much it is sending and to which screen. It has to be asked - a player reading part of a film off it talks to it directly, and this machine sees none of that - so it reports the address, the rate and the title for each screen it is feeding.",
+      "The drawing puts that rate on the line running from it to the screen it feeds, and the total in its own box beside \"second source\"."
+    ]
+  },
+  {
+    "version": "0.17.253",
+    "when": "2026-09-06",
+    "title": "Why a file was copied is written down, and the drawing shows who is feeding whom",
+    "items": [
+      "Every copy carried a place for why it was taken and it was empty on every one of them: the reason is worked out when the queue is made and was never carried through to the file going out. It travels with the file now and stands beside it in the list of what was transferred - what put it in the queue, and whose watching asked for it.",
+      "A film looked for on another machine is now looked for from where the film is coming from rather than from where the app is. Only the player moves when a film moves machines; the shelves stay behind, and the two were each using a different idea of where \"here\" was - so after a film moved it offered the machine it had just moved to as its own second source, and read the film off one machine while two of them held it.",
+      "In the drawing, a line runs from a machine only to the screen it is actually feeding. Every machine had a line to every screen, so one carrying a single film looked as though it were carrying all of them.",
+      "\"Outside\" is called WAN.",
+      "Installing a new version says it is restarting, and that anything playing from that machine stops for a moment. It said only \"installing\"."
+    ]
+  },
+  {
+    "version": "0.17.252",
+    "when": "2026-09-06",
+    "title": "What a screen is taking is written in the screen's own box",
+    "items": [
+      "It sat on the line running to the screen, which worked while one machine fed it. With two machines carrying one film there are two lines into that screen and only one of them could carry the figure, so it read as though half the film were arriving. The screen's box says what that screen is taking, and how it is playing it."
+    ]
+  },
+  {
+    "version": "0.17.251",
+    "when": "2026-09-06",
+    "title": "A film that has moved machines can move again, and everything is called by its name",
+    "items": [
+      "Moving a film to another machine was once per film. So a picture that stopped on the machine it had just moved to stayed stopped - there was nowhere left to go - while the machine it came from sat there answering. It is once a minute now, not once ever.",
+      "What the app knew about other machines was kept across a move, and the machine it had just moved to was the other machine a moment before. So it found itself as its own second source and read the film off one machine while two of them held it. It asks again from where it now stands.",
+      "Machines are called by their names. \"The other machine\", \"the machine that keeps copies\" and \"night server\" named nothing on a screen with two servers on it; every message, dot and label now says which one it means.",
+      "The drawing on the settings page reads left to right, the way a film travels: the way in from outside, the router it arrives at, the machines the films are on, and the screens watching them. Both machines are drawn feeding the screens, because both of them can be - only one line was drawn before, so a machine carrying half a picture looked idle.",
+      "It also says when a machine is a second source for something playing, rather than \"standing by\". A player reading part of a film off it talks to it directly and says nothing here, so this machine asks it.",
+      "Keys for machines that copy from this one are made and taken away one machine at a time. There was a single key for all of them: a new key took it away from every machine at once.",
+      "The decoder is set under This computer rather than under Quality, with the processor offered beside the card - the answer for a card that is full, busy, or making a mess of one file.",
+      "How much this server may read off the copy is set on the same page, and says plainly that the app's own reading from several machines is a separate thing that needs no setting."
+    ]
+  },
+  {
+    "version": "0.17.250",
+    "when": "2026-09-06",
+    "title": "What this computer encodes with, and how much it shares, are set together",
+    "items": [
+      "The decoder was set under Quality, among settings about how a film should look. It is a fact about this computer and it is set there now.",
+      "The processor is offered beside the card. Only what a screen cannot play as it stands is ever re-encoded; the card is quicker and is what this uses, and the processor is the answer for a card that is full, busy, or making a mess of one particular file.",
+      "How much of a film may be read off the machine that keeps copies is set on the same page, with what it does and when it is worth setting. The number used to sit on the page about the other computer, and it is about this one - and what is actually handed over is decided as the film is read, from how long this machine spends getting a stretch off its disk against how long it spends sending it."
+    ]
+  },
+  {
+    "version": "0.17.249",
+    "when": "2026-09-06",
+    "title": "The chip above the server list is rounded like the list below it",
+    "items": [
+      "The press was drawn into the chip before its rounded shape was painted, so the press left a square over a rounded chip - and the picker showed two grey boxes with different corners, one above the other. It is clipped first now, and ringed in white while the remote is on it, as the rows below it are.",
+      "When a film is read off one machine while another holds it too, the log said only that nothing else held it. Three separate reasons all printed that same sentence, so a film that had found its second machine and then set it aside read exactly like one that had found nothing. The log now names which of them it was, with the addresses and file names it compared."
+    ]
+  },
+  {
+    "version": "0.17.248",
+    "when": "2026-09-06",
+    "title": "A machine answering short no longer ends the film",
+    "items": [
+      "A machine that returns fewer bytes than it was asked for - which a busy one does - was taken to mean the file ended there. The player was told the film had finished, dropped back to the shelf, and playing it again started from the beginning. Nothing appeared in any log because as far as the player was concerned the film had simply ended. When the length is known from the open, a short answer is now a fault: the stretch goes back and is fetched again from whichever machine will have it.",
+      "How long a machine holding up the picture is waited for is no longer a flat eight seconds but about twice what the quickest machine standing would need to fetch that stretch instead - a fraction of a second, usually. Eight seconds was several times the whole run of film in hand, so a machine that went busy mid-stretch - somebody else starting a film on it - stopped the picture for six seconds before anything was done."
+    ]
+  },
+  {
+    "version": "0.17.247",
+    "when": "2026-09-06",
+    "title": "The slower machine keeps to the far end of the queue",
+    "items": [
+      "Deciding what a slow machine may take on was done by weighing how long it needs for one stretch against how fast the quick machine could clear everything claimed. That second figure is not how much time the player has - the player uses film at the rate the film runs - so the sum meant nothing, and it could both starve the slow machine and still hand it the very stretch the picture was waiting for.",
+      "No arithmetic now: a slow machine may take work from the far half of what is in hand and never the stretch about to be read. If the quick machine stops, its speed stops counting and the slow one takes everything - which is what it is there for."
+    ]
+  },
+  {
+    "version": "0.17.246",
+    "when": "2026-09-06",
+    "title": "The server chips are rounded, and the one the remote is on is ringed",
+    "items": [
+      "The press was drawn into the chip before the rounded panel was painted, so what the press drew was a square laid over rounded corners. The chip is clipped first now, and ringed in white while the remote is anywhere on it - which the television was otherwise showing almost nothing for.",
+      "An address on this network is only preferred over the way in from outside once the machine answering there has proved it is the right one. Houses number their machines from the same small range, so a server whose home address is 192.168.0.25 is somebody else's machine from anywhere but its own house. Any mix of addresses works: two from outside, one of each, or two on the network."
+    ]
+  },
+  {
+    "version": "0.17.245",
+    "when": "2026-09-06",
+    "title": "A machine in the same house is read from across the house",
+    "items": [
+      "A server is filed under whichever of its two addresses last answered, and one that had been filed under its way in from outside was then read from there - out through the router and back in over the same wireless, while the machine sat on the same network. Half of a 4K film was coming that way and what was left to play ran down to nothing. The address on this network is preferred whenever it answers, both for opening a server and for reading a share of a film off one.",
+      "Being read off several machines no longer stands the move to another machine down for ever. It was right that a film carrying on well should not move house over a thin buffer, but a machine can be answering and slow, or reached by a bad road - and then the picture stops with nothing coming to its rescue. A picture that has actually stood still long enough to empty what was in hand moves, as it did before."
+    ]
+  },
+  {
+    "version": "0.17.244",
+    "when": "2026-09-06",
+    "title": "The server the remote is on is ringed in white",
+    "items": [
+      "The ring was drawn from whether the panel itself held the remote, and it never does: each row carries buttons, and on a television the remote lands on one of those rather than on the panel around them. It follows the remote anywhere inside the row now."
+    ]
+  },
+  {
+    "version": "0.17.243",
+    "when": "2026-09-06",
+    "title": "The slower machine takes only the work it can finish in time",
+    "items": [
+      "Stretches of film reach the player in order, so one taken on by a slow machine holds up every stretch behind it while the quick one waits with nothing to do. A machine many times slower was still being handed one stretch in six, and a 4K film stopped on each of them: the picture froze, and what was left to play fell to nothing.",
+      "Each machine's speed is measured as it goes, and a machine is handed a stretch only when it can bring it back inside the run of film already in hand. A slow one gets the work when there is slack for it and none when there is not - and still takes everything the moment the quick one stops, which is what it is there for.",
+      "Finding a second machine no longer puts a message across the picture. The line along the top says so, and a message belongs to something going wrong."
+    ]
+  },
+  {
+    "version": "0.17.242",
+    "when": "2026-09-06",
+    "title": "A film now finds itself on the other machine, which it never once did",
+    "items": [
+      "The same film on another machine is looked for by title and year. What the player had in hand was often the row off the shelf it was started from, and that row carries what draws a poster rather than what identifies a film - the year is not on it. So the question went out asking for year nought, which matches nothing, and every film read as being held by no other machine however many held it. An episode is looked for by programme, season and number, all of which the row does carry, which is why episodes found their second machine and films never did.",
+      "What is playing is now asked for in full whenever the row in hand is short of what the question needs."
+    ]
+  },
+  {
+    "version": "0.17.241",
+    "when": "2026-09-06",
+    "title": "The app says what it knew when it went looking for a second machine",
+    "items": [
+      "A film held on two machines was being read off one of them about two times in three, and off one of them always when it was a film rather than an episode. Every explanation at the far end has been ruled out: the other machine finds the title, reports the same file of the same size, and answers in fifteen milliseconds. What is left is the list of machines the app is holding at the moment it asks, so that list now goes into the log with what was asked of it and what came back."
+    ]
+  },
+  {
+    "version": "0.17.240",
+    "when": "2026-09-06",
+    "title": "The line along the top is grouped, and reads the same in a browser",
+    "items": [
+      "Where the film is coming from, then what it is, then how it is flowing, then anything wrong with it. It used to be the order each thing was added over the years: whether the film was being encoded sat behind two decoder names, and how many frames had been dropped sat between the buffer and the subtitle.",
+      "A browser never said which machine was serving the film, which is the first thing worth knowing on a page that can move house halfway through. It says it now, and carries the same fields in the same order as the app.",
+      "Two fields on the browser's line - a warning about stray subtitle tracks and the count of subtitle lines drawn - were added to it after it had already been written out, so neither had ever appeared. Both are on it now."
+    ]
+  },
+  {
+    "version": "0.17.239",
+    "when": "2026-09-06",
+    "title": "The second machine is looked for sooner, and the looking never stops",
+    "items": [
+      "Other machines holding the film were looked for only while none had been found, so the first one found was the last one ever looked for: a third machine with the same film, or one switched on halfway through, was never picked up. It asks for the whole of the film now, once a minute.",
+      "And it starts asking straight away rather than waiting fifteen seconds for playback to settle first. That wait belongs to the buffer, not to the question of who else has the film, and it put the first answer half a minute into a film that a copy was holding all along."
+    ]
+  },
+  {
+    "version": "0.17.238",
+    "when": "2026-09-06",
+    "title": "The line along the top counts the machines instead of describing them",
+    "items": [
+      "It said \"looking for a second machine\" while it was asking, and named a machine when it found none - a paragraph about something that wants a number. It reads \"sources 1/1\", \"1/2\", \"2/2\": how many machines are carrying the film, of how many are known to hold it. The share each one has carried follows it when there is more than one.",
+      "A reason is kept only where there is nothing to be done about it - casting, or a film being encoded rather than sent as it is. A film being encoded cannot be split at all: what is sent is made as it goes, so two machines would not be making the same bytes."
+    ]
+  },
+  {
+    "version": "0.17.237",
+    "when": "2026-09-06",
+    "title": "A film takes all of its subtitles across, and the server list shows what is picked",
+    "items": [
+      "Copying a film sent only the subtitles in the languages being kept for, plus whichever one had been chosen. It sends every subtitle beside the film now - downloaded and already there alike - because the one wanted on the night is not always the one the languages say, and a subtitle is kilobytes against gigabytes. Episodes still take the languages being kept for: a series is hundreds of files where a film is one.",
+      "Each one carries its size and both its ends, so a subtitle that changes here is fetched again there rather than left as it was.",
+      "In the app, a row in the server picker is ringed in white while the remote is on it, and its corners stay round - the panel was rounded and what was drawn over it on a press was not, so the corners squared off at the moment of pressing."
+    ]
+  },
+  {
+    "version": "0.17.236",
+    "when": "2026-09-06",
+    "title": "How much of a film the other machine reads is decided where the reading happens",
+    "items": [
+      "The share handed to the machine that keeps copies was worked out from what the viewer had left to play. Nothing ever sent that figure, so the share sat at nothing and the second machine was never once asked for a block - and the figure would have been useless anyway, since a browser keeps about two seconds in front of itself however well it is fed.",
+      "It is measured at the disk now: the time spent getting a block off this machine against the time spent handing it on. A disk keeping well ahead of the line is worth nothing to share and the share winds down to nothing; a disk the line is waiting on hands over more, up to the ceiling set in settings under \"Read from it as well\"."
+    ]
+  },
+  {
+    "version": "0.17.235",
+    "when": "2026-09-06",
+    "title": "In a browser, moving to the other machine needs a reason",
+    "items": [
+      "What is left to play decided whether to move house, and in a browser that number means nothing: a film streamed from a file keeps about two seconds in front of itself however well it is being fed. So \"running low\" was true for the whole of every film on either machine, and it moved house over and over on a stream that was working - to the slower of the two, which cannot help. The picture standing still decides it now: the stream is opened again first, and only a second stall moves anything.",
+      "The server counts how much of a film each machine carried, ready for the line along the top to say so."
+    ]
+  },
+  {
+    "version": "0.17.234",
+    "when": "2026-09-06",
+    "title": "In a browser, the machine it is already on is not somewhere to move to",
+    "items": [
+      "The address of the machine that keeps copies is remembered between visits, so a browser opened on that machine held its own address as somewhere to go. Every dip in the buffer started the moving-house routine to arrive where it already was, and said so. An address belonging to the machine serving the page is no longer offered as anywhere.",
+      "A machine that will not take the film is left alone for half a minute rather than asked again on every tick, which was a line of toasts and a request a second at the moment there is least to spare.",
+      "Both messages name the machine instead of calling it \"the other machine\"."
+    ]
+  },
+  {
+    "version": "0.17.233",
+    "when": "2026-09-06",
+    "title": "A film being read off two machines is not moved to one of them",
+    "items": [
+      "A server filed under its address from outside was not recognised as the machine the film was already playing from, so it was offered as a second machine and the film was moved to where it already was - restarting every few minutes. A machine is matched by all of its addresses now, and the move refuses a destination that is the machine in use.",
+      "Moving the film to another machine used to happen whenever the buffer ran thin, and being read off two machines only made it wait longer before doing it. So a film carrying on perfectly well off the slower of the two ran its buffer down, waited out the longer count, and moved house - to the machine it was already reading from, restarting the film to arrive where it was. While the reader still has a machine it is left to get on with it; the move is kept for having run out of machines altogether.",
+      "The line along the top says \"single source\" when there is only one machine, rather than naming the machine it is already playing from as one that has not got the film."
+    ]
+  },
+  {
+    "version": "0.17.231",
+    "when": "2026-09-06",
+    "title": "Reading off a machine that has been switched off no longer fills memory",
+    "items": [
+      "Each two-megabyte stretch is held until the player has taken it, and the limit on how many were in hand was written as a distance rather than a count. Dropping a machine winds that distance back to where the player is, so with one server off and being retried the limit said there was room while the heap filled - and the film ended at a quarter of a gigabyte with the app gone and the home page back. It counts what is held now.",
+      "A reader that fails now takes only its own machine out. It threw, and a thread that throws takes the whole app with it, so the one fault this is built to survive was also the one that closed the film.",
+      "A machine that is not answering is tried again after five seconds, then ten, then twenty, up to a minute, instead of every five seconds for the rest of the film."
+    ]
+  },
+  {
+    "version": "0.17.230",
+    "when": "2026-09-06",
+    "title": "A film is read off every machine that has it, for as long as it has it",
+    "items": [
+      "The second machine was decided when the stream opened, and finding it takes about fifteen seconds of the film - so it was never known in time and every film was read off one machine however many held it. That is why the share never appeared on the screen and why a server switched off mid-film was a hand-over with a stop in it rather than the split this was built to be. The reader is asked which machines to use as it goes, and picks up a machine found after the film started.",
+      "It is no longer two: up to four machines are read from at once, and the line along the top gives each one's share - 100/0 at the start, then whatever they settle at.",
+      "Every server the app knows is asked once a minute for the film that is playing, rather than the copy being asked once at the start. A machine switched on halfway through joins what is already running.",
+      "A machine that stops answering is dropped and asked again five seconds later, so one switched off and on again during a film comes back instead of being gone for the rest of it."
+    ]
+  },
+  {
+    "version": "0.17.229",
+    "when": "2026-09-06",
+    "title": "The share each machine is carrying is on the screen while it is happening",
+    "items": [
+      "The two-source line waited until both machines had carried something before it appeared, so the opening stretch - read entirely off one of them - showed nothing, and a split that was working looked like no split at all. It shows the share from the moment the second machine is set up: 100/0 first, then whatever the two of them settle at."
+    ]
+  },
+  {
+    "version": "0.17.228",
+    "when": "2026-09-05",
+    "title": "The line about the second machine says which machine, and waits to be sure",
+    "items": [
+      "The stats line called the other machine \"the copy\", which names nothing on a screen that has both machines on it. It says the name now.",
+      "It also announced that the copy did not hold the film before it had finished asking - the answer takes about twenty seconds - so a film that was about to be read off both machines was announced as one that could not be. While the question is open it says so."
+    ]
+  },
+  {
+    "version": "0.17.227",
+    "when": "2026-09-05",
+    "title": "The list stops losing a server to the one that copies it",
+    "items": [
+      "A copy learned from a server was written down carrying that server's id, so the two rows read as one machine and the list folded them together on the next start - the server disappeared, the app sat on the copy, and the picker offered no way back. The id now belongs to whichever address answered with it: a row moved to another machine's address loses it, a row holding an id that another row has just proved has it cleared, and every row is asked at startup rather than only the ones with no id at all."
+    ]
+  },
+  {
+    "version": "0.17.226",
+    "when": "2026-09-05",
+    "title": "A film that runs out of server carries on, without stopping",
+    "items": [
+      "One film is read off both machines at once, and when one of them is switched off mid-film the other was supposed to pick up its share. It gave up instead: the reader waited its eight seconds for a lump the dead machine had taken on, asked whether more than one machine was still standing, and - since one had just died - stopped, with the survivor sitting there idle. A machine that has gone now hands back everything it was holding, not only the lump it died on, and one machine left is a machine to ask rather than a reason to stop.",
+      "The bar names the machine that is answering rather than the one that was chosen. A film that moves to the copy is on the copy, and every screen went on naming the other one.",
+      "Two rows for the same machine become one, on any address they share. It asked whether one row's way in was the other's way out, which misses two rows written down with the same address.",
+      "A server on the list is named by whatever answers there. The name a row was added under can come to belong to another machine, and the list stood with two rows under the main server's name, one of which was the cache.",
+      "The queue of what is being copied answered with an error rather than a queue - a name left behind when moving a title to the front by hand was taken out. Nothing asked it, so nothing said so; the pages about the machine that keeps copies are now among the ones checked before a build goes out.",
+      "The player says what it is doing to the server as well as to the device's own log. A television has no console and nothing to ask, so why a film came off one machine rather than two was written where nobody could read it."
+    ]
+  },
+  {
+    "version": "0.17.225",
+    "when": "2026-09-05",
+    "title": "The app lost the subtitles when the film changed machines",
+    "items": [
+      "Carrying on from the machine that keeps copies started the film again with nothing but the film and the place in it. The subtitle, the soundtrack, the picture size and the rate were all dropped, so an evening that moved machines lost its subtitles at the one moment nobody can work out why. All four go with it now - and because two libraries number their streams for themselves, the track is looked for again over there by its language and its name rather than by a number that means something else.",
+      "How the subtitles are drawn is put to the other machine before it is asked for anything, so its menus open on what is on the screen instead of its own defaults.",
+      "A screen says how much it has left to play, and that is what decides whether the machine keeping copies is asked to help with the reading. A buffer going down is the one honest sign that a machine is not keeping up - a quick disk and a clear line are both beside the point if the picture is about to stop.",
+      "A film coming off one machine when it could come off two says why, on the line along the top of the picture: it is being encoded, the copy has not got it, the copy has a different file, or the copy is this machine. It said so only into the system log, where nobody was reading, so a film that could have been split and was not looked exactly like one that could not."
+    ]
+  },
+  {
+    "version": "0.17.224",
+    "when": "2026-09-05",
+    "title": "Reading one film off two machines",
+    "items": [
+      "A share of the blocks of a film can be read off the machine that keeps copies while this one hands the film to a screen. It is set as a percentage and spread evenly through the film - a fifth means one block in five, not the first fifth - and the viewer sees one unbroken answer either way: this is which disk a block came off, not anything about the stream. A block that does not arrive quickly is read here instead, so the other machine can slow down or go away in the middle without the picture knowing.",
+      "Off unless somebody sets it. It is worth having when the two machines are about as quick as each other and worth nothing when they are not: one a tenth the speed adds a tenth.",
+      "Before that, and whatever the share: the film moves to the other machine when what is left to play starts falling rather than when the picture stops. Twelve seconds in hand is a pause nobody sees; nought is a stall."
+    ]
+  },
+  {
+    "version": "0.17.223",
+    "when": "2026-09-05",
+    "title": "An evening that changes machines keeps its subtitles",
+    "items": [
+      "Carrying on from the machine that keeps copies asked it for subtitle nought - none at all - so the subtitle went off at the moment the film moved, which is the moment nobody is in a position to work out why. The track that was on screen is looked for in the other machine's list by its language and its name, because a track number belongs to the machine that numbered it.",
+      "How the subtitles are drawn goes over with it, before anything else is asked of the other machine, so its own menus open on what is on the screen rather than on its defaults. Size, colour, background and position survive the change of machine."
+    ]
+  },
+  {
+    "version": "0.17.222",
+    "when": "2026-09-05",
+    "title": "Taking one poster off a shelf",
+    "items": [
+      "Marking something watched or forgotten on Continue watching takes that poster off the shelf and leaves the rest of the page alone. It drew the whole front page again for the sake of one card, which threw away where you were on it and blinked every other shelf. The page is only drawn again when a shelf empties, because then its heading has to go too."
+    ]
+  },
+  {
+    "version": "0.17.221",
+    "when": "2026-09-05",
+    "title": "Films and programmes by decade",
+    "items": [
+      "Films and TV can be narrowed to a decade, beside the genre, in the app and on the web. The list is built from what the shelves actually hold and says how many are in each, so it never offers a decade with nothing in it - here that is the fifties through the twenties, with the eighties, nineties and two-thousands ninety-odd films apiece.",
+      "A shelf narrowed by hand can still be kept as a collection, and the rule is the narrowing: a decade becomes a span of years, so what is added later joins it by itself."
+    ]
+  },
+  {
+    "version": "0.17.220",
+    "when": "2026-09-05",
+    "title": "Being named cost you your shelves",
+    "items": [
+      "A server calls its owner \"me\" until somebody says who they are. Naming them - by giving them an invitation of their own, so they are the same person on the television as at the desk - moves everything they had onto that name. The list of what to move left out their collections and the arrangement of their front page, so those stayed behind under the old name, still in the file and read by nothing: twelve collections vanished off the shelves and were made again from nothing. The list is the list of what a viewer owns now, and there is only one of it.",
+      "A server already in that state puts it right the first time its owner is asked for, and what they watched before they were named comes with it.",
+      "The owner's own viewing is kept by the machine that holds copies whether or not they have a key. It was kept only while they were still called \"me\", so the moment they were named, the one person certain to be watching was left out of their own cache."
+    ]
+  },
+  {
+    "version": "0.17.219",
+    "when": "2026-09-05",
+    "title": "The queue, written once - and it stops asking for what cannot come",
+    "items": [
+      "A file that fails the same way three times is given up on. A file that fails the check on arrival fails it again every time, because nothing about it has changed - and it was asked for again every pass, all night. Twenty-three damaged episodes had been fetched between fifteen and a hundred and eighty times each and deleted on arrival: seven hundred and twenty-nine gigabytes moved to deliver thirteen. It is asked for again the moment the file changes at the other end, because a different size or hash is a different file, and a different complaint does not count towards giving up - a bad minute is not a bad file.",
+      "What is worth copying is decided in three steps that can be read one at a time: what the house wants and why, the episodes that follow it, and the rows a copy can act on. It was one function of two hundred and sixty lines carrying three generations of contradictory rules, with the comments of all three still in it.",
+      "A programme's episodes are in season and episode order, in the place the programme stands. They arrive from three places - a watchlist, somebody part-way through, and the walk ahead of both - and each was added where it landed, so a series read as S01E01, S01E04, S01E02.",
+      "Moving a title to the front of the queue by hand is gone. One thing lifts anything above the list - a screen that is on this minute - and everything else keeps the place the list gave it. Two kinds of priority make a queue nobody can predict, which is the whole of what a queue is for."
+    ]
+  },
+  {
+    "version": "0.17.218",
+    "when": "2026-09-05",
+    "title": "The server list, written once",
+    "items": [
+      "The list of servers is one idea again. A machine is a set of addresses; machines fold together where their addresses overlap; the open one is the one holding this page's address, and it is called whatever that server calls itself; you reach a machine by trying its addresses with the kind you are already using first, knocking before leaving so a machine that does not answer cannot strand you. Five overlapping pieces and two disagreeing notes of which address answers became one of each, and a third of the code went.",
+      "Which address answers is remembered against the address. It was remembered against the machine, and a row that had never been asked which machine it is shared that with whatever was serving the page - so pressing such a row was answered with this page's own address and went nowhere.",
+      "Both of a machine's addresses appear once. The address you are on is also one of the two the machine names, and it was listed twice."
+    ]
+  },
+  {
+    "version": "0.17.217",
+    "when": "2026-09-05",
+    "title": "Both of a machine's addresses, nearest first",
+    "items": [
+      "The other address of the machine you are on was listed and did nothing when pressed. The row for this machine has no server behind it, and that was being read as \"you are already here\" whichever of its addresses you pressed - so the one address needed to get from outside back onto the network could not be used.",
+      "Addresses are offered with the kind you are already using first. On the network the network address is the quick one and always there; from outside it cannot be reached at all. Pressing a machine's name takes the first that answers, so on the network it stays on the network.",
+      "The list is tested as a guest as well as the owner. A guest is what a friend's link makes you, and it is the only way most people ever see this list."
+    ]
+  },
+  {
+    "version": "0.17.216",
+    "when": "2026-09-05",
+    "title": "No way back to a machine's other address",
+    "items": [
+      "The row for the machine you are on was built from the address you arrived at and no other, so opening a server from outside left no way back to its address on this network. A machine knows both of its addresses and says so; the list shows both, and pressing one that cannot be reached from where you are says so rather than leaving you on a blank page."
+    ]
+  },
+  {
+    "version": "0.17.215",
+    "when": "2026-09-05",
+    "title": "A machine with no name shows its address",
+    "items": [
+      "Two rows in the server list are ones nobody added: the machine keeping copies of this one, and the machine this one copies from. They are there because the list a browser keeps belongs to the address it is on, so opening the copy starts with an empty list and no way back. Until the machine's own name is known they were called \"The house\" and \"Night server\", which say nothing about which computer they mean. They show the address instead."
+    ]
+  },
+  {
+    "version": "0.17.214",
+    "when": "2026-09-05",
+    "title": "Every button in the server list, pressed",
+    "items": [
+      "Pressing one of a machine's addresses said you were now on it and stayed where it was - it only changed which library the shelves read - so the bar named one machine while every request went to another. It goes to that address now, and knocks first: an address on the house network cannot be reached from a train, and going there anyway leaves a blank page with no list on it to press.",
+      "Finding out where the house is, and finding out whether it is running something newer, were both asked inside the round that mirrors the app - which does nothing at all unless there is a folder to mirror into and half an hour has passed. A machine with nothing to mirror never learned where the house was and never looked for a newer build. Each is its own round now.",
+      "The list is tested by pressing it. The drawing code runs against a stand-in for a browser, so the buttons are the buttons - the same labels, the same handlers - and the test says where each press leads, standing on either machine, at either of its addresses, at home and away.",
+      "The bar names the machine you are on. It was drawn before the server had said what it is called, read \"This server\", and stayed that way - and on two machines answering the same pages, not knowing which one you are on is the whole difficulty.",
+      "Two rows for one machine are one row. Rows that share an address are the same computer written down twice, and the list showed both under the same name - one saying you were on it, the other offering to take you there.",
+      "The shelf of recently released episodes is empty on a machine that keeps copies, because a copied episode arrived with no idea when it went out. The house sends the date with the rest of what it knows about the file."
+    ]
+  },
+  {
+    "version": "0.17.213",
+    "when": "2026-09-05",
+    "title": "Opening the copy stranded you on it",
+    "items": [
+      "A machine says what it is called, where else it can be reached, and which machine it copies from. It said none of that if nothing was copying from it - which is true of every copy - so a page opened on the copy was told nothing about anywhere else and had no row to press to get back. Those are facts about the machine answering, not about any follower of its own, and they are always sent now.",
+      "The list is tested against both machines as they actually answer, from every address either of them has: one row is the open one, it is called what that server calls itself, and from anywhere there is a way to everywhere else. Every fault in this list so far has been in what a server said rather than in how the list was drawn, which a test made of invented answers cannot see."
+    ]
+  },
+  {
+    "version": "0.17.212",
+    "when": "2026-09-05",
+    "title": "A row named after a machine it is not",
+    "items": [
+      "A server on the list keeps the name it was added under, and an address can come to belong to another machine - a link handed on, a port moved, a row written down while the copy was answering for the house. Each address is asked what it is when the page opens, and the answer was used to file the row and not to name it. So the row was right by its address and wrong by its name: pressing the house said you were already on the house, while the copy was what had answered all along. Rows are renamed by whatever answers there."
+    ]
+  },
+  {
+    "version": "0.17.211",
+    "when": "2026-09-05",
+    "title": "The server list, decided in one place and tested",
+    "items": [
+      "Which machines the list offers and which of them is the one answering is worked out in one place now, apart from the drawing of it. The only way to find out what the list would do was to press it, and it was wrong in ways that depended on which library was on screen.",
+      "Exactly one row is ever the open one, and it is the row whose address is this page's address. With the other machine's library showing, its row claimed to be the open one and refused to go there - and the plain row stopped claiming anything, so the list said nothing was open while offering the machine you were standing on.",
+      "Moving to the machine that keeps copies says its name. What it does is not what it is called, and its name is what the bar shows a moment later.",
+      "A row knows which machine it is by the addresses on the row itself, not by the table this browser keeps of which machine answers where. That table is a guess about where else to knock, and a failover can write the house's name against the copy's addresses - which made the house's row contain the address of the page it was drawn on, so it said you were already there and would not go."
+    ]
+  },
+  {
+    "version": "0.17.210",
+    "when": "2026-09-05",
+    "title": "An evening that moves to the copy keeps its subtitles",
+    "items": [
+      "How each person has their subtitles drawn - size, colour, background, the language they want - is sent to the machine that keeps copies along with the invitations, and kept there under the same name. A film that carried on from the copy changed size and language halfway through, and the menus over there had that machine's defaults behind them rather than the person's, so setting anything meant setting it twice."
+    ]
+  },
+  {
+    "version": "0.17.209",
+    "when": "2026-09-05",
+    "title": "Pressing a machine's name went nowhere; pressing its address worked",
+    "items": [
+      "Which of a machine's addresses answers is remembered for two minutes, in a slot named after the machine - and a row that was never asked which machine it is had no name to use, so it shared the slot with whatever is serving the page. Both rows that a server offers rather than a person adding them are like that: the copy a server names, and the house a copy names. Within two minutes of the page knocking on itself, pressing one of those names was answered with this page's own address and went nowhere.",
+      "A subtitle key is sent to the machine that keeps copies with the login that goes with it. A key searches and only a login downloads, so the copy could list subtitles for everything and fetch none of them."
+    ]
+  },
+  {
+    "version": "0.17.208",
+    "when": "2026-09-05",
+    "title": "The list said you were on a machine you were not on",
+    "items": [
+      "Pressing a server said you were already on it and stayed where it was. It was deciding by which machine's shelves you had chosen to look at, which is a different question from which machine is answering the page - and with both libraries showing, the shelves were the other one's. A row is now the open one only when its address is this page's address."
+    ]
+  },
+  {
+    "version": "0.17.207",
+    "when": "2026-09-05",
+    "title": "No soundtrack to choose, on three thousand files",
+    "items": [
+      "A film with a dub in front of the original played the dub, and the soundtrack list would not let you change it. What each file's soundtracks are is written down the first time somebody opens the title - unless something is written down already, and a probe from before the library knew about soundtracks had written an empty list for every file it touched. Empty and never asked look the same from the outside, so those files were never asked: no numbered tracks, nothing to pick between, and whatever the encoder took first. Three thousand of three and a half thousand files were in that state; they are asked now, one at a time as they are opened.",
+      "The soundtrack list is sized for the screen it is on. It was drawn for a television read from a sofa, which on a telephone is enormous.",
+      "What a cache keeps, who it keeps it for, whether the cap may clear it, and how many episodes to keep ahead are all saved when they are changed. The page sent them and the server kept a fixed list of names it would accept, which those were not on - so four switches moved on the screen, said nothing, and went back to what they were on the next drawing."
+    ]
+  },
+  {
+    "version": "0.17.206",
+    "when": "2026-09-05",
+    "title": "A cache that was keeping the house's copies went on keeping them",
+    "items": [
+      "Keeping copies for one person rather than for the whole house arrived as the way a new machine starts, and was applied to machines already set up as well. One that had been holding the whole house's viewing quietly became one person's, and everything on anybody else's list stopped being copied - the queue full, the machine idle, and nothing anywhere saying why. Only a following that has not been set up yet starts as one person's."
+    ]
+  },
+  {
+    "version": "0.17.205",
+    "when": "2026-09-05",
+    "title": "The bar named a machine the page was not on",
+    "items": [
+      "Which machine's shelves you had chosen is remembered by the browser against the address you chose it at. Opening the copy is opening a different address, and the choice made on the house was restored there anyway: the bar named the house, its row said you were already on it, and every request on the page went to the copy. A choice is only put back on the machine it was made on."
+    ]
+  },
+  {
+    "version": "0.17.204",
+    "when": "2026-09-05",
+    "title": "No way back from the machine that keeps the copies",
+    "items": [
+      "Switching to the copy took you there and stranded you. A browser's list of servers belongs to the address it is on, so a page opened on the copy starts with an empty list, and the only other machine it offers is the one that copies from it - which the copy has not got. It now says where the house is, and the house is on the list.",
+      "A machine that follows another was answering that it followed nobody. It was looking for the setting in the viewer's own settings file, and the following is set up in the library's - so the question had never once been answered correctly by a machine that was in fact following one.",
+      "Where the house is gets asked for however the copy is set to handle updates. It was learned only as a side effect of checking for a newer build, so a machine told not to update itself never found out where the house was."
+    ]
+  },
+  {
+    "version": "0.17.203",
+    "when": "2026-09-05",
+    "title": "A follower set to keep up with the house never could",
+    "items": [
+      "A machine that keeps copies can be told to replace itself when the server it follows moves on. It compares two numbers to decide - what the house is running and what it is running - and the answer it reads them from carried neither. Both were absent, the comparison was nothing against nothing, and the machine sat on the build it was installed with for as long as it ran. Both numbers are sent now.",
+      "A machine deciding whether to update reads its own version from itself rather than from the answer the house sent back. For the first minutes after the house restarted it had no record of the other machine yet, so the comparison was against nothing and the update was declined.",
+      "The list of who a house has says each name once. The owner's name is also an invitation name when they hold a key of their own, and the list is read by people.",
+      "Each server on the list says whether it holds a key. Whether a row has one is the single thing that decides if it works from anywhere but the house, and it was nowhere on the screen - so a row that would be refused everywhere else looked exactly like one that would not."
+    ]
+  },
+  {
+    "version": "0.17.201",
+    "when": "2026-09-05",
+    "title": "Nothing to type on the end of the install code",
+    "items": [
+      "The address for Downloader on a Google TV ended in .apk, which is four more characters to spell out with a remote control and the part people got wrong. The file arrives named the same either way - the server says what it is in the response - so the line to type is now just the address and the code, and says so: no http, nothing on the end."
+    ]
+  },
+  {
+    "version": "0.17.200",
+    "when": "2026-09-05",
+    "title": "The app held an invitation it never sent",
+    "items": [
+      "A server typed in at home is saved without a key, because none is needed there. The invitation that arrives later is a second row for the same machine with the key on it. The app opened the first row, sent nothing, and was refused everything from outside the house - which reads as the server being empty rather than as the app being nobody: a green dot and bare shelves.",
+      "A row is now opened carrying whatever key any row of that machine has, on every path that chooses a server - the one the app starts on as well as the one somebody presses. Folding two rows into one for the screen keeps the key as well, which it had been dropping along with the row it came on.",
+      "A guest who is not on the house network is no longer shown the address on it, in the app or on the web. It is no use from where they are standing, and the inside of somebody else's house is not theirs to be told about."
+    ]
+  },
+  {
+    "version": "0.17.198",
+    "when": "2026-09-05",
+    "title": "A server that answers is not the same as a server that lets you in",
+    "items": [
+      "The dot beside a server on the phone meant the machine answered a knock, and the knock lands on one of the few doors open to anybody. A server with no password set takes the address for the proof of who you are, so away from the house it answered every knock and refused everything behind it: a green dot and an empty library. The dot now asks the second question too, and turns amber with a line saying to set a password on that server or open it with an invitation link.",
+      "The server list is drawn folded after it is knocked on. It was being written back unfolded, so a machine known by both its addresses appeared twice a quarter of a minute after the screen opened."
+    ]
+  },
+  {
+    "version": "0.17.197",
+    "when": "2026-09-05",
+    "title": "Add-ins stay on the list after they are fetched",
+    "items": [
+      "ffmpeg, the app and the subtitle tools each disappeared from the add-ins list the moment they worked, so there was nowhere to see where one had come from, where it sits, or to change your mind about it. All three stay on the list with what they are and where they came from.",
+      "Remove lets go of an add-in rather than deleting it. The files stay where they are and it is taken up again with one press and no download. Until then the server behaves as though it never had it: files are handed over exactly as they are, a phone asking for the app is told there is none, and the subtitle tools do not run.",
+      "Fetching over a copy that is already on the disk asks first, and names the file and where the new one would come from."
+    ]
+  },
+  {
+    "version": "0.17.196",
+    "when": "2026-09-05",
+    "title": "A way back for copies made before there was a record of them",
+    "items": [
+      "A folder filled by an older version is full of files nothing can tell apart from somebody's own, so the cap will not touch them and the folder grows past it for ever. Under Follow another server there is now one button that says the folder is Palladium's cache and takes what is in it - asked for by hand, once, with the folder written out and the count in the question.",
+      "It takes films and subtitles and nothing else. A folder of archives or disk images is not a cache whatever is pressed, and anything that is not something a player could open stays untracked and cannot be deleted from here at all."
+    ]
+  },
+  {
+    "version": "0.17.195",
+    "when": "2026-09-05",
+    "title": "The cache says which folder it is in, and waits to be told to clear it",
+    "items": [
+      "Clearing is by hand unless somebody says otherwise. Switching it to automatic names the folder first and lists the files the first clear would take, because what a thing will do has to be readable before it does it.",
+      "The folder is written out in full under Follow another server, with how much is in it and what the cap is. It was a setting somebody typed once and never saw again.",
+      "The cap is measured against this machine's own copies rather than against the folder. Measured against the folder, one large file somebody else left in it counted towards the cap, and the cache deleted its own copies for ever to make room it could never make.",
+      "Files in the folder that did not come from the other server are listed, with a warning when there are a lot of them - that is usually a folder belonging to something else. They cannot be deleted from here at all."
+    ]
+  },
+  {
+    "version": "0.17.194",
+    "when": "2026-09-05",
+    "title": "A cache deletes only what it fetched",
+    "items": [
+      "Making room used to work by exclusion: everything in the cache folder that was not wanted tonight could go. The folder is a path typed by hand, so one wrong path pointed that at somebody's own files. Every file this machine fetches is now written down as it lands, and nothing else is ever deleted.",
+      "Nothing outside the folder is looked at, listed or deleted. A link or a junction inside it is a way out of it, so each file is checked against the folder's real path; a drive root, a profile, or a documents folder is refused outright as a place to keep copies.",
+      "Files in the folder that this machine did not fetch are listed under Follow another server, with what they take up. They stay until somebody says otherwise: delete them, or mark them as copies so the cap may clear them.",
+      "A folder that was filled by an older version has its files listed the same way rather than assumed. Guessing which of them were copies is the thing that had to stop."
+    ]
+  },
+  {
+    "version": "0.17.193",
+    "when": "2026-09-05",
+    "title": "A key can be taken away, and a cache can be one person's",
+    "items": [
+      "A key that lets another computer keep copies can now be revoked. Making a new key stops the old one but leaves a key on the table; revoking leaves none, and nothing follows this server until somebody makes one again.",
+      "The list of computers that copy from this one says what each holds: how many files, how much disk it has used and has left, what would not come, which of this house's keys it has been given, and what it is running. The list was kept in memory and emptied itself on every restart; it is written down now.",
+      "A cache can be kept for one person rather than for the house, and that is how it starts. A machine in somebody's room was filling with the rest of the house's evening. Under Follow another server: this user, or the whole house.",
+      "The buttons that send this house's subtitle and catalogue keys are only shown for keys the house actually has. The others could only ever answer that there was no key here to send."
+    ]
+  },
+  {
+    "version": "0.17.192",
+    "when": "2026-09-05",
+    "title": "Every subtitle was being deleted on arrival",
+    "items": [
+      "A file is checked on arrival to see that it is what was asked for, and subtitles are exempt because a subtitle is text. The check was asking the temporary name - the one ending in .part - so no subtitle ever matched the exemption: each one arrived, failed the test, was deleted, and was asked for again on the next pass, for ever.",
+      "What would not come is sent to the server with the rest of the report. A machine that sets a failed file aside and carries on down the list looked, from the other end, like a queue being ignored: seven rows waiting while the eighth was fetched, and nothing anywhere saying why."
+    ]
+  },
+  {
+    "version": "0.17.191",
+    "when": "2026-09-05",
+    "title": "A file that is still being asked for is still on the list",
+    "items": [
+      "Having sent a file once is not the same as it being there: it can arrive wrong, be swept away to stay under a cap, or never finish. Treating sent as held hid forty-six rows the other machine was still working through - which is how a transfer came to have no line anywhere on the page and looked like it had been invented. Only what that machine says it holds counts now, which it says by key before it copies anything.",
+      "A server that follows another no longer draws a queue of its own. It was answering the same question about itself - what it would hand to a machine copying from it, out of its own library - and that reads as a second queue disagreeing with the first."
+    ]
+  },
+  {
+    "version": "0.17.190",
+    "when": "2026-09-05",
+    "title": "The queue is the server's, and the other machine works it",
+    "items": [
+      "The machine keeping copies says which files on the list it already has, by the library's own numbers, before it copies anything. It knew all along and never said: the only thing it decided for itself was to skip a file it already had, which the house could not see - so the top of the queue could be something already there while the transfer quietly took the next one down. Now those leave the queue and the top of the list is what moves.",
+      "What the other machine holds is added to rather than replaced, so the short report about today's list no longer wipes the full one."
+    ]
+  },
+  {
+    "version": "0.17.189",
+    "when": "2026-09-05",
+    "title": "Copying again, and the queue is what is worked",
+    "items": [
+      "Copying stopped altogether in the last build: a new list of what is being worked on was given a name the follower already used for a lock, so every pass ended before it began.",
+      "The machine that keeps copies asks again after every file and takes whatever is at the top of the queue at that moment. It used to take the list once at the start of a pass and work through forty files from it - so what was being fetched came from a list made an hour earlier, and the queue on screen and the transfer could never agree.",
+      "Choosing a machine in the server list goes to that machine. It was a piece of state on the page, and anything that lost its footing put it back - one stumbling request falls through to the copy and the choice was undone without a word.",
+      "The copy log records who a file was for and why it was wanted.",
+      "A file already sent is shown as finished even when the other machine has not said what it holds."
+    ]
+  },
+  {
+    "version": "0.17.188",
+    "when": "2026-09-05",
+    "title": "The file being fetched is in the queue",
+    "items": [
+      "What the other machine is copying this minute stands at the top of the queue, marked as being fetched. The machine works through the list it was handed a minute ago and finishes what it started; the page built a fresh list every time it was opened, so the one file actually moving was the one thing missing from a list of what is being taken.",
+      "Choosing a machine by name in the server list switches to it at once. It waited for every address that machine answers to to be tried in turn, three seconds each, with the list already closed - so pressing a name did nothing for as long as ten seconds while pressing the address under it worked immediately.",
+      "The watch party settings are gone with the rest of it."
+    ]
+  },
+  {
+    "version": "0.17.187",
+    "when": "2026-09-05",
+    "title": "The new server comes from the machine next door",
+    "items": [
+      "A server that follows another takes its update from that machine when it has the installer to give - the same file over the network the two share, checked against the hash that machine sent with it, rather than 34 MB across the internet. It also means the two end up on the same build rather than both chasing whatever is published.",
+      "And a setting for whether this machine may ask palladium.video for anything at all: the server it updates itself with, and the app it hands to a phone. With it off, a machine that follows another takes both from that machine.",
+      "The hour this machine sleeps at was read from the wrong answer and the box was empty however it was set.",
+      "A phone that opened the app away from home kept reaching the server by the address the router forwards, even once it was back on the same network - Android resumes an app rather than starting it again, and the short way was only ever looked for at startup. Every poster went out to the internet and back in to a machine three metres away. It looks again when the app is opened."
+    ]
+  },
+  {
+    "version": "0.17.185",
+    "when": "2026-09-04",
+    "title": "The queue that is shown is the queue that is worked",
+    "items": [
+      "The page asked for the night's list whatever the hour, while the machine keeping copies asked for a shorter one - so what was on screen and what was actually being fetched were two different lists. The page now asks the question the other machine last asked.",
+      "A file moved by hand takes the place it was moved to. It used to join a class of its own that sat above everything nobody had touched, so one press of an arrow promoted a film past the whole queue. What somebody is watching now still comes first; that is needed in twenty minutes.",
+      "Pressing a machine in the server list switches to it. Only the button on the row did, which reads as the press not having worked.",
+      "Subtitles keep their size and place when a film moves to the machine keeping copies. That machine has never been told how this person likes them drawn and answered with its own defaults, in the middle of a film."
+    ]
+  },
+  {
+    "version": "0.17.184",
+    "when": "2026-09-04",
+    "title": "Going to bed early, and a language that stays put",
+    "items": [
+      "Choosing a language in the subtitle download panel no longer becomes the standing default. Fetching one Swedish subtitle stopped English being the language every screen in the house read.",
+      "Start the night now: taking copies of everything anybody is half way through begins an hour before this machine sleeps, and somebody going to bed early had no way to say so.",
+      "What the other machine holds is written down rather than only remembered, so restarting this one no longer blanks the mark on every poster until it next speaks.",
+      "The machine keeping copies is called what it calls itself, rather than its address with the word copy after it.",
+      "The watch party is gone from the web client and the app."
+    ]
+  },
+  {
+    "version": "0.17.183",
+    "when": "2026-09-04",
+    "title": "Playing again",
+    "items": [
+      "Playback threw before it started. Taking the other server out took a set of headers with it, and three places still named them - a name with nothing behind it is not ignored, it stops the function it is in. A film resumed from the machine keeping copies began at nothing and played no sound.",
+      "The client is now checked for names that do not exist, which is the fault above and a class a syntax check cannot see."
+    ]
+  },
+  {
     "version": "0.17.182",
     "when": "2026-09-04",
     "title": "One library, and a ceiling on what another machine may take",

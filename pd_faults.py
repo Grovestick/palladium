@@ -25,6 +25,7 @@ import re
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 
 #: where they go
@@ -120,18 +121,55 @@ def machine():
     return said
 
 
-def send(row, how, build="", app="", called="", forced=False, people=()):
-    """Post one fault, in the background, if the setting allows it.
+def post(said, timeout=20):
+    """Hand one report over and say plainly whether it arrived.
 
-    `forced` is somebody pressing send on a single report with the setting off: one
-    report, chosen by hand, which is a different thing from a machine reporting on
-    its own and is allowed whatever the setting says.
+    (sent, why). A report marked sent that never left is worse than one never sent:
+    nobody goes looking for it again.
+    """
+    try:
+        req = urllib.request.Request(
+            WHERE, data=json.dumps(said).encode(), method="POST",
+            # says what it is: the name urllib gives itself is turned away at the
+            # edge as a robot, which is why nothing ever arrived
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "Palladium/%s" % (said.get("build") or "0")})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read(2000).decode("utf-8", "replace")
+            code = int(getattr(r, "status", 200) or 200)
+    except urllib.error.HTTPError as e:
+        return False, "the site answered %d" % e.code
+    except Exception as e:
+        return False, (str(e)[:160] or e.__class__.__name__)
+    if code >= 300:
+        return False, "the site answered %d" % code
+    try:
+        answer = json.loads(body)
+    except ValueError:
+        answer = {}
+    if isinstance(answer, dict) and answer.get("ok") is False:
+        return False, str(answer.get("why") or "the site would not take it")[:160]
+    return True, ""
+
+
+def send(row, how, build="", app="", called="", forced=False, people=(), then=None):
+    """Post one fault if the setting allows it, and say what came of it.
+
+    (sent, why). `forced` is somebody pressing send on a single report with the
+    setting off: one report, chosen by hand, which is a different thing from a
+    machine reporting on its own and is allowed whatever the setting says - and it
+    is posted here and now, because somebody is waiting for the answer.
+
+    A machine reporting on itself posts in the background instead, so a fault that
+    arrives while the server is answering something else does not hold that answer
+    up; `then` is called with the same pair when that is done, which is where the
+    row gets marked.
     """
     how = str(how or OFF)
     if not forced and how not in (ERRORS, MORE):
-        return False
+        return False, "this machine is set to send nothing"
     if time.time() - LAST["at"] < EVERY and not forced:
-        return False
+        return False, "too soon after the last one"
     LAST["at"] = time.time()
     said = {
         "kind": str(row.get("kind") or "error")[:20],
@@ -143,14 +181,16 @@ def send(row, how, build="", app="", called="", forced=False, people=()):
     if how == MORE or (forced and how != OFF):
         said["machine"] = machine()
 
+    if forced:
+        return post(said)
+
     def go():
-        try:
-            req = urllib.request.Request(
-                WHERE, data=json.dumps(said).encode(), method="POST",
-                headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=20).read()
-        except Exception:
-            pass                          # a fault about a fault helps nobody
+        got = post(said)
+        if then:
+            try:
+                then(*got)
+            except Exception:
+                pass                      # a fault about a fault helps nobody
 
     threading.Thread(target=go, daemon=True).start()
-    return True
+    return False, "on its way"

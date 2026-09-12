@@ -206,6 +206,49 @@ data class Media(
     /** Which server this came from; null means the one currently open. */
     var srv: Server? = null
 
+    /** The episodes a season card on a shelf stands for, in order, where it stands
+     *  for any. A shelf holds episodes and shows them rolled up into seasons; playing
+     *  it plays these, not the season's own key - which answers with the programme. */
+    var holds: List<String> = emptyList()
+
+    /** The shelf this stands for on Continue watching, where it stands for one. A
+     *  shuffled shelf is one row rather than one row per episode, and the row has to
+     *  say so or it reads as the episode it happens to be showing. */
+    var shuffle: String = ""
+
+    /** Where the round on this shelf was left, in seconds, when it was left anywhere.
+     *  A button that carries on from eight minutes in should not say Play. */
+    var shelfResumeAt: Int = 0
+
+    /** Which shelf's round is holding this place, where one is. Carried into the
+     *  player so the shelf keeps the place and Next draws from that shelf. */
+    var shuffleId: String = ""
+
+    /** The library's genres for this title, for narrowing a list it is on. */
+    var genres: List<String> = emptyList()
+
+    /** A collection's saved sort and filters, as the server keeps them (JSON). */
+    var shelfView: String = ""
+
+    /** A film offered from a torrent pack: not here yet, fetched when asked for. */
+    var offered: Boolean = false
+    /** its download as the server last said: "", queued, downloading, done or failed */
+    var offerState: String = ""
+    var offerProgress: Double = 0.0
+    var offerSize: Long = 0L
+    /** gigabytes free on the drive downloads go to; negative when not known */
+    var offerFree: Double = -1.0
+    /** why it cannot be downloaded at all, when qBittorrent cannot load its pack */
+    var offerRefused: String = ""
+    /** while it comes in: megabits a second, and seconds left (negative when not known) */
+    var offerMbit: Double = 0.0
+    var offerEta: Long = -1L
+    /** who asked for it, and how many downloads are ahead of it while it waits */
+    var offerWho: String = ""
+    var offerPlace: Int = 0
+    /** the pack's releases of this film when it carries more than one: key, and what to call it */
+    var offerVersions: List<Pair<String, String>> = emptyList()
+
     val isFolder get() = type == "show" || type == "season"
 
     /** The same title, described by another of its files. */
@@ -273,6 +316,11 @@ data class Media(
      * DTS has no decoder on Google's own hardware and MPEG-4 Part 2 (Xvid/DivX) is not
      * supported by ExoPlayer, so those are the two that need the server.
      */
+    /** The picture plays as it is: when only the sound cannot, the server copies the
+     *  picture and encodes the sound. */
+    fun videoPlaysAsIs(): Boolean =
+        videoCodec?.lowercase() in setOf("h264", "avc", "hevc", "h265")
+
     fun canDirectPlay(): Boolean {
         val v = videoCodec?.lowercase() ?: return false
         val a = audioCodec?.lowercase() ?: ""
@@ -422,6 +470,11 @@ data class Media(
             )
         }
 
+        private fun heldBy(o: JSONObject): List<String> {
+            val arr = o.optJSONArray("holds") ?: return emptyList()
+            return (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }
+        }
+
         fun from(o: JSONObject): Media {
             val all = o.optJSONArray("Media")
             val copies = (0 until (all?.length() ?: 0)).map {
@@ -510,7 +563,12 @@ data class Media(
                 maxHeight = o.optInt("maxHeight"),
                 copies = copies,
                 mi = first.mi,
-            )
+            ).also {
+                it.holds = heldBy(o)
+                it.shuffle = o.optString("shuffle", "")
+                it.shelfResumeAt = o.optInt("resumeAt", 0)
+                it.shuffleId = o.optString("shuffleId", "")
+            }
         }
     }
 }

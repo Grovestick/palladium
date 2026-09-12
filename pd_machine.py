@@ -31,9 +31,10 @@ def program():
     """What a shortcut should point at: the tray, whichever form it takes."""
     here = os.path.dirname(os.path.abspath(
         sys.executable if packaged() else __file__))
-    built = os.path.join(here, "palladium.exe")
+    # the server, which shows the icon itself; the separate tray program is no more
+    built = os.path.join(here, "palladium-server.exe")
     if os.path.exists(built):
-        return built, ""
+        return built, "--no-open"
     # from source: the tray script, run by the windowless interpreter so no console
     # opens at every sign-in
     quiet = sys.executable.replace("python.exe", "pythonw.exe")
@@ -231,10 +232,49 @@ def gateway():
     return GATE["ip"]
 
 
+def _ask_once(port, lan_ip=""):
+    """The firewall rule and the network, in one start of PowerShell.
+
+    Two starts cost twice, and on a machine that has just been installed each one is
+    seconds rather than tenths - the first settings page a new owner opens was the
+    slowest thing the server ever did. Written into the same caches the separate
+    questions use, so nothing after this asks again.
+    """
+    said = powershell(
+        "$fw = (Get-NetFirewallRule -DisplayName '%s' -ErrorAction SilentlyContinue | "
+        "Get-NetFirewallPortFilter | Where-Object { $_.LocalPort -eq %d } | "
+        "Measure-Object).Count; "
+        "$i = (Get-NetIPAddress -IPAddress '%s' -ErrorAction SilentlyContinue)."
+        "InterfaceIndex; "
+        "$net = if ($i) { (Get-NetConnectionProfile -InterfaceIndex $i "
+        "-ErrorAction SilentlyContinue).NetworkCategory } else { $null }; "
+        "if (-not $net) { $net = (Get-NetConnectionProfile | Where-Object { "
+        "$_.IPv4Connectivity -ne 'NoTraffic' } | Select-Object -First 1 "
+        "-ExpandProperty NetworkCategory) }; "
+        "\"$fw|$net\"" % (RULE, int(port), lan_ip or "0.0.0.0"))
+    line = (said or "").strip().splitlines()[-1] if (said or "").strip() else ""
+    if "|" not in line:
+        return False
+    count, kind = line.split("|", 1)
+    try:
+        open_now = int(count.strip() or "0") > 0
+    except ValueError:
+        return False
+    FIREWALL.update({"port": int(port), "open": open_now, "at": time.time()})
+    NETWORK.update({"kind": kind.strip(), "at": time.time()})
+    return True
+
+
 def state(port, lan_ip=""):
     """What the panel shows."""
     if not windows():
         return {"windows": False}
+    # both of the slow ones at once, unless a fresh enough answer is already held
+    stale = (not FIREWALL["at"] or FIREWALL["port"] != int(port)
+             or time.time() - FIREWALL["at"] >= FIREWALL_FOR
+             or not NETWORK["kind"] or time.time() - NETWORK["at"] >= NETWORK_FOR)
+    if stale:
+        _ask_once(port, lan_ip)
     return {"windows": True, "startup": starts_at_login(),
             "firewall": firewall_open(port), "port": int(port),
             # what Windows calls this network: the rule only covers a private one

@@ -9,7 +9,11 @@ import androidx.activity.ComponentActivity
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.border
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
@@ -107,9 +111,25 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
         safeKey(event) { super.dispatchKeyEvent(event) }
 
+    /** When the short way was last looked for, so coming back to the app is cheap. */
+    private var lastLookedForTheShortWay = 0L
+
     override fun onResume() {
         super.onResume()
         returned.value = returned.value + 1
+        // A phone that opened this app away from home filed the server under the
+        // address the router forwards, and Android resumes a process rather than
+        // making a new one - so coming home changed nothing and every poster went out
+        // to the internet and back in to a machine three metres away. Looked for again
+        // here, because this is the moment the network has usually changed.
+        val now = System.currentTimeMillis()
+        if (now - lastLookedForTheShortWay > 20_000L) {
+            lastLookedForTheShortWay = now
+            lifecycleScope.launch(Dispatchers.IO) {
+                Api.openTheDoorThatAnswers(this@MainActivity)
+                Api.fileThemWhereTheyAnswer(this@MainActivity)
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,7 +153,7 @@ class MainActivity : AppCompatActivity() {
         // and where to go when this server is off: the machine that keeps copies
         lifecycleScope.launch(Dispatchers.IO) { Api.learnStandby(this@MainActivity) }
         // and the other address this same server answers to, so a screen away from
-        // home reaches the house rather than only the machine that keeps copies
+        // home reaches the main server rather than only the machine that keeps copies
         lifecycleScope.launch(Dispatchers.IO) { Api.learnTheWayIn(this@MainActivity) }
         // and if the address it is filed under does not answer from where this screen
         // is, open it by the one that does
@@ -201,6 +221,20 @@ private fun App() {
         }
     }
 
+    // Downloads, live on every screen: every 3 s while something is coming in, 10 s otherwise.
+    // It ran inside the home screen's download line, so a film page never saw progress move.
+    LaunchedEffect(Unit) {
+        while (true) {
+            runCatching { Api.refreshDownloading(ctx) }
+            // a second while anything is arriving, so the percentage, the rate and
+            // the time left move as they happen rather than in steps
+            // two seconds, not one: a second poll against a server already
+            // transcoding is where the connections that time out come from, and the
+            // numbers move no less for being read half as often
+            kotlinx.coroutines.delay(if (Api.downloading.value.isEmpty()) 10_000L else 2_000L)
+        }
+    }
+
     // Android 15 draws apps edge to edge, so without these the header sits underneath
     // the clock and status icons, and the bottom row under the navigation bar.
     Surface(color = Skin.Bg,
@@ -231,9 +265,9 @@ private fun App() {
                 ReportsScreen(onBack = { screen = "home" })
             }
             stack.isNotEmpty() -> {
-                BackHandler { stack.removeAt(stack.lastIndex) }
+                BackHandler { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
                 DetailScreen(stack.last(),
-                             onBack = { stack.removeAt(stack.lastIndex) },
+                             onBack = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) },
                              onOpen = { stack.add(it) })
             }
             else -> {
@@ -250,7 +284,11 @@ private fun App() {
                                        Toast.LENGTH_SHORT).show()
                     }
                 }
-                HomeScreen(browse, onOpen = { stack.add(it) },
+                // the menu's download line, pressed: that film's page
+                LaunchedEffect(Api.openWanted.value) {
+                    Api.openWanted.value?.let { Api.openWanted.value = null; stack.add(it) }
+                }
+                HomeScreen(browse, onOpen = { browse.backdrop = it; stack.add(it) },
                            onSettings = { cameFrom = "home"; screen = "setup" },
                            onPeople = { screen = "people" },
                            onPrefs = { screen = "settings" },
@@ -286,6 +324,11 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
     var forgetting by remember { mutableStateOf<Server?>(null) }
     // which of them answered when last asked, so a row can say so
     var alive by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    // and whether it lets us read anything from where we are standing. Answering and
+    // letting us in are two different questions, and the dot only ever asked the
+    // first: a server with no password takes the address for the proof, so from a
+    // train it answers every knock and refuses every request behind it.
+    var letIn by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     // and whichever server is open is asked whether it keeps a copy somewhere: the
     // answer arrives while this screen is on, rather than only when the app started
     LaunchedEffect(Unit) {
@@ -293,18 +336,28 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
         list = Servers.folded(Servers.all(ctx))
     }
     // every server in the list, knocked on now and then: the one on the shelf may be
-    // off and the copy may be awake, and only asking says which
+    // off and the cache may be awake, and only asking says which
     LaunchedEffect(list.size) {
         while (true) {
             val said = HashMap<String, Boolean>()
+            val open = HashMap<String, Boolean>()
             list.forEach { s ->
                 said[s.base] = Api.answering(s.base, s.token) ||
                     (s.outside.isNotEmpty() && Api.answering(s.outside, s.token))
                 // and whether it takes us for its owner from where we are standing
-                if (said[s.base] == true) Servers.learnWhose(ctx, s)
+                if (said[s.base] == true) {
+                    Servers.learnWhose(ctx, s)
+                    open[s.base] = Servers.describe(s.base, s.token) != null ||
+                        (s.outside.isNotEmpty() &&
+                         Servers.describe(s.outside, s.token) != null)
+                }
             }
-            list = Servers.all(ctx)
+            // folded, as it is drawn. The knocking loop was writing the unfolded list
+            // back over it, so every machine known by both its addresses appeared
+            // twice a quarter of a minute after the screen opened.
+            list = Servers.folded(Servers.all(ctx))
             alive = said
+            letIn = open
             kotlinx.coroutines.delay(15_000)
         }
     }
@@ -335,9 +388,40 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
                      letterSpacing = 1.sp,
                      modifier = Modifier.padding(top = 6.dp, bottom = 6.dp))
             }
-            val open = srv.base == Api.base
+            // by address, and by either of the machine's addresses: a film that moved
+            // to the cache is on the cache, whichever way in it was reached
+            val open = listOf(srv.base, srv.outside).map { it.trimEnd('/') }
+                .contains(Api.base.trimEnd('/'))
+            // The whole row switches, not only the pill on it. Pressing the name of a
+            // machine is what somebody does to choose that machine; having to find a
+            // button after that reads as the press not having worked.
+            // Clipped before anything is drawn into it. The panel was rounded and
+            // the press-and-focus drawn over it was not, so the corners squared off
+            // the moment the remote landed on a row - and which row the remote was on
+            // was left to whatever the system draws, which on a television is nothing
+            // much. It is ringed in white now.
+            // Whether the remote is anywhere on this row, not whether it is on the
+            // row itself: each row carries buttons, and on a television the remote
+            // lands on one of those rather than on the panel around them - so the
+            // panel's own focus was never true and the ring never appeared.
+            val shape = RoundedCornerShape(10.dp)
+            var onIt by remember { mutableStateOf(false) }
             Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)
-                       .background(Skin.Panel, RoundedCornerShape(10.dp))
+                       .onFocusChanged { onIt = it.hasFocus || it.isFocused }
+                       .focusGroup()
+                       .clip(shape)
+                       .background(Skin.Panel, shape)
+                       .border(if (onIt) 2.dp else 0.dp,
+                               if (onIt) Color.White else Color.Transparent, shape)
+                       .then(if (open) Modifier else Modifier.clickable {
+                           ctx.lifecycleScope.launch {
+                               val door = Servers.doorThatOpens(srv)
+                               Servers.use(ctx, if (door == srv.base) srv
+                                                else srv.copy(base = door,
+                                                              outside = srv.base))
+                               reload(); onDone()
+                           }
+                       })
                        .padding(horizontal = 14.dp, vertical = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -345,11 +429,13 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
                             // answering, and how it is known: green for a machine
                             // that spoke a moment ago
                             val up = alive[srv.base]
+                            val shut = up == true && letIn[srv.base] == false
                             Box(Modifier.padding(end = 8.dp).size(9.dp)
                                     .background(
-                                        when (up) {
-                                            true -> Color(0xFF42C96A)
-                                            false -> Color(0xFF7D2E2E)
+                                        when {
+                                            shut -> Color(0xFFF0B429)
+                                            up == true -> Color(0xFF42C96A)
+                                            up == false -> Color(0xFF7D2E2E)
                                             else -> Color(0xFF3A424D)
                                         }, RoundedCornerShape(5.dp)))
                             Text(srv.name.ifEmpty { Servers.hostOf(srv.base) },
@@ -359,24 +445,47 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
                         // Both of its addresses, each said plainly. Which one a
                         // machine is filed under is the thing that goes wrong, and
                         // it cannot be checked if only one of them is on the screen.
-                        if (srv.outside.isNotEmpty()) {
+                        // A machine that answers and then refuses everything is
+                        // the hardest thing on this screen to work out from a dot,
+                        // so it says so, and says what to do about it.
+                        if (alive[srv.base] == true && letIn[srv.base] == false) {
+                            Text("answers, but does not know you from here — " +
+                                 "set a password on that server, or open it with an " +
+                                 "invitation link",
+                                 color = Color(0xFFF0B429), fontSize = 11.sp,
+                                 modifier = Modifier.padding(top = 3.dp))
+                        }
+                        // A guest who is not on that network is not shown the
+                        // address on it: it is no use from where they are, and the
+                        // inside of somebody else's house is not theirs to be told.
+                        val showIt = { where: String ->
+                            srv.mine || !Servers.athome(where) ||
+                                Servers.athome(Api.base)
+                        }
+                        if (srv.outside.isNotEmpty() && showIt(srv.outside)) {
                             Text(Servers.whereKind(srv.outside) + "   " + srv.outside,
                                  color = Skin.Dim, fontSize = 11.sp,
                                  modifier = Modifier.padding(top = 2.dp))
                         }
-                        Text(srv.base +
-                             // which address this is. One machine answers to two -
-                             // the network one and the one the router forwards - and
-                             // a row that did not say which read as a second machine
-                             "  ·  " + Servers.whereKind(srv.base) +
-                             "  ·  in use" +
-                             // a cache is a server like any other in this list;
-                             // the tag says why its shelf is the shorter one
-                             (if (srv.copyOf.isNotEmpty()) "  ·  cache backup"
-                              else if (srv.mine) "  ·  yours"
-                              else "  ·  guest") +
-                             (if (srv.group.isNotEmpty()) "  ·  " + srv.group
-                              else ""),
+                        val bits = ArrayList<String>()
+                        // which address this is. One machine answers to two - the
+                        // network one and the one the router forwards - and a row
+                        // that did not say which read as a second machine
+                        if (showIt(srv.base)) {
+                            bits.add(srv.base)
+                            bits.add(Servers.whereKind(srv.base))
+                        }
+                        bits.add("in use")
+                        // a cache is a server like any other in this list; the tag
+                        // says why its shelf is the shorter one
+                        bits.add(if (srv.copyOf.isNotEmpty()) "cache backup"
+                                 else if (srv.mine) "yours" else "guest")
+                        // and whether this row holds a key at all, which is the one
+                        // thing that decides whether it works from anywhere but the
+                        // house - and was nowhere on the screen
+                        bits.add(if (srv.token.isEmpty()) "no key" else "has a key")
+                        if (srv.group.isNotEmpty()) bits.add(srv.group)
+                        Text(bits.joinToString("  ·  "),
                              color = Skin.Dim, fontSize = 12.sp)
                     }
                 }
@@ -447,7 +556,8 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
             Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)
                        .background(Skin.Panel, RoundedCornerShape(10.dp))
                        .padding(horizontal = 14.dp, vertical = 12.dp)) {
-                Text("The machine that keeps copies", color = Skin.Fg, fontSize = 15.sp)
+                Text(Api.standbyName.ifBlank { Servers.hostOf(copyAt) },
+                     color = Skin.Fg, fontSize = 15.sp)
                 Text(copyAt + "  ·  it answers when this server is off",
                      color = Skin.Dim, fontSize = 12.sp)
                 Row(Modifier.padding(top = 10.dp)) {
@@ -456,7 +566,10 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
                         // filed under, so it comes back as one machine
                         val other = listOf(Api.standby, Api.standbyOut)
                             .firstOrNull { it.isNotEmpty() && it != copyAt } ?: ""
-                        Servers.add(ctx, Server(Servers.hostOf(copyAt) + " copy",
+                        // its own name, which it announced: "192.168.0.9 copy" is
+                        // an address and a role, and neither is what the machine is
+                        Servers.add(ctx, Server(Api.standbyName.ifBlank {
+                                                    Servers.hostOf(copyAt) },
                                                 copyAt, Api.token,
                                                 mine = Api.token.isEmpty(),
                                                 on = false, copyOf = Api.base,
@@ -584,6 +697,8 @@ private fun ReportsScreen(onBack: () -> Unit) {
     var reports by remember { mutableStateOf<List<Api.Report>>(emptyList()) }
     var changes by remember { mutableStateOf<List<Api.Release>>(emptyList()) }
     var openRelease by remember { mutableStateOf(0) }
+    // minor version open in What is new; empty = the newest
+    var openGroup by remember { mutableStateOf("") }
     var reportTab by remember { mutableStateOf("new") }
     var shown by remember { mutableStateOf("open") }
     var writing by remember { mutableStateOf(false) }
@@ -615,7 +730,21 @@ private fun ReportsScreen(onBack: () -> Unit) {
         }
 
         if (reportTab == "new" && changes.isNotEmpty()) {
-            changes.forEachIndexed { n, release ->
+            // grouped by minor version (0.18, 0.17), one open: hundreds of releases were one long scroll
+            val groups = changes.withIndex().groupBy {
+                it.value.version.split(".").take(2).joinToString(".")
+            }.toList()
+            groups.forEachIndexed { g, (minor, rels) ->
+            val groupOpen = if (openGroup.isEmpty()) g == 0 else openGroup == minor
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                    .clickable { openGroup = if (groupOpen) "-" else minor }
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text((if (groupOpen) "▾  " else "▸  ") + minor + "  ·  " + rels.size +
+                         (if (rels.size == 1) " release" else " releases"),
+                     color = Skin.Accent, fontSize = 15.sp)
+            }
+            if (groupOpen) rels.forEach { (n, release) ->
                 val open = n == openRelease
                 Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)
                            .background(Skin.Panel, RoundedCornerShape(10.dp))
@@ -641,6 +770,7 @@ private fun ReportsScreen(onBack: () -> Unit) {
                         }
                     }
                 }
+            }
             }
         }
 
@@ -737,6 +867,7 @@ private fun ReportsScreen(onBack: () -> Unit) {
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                            onPeople: (() -> Unit)? = null) {
@@ -886,10 +1017,32 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
             }
         }
 
+        // Where the artwork stands. The server keeps an answer for each kind of screen
+        // and this sets the one it is asked from, so the phone and the television are
+        // free to differ - a poster across a room is not a poster at arm's length.
+        var ground by remember { mutableStateOf(Skin.Backdrop) }
+        val grounds = listOf("on" to "Always", "poster" to "Title page only",
+                             "off" to "Off")
+        SettingsRow("Background poster",
+                    grounds.firstOrNull { it.first == ground }?.second ?: "Always",
+                    extra = ({
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            grounds.forEach { (id, label) ->
+                                Pill(label, active = id == ground, small = true,
+                                     narrow = true) {
+                                    ground = id
+                                    Skin.Backdrop = id      // the page behind answers now
+                                    ctx.lifecycleScope.launch { Api.setBackdrop(id) }
+                                }
+                            }
+                        }
+                    }))
+
         SettingsHeading("SERVERS")
-        SettingsRow(Servers.current(ctx)?.name ?: "None yet",
+        SettingsRow(Servers.inUse(ctx)?.name ?: "None yet",
                     Servers.all(ctx).size.toString() + " known  \u00b7  " +
-                    (Servers.current(ctx)?.base ?: "")) {
+                    (Servers.inUse(ctx)?.base ?: "")) {
             Pill("Manage") { onServers() }
         }
         // Inviting somebody is done once and rarely, and it was a pill on the bar
@@ -902,7 +1055,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         }
 
         // More than one server, and what to do with what they hold: one shelf, one
-        // server at a time, or a shelf per group. The house's two machines are one
+        // server at a time, or a shelf per group. The main server's two machines are one
         // library seen twice; a friend's is somebody else's evening.
         // What this screen wears. The server holds the palettes, so the list is
         // whatever it offers and nothing here knows a colour.
@@ -928,25 +1081,36 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
             }
         }
         if (looks.isNotEmpty()) {
+            // The pills say which one is on, so naming it again on the line above was
+            // the same word twice and a taller box for it.
             SettingsRow("Theme",
-                        (looks.firstOrNull { it.first == wearing }?.second ?: "House") +
-                            (if (putOn.isNotEmpty())
-                                 "  ·  wearing " +
-                                 (looks.firstOrNull { it.first == putOn }?.second
-                                  ?: putOn)
-                             else ""),
-                        extra = if (putOn.isEmpty()) null else ({
-                            Text("This machine put that on itself - " + putOnWhy +
-                                 ". What is chosen here comes back when that passes.",
-                                 color = Skin.Dim, fontSize = 12.sp)
-                        })) {
-                looks.forEach { (id, label, _) ->
-                    Pill(label, active = id == wearing) {
-                        wearing = id
-                        ctx.lifecycleScope.launch { Api.wearSkin(id) }
-                    }
-                }
-            }
+                        if (putOn.isNotEmpty())
+                            "wearing " +
+                            (looks.firstOrNull { it.first == putOn }?.second ?: putOn) +
+                            " for now"
+                        else "",
+                        extra = ({
+                            if (putOn.isNotEmpty()) {
+                                Text("This machine put that on itself - " + putOnWhy +
+                                     ". What is chosen here comes back when that " +
+                                     "passes.",
+                                     color = Skin.Dim, fontSize = 12.sp,
+                                     modifier = Modifier.padding(bottom = 8.dp))
+                            }
+                            // five of them are wider than a phone held upright: they
+                            // wrap, and the tighter pill keeps the wrap to two lines
+                            // instead of running the box down the page
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                looks.forEach { (id, label, _) ->
+                                    Pill(label, active = id == wearing, small = true,
+                                         narrow = true) {
+                                        wearing = id
+                                        ctx.lifecycleScope.launch { Api.wearSkin(id) }
+                                    }
+                                }
+                            }
+                        }))
         }
         var howShelves by remember { mutableStateOf(Servers.shelves(ctx)) }
         var servers by remember { mutableStateOf(Servers.all(ctx)) }
@@ -1182,7 +1346,11 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         // told what is running and nothing else: it cannot see what happens next, and
         // the machine it would be restarting is not in front of anybody.
         server?.let { build ->
-            SettingsRow("The server",
+            // by name. "The server" and "the other server" name nothing on a
+            // screen that has two of them on it, and which one is being updated is
+            // exactly what somebody pressing Update needs to be sure of.
+            SettingsRow(Servers.inUse(ctx)?.name?.takeIf { it.isNotBlank() }
+                            ?: Servers.hostOf(Api.base),
                         "Version " + build.have +
                         (if (build.newer) "  \u00b7  " + build.latest + " is out"
                          else "  \u00b7  up to date") +
@@ -1198,7 +1366,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                             serverSaid = "asking the server"
                             ctx.lifecycleScope.launch {
                                 val why = Api.updateServer()
-                                serverSaid = why ?: ("installing " + build.latest +
+                                serverSaid = why ?: ("installing " + build.latest + " and restarting" +
                                                      " - it will come back on its own")
                                 if (why != null) updating = false
                                 else {
@@ -1231,13 +1399,43 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         // The machine that keeps copies, replaced from here rather than by switching
         // the whole app over to it and back again. It is a server, and it goes stale
         // exactly like this one.
-        val copyAt = listOf(Api.standby, Api.standbyOut).firstOrNull { it.isNotEmpty() }
-            ?: ""
+        // The other machine, whichever way round the two are standing. This asked
+        // the server for the machine that keeps copies of it - and a copy keeps no
+        // copies of its own, so with the app on the copy there was no second row and
+        // the house itself could not be updated from here at all.
+        val elsewhere = remember(Api.base) {
+            Servers.all(ctx).firstOrNull {
+                it.base.isNotEmpty() &&
+                    !Servers.sameMachine(it, Server("", Api.base.trimEnd('/'), ""))
+            }
+        }
+        // A machine this app knows that is not the one it is standing on, first of
+        // all. What the server says about its copy is remembered against each server
+        // and can be stale - on the cache it pointed at the cache itself, so the second
+        // row named the machine already in the first and the other one appeared
+        // nowhere at all.
+        // The server itself answers this, both ways round: it names the machine that
+        // copies from it, and the machine it copies from. On the main server the first is
+        // filled and on the copy the second, so between them there is always an
+        // answer - which is why this no longer depends on what the app happens to
+        // have written down about either machine.
+        val here = Server("", Api.base.trimEnd('/'), "")
+        val copyAt = listOf(Api.standby, Api.standbyOut, Api.houseWhere)
+            .firstOrNull {
+                it.isNotEmpty() && !Servers.sameMachine(Server("", it, ""), here)
+            }
+            ?: elsewhere?.base.orEmpty()
+        val copyCalled = (if (copyAt == Api.houseWhere) Api.houseName else Api.standbyName)
+            .ifBlank { elsewhere?.name.orEmpty() }
+            .ifBlank { Servers.hostOf(copyAt) }
+        // and its own key, not this server's: a key belongs to the machine that
+        // issued it, and asking one machine with another's is refused
+        val copyKey = elsewhere?.token?.takeIf { it.isNotEmpty() } ?: Api.token
         if (copyAt.isNotEmpty()) {
             LaunchedEffect(copyAt) {
-                if (copyBuild == null) copyBuild = Api.serverBuildAt(copyAt, Api.token)
+                if (copyBuild == null) copyBuild = Api.serverBuildAt(copyAt, copyKey)
             }
-            SettingsRow("The other server",
+            SettingsRow(copyCalled,
                         copyBuild?.let { b ->
                             "Version " + b.have +
                             (if (b.newer) "  ·  " + b.latest + " is out"
@@ -1252,13 +1450,13 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                             copyBusy = true
                             copySaid = "asking that machine"
                             ctx.lifecycleScope.launch {
-                                val why = Api.updateServerAt(copyAt, Api.token)
-                                copySaid = why ?: ("installing " + b.latest +
+                                val why = Api.updateServerAt(copyAt, copyKey)
+                                copySaid = why ?: ("installing " + b.latest + " and restarting" +
                                                    " - it will come back on its own")
                                 if (why != null) copyBusy = false
                                 else {
                                     kotlinx.coroutines.delay(20_000)
-                                    copyBuild = Api.serverBuildAt(copyAt, Api.token)
+                                    copyBuild = Api.serverBuildAt(copyAt, copyKey)
                                     copySaid = copyBuild?.let { "now " + it.have }
                                     copyBusy = false
                                 }
@@ -1362,7 +1560,9 @@ private fun SettingsRow(title: String, value: String, accent: Boolean = false,
                         // a second line inside the same box, for a setting whose
                         // choices do not fit beside its name
                         extra: (@Composable () -> Unit)? = null,
-                        control: @Composable RowScope.() -> Unit) {
+                        // nothing beside the name: a setting whose choices are all on
+                        // the line below has no control to put there
+                        control: @Composable RowScope.() -> Unit = {}) {
     Column(Modifier.fillMaxWidth().padding(top = 6.dp)
                .background(Skin.Panel, RoundedCornerShape(8.dp))
                .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)) {
@@ -1486,22 +1686,37 @@ private fun WhichServer(onDone: () -> Unit) {
     // re-filed under whichever of its addresses answers, and a list remembered from
     // before that happened shows a server under the wrong heading while the settings
     // page - which reads it fresh - says the other thing.
-    val list = remember(Api.base) {
-        Servers.folded(Servers.all(ctx))
-            .sortedBy { it.name.ifBlank { Servers.hostOf(it.base) }.lowercase() }
-    }
+    // Read again while the list is open, not once when it opened. A machine that
+    // was switched off and came back was not there until the app was started again:
+    // the list and the knocking on it were both taken once, and nothing since then
+    // could put a machine back on the screen.
+    var list by remember { mutableStateOf(listOf<Server>()) }
     var alive by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     LaunchedEffect(Unit) {
-        alive = list.associate { it.base to Api.answering(it.base, it.token) }
+        while (true) {
+            list = Servers.folded(Servers.all(ctx))
+                .sortedBy { it.name.ifBlank { Servers.hostOf(it.base) }.lowercase() }
+            alive = list.associate { it.base to Api.answering(it.base, it.token) }
+            kotlinx.coroutines.delay(10_000)
+        }
     }
     Column(Modifier.padding(top = 6.dp, bottom = 2.dp)) {
         list.forEach { srv ->
             val on = srv.base.trimEnd('/') == Api.base
             val up = alive[srv.base]
             var lit by remember { mutableStateOf(false) }
+            // Clipped before the press is drawn into it, and ringed while the remote
+            // is on it. The rounded panel was painted after the press, so whatever
+            // the press drew was a square laid over rounded corners - and which chip
+            // the remote was on was left to the system, which on a television shows
+            // almost nothing.
+            val chip = RoundedCornerShape(8.dp)
             Row(verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .onFocusChanged { lit = it.isFocused }
+                    .onFocusChanged { lit = it.hasFocus || it.isFocused }
+                    .clip(chip)
+                    .border(if (lit) 2.dp else 0.dp,
+                            if (lit) Color.White else Color.Transparent, chip)
                     .clickable {
                         if (on) onDone() else ctx.lifecycleScope.launch {
                             val door = Servers.doorThatOpens(srv)
@@ -1525,8 +1740,7 @@ private fun WhichServer(onDone: () -> Unit) {
                             ctx.recreate()
                         }
                     }
-                    .background(if (lit) Skin.Panel else Color.Transparent,
-                                RoundedCornerShape(8.dp))
+                    .background(if (lit) Skin.Panel else Color.Transparent, chip)
                     .padding(horizontal = 8.dp, vertical = 5.dp)) {
                 Box(Modifier.size(6.dp).background(
                         when (up) {
@@ -1537,10 +1751,10 @@ private fun WhichServer(onDone: () -> Unit) {
                 Text(srv.name.ifBlank { Servers.hostOf(srv.base) },
                      color = if (on || lit) Skin.Fg else Skin.Dim, fontSize = 12.sp,
                      modifier = Modifier.padding(start = 8.dp))
-                // Standby is what a machine is doing, not what it is: the one
+                // Cache is what a machine is doing, not what it is: the one
                 // being watched is not standing by for anything.
                 if (srv.copyOf.isNotEmpty() && !on) {
-                    Text("standby", color = Skin.Dim, fontSize = 10.sp,
+                    Text("cache", color = Skin.Dim, fontSize = 10.sp,
                          modifier = Modifier.padding(start = 6.dp))
                 }
                 // Which way in this row is using, and a press to change it. The
@@ -1591,6 +1805,8 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
     // the row scrolls, and a button that is off to the right is still where it was
     // last time. Nothing is hidden to make room for anything.
     val housekeeping = true
+    val wide = onTv() ||
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Two rows, on every screen. The name and the cast button take the first; the
     // tabs and everything to do with what is being looked at take the second.
     //
@@ -1612,21 +1828,29 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                 // "where am I" was answered only by going back to the server list.
                 val ctx = LocalContext.current
                 // by address, not by what was chosen: after a film moves house the
-                // app is on the copy without anybody having picked it
-                val here = remember(Api.base) {
-                    Servers.all(ctx).firstOrNull { it.base.trimEnd('/') == Api.base }
-                        ?: Servers.current(ctx)
-                }
+                // app is on the cache without anybody having picked it
+                // by either of a machine's addresses: a film that carried on from
+                // the cache was reached by whichever way answered, and matching only
+                // the address a row was filed under left the bar naming the machine
+                // that had gone off
+                val here = remember(Api.base) { Servers.inUse(ctx) }
                 // and a press away from every other one: moving used to mean going
                 // back to the server list and finding it there
                 var picking by remember { mutableStateOf(false) }
                 var lit by remember { mutableStateOf(false) }
+                // Clipped before the press is drawn into it, as the rows below are.
+                // The rounded panel was painted after the press, so the press drew a
+                // square over a rounded chip - and the picker showed two grey boxes
+                // with different corners, one above the other.
+                val pill = RoundedCornerShape(999.dp)
                 Row(verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .onFocusChanged { lit = it.isFocused }
+                        .onFocusChanged { lit = it.hasFocus || it.isFocused }
+                        .clip(pill)
+                        .border(if (lit) 2.dp else 0.dp,
+                                if (lit) Color.White else Color.Transparent, pill)
                         .clickable { picking = !picking }
-                        .background(if (lit) Skin.Panel else Color.Transparent,
-                                    RoundedCornerShape(999.dp))
+                        .background(if (lit) Skin.Panel else Color.Transparent, pill)
                         // a thumb is not a remote: the words are small on purpose,
                         // so the thing being pressed has to be bigger than they are
                         .heightIn(min = 32.dp)
@@ -1658,6 +1882,8 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
             // full on a phone, and searching is the one thing done from any of the
             // three places a library is looked at.
             search?.let { Spacer(Modifier.width(14.dp)); it() }
+            // television or phone on its side: the download line beside search, not a row of its own
+            if (wide) { Spacer(Modifier.width(10.dp)); DownloadLine(inline = true) }
             Spacer(Modifier.weight(1f))
             CastButton()
         }
@@ -1671,11 +1897,6 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                     if (housekeeping) {
                         Spacer(Modifier.width(10.dp))
                         onSetup?.let { Pill("Settings") { it() } }
-                    }
-                    // the room, from the shelves: what is said over a film needs no
-                    // press, and answering it does
-                    onChat?.let {
-                        Spacer(Modifier.width(8.dp)); Pill("Watch party") { it() }
                     }
                     // room for the arrow to sit over without covering a pill
                     if (along.maxValue > 0) Spacer(Modifier.width(22.dp))
@@ -1693,6 +1914,8 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                 }
             }
         }
+        // up from the download pill goes to the current tab; with no target it had nowhere to go
+        if (!wide) DownloadLine(up = tabFocus[tab] ?: tabFocus["home"])
     }
 }
 
@@ -1727,11 +1950,38 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
     picks?.let { it() }
     tabPill("watchlist", "Watchlist")
     tabPill("collections", "Collections")
-    tabPill("casual", "Casual")
     // Not while looking through the library: Films and TV carry a sort, a genre and a
     // search box on the same line, and nobody goes looking for the noticeboard
     // halfway down a list of films. It is on Home, where it belongs.
     if (tab != "films" && tab != "tv") tabPill("reports", "Reports")
+}
+
+/** Something downloading: what, how far, how fast, how long and who asked, on a line of
+ *  its own under the tabs. At the end of them it was off the side of a phone. */
+@Composable
+private fun DownloadLine(up: FocusRequester? = null, inline: Boolean = false) {
+    val coming = Api.downloading.value          // refreshed app-wide
+    val d = coming.firstOrNull() ?: return
+    val more = coming.size - 1
+    // progress and ETA first, title after: the pill clips at its edge, and beside search on a
+    // television the title took the width and the numbers were cut off
+    val state = if (d.offerState == "queued")
+                    "queued" + (if (d.offerPlace > 0) " · ${d.offerPlace} ahead" else "")
+                else "${(d.offerProgress * 100).toInt()}%" +
+                     (if (d.offerEta >= 0) " · " + etaShort(d.offerEta) else "") +
+                     (if (d.offerMbit > 0)
+                          String.format(java.util.Locale.US, " · %.1f Mbit/s", d.offerMbit)
+                      else "")
+    val title = if (inline) d.title.take(24) else d.title
+    Row(Modifier.padding(top = if (inline) 0.dp else 6.dp)) {
+        Pill("⤓ " + state + "  " + title +
+                 (if (!inline && d.offerWho.isNotEmpty()) " · " + d.offerWho else "") +
+                 (if (more > 0) "  +$more" else ""),
+             filled = true, small = true,
+             modifier = if (up == null) Modifier else Modifier.focusProperties { this.up = up }) {
+            Api.openWanted.value = d
+        }
+    }
 }
 
 /**
@@ -1777,7 +2027,12 @@ private class Browse {
     var tab by mutableStateOf("home")
     var rows by mutableStateOf<List<Pair<String, List<Media>>>>(emptyList())
     var grid by mutableStateOf<List<Media>>(emptyList())
+    /** What stands behind the shelves: the last title opened, or failing that
+     *  whatever is newest in Continue watching - the film somebody stopped. */
+    var backdrop by mutableStateOf<Media?>(null)
     var more by mutableStateOf(false)          // another page is waiting
+    /** titles matching several marked genres, for the genre button; -1 when not counted */
+    var matching by mutableStateOf(-1)
     var loading by mutableStateOf(true)
     var failed by mutableStateOf<String?>(null)
     // opens on what came out last: "what is new in the world" is a better first
@@ -1786,6 +2041,8 @@ private class Browse {
     var sortAsc by mutableStateOf(false)
     var genre by mutableStateOf("")            // "" is everything
     var genres by mutableStateOf<List<Pair<String, Int>>>(emptyList())
+    var decade by mutableStateOf("")           // "" is every year
+    var decades by mutableStateOf<List<Pair<String, Int>>>(emptyList())
     var query by mutableStateOf("")
     var loaded by mutableStateOf("")           // which tab and order the lists hold
     var update by mutableStateOf<Updates.Available?>(null)
@@ -1796,19 +2053,35 @@ private class Browse {
     /** a line sent from the server, and the last one that was shown */
     var notice by mutableStateOf<String?>(null)
     var noticeAsked = false                    // the first ask learns where we are
-    var casual by mutableStateOf<Set<String>>(emptySet())   // in the shuffle
     /** the collection being looked into, or null for the shelf of shelves */
     var collectionOn by mutableStateOf<Media?>(null)
+
+    /** whether Play on a shelf draws from its round rather than reading it in order */
+    var shuffled by mutableStateOf(false)
     // a collection reads in release order, oldest first - a series is watched from
     // its beginning - and keeps that apart from the order the library is browsed in
     var collSortKey by mutableStateOf("originallyAvailableAt")
     var collSortAsc by mutableStateOf(true)
-    var watchTab by mutableStateOf("list")     // which of the two shelves is shown
-    var askReset by mutableStateOf(false)      // Start over, waiting to be confirmed
-    var casualPlayed by mutableStateOf(0)      // how far this round has got
-    var casualPool by mutableStateOf(0)        // and how much there is
+    /** the poster being held, and what is offered for it */
+    var held by mutableStateOf<Media?>(null)
+    /** the favorites, in a row of their own under the watchlist */
+    var favs by mutableStateOf<List<Media>>(emptyList())
+    /** a watchlist poster being held: favorite it or not */
+    var favHeld by mutableStateOf<Media?>(null)
+    /** the poster a title was opened from, so back returns the grid to it */
+    var openedKey by mutableStateOf("")
+    /** and where the grid was scrolled to then: first row shown, and how far into it */
+    var openedAt: Pair<Int, Int>? = null
+    /** the last return to the front already answered by going Home */
+    var returnSeen = 0
     val gridState = androidx.compose.foundation.lazy.grid.LazyGridState()
     val rowsState = androidx.compose.foundation.lazy.LazyListState()
+    /** home row a title was opened from */
+    var openedRow = ""
+    /** horizontal scroll per home row, kept across the title page */
+    val rowStates = HashMap<String, androidx.compose.foundation.lazy.LazyListState>()
+    /** poster to focus once the list is drawn again after back; cleared when used */
+    var focusKey by mutableStateOf("")
 }
 
 // FocusRequester.Cancel - refusing a direction - is still marked experimental
@@ -1817,6 +2090,9 @@ private class Browse {
 private fun named(u: Updates.Available): String =
     u.versionName + (if (u.versionName == BuildConfig.VERSION_NAME)
                          " (" + u.versionCode + ")" else "")
+
+/** The row that resumes rather than opens. */
+private const val DECK = "Continue watching"
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -1878,13 +2154,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     val order = browse.sortKey + if (browse.sortAsc) ":asc" else ":desc"
     // what the held lists correspond to; coming back from a title matches, and the
     // fetch is skipped rather than throwing the scroll position away
-    val want = browse.tab + "|" + browse.watchTab + "|" + order + "|" +
-        browse.genre + "|" +
+    val want = browse.tab + "|" + order + "|" +
+        browse.genre + "|" + browse.decade + "|" +
                browse.query.trim() + "|" +
         (browse.collectionOn?.ratingKey ?: "") +
         // the two shelves are what a mark changes, so they alone are refetched when
         // one is changed; a grid of films does not move because a series was marked
-        (if (browse.tab == "watchlist" || browse.tab == "casual")
+        (if (browse.tab == "watchlist")
              "|" + MainActivity.marksTouched.value else "")
 
     // which genres exist, for the tab in hand: asked once per tab
@@ -1894,32 +2170,106 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             // the tab is called "tv"; asking for "shows" here matched nothing, so the
             // genre control on TV has been empty since the day it was added
             "tv" -> Api.genres("show")
+            // a list's own genres are worked out from the list when it loads
+            "watchlist", "collections" -> browse.genres
             else -> emptyList()
+        }
+        browse.decades = when (browse.tab) {
+            "films" -> Api.decades("movie")
+            "tv" -> Api.decades("show")
+            "watchlist", "collections" -> browse.decades
+            else -> emptyList()
+        }
+        // a decade the other tab has nothing from is not a decade to carry across
+        if (browse.decade.isNotEmpty() &&
+            browse.decades.none { it.first == browse.decade }) {
+            browse.decade = ""
         }
         // A genre chosen on one tab is not a genre on the other: films have Western
         // and television has Talk Show, and carrying one across showed an empty
         // library with no hint as to why. It is kept when the new tab has it too.
-        if (browse.genre.isNotEmpty() &&
-            browse.genres.none { it.first.equals(browse.genre, ignoreCase = true) }) {
-            browse.genre = ""
+        if (browse.genre.isNotEmpty()) {
+            browse.genre = browse.genre.split(",").filter { g ->
+                g.isNotBlank() && browse.genres.any { it.first.equals(g, ignoreCase = true) }
+            }.joinToString(",")
         }
     }
 
-    // coming back from a film: the count on the casual shelf is a round out of date
-    // until something else asks for it
+    // Coming back from a film lands on the homepage, drawn again. Whatever was on
+    // screen when the film started is a page from before it: Continue watching still
+    // says the place it was at, a shelf still says what it said when the draw was
+    // made, and a shuffle that has moved on says nothing at all.
+    // Arriving, everywhere it shows: a finished download leaves the live list, and its poster
+    // kept the state it loaded with until the shelf was read again by hand. Each such title is
+    // read on its own every 10 s and swapped in until it has become the library film.
+    val shownOffers = (browse.grid + browse.favs + browse.rows.flatMap { it.second })
+        .filter { m -> m.offered && m.offerState in setOf("queued", "downloading", "done") &&
+                       Api.downloading.value.none { it.ratingKey == m.ratingKey } }
+        .map { it.ratingKey }.distinct()
+    LaunchedEffect(shownOffers.joinToString(",")) {
+        while (shownOffers.isNotEmpty()) {
+            kotlinx.coroutines.delay(10_000)
+            for (key in shownOffers) {
+                val old = (browse.grid + browse.favs + browse.rows.flatMap { it.second })
+                    .firstOrNull { it.ratingKey == key } ?: continue
+                val fresh = runCatching { Api.metadata(old) }.getOrNull() ?: continue
+                if (fresh.ratingKey == old.ratingKey && fresh.offered == old.offered &&
+                    fresh.offerState == old.offerState) continue
+                val swap = { l: List<Media> -> l.map { if (it.ratingKey == key) fresh else it } }
+                browse.grid = swap(browse.grid)
+                browse.favs = swap(browse.favs)
+                browse.rows = browse.rows.map { (title, list) -> title to swap(list) }
+            }
+        }
+    }
     val cameBack = MainActivity.returned.value
-    LaunchedEffect(cameBack, browse.tab) {
-        if (browse.tab == "casual") {
-            val where = runCatching { Api.casualProgress() }.getOrDefault(Pair(0, 0))
-            browse.casualPlayed = where.first
-            browse.casualPool = where.second
+    LaunchedEffect(cameBack) {
+        // once for each time the app came to the front: this screen is drawn again
+        // after every title page, and taking that for a return sent back from the
+        // middle of Films to the top of Home
+        if (cameBack > 0 && cameBack != browse.returnSeen) {
+            browse.returnSeen = cameBack
+            browse.collectionOn = null
+            browse.tab = "home"
+            // after the film has said where it got to. Both happen at once when
+            // somebody backs out, and this read was winning - so the shelf was drawn
+            // from what the server knew a moment before the film ended.
+            kotlinx.coroutines.withTimeoutOrNull(2_000) {
+                PlayerActivity.settling?.join()
+            }
+            PlayerActivity.settling = null
+            // and read again. Setting the tab is what used to force this, so it only
+            // happened when the film had been started from somewhere else - and a
+            // film is nearly always started from here.
+            browse.loaded = ""
         }
     }
-
     LaunchedEffect(want) {
         if (browse.loaded == want) return@LaunchedEffect
         browse.loading = true; browse.failed = null
+        browse.matching = -1
         val tab = browse.tab
+        // a list's genres and decades become its options, and it comes back narrowed
+        // to the ones chosen - the controls Films and TV have, over a list of keys
+        fun narrowed(all: List<Media>): List<Media> {
+            browse.genres = all.flatMap { it.genres }.groupingBy { it }.eachCount()
+                .toList().sortedBy { it.first.lowercase() }
+            browse.decades = all.mapNotNull { m ->
+                (m.year ?: 0).takeIf { it > 0 }?.let { (it / 10 * 10).toString() }
+            }.groupingBy { it }.eachCount().toList().sortedByDescending { it.first }
+            if (browse.genre.isNotEmpty()) {
+                browse.genre = browse.genre.split(",").filter { g ->
+                    g.isNotBlank() && browse.genres.any { it.first.equals(g, ignoreCase = true) }
+                }.joinToString(",")
+            }
+            if (browse.decade.isNotEmpty() && browse.decades.none { it.first == browse.decade }) {
+                browse.decade = ""
+            }
+            return all.filter { m ->
+                (browse.genre.isEmpty() || browse.genre.split(",").filter { it.isNotBlank() }.all { want -> m.genres.any { it.equals(want, ignoreCase = true) } }) &&
+                (browse.decade.isEmpty() || ((m.year ?: 0) / 10 * 10).toString() == browse.decade)
+            }
+        }
         val query = browse.query
         try {
             when {
@@ -1935,44 +2285,49 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     browse.more = false
                 }
                 tab == "home" -> browse.rows = listOf(
-                    "Continue watching" to runCatching { Api.onDeck(ctx) }.getOrDefault(emptyList()),
+                    DECK to runCatching { Api.onDeck(ctx) }.getOrDefault(emptyList()),
                     "Recently added films" to runCatching { Api.recentFilms(ctx) }.getOrDefault(emptyList()),
                     "Recently released films" to runCatching { Api.releasedFilms(ctx) }.getOrDefault(emptyList()),
                     "Recently added TV" to runCatching { Api.recentEpisodes(ctx) }.getOrDefault(emptyList()),
                     "Recently released series" to runCatching { Api.releasedShows(ctx) }.getOrDefault(emptyList()),
                 ).filter { it.second.isNotEmpty() }
-                tab == "watchlist" || tab == "casual" -> {
-                    browse.casual = runCatching { Api.casualMarks() }
-                        .getOrDefault(emptySet())
-                    // which way it plays is the server's, so the phone and the
-                    // television agree about it
-                    val where = runCatching { Api.casualProgress() }
-                        .getOrDefault(Pair(0, 0))
-                    browse.casualPlayed = where.first
-                    browse.casualPool = where.second
+                tab == "watchlist" -> {
                     // marked for later, newest mark first: the order it was thought of
                     // in, which is not an order worth re-sorting
-                    // its own shelf, not a corner of the watchlist
-                    browse.grid = if (tab == "casual") Api.casualShelf(ctx)
-                                  else Api.watchlist(ctx)
+                    // favorites have a row of their own under the watchlist
+                    val kept = runCatching { Api.favorites(ctx) }.getOrDefault(emptyList())
+                    val keptKeys = kept.map { it.ratingKey }.toSet()
+                    runCatching { Api.favored() }
+                    browse.favs = narrowed(kept)
+                    browse.grid = narrowed(Api.watchlist(ctx)).filter { it.ratingKey !in keptKeys }
                     browse.more = false
                 }
                 tab == "collections" -> {
                     // the shelves, or the one that has been opened
                     val open = browse.collectionOn
                     browse.grid = if (open == null) Api.collections(ctx)
-                                  else Api.collectionItems(open)
+                                  else narrowed(Api.collectionItems(open))
                     browse.more = false
                 }
                 tab == "films" -> {
-                    browse.grid = Api.movies(ctx, order, genre = browse.genre)
+                    browse.grid = Api.movies(ctx, order, genre = browse.genre,
+                                             decade = browse.decade)
                     browse.more = browse.grid.size >= PAGE
+                    // the grid is one page; the count comes from the server's totalSize
+                    if (browse.genre.contains(","))
+                        browse.matching = Api.shelfCount(ctx, 1, browse.genre, browse.decade)
                 }
                 tab == "tv" -> {
-                    browse.grid = Api.shows(ctx, order, genre = browse.genre)
+                    browse.grid = Api.shows(ctx, order, genre = browse.genre,
+                                            decade = browse.decade)
                     browse.more = browse.grid.size >= PAGE
+                    if (browse.genre.contains(","))
+                        browse.matching = Api.shelfCount(ctx, 2, browse.genre, browse.decade)
                 }
             }
+            // watchlists and collections are whole lists, filtered here: their count is the list
+            if (browse.genre.contains(",") && (tab == "watchlist" || tab == "collections"))
+                browse.matching = browse.grid.size + (if (tab == "watchlist") browse.favs.size else 0)
             browse.loaded = want
         } catch (stopped: kotlinx.coroutines.CancellationException) {
             // another letter was typed and this fetch was dropped for the next one.
@@ -2007,10 +2362,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
 
     // one per tab, kept for the life of this screen: back needs to hand the focus to
     // the tab it came from, and a requester has to be the same object to work
-    // the resume button on the casual shelf, so the tab above it can point down at it
-    val casualPlay = remember { FocusRequester() }
     val tabFocus = remember {
-        listOf("home", "films", "tv", "watchlist", "collections", "casual")
+        listOf("home", "films", "tv", "watchlist", "collections")
             .associateWith { FocusRequester() }
     }
     // Inside the library - focus on a poster, or the list scrolled away from the top
@@ -2025,13 +2378,27 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     else
         browse.gridState.firstVisibleItemIndex > 0 ||
             browse.gridState.firstVisibleItemScrollOffset > 0
-    BackHandler(enabled = scrolled || inContent) {
+    // only while focus is in the list: enabled on scroll as well, a scrolled list kept Back
+    // moving focus to the tab and it never reached the press-twice exit
+    BackHandler(enabled = inContent) {
         // The place in the list is kept: coming back down should land where you were,
         // not at the beginning of the library. Only the focus moves - to the tab you
         // are on, Films from Films and TV from TV.
         runCatching { tabFocus[browse.tab]?.requestFocus() }
     }
 
+    val behind = browse.backdrop
+        ?: browse.rows.firstOrNull { it.first == DECK }?.second?.firstOrNull()
+    Box(Modifier.fillMaxSize()) {
+    // The title last opened, or the one somebody stopped, kept behind the shelves.
+    // Faint on purpose: every poster drawn over it has to stay legible.
+    // Fitted, not cropped: filling the screen with a 2:3 poster blew it up until only
+    // the middle of it was left, and what somebody stopped watching was unrecognisable.
+    if (behind != null && Skin.BackdropBehind) {
+        Art(Api.artUrl(behind), behind.title, Modifier.fillMaxSize().alpha(0.16f),
+            mark = 0, scale = androidx.compose.ui.layout.ContentScale.Fit,
+            ground = Brush.verticalGradient(listOf(Skin.Bg, Skin.Bg)))
+    }
     Column(Modifier.fillMaxSize()) {
         TopBar(browse.tab,
                { chosen ->
@@ -2050,8 +2417,6 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                // nothing to give it to: it asked an unattached requester, the request
                // threw, and the press did nothing at all
                tabFocus = tabFocus,
-               // on the casual tab, down goes to the button that starts it
-               belowTabs = if (browse.tab == "casual") casualPlay else null,
                // Sorting a shuffle means nothing; putting something on is the whole
                // point of the shelf, so that is what the Watchlist tab offers instead.
                picks = if (browse.tab == "films" || browse.tab == "tv") ({
@@ -2067,20 +2432,27 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                                           "quality")
                        },
                        onFlip = { browse.sortAsc = !browse.sortAsc })
-                   GenreControl(browse.genre, browse.genres,
+                   GenreControl(browse.genre, browse.genres, matching = browse.matching,
                                 onGenre = { browse.genre = it })
+                   DecadeControl(browse.decade, browse.decades,
+                                 onDecade = { browse.decade = it })
+               }) else if (browse.tab == "watchlist") ({
+                   SortControl(
+                       browse.collSortKey, browse.collSortAsc,
+                       onSort = { key ->
+                           browse.collSortKey = key
+                           browse.collSortAsc = key !in setOf("addedAt", "quality")
+                       },
+                       onFlip = { browse.collSortAsc = !browse.collSortAsc })
+                   GenreControl(browse.genre, browse.genres, matching = browse.matching,
+                                onGenre = { browse.genre = it })
+                   DecadeControl(browse.decade, browse.decades,
+                                 onDecade = { browse.decade = it })
                }) else null,
                search = if (browse.tab in setOf("home", "films", "tv")) ({
                    FilterControls(browse.query, { browse.query = it })
                }) else null,
-               filters = if (browse.tab == "home") null
-                         // Only the two shelves up here. Everything else about casual watching
-               // - how it plays, and the button that plays it - goes in a row of its
-               // own below, where a television has room for it: crammed into this row
-               // they ran off the edge of the screen and the play button was the one
-               // that went.
-               else if (browse.tab == "watchlist" || browse.tab == "casual") null
-                         else null)
+               filters = null)
         if (chatting) {
             ChatPanel(scope = (ctx as AppCompatActivity).lifecycleScope) {
                 chatting = false
@@ -2231,32 +2603,104 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // button that puts something on. Its own line because a television's top bar
         // has no room left after the tabs, and what fell off the end was the button
         // that actually does something.
-        if (browse.askReset) {
+        browse.held?.let { one ->
+            // a shuffle row carries the shelf it stands for; the title on it is only
+            // whatever the hat drew last
+            val shelf = one.shuffleId
+            val shelfName = one.shuffle.ifBlank { one.title }
             AlertDialog(
-                onDismissRequest = { browse.askReset = false },
+                onDismissRequest = { browse.held = null },
                 containerColor = Skin.Panel,
-                title = { Text("Start the shuffle over?", color = Skin.Fg) },
+                title = { Text(if (shelf.isNotEmpty()) shelfName else one.title,
+                                color = Skin.Fg) },
                 text = {
-                    Text(browse.casualPlayed.toString() + " played so far will be " +
-                         "forgotten, along with where any half-watched episode was left.",
+                    androidx.compose.foundation.layout.Column {
+                        Text(when {
+                                 shelf.isNotEmpty() ->
+                                     "End this shuffle: everything goes back in the hat " +
+                                     "and it leaves Continue watching."
+                                 else -> "Seen it, or forget where you were."
+                             },
+                             color = Skin.Dim, fontSize = 14.sp)
+                        Spacer(Modifier.height(12.dp))
+                        // the title's own page; an episode has none, so its programme's
+                        Pill("→ Go to title") {
+                            browse.held = null
+                            val show = if (one.type == "episode") one.grandparentKey else null
+                            if (show.isNullOrEmpty()) onOpen(one)
+                            else (ctx as AppCompatActivity).lifecycleScope.launch {
+                                Api.item(show, one.srv)?.let { onOpen(it) }
+                            }
+                        }
+                    }
+                },
+                confirmButton = if (shelf.isNotEmpty()) ({
+                    Pill("✕ End this shuffle", primary = true) {
+                        browse.held = null
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            Api.shelfReset(shelf, one.srv)
+                            browse.loaded = ""
+                        }
+                    }
+                }) else ({
+                    Pill("✓ Watched", primary = true) {
+                        browse.held = null
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            Api.setWatched(one, true)
+                            // and off the shelf with it: marking one episode watched
+                            // otherwise hands the shelf to the next episode, which
+                            // reads as nothing having happened
+                            Api.aside(one)
+                            browse.loaded = ""      // the shelf is read again
+                        }
+                    }
+                }),
+                dismissButton = if (shelf.isNotEmpty()) ({
+                    Pill("Cancel") { browse.held = null }
+                }) else ({
+                    Pill("✕ Not watched") {
+                        browse.held = null
+                        MainActivity.marksTouched.value++
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            Api.setWatched(one, false)
+                            Api.aside(one)
+                            browse.loaded = ""
+                        }
+                    }
+                }))
+        }
+        // Held on the watchlist: a favorite stays on it when watched, and is kept on
+        // both machines.
+        browse.favHeld?.let { one ->
+            val kept = one.ratingKey in Api.favKeys.value
+            AlertDialog(
+                onDismissRequest = { browse.favHeld = null },
+                containerColor = Skin.Panel,
+                title = { Text(one.title, color = Skin.Fg) },
+                text = {
+                    Text(if (kept) "A favorite stays on the watchlist when it is watched, " +
+                                   "and is kept on both machines."
+                         else "Make it a favorite: it stays on the watchlist when it is " +
+                              "watched, and is kept on both machines.",
                          color = Skin.Dim, fontSize = 14.sp)
                 },
                 confirmButton = {
-                    Pill("Start over", primary = true) {
-                        browse.askReset = false
+                    Pill(if (kept) "\u2661 Remove favorite" else "\u2665 Favorite",
+                         primary = true) {
+                        browse.favHeld = null
                         (ctx as AppCompatActivity).lifecycleScope.launch {
-                            Api.resetCasual()
-                            // say so at once rather than waiting for the next visit
-                            val where = runCatching { Api.casualProgress() }
-                                .getOrDefault(Pair(0, browse.casualPool))
-                            browse.casualPlayed = where.first
-                            browse.casualPool = where.second
+                            Api.favorite(one, !kept)
+                            MainActivity.marksTouched.value++
                             browse.loaded = ""
                         }
                     }
                 },
-                dismissButton = { Pill("Keep going") { browse.askReset = false } },
-            )
+                dismissButton = {
+                    Pill("\u2192 Go to title") {
+                        browse.favHeld = null
+                        goToTitle(ctx, one, onOpen)
+                    }
+                })
         }
         // Inside a collection: its name over the grid, and back leads out of it
         // rather than out of the app. No button for it - the one on the remote is
@@ -2264,18 +2708,46 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         browse.collectionOn?.let { open ->
             if (browse.tab == "collections") {
                 BackHandler { browse.collectionOn = null }
+                val tightRow = LocalConfiguration.current.screenWidthDp < 600
+                // On a phone the name takes the line and the controls take the next
+                // one. Five things across 360 points put the buttons off the edge,
+                // and a button off the edge cannot be pressed at all.
+                if (tightRow) {
+                    Row(Modifier.fillMaxWidth()
+                            .padding(start = 21.dp, end = 16.dp, top = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        SectionTitle(open.title)
+                        Spacer(Modifier.width(10.dp))
+                        Text(open.subtitle, color = Skin.Dim, fontSize = 12.sp)
+                    }
+                }
                 Row(Modifier.fillMaxWidth()
-                        .padding(start = 21.dp, end = 16.dp, top = 12.dp),
+                        .padding(start = 21.dp, end = 16.dp,
+                                 top = if (tightRow) 6.dp else 12.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    SectionTitle(open.title)
-                    Spacer(Modifier.width(12.dp))
-                    Text(open.subtitle, color = Skin.Dim, fontSize = 13.sp)
-                    Spacer(Modifier.weight(1f))
+                    if (!tightRow) {
+                        SectionTitle(open.title)
+                        Spacer(Modifier.width(12.dp))
+                        Text(open.subtitle, color = Skin.Dim, fontSize = 13.sp)
+                        Spacer(Modifier.weight(1f))
+                    }
                     // in the order shown, or one drawn out of the hat
                     val start: (Media) -> Unit = { pick ->
                         (ctx as AppCompatActivity).lifecycleScope.launch {
-                            val full = runCatching { Api.metadata(pick) }
-                                .getOrNull() ?: pick
+                            // A season card on a shelf stands for the episodes under
+                            // it, and those are what plays. Asking the library for the
+                            // season answers with the programme, so Play opened the
+                            // show and started nothing at all.
+                            val first = pick.holds.firstOrNull()
+                            val want = if (first != null)
+                                           runCatching { Api.item(first, pick.srv) }
+                                               .getOrNull() ?: pick
+                                       else pick
+                            val full = (runCatching { Api.metadata(want) }
+                                .getOrNull() ?: want)
+                                // and from the main server, if it was listed from the
+                                // copy while that one was answering for it
+                                .let { Api.atHome(ctx, it) ?: it }
                             if (full.isFolder) onOpen(full)      // a series: its page
                             else ctx.startActivity(
                                 playIntent(ctx, full,
@@ -2288,10 +2760,57 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     val order = collectionOrder(browse.grid, browse.collSortKey,
                                                 browse.collSortAsc)
                     if (order.isNotEmpty()) {
-                        Pill("▶ Play", primary = true) { start(order.first()) }
-                        Spacer(Modifier.width(8.dp))
-                        Pill("↻ Shuffle") { start(order.random()) }
-                        Spacer(Modifier.width(8.dp))
+                        // One Play, and a switch beside it for how. Shuffled means the
+                        // round the main server keeps for this shelf and this person -
+                        // carrying on with whatever was left part-way, nothing twice
+                        // until the hat is empty. It used to draw a title at random,
+                        // which is a fresh evening every time it is pressed.
+                        // Resume names the second it would start at, when the round
+                        // on this shelf was left somewhere. Play on a button that
+                        // carries on from eight minutes in is a promise about what
+                        // pressing it does that pressing it does not keep.
+                        val carryOn = browse.shuffled && open.shelfResumeAt > 30
+                        Pill(if (carryOn)
+                                 "▶ Resume  " + fmt(open.shelfResumeAt.toLong())
+                             else "▶ Play",
+                             primary = true,
+                             narrow = tightRow, small = tightRow) {
+                            if (browse.shuffled) {
+                                (ctx as AppCompatActivity).lifecycleScope.launch {
+                                    val drew = Api.shelfDraw(open, true)
+                                    if (drew == null) {
+                                        browse.notice = "Nothing to play on that shelf"
+                                    } else {
+                                        // the shelf's copy carries no streams: the
+                                        // full answer decides the soundtrack and the
+                                        // subtitle, as it does everywhere else
+                                        val full = (runCatching {
+                                            Api.metadata(drew.media)
+                                        }.getOrNull() ?: drew.media)
+                                            .let { Api.atHome(ctx, it) ?: it }
+                                        ctx.startActivity(
+                                            playIntent(ctx, full,
+                                                       drew.resumeAt,
+                                                       full.pickedSub ?: full.openWith(
+                                                           Api.myLanguage)?.index)
+                                                // put on rather than chosen, and the
+                                                // shelf it came off, so Next draws
+                                                // from that shelf rather than handing
+                                                // over the next episode of a series
+                                                .putExtra("casual", true)
+                                                .putExtra("shelf",
+                                                          open.ratingKey
+                                                              .removePrefix("coll:")))
+                                    }
+                                }
+                            } else order.firstOrNull { !it.offered }?.let { start(it) }
+                        }
+                        Spacer(Modifier.width(if (tightRow) 4.dp else 8.dp))
+                        Pill("↻ Shuffle", active = browse.shuffled,
+                             narrow = tightRow, small = tightRow) {
+                            browse.shuffled = !browse.shuffled
+                        }
+                        Spacer(Modifier.width(if (tightRow) 4.dp else 8.dp))
                     }
                     SortControl(
                         browse.collSortKey, browse.collSortAsc,
@@ -2302,52 +2821,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             browse.collSortAsc = key !in setOf("addedAt", "quality")
                         },
                         onFlip = { browse.collSortAsc = !browse.collSortAsc })
+                    GenreControl(browse.genre, browse.genres, matching = browse.matching,
+                                 onGenre = { browse.genre = it })
+                    DecadeControl(browse.decade, browse.decades,
+                                  onDecade = { browse.decade = it })
                 }
-            }
-        }
-        if (browse.tab == "casual") {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                // Down from the tabs lands here rather than in the shelf: on this tab
-                // the button is what somebody came for, and hunting for it past a row
-                // of posters is two presses nobody should have to make.
-                Pill("↻ Casual play", primary = true,
-                     // Up goes back to the tabs. The name of the server is a button
-                     // now and it sits above them, so the nearest thing above this
-                     // one stopped being the row of tabs and became that - which is
-                     // a long way from where anybody pressing up is trying to go.
-                     modifier = Modifier.focusRequester(casualPlay)
-                         .focusProperties {
-                             up = tabFocus[browse.tab] ?: FocusRequester.Default
-                         }) {
-                    (ctx as AppCompatActivity).lifecycleScope.launch {
-                        // the button that starts casual watching picks up where
-                        // the shelf was left
-                        val pick = Api.casualDraw(resume = true)
-                        if (pick == null) {
-                            android.widget.Toast.makeText(
-                                ctx, "Nothing is marked for casual watching",
-                                android.widget.Toast.LENGTH_SHORT).show()
-                        } else {
-                            // carry on from where it was left, if it was left part-way,
-                            // and with a subtitle chosen - the shelf's copy carries no
-                            // streams, so the full metadata decides
-                            val full = runCatching { Api.metadata(pick.media) }
-                                .getOrNull() ?: pick.media
-                            ctx.startActivity(
-                                playIntent(ctx, full, pick.resumeAt,
-                                           full.pickedSub ?: full.openWith(
-                                               Api.myLanguage)
-                                               ?.index)
-                                    .putExtra("casual", true))
-                        }
-                    }
-                }
-                Spacer(Modifier.width(14.dp))
-                Text("Played " + browse.casualPlayed + " of " + browse.casualPool,
-                     color = Skin.Dim, fontSize = 14.sp)
-                Spacer(Modifier.width(10.dp))
-                Pill("↺ Start over") { browse.askReset = true }
             }
         }
         when {
@@ -2364,12 +2842,68 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 items(browse.rows) { (title, list) ->
                     SectionTitle(title, Modifier.padding(start = 21.dp, top = 16.dp, bottom = 2.dp))
                     val w = if (LocalConfiguration.current.screenWidthDp < 600) 108 else 140
-                    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
-                        items(list) { m -> Poster(m, width = w) { onOpen(m) } }
+                    val rowState = browse.rowStates.getOrPut(title) {
+                        androidx.compose.foundation.lazy.LazyListState() }
+                    // back from a title opened in this row: scroll the row to it, then focus it
+                    LaunchedEffect(title) {
+                        if (browse.openedRow == title && browse.openedKey.isNotEmpty()) {
+                            val key = browse.openedKey
+                            browse.openedRow = ""; browse.openedKey = ""
+                            val at = list.indexOfFirst { it.ratingKey == key }
+                            if (at >= 0) {
+                                runCatching { rowState.scrollToItem(at) }
+                                browse.focusKey = key
+                            }
+                        }
+                    }
+                    LazyRow(state = rowState, contentPadding = PaddingValues(horizontal = 16.dp)) {
+                        items(list) { m ->
+                            val here = remember { FocusRequester() }
+                            LaunchedEffect(browse.focusKey) {
+                                if (browse.focusKey == m.ratingKey) {
+                                    runCatching { here.requestFocus() }
+                                    browse.focusKey = ""
+                                }
+                            }
+                            Poster(m, width = w, modifier = Modifier.focusRequester(here),
+                                   onHold = if (title == DECK)
+                                       ({ browse.held = m })
+                                       else ({
+                                           browse.openedRow = title; browse.openedKey = m.ratingKey
+                                           goToTitle(ctx, m, onOpen)
+                                       })) {
+                                // Continue watching resumes where it was left. Opening
+                                // the page instead put every resume one press further
+                                // away, and a shuffle lost its shelf on the way: the
+                                // page carries no shelf, so Next handed over the next
+                                // episode of the programme rather than drawing.
+                                if (title == DECK && !m.isFolder) {
+                                    // asked for in full first. A row on this shelf is
+                                    // brief - no codecs, no part, nothing about the
+                                    // file - and a film that cannot say what it is
+                                    // cannot be played as it is, so every resume from
+                                    // here went through the encoder.
+                                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                                        val full = (runCatching { Api.metadata(m) }
+                                            .getOrNull() ?: m)
+                                            .let { Api.atHome(ctx, it) ?: it }
+                                        full.shuffleId = m.shuffleId
+                                        val pick = full.pickedSub
+                                            ?: full.openWith(Api.myLanguage)?.index
+                                        play(ctx, full, m.viewOffsetMs / 1000, pick)
+                                    }
+                                } else {
+                                    browse.openedRow = title; browse.openedKey = m.ratingKey
+                                    onOpen(m)
+                                }
+                            }
+                        }
                     }
                 }
             }
-            browse.grid.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+            browse.grid.isEmpty() &&
+                !(browse.tab == "watchlist" && browse.favs.isNotEmpty()) ->
+                Box(Modifier.fillMaxSize(), Alignment.Center) {
                 Text(if (browse.query.isBlank()) "Nothing here" else "Nothing matches that",
                      color = Skin.Dim, fontSize = 15.sp)
             }
@@ -2388,14 +2922,42 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             val next = runCatching {
                                 if (browse.tab == "films")
                                     Api.movies(ctx, order, browse.grid.size, PAGE,
-                                               browse.genre)
+                                               browse.genre, browse.decade)
                                 else Api.shows(ctx, order, browse.grid.size, PAGE,
-                                               browse.genre)
+                                               browse.genre, browse.decade)
                             }.getOrDefault(emptyList())
                             browse.grid = browse.grid + next
                             browse.more = next.size >= PAGE
                             paging = false
                         }
+                    }
+                }
+                // Back from a title opened here: the grid is put back on its poster,
+                // whatever else moved while the title's page was open. Run when the grid
+                // is drawn again, not when the poster is pressed.
+                LaunchedEffect(Unit) {
+                    val key = browse.openedKey
+                    val was = browse.openedAt
+                    browse.openedKey = ""
+                    browse.openedAt = null
+                    if (key.isNotEmpty()) {
+                        val order = if (browse.collectionOn != null || browse.tab == "watchlist")
+                            collectionOrder(browse.grid, browse.collSortKey, browse.collSortAsc)
+                        else browse.grid
+                        val at = order.indexOfFirst { it.ratingKey == key }
+                        when {
+                            at < 0 -> Unit
+                            // still where it was: nothing to do
+                            was != null && gridState.firstVisibleItemIndex == was.first &&
+                                gridState.firstVisibleItemScrollOffset == was.second -> Unit
+                            // the same list: exactly the place it was scrolled to
+                            was != null && at >= was.first && at - was.first < 60 &&
+                                was.first < order.size ->
+                                gridState.scrollToItem(was.first, was.second)
+                            // a list drawn again differently: the poster, at least
+                            else -> gridState.scrollToItem(at)
+                        }
+                        if (at >= 0) browse.focusKey = key
                     }
                 }
                 // three across on a phone, six or so on a television
@@ -2423,7 +2985,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                 FocusRequester.Cancel else FocusRequester.Default
                         },
                 ) {
-                    val shown = if (browse.collectionOn != null)
+                    val shown = if (browse.collectionOn != null || browse.tab == "watchlist")
                         collectionOrder(browse.grid, browse.collSortKey,
                                         browse.collSortAsc)
                         else browse.grid
@@ -2437,15 +2999,58 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                 m.isFolder && m.released.isNotEmpty())
                                 "last aired " + m.released
                             else null
-                        Poster(m, fill = true, instead = instead) {
+                        val here = remember { FocusRequester() }
+                        LaunchedEffect(browse.focusKey) {
+                            if (browse.focusKey == m.ratingKey) {
+                                runCatching { here.requestFocus() }
+                                browse.focusKey = ""
+                            }
+                        }
+                        Poster(m, fill = true, instead = instead,
+                               modifier = Modifier.focusRequester(here),
+                               // held: the title's own page, and on the watchlist
+                               // the choice to make it a favorite
+                               onHold = {
+                                   if (m.type == "collection") openShelf(browse, m)
+                                   else if (browse.tab == "watchlist") browse.favHeld = m
+                                   else {
+                                       browse.openedKey = m.ratingKey
+                                       browse.openedAt = gridState.firstVisibleItemIndex to
+                                           gridState.firstVisibleItemScrollOffset
+                                       goToTitle(ctx, m, onOpen)
+                                   }
+                               }) {
                             // a shelf is not a title: it opens into what it holds
-                            if (m.type == "collection") browse.collectionOn = m
-                            else onOpen(m)
+                            if (m.type == "collection") openShelf(browse, m)
+                            else {
+                                browse.openedKey = m.ratingKey
+                                browse.openedAt = gridState.firstVisibleItemIndex to
+                                    gridState.firstVisibleItemScrollOffset
+                                onOpen(m)
+                            }
+                        }
+                    }
+                    // favorites: a row of their own under the watchlist
+                    if (browse.tab == "watchlist" && browse.collectionOn == null &&
+                        browse.favs.isNotEmpty()) {
+                        item(span = {
+                            androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan)
+                        }) {
+                            SectionTitle("Favorites",
+                                         Modifier.padding(start = 7.dp, top = 18.dp,
+                                                          bottom = 2.dp))
+                        }
+                        items(collectionOrder(browse.favs, browse.collSortKey,
+                                              browse.collSortAsc)) { m ->
+                            Poster(m, fill = true, onHold = { browse.favHeld = m }) {
+                                onOpen(m)
+                            }
                         }
                     }
                 }
             }
         }
+    }
     }
 }
 
@@ -2504,6 +3109,37 @@ private fun ReportDialog(startAs: String = "problem", onClose: () -> Unit) {
  * Sorted here rather than asked for: a collection arrives whole, so turning it round
  * is arithmetic on a list already in hand and needs no second fetch.
  */
+/** A download's time left, the way a person says it. */
+private fun etaWords(seconds: Long): String = when {
+    seconds < 60 -> "$seconds s left"
+    seconds < 3600 -> "${seconds / 60} min left"
+    else -> "${seconds / 3600} h ${seconds % 3600 / 60} min left"
+}
+
+/** A collection opened: the sort and filters it was saved with come with it. */
+private fun openShelf(browse: Browse, shelf: Media) {
+    runCatching {
+        val saved = org.json.JSONObject(shelf.shelfView.ifEmpty { "{}" })
+        saved.optString("sort").takeIf { it.isNotEmpty() }?.let {
+            browse.collSortKey = it
+            browse.collSortAsc = saved.optString("dir", "asc") != "desc"
+        }
+        browse.genre = saved.optString("genre", "")
+        browse.decade = saved.optString("decade", "")
+    }
+    browse.collectionOn = shelf
+}
+
+/** A poster held: its own page, and for an episode its programme's, which is where an
+ *  episode is found. */
+private fun goToTitle(ctx: android.content.Context, one: Media, onOpen: (Media) -> Unit) {
+    val show = if (one.type == "episode") one.grandparentKey else null
+    if (show.isNullOrEmpty()) onOpen(one)
+    else (ctx as AppCompatActivity).lifecycleScope.launch {
+        Api.item(show, one.srv)?.let { onOpen(it) }
+    }
+}
+
 private fun collectionOrder(list: List<Media>, key: String, asc: Boolean): List<Media> {
     val by = when (key) {
         "addedAt" -> compareBy<Media> { it.addedAt }
@@ -2569,12 +3205,18 @@ private fun RowScope.SortControl(
 private fun RowScope.GenreControl(
     genre: String,
     genres: List<Pair<String, Int>>,
+    /** titles carrying all marked genres, when two or more are marked; -1 while not known */
+    matching: Int = -1,
     onGenre: (String) -> Unit,
 ) {
     if (genres.isEmpty()) return
     var genreOpen by remember { mutableStateOf(false) }
+    // several can be marked: comma-joined, a title must carry all of them
+    val marked = genre.split(",").map { it.trim() }.filter { it.isNotEmpty() }
     Box {
-        Pill(if (genre.isEmpty()) "Genre" else genre, narrow = !onTv(),
+        Pill(when (marked.size) { 0 -> "Genre"; 1 -> marked[0]
+                                  else -> if (matching >= 0) "Genres · " + matching else "Genres" },
+             narrow = !onTv(),
              small = !onTv() && LocalConfiguration.current.screenWidthDp < 400) {
             genreOpen = true
         }
@@ -2584,17 +3226,56 @@ private fun RowScope.GenreControl(
                 .width(260.dp).heightIn(max = 360.dp)) {
             DropdownMenuItem(
                 contentPadding = MENU_PAD,
-                text = { Text("All", fontSize = 14.sp,
-                              color = if (genre.isEmpty()) Skin.Accent else Skin.Fg) },
+                text = { Text("Clear", fontSize = 14.sp,
+                              color = if (marked.isEmpty()) Skin.Dim else Skin.Accent) },
                 onClick = { onGenre(""); genreOpen = false })
             genres.forEach { (name, count) ->
+                val on = marked.any { it.equals(name, ignoreCase = true) }
                 DropdownMenuItem(
                     contentPadding = MENU_PAD,
-                    text = { Text(name + "  (" + count + ")", fontSize = 14.sp,
-                                  maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                  color = if (name == genre) Skin.Accent
-                                          else Skin.Fg) },
-                    onClick = { onGenre(name); genreOpen = false })
+                    text = { Text((if (on) "✓  " else "     ") + name + "  (" + count + ")",
+                                  fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                  color = if (on) Skin.Accent else Skin.Fg) },
+                    // toggles and stays open, so several can be marked in one visit
+                    onClick = {
+                        val next = if (on) marked.filterNot { it.equals(name, ignoreCase = true) }
+                                   else marked + name
+                        onGenre(next.joinToString(","))
+                    })
+            }
+        }
+    }
+}
+
+/** From when: built from what the library holds, so it never offers an empty one. */
+@Composable
+private fun RowScope.DecadeControl(
+    decade: String,
+    decades: List<Pair<String, Int>>,
+    onDecade: (String) -> Unit,
+) {
+    if (decades.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Pill(if (decade.isEmpty()) "Decade" else decade + "s", narrow = !onTv(),
+             small = !onTv() && LocalConfiguration.current.screenWidthDp < 400) {
+            open = true
+        }
+        DropdownMenu(
+            expanded = open, onDismissRequest = { open = false },
+            modifier = Modifier.background(Skin.Panel)
+                .width(200.dp).heightIn(max = 360.dp)) {
+            DropdownMenuItem(
+                contentPadding = MENU_PAD,
+                text = { Text("All", fontSize = 14.sp,
+                              color = if (decade.isEmpty()) Skin.Accent else Skin.Fg) },
+                onClick = { onDecade(""); open = false })
+            decades.forEach { (era, count) ->
+                DropdownMenuItem(
+                    contentPadding = MENU_PAD,
+                    text = { Text(era + "s  (" + count + ")", fontSize = 14.sp,
+                                  color = if (era == decade) Skin.Accent else Skin.Fg) },
+                    onClick = { onDecade(era); open = false })
             }
         }
     }
@@ -2664,7 +3345,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
     // index of the chosen subtitle stream, or null for none
     var sub by remember(m.ratingKey) { mutableStateOf<Int?>(null) }
     var styling by remember(m.ratingKey) { mutableStateOf(false) }
-    // the copy chooser, for a title the library holds more than once
+    // the cache chooser, for a title the library holds more than once
     var versions by remember(m.ratingKey) { mutableStateOf(false) }
     var downloading by remember(m.ratingKey) { mutableStateOf(false) }
     //: waiting for a subtitle being written, so the remote can be put on Play as soon
@@ -2682,8 +3363,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
     var seen by remember(m.ratingKey) { mutableStateOf(m.watched) }
     // and of the watchlist mark, for the same reason
     var listed by remember(m.ratingKey) { mutableStateOf(false) }
-    // whether it is in the casual shuffle, which is a corner of the watchlist
-    var casual by remember(m.ratingKey) { mutableStateOf(false) }
+    var picking by remember(m.ratingKey) { mutableStateOf(false) }
+    var inCollection by remember(m.ratingKey) { mutableStateOf(false) }
 
     // and again on the way back from the player: the button says "Resume 7:19", and
     // after watching another twenty minutes it should not still say 7:19
@@ -2706,8 +3387,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
         // this page was last looked at
         listed = runCatching { Api.marked() }.getOrDefault(emptySet())
             .contains(m.ratingKey)
-        casual = runCatching { Api.casualMarks() }.getOrDefault(emptySet())
-            .contains(m.ratingKey)
+        runCatching { Api.favored() }             // the heart reads what this fills in
+        inCollection = Api.shelvesHolding(full).any { it.state != "none" }
     }
 
     val facts: @Composable () -> Unit = {
@@ -2731,8 +3412,11 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                     Chip(String.format(java.util.Locale.US, "%.1f Mbit/s",
                                        full.bitrate / 1000f))
                 }
-                Chip(if (full.canDirectPlay()) "Direct play" else "Transcoded",
-                     accent = !full.canDirectPlay())
+                Chip(when {
+                         full.canDirectPlay() -> "Direct play"
+                         full.videoPlaysAsIs() -> "Direct video, sound encoded"
+                         else -> "Transcoded"
+                     }, accent = !full.canDirectPlay())
             }
         }
     }
@@ -2832,30 +3516,34 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
     val marks: @Composable () -> Unit = {
         Row(Modifier.padding(top = if (cramped) 6.dp else 12.dp),
             verticalAlignment = Alignment.CenterVertically) {
+            // one button stepping through three: off, on the watchlist, a favorite
+            val favorite = m.ratingKey in Api.favKeys.value
             MarkControl(
-                listed = listed, casual = casual,
+                listed = listed, favorite = favorite, inCollection = inCollection,
                 onList = {
-                    val on = !listed
-                    listed = on
-                    MainActivity.marksTouched.value++
-                    (ctx as AppCompatActivity).lifecycleScope.launch { Api.mark(full, on) }
-                },
-                onCasual = {
-                    val on = !casual
-                    casual = on
                     MainActivity.marksTouched.value++
                     (ctx as AppCompatActivity).lifecycleScope.launch {
-                        Api.markCasual(full, on)
+                        when {
+                            favorite -> {
+                                Api.favorite(full, false)
+                                Api.mark(full, false)
+                                listed = false
+                            }
+                            listed -> Api.favorite(full, true)
+                            else -> {
+                                Api.mark(full, true)
+                                listed = true
+                            }
+                        }
                     }
-                })
-            Text(when {
-                     listed && casual -> "On your watchlist, and in the shuffle"
-                     listed -> "On your watchlist"
-                     casual -> "In the casual shuffle"
-                     // unmarked: name the two halves rather than say "mark this",
-                     // which does not say what either of them would do
-                     else -> "Watchlist / Casual"
-                 }, color = Skin.Dim, fontSize = 14.sp)
+                },
+                onCollection = { picking = true })
+        }
+        if (picking) {
+            ShelfPicker(full, emptyList(), onClose = { picking = false }) { now ->
+                inCollection = now.any { it.state != "none" }
+                MainActivity.marksTouched.value++
+            }
         }
     }
 
@@ -2904,9 +3592,24 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                             android.widget.Toast.LENGTH_LONG).show()
                         ctx.startActivity(
                             playIntent(ctx, full, at, NO_SUBS)
-                                .putExtra("wantMade", true))
+                                .putExtra("wantMade", true)
+                                .also { go ->
+                                    if (m.shuffleId.isNotEmpty()) {
+                                        go.putExtra("casual", true)
+                                        go.putExtra("shelf", m.shuffleId)
+                                    }
+                                })
                     } else {
-                        play(ctx, full, at, sub.takeIf { it != PENDING_SUB })
+                        full.shuffleId = m.shuffleId
+                        // and from the main server if this page was drawn from the
+                        // copy: asking that machine for its own key first, because
+                        // one machine's key means nothing on another
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            val here = (Api.atHome(ctx, full) ?: full).also {
+                                it.shuffleId = m.shuffleId
+                            }
+                            play(ctx, here, at, sub.takeIf { it != PENDING_SUB })
+                        }
                     }
                 }
 
@@ -2946,19 +3649,93 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                         kotlinx.coroutines.delay(5000)
                     }
                 }
-                Pill(if (resume > 5) "Resume " + fmt(resume) else "Play", primary = true,
-                     narrow = narrowRow, small = smallRow,
+                // squeezed only beside From start, and the rest of the row with it:
+                // one height for every button on the line
+                // a film on offer from a torrent pack: the one thing to do is fetch it
+                if (full.offered) {
+                    var said by remember(m.ratingKey) { mutableStateOf("") }
+                    // while it comes in: read again every few seconds, until it is done
+                    // and once it has come in, the film's own page: the server answers the
+                    // offer with the film, and this page becomes it
+                    LaunchedEffect(full.ratingKey, full.offerState) {
+                        while (full.offered &&
+                               full.offerState in setOf("queued", "downloading", "done")) {
+                            kotlinx.coroutines.delay(5000)
+                            runCatching { Api.metadata(full) }.getOrNull()?.let { full = it }
+                        }
+                    }
+                    // progress from the live list: the metadata re-read every 5 s carries no
+                    // download progress for a pack film, so the page stayed at 0%
+                    val live = Api.liveOffer(full)
+                    val busy = full.offerRefused.isNotEmpty() ||
+                        live.offerState in setOf("queued", "downloading", "done")
+                    Pill(if (full.offerRefused.isNotEmpty()) "Cannot download" else when (live.offerState) {
+                             "downloading" -> "Downloading " + (live.offerProgress * 100).toInt() + "%" +
+                                 (if (live.offerMbit > 0)
+                                      String.format(java.util.Locale.US, "  \u00b7  %.1f Mbit/s",
+                                                    live.offerMbit) else "") +
+                                 (if (live.offerEta >= 0) "  \u00b7  " + etaWords(live.offerEta) else "")
+                             "queued" -> "Queued" +
+                                 (if (live.offerPlace > 0) " · ${live.offerPlace} ahead" else "")
+                             "done" -> "Downloaded - arriving"
+                             else -> "\u2913 Download"
+                         } + (if (full.offerSize > 0)
+                                  String.format(java.util.Locale.US, "  %.1f GB",
+                                                full.offerSize / 1e9) else "") +
+                             (if (full.offerFree >= 0)
+                                  String.format(java.util.Locale.US, "  ·  %.0f GB free",
+                                                full.offerFree) else ""),
+                         primary = !busy) {
+                        if (!busy) (ctx as AppCompatActivity).lifecycleScope.launch {
+                            val (ok, words) = Api.torrentGet(full)
+                            said = if (ok) "Downloading - it appears in Films when it has arrived"
+                                   else words
+                            Api.metadata(full)?.let { full = it }
+                            Api.refreshDownloading(ctx)
+                        }
+                    }
+                    if (live.offerState == "queued" || live.offerState == "downloading") {
+                        Pill("Cancel download") {
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                val (ok, words) = Api.torrentCancel(full)
+                                said = words
+                                if (ok) Api.metadata(full)?.let { full = it }
+                                Api.refreshDownloading(ctx)
+                            }
+                        }
+                    }
+                    // one poster for a film its pack carries more than once: the release is
+                    // chosen here, and Download fetches the one chosen
+                    if (full.offerVersions.size > 1) {
+                        full.offerVersions.forEach { (key, label) ->
+                            Pill(label, outline = key == full.ratingKey, small = true) {
+                                if (key != full.ratingKey) (ctx as AppCompatActivity).lifecycleScope.launch {
+                                    val was = full
+                                    Api.metadata(was.copy(ratingKey = key).also { it.srv = was.srv })
+                                        ?.takeIf { it.offered }?.let { full = it; said = "" }
+                                }
+                            }
+                        }
+                    }
+                    val shown = said.ifEmpty { full.offerRefused }
+                    if (shown.isNotEmpty()) {
+                        Text(shown, color = Skin.Dim, fontSize = 13.sp,
+                             modifier = Modifier.padding(start = 4.dp, top = 8.dp))
+                    }
+                }
+                if (!full.offered) Pill(if (resume > 5) "Resume " + fmt(resume) else "Play", primary = true,
+                     narrow = narrowRow && resume > 5, small = smallRow && resume > 5,
                      modifier = Modifier.focusRequester(playFocus)) {
                     startIt(resume)
                 }
-                if (resume > 5) Pill("From start", narrow = narrowRow,
+                if (resume > 5 && !full.offered) Pill("From start", narrow = narrowRow,
                                      small = smallRow) {
                     startIt(0)
                 }
                 // filled in once the film has been watched; otherwise plain, with
                 // the white ring under the remote like everything else
-                Pill(if (seen) "\u2713 Watched" else "Mark watched",
-                     active = seen, narrow = narrowRow, small = smallRow) {
+                if (!full.offered) Pill(if (seen) "\u2713 Watched" else "Mark watched",
+                     active = seen, narrow = narrowRow, small = smallRow && resume > 5) {
                     seen = !seen
                     // Watched means finished, so there is nothing left to resume and
                     // the button goes back to Play. The server drops the resume point
@@ -2974,7 +3751,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                 // in, standing on the episode itself, not a row of season posters.
                 if (full.type == "episode" &&
                     !(full.parentKey ?: full.grandparentKey).isNullOrEmpty()) {
-                    Pill("Go to show", narrow = narrowRow, small = smallRow) {
+                    Pill("Go to show", narrow = narrowRow, small = smallRow && resume > 5) {
                         (ctx as AppCompatActivity).lifecycleScope.launch {
                             val where = full.parentKey ?: full.grandparentKey!!
                             MainActivity.reveal.value = full.ratingKey
@@ -3112,21 +3889,23 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
         // The artwork keeps to one side rather than lying under the whole page: on a
         // television the right of the screen, on a phone a band across the top. Either
         // way it fades out before it reaches the poster, so nothing is drawn twice.
-        Box(
-            if (portrait) Modifier.align(Alignment.TopCenter).fillMaxWidth().fillMaxHeight(0.34f)
-            else Modifier.align(Alignment.CenterEnd).fillMaxHeight().fillMaxWidth(0.52f)
-        ) {
-            // the whole picture, scaled to the height it has: cropping a 2:3 poster
-            // into a half-width column cut the top and bottom off it
-            Art(Api.artUrl(full), full.title, Modifier.fillMaxSize().alpha(0.45f),
-                mark = 120, scale = androidx.compose.ui.layout.ContentScale.Fit)
-            Box(Modifier.matchParentSize().background(
-                if (portrait)
-                    Brush.verticalGradient(listOf(Skin.Bg.copy(alpha = 0.35f),
-                                                  Skin.Bg.copy(alpha = 0.85f), Skin.Bg))
-                else
-                    Brush.horizontalGradient(listOf(Skin.Bg, Skin.Bg.copy(alpha = 0.75f),
-                                                    Skin.Bg.copy(alpha = 0.25f)))))
+        if (Skin.BackdropOnPage) {
+            Box(
+                if (portrait) Modifier.align(Alignment.TopCenter).fillMaxWidth().fillMaxHeight(0.34f)
+                else Modifier.align(Alignment.CenterEnd).fillMaxHeight().fillMaxWidth(0.52f)
+            ) {
+                // the whole picture, scaled to the height it has: cropping a 2:3 poster
+                // into a half-width column cut the top and bottom off it
+                Art(Api.artUrl(full), full.title, Modifier.fillMaxSize().alpha(0.45f),
+                    mark = 120, scale = androidx.compose.ui.layout.ContentScale.Fit)
+                Box(Modifier.matchParentSize().background(
+                    if (portrait)
+                        Brush.verticalGradient(listOf(Skin.Bg.copy(alpha = 0.35f),
+                                                      Skin.Bg.copy(alpha = 0.85f), Skin.Bg))
+                    else
+                        Brush.horizontalGradient(listOf(Skin.Bg, Skin.Bg.copy(alpha = 0.75f),
+                                                        Skin.Bg.copy(alpha = 0.25f)))))
+            }
         }
 
         // One column, sized to fit: with nothing to scroll, moving focus cannot drag
@@ -3146,6 +3925,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                 Box(Modifier.padding(top = 14.dp).width(120.dp).height(180.dp)
                         .clip(RoundedCornerShape(10.dp))) {
                     Art(Api.artUrl(full), full.title, Modifier.fillMaxSize(), mark = 44)
+                    OfferProgress(full)
                 }
                 Text(full.title, color = Skin.Fg, fontSize = 24.sp,
                      fontWeight = FontWeight.SemiBold,
@@ -3160,6 +3940,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                             .clip(RoundedCornerShape(10.dp))) {
                         Art(Api.artUrl(full), full.title, Modifier.fillMaxSize(),
                             mark = if (cramped) 40 else 60)
+                        OfferProgress(full)
                     }
                     Column(Modifier.padding(start = if (cramped) 16.dp else 24.dp)) {
                         Text(full.title, color = Skin.Fg,
@@ -3227,14 +4008,31 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                 // Arrived from an episode's own page: stand on that episode rather
                 // than at the start of the season. Cleared once used, so opening the
                 // season any other way starts where it always did.
+                // Scrolling moved the row and left the highlight where it was, so the
+                // first press of a direction key took the row back to where it had
+                // been - which is indistinguishable from not having gone there at all.
+                // The episode is stood on as well as scrolled to.
+                val standOn = remember { FocusRequester() }
+                var standing by remember(children) {
+                    mutableStateOf<String?>(null)
+                }
                 LaunchedEffect(children, MainActivity.reveal.value) {
                     val want = MainActivity.reveal.value
                     if (!want.isNullOrEmpty()) {
                         val at = children.indexOfFirst { it.ratingKey == want }
                         if (at >= 0) {
                             episodes.scrollToItem(at)
+                            standing = want
                             MainActivity.reveal.value = null
                         }
+                    }
+                }
+                LaunchedEffect(standing, children) {
+                    if (standing != null) {
+                        // composed only after the scroll has settled
+                        kotlinx.coroutines.delay(120)
+                        runCatching { standOn.requestFocus() }
+                        standing = null
                     }
                 }
                 LazyRow(
@@ -3252,7 +4050,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                     contentPadding = PaddingValues(end = 180.dp),
                 ) {
                     items(children) { c ->
-                        Poster(c, width = if (portrait) 120 else 140) { onOpen(c) }
+                        Poster(c, width = if (portrait) 120 else 140,
+                               modifier = if (c.ratingKey == standing)
+                                              Modifier.focusRequester(standOn)
+                                          else Modifier) { onOpen(c) }
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -3275,7 +4076,15 @@ private fun fmt(sec: Long): String {
 }
 
 private fun play(ctx: Context, m: Media, positionSec: Long, subIndex: Int? = null) {
-    ctx.startActivity(playIntent(ctx, m, positionSec, subIndex))
+    // A row the hat is holding stays the hat's when it is pressed. Opening it from
+    // Continue watching and playing it wrote an ordinary place instead, so the shelf
+    // lost track of its own evening and Next handed over the next episode of the
+    // programme rather than drawing.
+    val go = playIntent(ctx, m, positionSec, subIndex)
+    if (m.shuffleId.isNotEmpty()) {
+        go.putExtra("casual", true).putExtra("shelf", m.shuffleId)
+    }
+    ctx.startActivity(go)
 }
 
 /** Everything the player needs, in one place, so the next episode can start itself. */

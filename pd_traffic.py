@@ -150,6 +150,18 @@ def note(sent, how="", row=None, when=None):
                     "gb": round(int(sent) / 1e9, 3),
                     "to": row.get("who") or "",
                     "address": row.get("address") or "",
+                    # whose viewing put this file in the queue, and what about it:
+                    # a log of what moved says nothing about why it moved
+                    "for": row.get("for") or "",
+                    "why": row.get("why") or "",
+                    # and how fast it actually went. A list of what moved and when
+                    # cannot answer "why was tonight slow": the same file at eighty
+                    # megabits and at seventeen looks identical here, and which of
+                    # the two it was is the whole question.
+                    "secs": int(max(0, time.time() - float(row.get("started") or 0))
+                                if row.get("started") else 0),
+                    "mbit": round(float(row.get("average") or 0) * 8, 1),
+                    "peak": round(float(row.get("peak") or 0) * 8, 1),
                 }) + chr(10))
         except OSError:
             pass                      # a note nobody kept is not worth a fault

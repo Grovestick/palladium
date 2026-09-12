@@ -12,10 +12,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pd-server.py pd_localapi.py pd_library.py pd_gpu.py pd_invites.py pd_subs.py \
-     pd_sync.py pd_upnp.py pd_watching.py pd_follow.py pd_ai_subs.py \
-     pd_machine.py pd_traffic.py pd_skins.py pd_faults.py pd_update.py \
-     pd_subs_make.py changes.json ./
+# Every module, by the shape of its name rather than one by one. The list was
+# written out in full and fell behind the server twice: a module added after it
+# was written is imported by name at startup, and the container then restarts for
+# ever saying only which one it could not find.
+COPY pd-server.py pd_*.py changes.json ./
 COPY static/ ./static/
 
 # A user of its own rather than root: the films are mounted read-only, but a media

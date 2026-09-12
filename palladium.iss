@@ -33,7 +33,7 @@ RestartApplications=no
 OutputDir=build
 OutputBaseFilename=Palladium-Setup-{#MyVersion}
 SetupIconFile=static\palladium.ico
-UninstallDisplayIcon={app}\palladium.exe
+UninstallDisplayIcon={app}\palladium-server.exe
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -43,8 +43,12 @@ ArchitecturesInstallIn64BitMode=x64compatible
 [Files]
 Source: "build\Palladium\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; the tray program of earlier builds: the server shows the icon now
+Type: files; Name: "{app}\palladium.exe"
+
 [Icons]
-Name: "{group}\Palladium"; Filename: "{app}\palladium.exe"
+Name: "{group}\Palladium"; Filename: "{app}\palladium-server.exe"; Parameters: "--no-open"
 
 [Run]
 ; Nothing is asked and nothing is arranged here. Starting at sign-in and letting the
@@ -52,7 +56,7 @@ Name: "{group}\Palladium"; Filename: "{app}\palladium.exe"
 ; can be changed and where the second one can ask for the administrator it needs.
 ; No skipifsilent: an install that replaces a running server should leave one
 ; running. Silently installed, this is the only thing that starts it again.
-Filename: "{app}\palladium.exe"; Description: "Start Palladium now"; Flags: nowait postinstall
+Filename: "{app}\palladium-server.exe"; Parameters: "--no-open"; Description: "Start Palladium now"; Flags: nowait postinstall
 
 [UninstallRun]
 Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Palladium"""; Flags: runhidden; RunOnceId: "DropFirewallRule"
