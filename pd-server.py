@@ -11,6 +11,7 @@ http://localhost:8765 also gives the Google Cast SDK the secure origin it insist
 """
 import hashlib
 import hmac
+import math
 from pd_library import is_episode, is_title, move_key
 import http.server
 import shutil
@@ -1430,6 +1431,112 @@ def srt_to_vtt(text):
 COOKIE_LIFE = 365 * 86400
 
 
+#: Measured loudness per part, cached: measuring costs 180 s of ffmpeg and a file
+#: does not change. {part id: {"lufs": float, "size": int, "when": int}}
+LOUDNESS = {}
+LOUDNESS_LOCK = threading.Lock()
+#: parts being measured now, so repeated requests do not start repeated measurements
+MEASURING = set()
+
+#: Target loudness. Not EBU's -23: this library holds two copies of one episode 13 dB
+#: apart, and the usual level here is nearer streaming's -16 to -18.
+VOLUME_TARGET = -18.0
+#: dead band: files within this of the target are left alone
+VOLUME_LEEWAY = 4.0
+#: and the maximum correction applied
+VOLUME_MOST = 8.0
+
+
+def loudness_file():
+    return os.path.join(ROOT, "loudness.json")
+
+
+def read_loudness():
+    """The cached measurements, read from disk once."""
+    if LOUDNESS:
+        return LOUDNESS
+    try:
+        with open(loudness_file(), encoding="utf-8") as f:
+            LOUDNESS.update(json.load(f) or {})
+    except (OSError, ValueError):
+        pass
+    return LOUDNESS
+
+
+def write_loudness():
+    try:
+        with open(loudness_file(), "w", encoding="utf-8") as f:
+            json.dump(LOUDNESS, f)
+    except OSError:
+        pass
+
+
+def measure_loudness(part, path, size):
+    """Measure one file on a background thread and cache the result."""
+    def work():
+        try:
+            import pd_gpu
+            said = pd_gpu.loudness(path)
+        except Exception:
+            said = None
+        with LOUDNESS_LOCK:
+            MEASURING.discard(str(part))
+            if said is not None:
+                LOUDNESS[str(part)] = {"lufs": said, "size": int(size or 0),
+                                       "when": int(time.time())}
+                write_loudness()
+    # Not while anything is playing or copying: measuring is a 180 s read off the
+    # same disks. Two concurrent measurements held a copy at 41 Mbit with the drive
+    # at 57 ms latency. An unmeasured file plays uncorrected until the next quiet
+    # moment.
+    if Handler.WATCHING_NOW or Handler.disk_reading_slow():
+        return
+    with LOUDNESS_LOCK:
+        read_loudness()
+        known = LOUDNESS.get(str(part))
+        if known and int(known.get("size") or 0) == int(size or 0):
+            return
+        if str(part) in MEASURING or len(MEASURING) >= 1:
+            return               # one at a time: this is ffmpeg, not a lookup
+        MEASURING.add(str(part))
+    threading.Thread(target=work, name="palladium-loudness", daemon=True).start()
+
+
+def volume_gain(part, path=None, size=0, cfg=None):
+    """Correction in dB for this file, or 0.
+
+    0 unless evenVolume is on, the file is measured, and it is outside the dead band.
+    """
+    stored = cfg if cfg is not None else (read_settings() or {})
+    if not stored.get("evenVolume"):
+        return 0.0
+    with LOUDNESS_LOCK:
+        known = read_loudness().get(str(part))
+    if not known:
+        if path:
+            measure_loudness(part, path, size)
+        return 0.0
+    try:
+        target = float(stored.get("volumeTarget") or VOLUME_TARGET)
+    except (TypeError, ValueError):
+        target = VOLUME_TARGET
+    off = target - float(known.get("lufs") or target)
+    if abs(off) <= VOLUME_LEEWAY:
+        return 0.0
+    return round(max(-VOLUME_MOST, min(VOLUME_MOST, off)), 1)
+
+
+def hand_over_the_gain():
+    """Give pd_localapi the gain and loudness lookups. Called once at startup."""
+    try:
+        import pd_localapi
+        pd_localapi.GAIN_OF[0] = lambda part, path, size: volume_gain(part, path, size)
+        pd_localapi.LOUDNESS_OF[0] = lambda part: (
+            (read_loudness().get(str(part)) or {}).get("lufs"))
+    except Exception:
+        pass
+
+
 def learn_invites(said, owner=None, master="", look=None):
     """Take the main server's invitations, so its guests are known here too.
 
@@ -1455,6 +1562,7 @@ def learn_invites(said, owner=None, master="", look=None):
                      "email": "", "created": int(time.time()),
                      "expires": int(r.get("expires") or 0),
                      "language": r.get("language") or "",
+                     "role": str(r.get("role") or ""),
                      "lastSeen": 0, "hits": 0, "borrowed": True})
     # what the main server keeps for each of them, refreshed every time: it is the
     # sentence this machine puts at the top of its own page
@@ -1463,6 +1571,10 @@ def learn_invites(said, owner=None, master="", look=None):
         if theirs_row:
             for name in ("cacheDeck", "cacheList", "cacheCasual"):
                 row[name] = bool(theirs_row.get(name))
+            # role, refreshed each round, so a key promoted or demoted on the main
+            # server changes here too. Cache keys are filtered out before sending.
+            if row.get("borrowed"):
+                row["role"] = str(theirs_row.get("role") or "")
     INVITES.save(keep)
     if isinstance(look, dict) and look:
         # How the main server draws each person's subtitles, kept here under the same key.
@@ -2259,6 +2371,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             write_settings(stored)
             self.reply_json({"collections": self.shelves_holding(key)})
             return
+        if path == "/stream/buffer":
+            self.stream_buffer()
+            return
         if path == "/feedback/seen":
             # the owner has the page open: everything up to now has been looked at
             stored = self.settings_file()
@@ -2530,6 +2645,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 write_settings(stored, merge=False)
                 self.reply_json({"autoNext": stored["autoNext"]})
                 return
+            # volume normalisation on/off, and the target in LUFS
+            if "evenVolume" in body or "volumeTarget" in body:
+                stored = self.settings_file()
+                if "evenVolume" in body:
+                    stored["evenVolume"] = bool(body["evenVolume"])
+                if "volumeTarget" in body:
+                    try:
+                        stored["volumeTarget"] = max(-31.0, min(-9.0,
+                                                     float(body["volumeTarget"])))
+                    except (TypeError, ValueError):
+                        pass
+                write_settings(stored, merge=False)
+                self.reply_json({"evenVolume": bool(stored.get("evenVolume")),
+                                 "volumeTarget": stored.get("volumeTarget",
+                                                            VOLUME_TARGET)})
+                return
             saved = self.save_subtitle_settings(body.get("subtitles", {}), key, device)
             self.reply_json({
                 "subtitles": saved, "device": device,
@@ -2719,7 +2850,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(403, "not allowed")
                 return
             names = [str(n) for n in ((self.read_json() or {}).get("names") or [])][:400]
-            found, facts, items = {}, {}, {}
+            found, facts, items, titles = {}, {}, {}, {}
             if names:
                 con = local().lib.db()
                 try:
@@ -2728,9 +2859,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             """SELECT f.path, f.item_id, f.episode_id, f.duration,
                                       f.container, f.vcodec, f.acodec, f.width,
                                       f.height, f.channels, f.bitrate,
-                                      e.aired AS aired
+                                      e.aired AS aired,
+                                      i.title AS title, i.year AS year,
+                                      i.sort_title AS sort_title
                                FROM file f
-                               LEFT JOIN episode e ON e.id = f.episode_id"""):
+                               LEFT JOIN episode e ON e.id = f.episode_id
+                               LEFT JOIN item i ON i.id = f.item_id"""):
                         low = os.path.basename(row["path"] or "").lower()
                         if low not in wanted:
                             continue
@@ -2738,6 +2872,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         found[name] = (str(row["episode_id"]) if row["episode_id"]
                                        else str(row["item_id"]))
                         items[name] = str(row["item_id"])      # the title, for a copy to file under
+                        # and this server's title for it. A follower names titles
+                        # from file names, so any title with punctuation differed and
+                        # lookups by name between the two returned nothing.
+                        titles[name] = {"title": row["title"], "year": row["year"],
+                                        "sort": row["sort_title"]}
                         # and what was measured when it arrived here, so the cache
                         # does not have to open the file to know what is in it
                         facts[name] = {k: row[k] for k in
@@ -2751,7 +2890,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             facts[name]["aired"] = row["aired"]
                 finally:
                     con.close()
-            self.reply_json({"keys": found, "facts": facts, "items": items})
+            self.reply_json({"keys": found, "facts": facts, "items": items,
+                             "titles": titles})
             return
         if path == "/follow/holding":
             # What the following server actually has, by this library's own numbers.
@@ -3167,6 +3307,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     one["episodes"] = max(0, min(int(body["episodes"]), 40))
                 except (TypeError, ValueError):
                     pass
+            # per-kind mode: off, night, or always. Sent one at a time so a page
+            # cannot overwrite a setting it was not displaying.
+            if isinstance(body.get("kinds"), dict):
+                import pd_follow as _f
+                kinds = dict(one.get("kinds") or {})
+                for kind, mode in body["kinds"].items():
+                    if kind in _f.KINDS and str(mode) in ("off", "night", "always"):
+                        kinds[str(kind)] = str(mode)
+                one["kinds"] = kinds
             # The hours this machine is the one awake. The page has always offered
             # them and the server has always dropped them, so an owner who typed 21
             # was left with 22 and nothing on screen to say otherwise.
@@ -3966,11 +4115,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             who = self.guest_name or "guest"
             body = "\n".join(
                 (who + ": " + ln) for ln in body.splitlines()[:120])
-        with open(os.path.join(ROOT, "debug.log"), "a", encoding="utf-8") as f:
-            f.write(body.rstrip("\n") + "\n")
+        body = self.not_again(body)
+        if body:
+            with open(os.path.join(ROOT, "debug.log"), "a", encoding="utf-8") as f:
+                f.write(body.rstrip("\n") + "\n")
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    #: last time each browser log line was written, keyed by the line with digits
+    #: replaced. {line: when}
+    SAID_BEFORE = {}
+    #: and how long before the same line is written again
+    SAY_AGAIN = 900
+
+    @classmethod
+    def not_again(cls, body):
+        """Drop browser log lines repeated within SAY_AGAIN seconds.
+
+        A stale page posts the same line every 15 s until reloaded, which buried the
+        rest of the log. The page reports once now, but pages already open run the old
+        code.
+        """
+        now = time.time()
+        if len(cls.SAID_BEFORE) > 400:
+            cls.SAID_BEFORE.clear()
+        keep = []
+        for line in body.splitlines():
+            # the same line without whatever counts up in it: times, sizes, places
+            bare = re.sub(r"\d+", "#", line)
+            if line.strip() and now - (cls.SAID_BEFORE.get(bare) or 0) < cls.SAY_AGAIN:
+                continue
+            cls.SAID_BEFORE[bare] = now
+            keep.append(line)
+        return "\n".join(keep)
 
     @staticmethod
     def wanted_audio(q, src=None):
@@ -4149,7 +4327,75 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     % (rate, mbit))
         return ""
 
-    def capped(self, height, mbit):
+    #: What a sound track of this kind costs, in megabits, at six channels. Taken off
+    #: the top before the picture is measured: the library keeps the whole container's
+    #: rate, and a film with DTS carries a megabit and a half that is not picture - and
+    #: is re-encoded to something far smaller anyway.
+    SOUND_MBIT = {"truehd": 4.0, "mlp": 4.0, "pcm": 4.6, "flac": 1.0,
+                  "dtshd": 3.0, "dts-hd": 3.0, "dts": 1.5,
+                  "eac3": 0.64, "ac3": 0.64, "opus": 0.25, "vorbis": 0.25,
+                  "aac": 0.25, "mp3": 0.2, "mp2": 0.2}
+    SOUND_OTHERWISE = 0.4
+
+    #: How much of an old codec's bitrate a modern one needs for the same picture.
+    #: MPEG-2 spends three times what h264 does, and the DVD rips spend about half
+    #: again; asking for the old number would re-encode a 21 megabit broadcast at 21.
+    CODEC_COST = {"mpeg2video": 0.4, "mpeg1video": 0.4, "msmpeg4v3": 0.6,
+                  "mpeg4": 0.6, "msmpeg4v2": 0.6, "wmv3": 0.8, "vc1": 0.8,
+                  "h264": 1.0, "avc": 1.0, "hevc": 1.0, "h265": 1.0,
+                  "vp9": 1.0, "av1": 1.0}
+
+    #: x265 only: 1.5x the source rate
+    HEVC_HEADROOM = 1.5
+
+    @classmethod
+    def sound_mbit(cls, src):
+        """Audio bitrate of this file, in Mbit."""
+        try:
+            name = str((src or {})["acodec"] or "").lower()
+        except (KeyError, IndexError, TypeError):
+            return 0.0
+        if not name:
+            return 0.0
+        cost = cls.SOUND_OTHERWISE
+        for word, mbit in cls.SOUND_MBIT.items():
+            if word in name:
+                cost = mbit
+                break
+        try:
+            channels = int((src or {})["channels"] or 0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            channels = 0
+        # table is for 6 channels; 8 cost ~30% more, 2 cost ~60% less
+        if channels >= 8:
+            cost *= 1.3
+        elif 0 < channels <= 2:
+            cost *= 0.4
+        return cost
+
+    @classmethod
+    def source_mbit(cls, src, hevc=False):
+        """Encode ceiling derived from the source file, in Mbit, or 0.
+
+        Container rate minus audio, scaled by CODEC_COST for the source codec (MPEG-2
+        spends ~3x h264 for the same picture), then HEVC_HEADROOM for x265. Minimum 1.
+        """
+        try:
+            rate = float((src or {})["bitrate"] or 0) / 1000.0
+        except (KeyError, IndexError, TypeError, ValueError):
+            return 0
+        if rate <= 0:
+            return 0
+        picture = max(0.1, rate - cls.sound_mbit(src))
+        try:
+            vcodec = str((src or {})["vcodec"] or "").lower()
+        except (KeyError, IndexError, TypeError):
+            vcodec = ""
+        cost = cls.CODEC_COST.get(vcodec, 1.0)
+        want = picture * cost * (cls.HEVC_HEADROOM if hevc else 1.0)
+        return max(1, int(math.ceil(want)))
+
+    def capped(self, height, mbit, src=None, hevc=False):
         """What a viewer gets, given what they asked for and where they are.
 
         Three things have a say, in this order: what the player asked for, what this
@@ -4178,6 +4424,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 mbit = int(local().lib.config().get("awayMbit") or 8)
             except (TypeError, ValueError):
                 mbit = 8
+        # capped at what the source carries: the rules above measure the line, not
+        # the file. A 528x384 DVD rip at 1 Mbit was re-encoded at 8 Mbit, three times
+        # its own size, with no detail to gain.
+        own = self.source_mbit(src, hevc)
+        if own and (not mbit or mbit > own):
+            mbit = own
         return int(height or 0), int(mbit or 0)
 
     def wanted_rate(self, q):
@@ -4206,7 +4458,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             mi = int(q.get("mi", ["0"])[0])
             src = local().file_for(key, mi) if q.get("src", [""])[0] == "local" else None
             height, mbit = self.capped(int(q.get("height", ["0"])[0]),
-                                       self.wanted_rate(q))
+                                       self.wanted_rate(q), src,
+                                       q.get("hevc", ["0"])[0] in ("1", "true", "yes"))
             st = engine().start_hls(
                 key,
                 audio_index=self.wanted_audio(q, src),
@@ -4438,7 +4691,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                    or self.house_source(q)) \
                 if q.get("src", [""])[0] == "local" else None
             height, mbit = self.capped(int(q.get("height", ["0"])[0] or 0),
-                                       self.wanted_rate(q))
+                                       self.wanted_rate(q), src,
+                                       q.get("hevc", ["0"])[0] in ("1", "true", "yes"))
             burn = self.burn_for(q, src) if self.burn_allowed_here(q) else None
             if not self.video_copies(src, q, height, mbit, burn):
                 return {"at": offset, "copy": False}
@@ -4592,7 +4846,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             src = ((local().file_for(key, mi) or self.house_source(q))
                    if q.get("src", [""])[0] == "local" else None)
             height, mbit = self.capped(int(q.get("height", ["0"])[0]),
-                                       self.wanted_rate(q))
+                                       self.wanted_rate(q), src,
+                                       q.get("hevc", ["0"])[0] in ("1", "true", "yes"))
             burn = self.burn_for(q, src) if self.burn_allowed_here(q) else None
             # the picture as it is, for an app that asked where such a stream starts
             copy = (q.get("copyv", ["0"])[0] == "1"
@@ -4610,6 +4865,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 copy_video=copy,
                                 src=src,
                                 audio_mode=mode,
+                                # loudness correction, applied by the encoder
+                                gain_db=volume_gain(src.get("part") or src.get("id"),
+                                                    src.get("file"),
+                                                    src.get("size") or 0),
                                 # the client saying it can decode HEVC, which means
                                 # nothing has to be made smaller to reach it
                                 hevc=q.get("hevc", ["0"])[0] in ("1", "true", "yes"),
@@ -5818,13 +6077,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         import urllib.request
         try:
             where = one["master"].rstrip("/")
-            ask = urllib.parse.urlencode(
-                {k: v for k, v in what.items() if v not in (None, "")})
-            with urllib.request.urlopen(
-                    where + "/local/library/find?" + ask + "&t=" +
-                    urllib.parse.quote(one["key"]), timeout=20) as answer:
-                found = json.loads(answer.read().decode("utf-8", "replace"))
-            theirs = ((found.get("MediaContainer") or {}).get("key") or "")
+            # by key first: both machines derive the same key from title and year,
+            # while names differ because a follower names files from their filenames
+            theirs = ""
+            try:
+                with urllib.request.urlopen(
+                        where + "/local/library/metadata/" + urllib.parse.quote(str(key))
+                        + "?t=" + urllib.parse.quote(one["key"]), timeout=20) as answer:
+                    said = json.loads(answer.read().decode("utf-8", "replace"))
+                if ((said.get("MediaContainer") or {}).get("Metadata") or []):
+                    theirs = str(key)
+            except Exception:
+                theirs = ""
+            if theirs:
+                found = {}
+            else:
+                ask = urllib.parse.urlencode(
+                    {k: v for k, v in what.items() if v not in (None, "")})
+                with urllib.request.urlopen(
+                        where + "/local/library/find?" + ask + "&t=" +
+                        urllib.parse.quote(one["key"]), timeout=20) as answer:
+                    found = json.loads(answer.read().decode("utf-8", "replace"))
+                theirs = ((found.get("MediaContainer") or {}).get("key") or "")
             if not theirs:
                 return None
             req = urllib.request.Request(
@@ -6002,6 +6276,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     DISK_BUSY = 0.35
     DISK_EASY = 0.15
 
+    #: share of read time spent waiting on disk, and when it was measured
+    DISK = {"busy": 0.0, "when": 0.0}
+
     def share_by_reads(self, now, most, disk, wrote):
         """How much of the reading the cache should do, from how this machine is faring.
 
@@ -6018,6 +6295,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if both <= 0:
             return now
         busy = disk / both
+        # recorded for the sync ceiling: a copy reads the same disks, so this is an
+        # earlier signal than a viewer's buffer running down
+        Handler.DISK = {"busy": busy, "when": time.time()}
         if busy > Handler.DISK_BUSY:
             return min(most, now + 10)
         if busy < Handler.DISK_EASY:
@@ -6291,13 +6571,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         what is on their list. It is what makes one person's two ticks visibly dearer
         than another's.
         """
+        import pd_localapi
         con = local().lib.db()
         seen, files, size = set(), 0, 0
         keys, listed, shuffled = [], [], []
         try:
             keys = [str(r["key"]) for r in con.execute(
                 """SELECT key FROM progress WHERE who = ? AND position > 30
-                   AND position < duration * 0.95 AND COALESCE(casual, 0) = 0
+                   AND position < """ + pd_localapi.FINISHED_SQL + """
+                     AND COALESCE(casual, 0) = 0
                    ORDER BY updated DESC LIMIT 40""",
                 (who,))]
             listed = [str(k) for k in self.watchlist_of(who)[:40]]
@@ -6677,12 +6959,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         film off the cache talks to the cache directly and says nothing here, so the
         drawing called a machine carrying half a film "standing by".
 
-        Kept for half a minute: the drawing is made again every few seconds and this
-        is a round trip to another computer.
+        Kept for five seconds: the drawing is made again every two, and a round trip
+        to the machine next to it takes milliseconds. At half a minute the picture was
+        a different moment from the list of viewers printed under it - a film had been
+        coming off both machines for twenty seconds before the line appeared.
         """
         now = time.time()
         had = Handler.COPY_BUSY
-        if had and now - had[1] < 30:
+        if had and now - had[1] < 5:
             return had[0]
         Handler.COPY_BUSY = ([], now)
         one = self.standby_now()
@@ -6713,6 +6997,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             busy = []
         Handler.COPY_BUSY = (busy, now)
+        return busy
+
+    #: what the followed server is serving, and when it was asked
+    HOUSE_BUSY = ([], 0.0)
+
+    def house_is_busy(self):
+        """Screens the followed server is serving, by address.
+
+        Mirror of copy_is_busy for a follower: the diagram drew a line only from
+        this machine, so a film read off both showed the main server idle while it
+        carried half. Asked with the follow key: a browser's key here is local and
+        unknown to the main server.
+        """
+        now = time.time()
+        had = Handler.HOUSE_BUSY
+        if had and now - had[1] < 5:
+            return had[0]
+        Handler.HOUSE_BUSY = ([], now)
+        busy = []
+        try:
+            import pd_follow
+            one = pd_follow.settings(local().lib.config())
+            where = str(one.get("master") or "").rstrip("/")
+            key = str(one.get("key") or "")
+            if one.get("on") and where and key:
+                import urllib.request
+                with urllib.request.urlopen(
+                        "%s/watching?t=%s" % (where, urllib.parse.quote(key)),
+                        timeout=3) as answer:
+                    said = json.loads(answer.read().decode("utf-8", "replace"))
+                busy = [{"address": str((r or {}).get("address") or ""),
+                         "mbit": round(float((r or {}).get("mbit") or 0), 1),
+                         "title": str((r or {}).get("title") or "")}
+                        for r in (said.get("live") or [])
+                        if (r or {}).get("how") != "syncing"]
+        except Exception:
+            busy = []
+        Handler.HOUSE_BUSY = (busy, now)
         return busy
 
     def standby_now(self):
@@ -6882,22 +7204,85 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return out
 
     @classmethod
-    def link_seen(cls, total):
-        """Remember the most this machine has carried, and let it fade.
+    def link_seen(cls, total, side="home"):
+        """High-water mark per side, halved after 10 quiet minutes.
 
-        A high-water mark that never falls is a measurement of the best night this
-        machine ever had, which is no use on a worse one. It halves after ten quiet
-        minutes, so a line that has got slower is believed within the hour.
+        A mark that never falls measures the best night this machine ever had. One
+        mark per side: LAN and WAN differ by an order of magnitude, and a single
+        number took the larger of the two.
         """
         now = time.time()
-        if total > cls.LINK["seen"]:
-            cls.LINK = {"seen": float(total), "when": now}
-        elif now - (cls.LINK["when"] or 0) > 600:
-            cls.LINK = {"seen": max(0.0, cls.LINK["seen"] * 0.5), "when": now}
-        return cls.LINK["seen"]
+        mark = cls.LINK.setdefault(side, {"seen": 0.0, "when": 0.0})
+        if total > mark["seen"]:
+            cls.LINK[side] = {"seen": float(total), "when": now}
+        elif now - (mark["when"] or 0) > 600:
+            cls.LINK[side] = {"seen": max(0.0, mark["seen"] * 0.5), "when": now}
+        return cls.LINK[side]["seen"]
+
+    #: seconds of buffer each viewer reports, and when. The one measure that reads
+    #: the same for direct play and for a transcode.
+    AHEAD = {}
+    #: A fed player holds ~50 s. Under 40 the ceiling stops climbing, under 30 it
+    #: halves, under 20 it drops to the floor.
+    FED_AHEAD = 50.0
+    EASE_AHEAD = 40.0
+    THIN = 30.0
+    PANIC_AHEAD = 20.0
+    #: A transcode holds whatever the encoder is ahead by, so a steady 8 s is
+    #: healthy. Direction separates the two; below this, falling or not, it is starved.
+    STALLED_AHEAD = 5.0
 
     @staticmethod
-    def a_film_is_struggling(rows):
+    def how_thin(now=None, side=None):
+        """Worst recent report: "", "ease", "back" or "panic".
+
+        Filtered to one side when given: a thin buffer on the WAN says nothing about
+        a copy between two machines on the LAN.
+        """
+        now = now or time.time()
+        worst = ""
+        for said in list(Handler.AHEAD.values()):
+            ahead, when = said[0], said[1]
+            where = said[2] if len(said) > 2 else None
+            if side and where and where != side:
+                continue
+            if now - when >= 12 or ahead < 0:
+                continue
+            before = said[3] if len(said) > 3 else -1.0
+            # the player reports a stall: no measurement overrides that
+            if len(said) > 4 and said[4]:
+                return "panic"
+            # steady or rising and above the floor: fed at whatever height this way
+            # of watching holds, and taking megabits off a copy would not raise it
+            if (ahead > Handler.STALLED_AHEAD
+                    and not (before >= 0 and ahead < before - 1.0)):
+                continue
+            if ahead < Handler.PANIC_AHEAD:
+                return "panic"
+            if ahead < Handler.THIN:
+                worst = "back"
+            elif ahead < Handler.EASE_AHEAD and worst != "back":
+                worst = "ease"
+        return worst
+
+    @staticmethod
+    def running_dry(now=None, side=None):
+        """True when a report is at "back" or "panic"."""
+        return Handler.how_thin(now, side) in ("back", "panic")
+
+    @classmethod
+    def disk_reading_slow(cls, now=None):
+        """True when reads were lately spending their time waiting on disk.
+
+        Share of each block's time spent reading rather than sending, measured while
+        serving. An earlier signal than a viewer's buffer, and it costs nothing.
+        """
+        now = now or time.time()
+        return (now - (cls.DISK.get("when") or 0) < 12
+                and (cls.DISK.get("busy") or 0) > cls.DISK_BUSY)
+
+    @staticmethod
+    def a_film_is_struggling(rows, side=None):
         """Whether anybody watching is getting less than they were getting.
 
         Measured against each viewer's own average rather than against the bitrate of
@@ -6908,6 +7293,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         A viewer with nothing open is holding a full buffer, which is the opposite of
         starved, and the first seconds of a viewing have no average worth the name.
         """
+        # the players' own reports first: true before the picture stops, and it
+        # reads the same for direct play and for a transcode
+        if Handler.running_dry(side=side):
+            return True
         for r in rows:
             if r.get("how") == "syncing" or r.get("holding"):
                 continue
@@ -6921,37 +7310,279 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     @classmethod
-    def sync_ceiling(cls, cfg, streaming, syncing):
+    def sync_ceiling(cls, cfg, streaming, syncing, side="home"):
         """What a copy may take this second, in megabits.
 
         Nought from the settings means no ceiling and is left alone. A number means
         that number. Otherwise it is worked out: what the line has been seen to carry,
         less what the films are drawing, less a margin for the bursts they ask in.
         """
+        # 0 means no ceiling chosen, not a ceiling of zero: returned as a number it
+        # read downstream as unlimited, and a copy took 300 Mbit off the disks a film
+        # was being read from.
         said = cfg.get("syncMbitWhileWatching")
-        if said not in (None, ""):
+        if said not in (None, "", 0, "0"):
             try:
                 return float(said)
             except (TypeError, ValueError):
                 pass
         if not cfg.get("syncAdaptive", True):
             return 20.0
-        line = cls.link_seen(float(streaming) + float(syncing))
+        line = cls.link_seen(float(streaming) + float(syncing), side)
+        # a viewer's own report is enough: without this it was ignored until a copy
+        # had run flat out long enough to measure the line
+        # under PANIC_AHEAD the copy drops to LEAST_MBIT
+        if cls.how_thin(side=side) == "panic":
+            return cls.LEAST_MBIT
         if line <= 0:
             return 0.0                    # nothing measured yet: no ceiling to give
         # what is left on the line once the films have what they are drawing
         spare = max(cls.LEAST_MBIT, line * cls.SPARE - float(streaming))
+        # Room to probe above the mark. What has been seen is what this ceiling has
+        # allowed so far, so a ceiling capped by its own measurements can never learn
+        # a higher one: a copy sat at 16 Mbit on a 100 Mbit LAN. It may climb to twice
+        # what the side has carried, doubling every few seconds until something real
+        # stops it - a struggling viewer halves it.
+        room = max(spare, line * 2)
         now = time.time()
-        pace = cls.PACE["mbit"] or spare
-        if now - (cls.PACE["when"] or 0) > 30:
+        held = cls.PACE.setdefault(side, {"mbit": 0.0, "when": 0.0})
+        pace = held["mbit"] or spare
+        if now - (held["when"] or 0) > 30:
             pace = spare                  # nobody has watched for a while: start again
-        elif cls.a_film_is_struggling(cls.WATCHING_NOW):
+        elif cls.a_film_is_struggling(cls.WATCHING_NOW) or cls.disk_reading_slow():
+            # either side: the two lines are separate but the disks are shared, so a
+            # WAN viewer can be starved by a LAN copy taking none of their megabits.
+            # The side decides how much room there is; struggle decides whether to
+            # take it.
             pace = pace * cls.BACK_OFF
+        elif cls.how_thin(side=side) == "ease":
+            pass                  # under forty: hold here, do not climb further
         else:
             pace = pace + cls.STEP_UP
-        pace = max(cls.LEAST_MBIT, min(spare, pace))
-        cls.PACE = {"mbit": pace, "when": now}
+        pace = max(cls.LEAST_MBIT, min(room, pace))
+        cls.PACE[side] = {"mbit": pace, "when": now}
         return pace
+
+    @classmethod
+    def settled_numbers(cls):
+        """The server's built-in constants, grouped, for Settings > Advanced.
+
+        Read from the values themselves so the page cannot disagree with the server.
+        Read-only: these are the defaults, not settings.
+        """
+        import pd_follow
+        import pd_torrents
+
+        def row(name, value, what):
+            return {"name": name, "value": str(value), "what": what}
+
+        sound = ", ".join("%s %.2g" % (k, v) for k, v in
+                          sorted(cls.SOUND_MBIT.items(), key=lambda kv: -kv[1]))
+        seen, costs = set(), []
+        for name, cost in sorted(cls.CODEC_COST.items(), key=lambda kv: kv[1]):
+            if cost not in seen or cost == 1.0:
+                costs.append("%s %.2g" % (name, cost))
+                seen.add(cost)
+        return [
+            {"title": "Making a film smaller",
+             "why": "What an encoder is asked for when a film cannot be sent as it is. "
+                    "Each of these is a ceiling, never a target to fill.",
+             "rows": [
+                 row("Away, with nothing set", "8 Mbit",
+                     "What somebody outside the house is given when no ceiling has been "
+                     "chosen for them. Inside the house there is no ceiling."),
+                 row("x265 headroom", "%.2g times" % cls.HEVC_HEADROOM,
+                     "The one encode allowed more than the picture carries, because a "
+                     "re-encode is never free. Everything else is held to what came in: "
+                     "spending more cannot put back what was never there."),
+                 row("Sound taken off the top", sound + " Mbit",
+                     "The library keeps the whole container's rate, so the sound comes "
+                     "off before the picture is measured - it is re-encoded to a "
+                     "fraction of this anyway. These are the costs at six channels; "
+                     "eight cost a third more, two a good deal less, and anything "
+                     "unnamed is reckoned at %.2g." % cls.SOUND_OTHERWISE),
+                 row("What an old codec costs", ", ".join(costs),
+                     "How much of the old bitrate a modern encoder needs for the same "
+                     "picture. MPEG-2 spends about three times what h264 does, so a "
+                     "broadcast at twenty-one megabits is redone at eight."),
+                 row("Least given to a picture", "1 Mbit",
+                     "However small the file, a picture still has to arrive."),
+                 row("Sound aimed at", "%.4g LUFS" % VOLUME_TARGET,
+                     "Where a file's sound is put, when evening it out is on. LUFS is "
+                     "how loud something is over its whole length rather than at its "
+                     "peak: broadcasting works to -23, streaming sits nearer -18, a "
+                     "cinema mix lands around -27. This library holds two copies of "
+                     "one episode fifteen decibels apart, and the ear is set by "
+                     "whatever is played most."),
+                 row("Left alone within", "%.3g dB" % VOLUME_LEEWAY,
+                     "How far off a file may be before anything is done to it. Most "
+                     "releases are within a few decibels of each other and are better "
+                     "left exactly as they were made; this is about the one that is "
+                     "eight decibels under the rest."),
+                 row("Most ever added or taken", "%.3g dB" % VOLUME_MOST,
+                     "The end of the lift. A file far below everything else is brought "
+                     "most of the way up rather than all of it, because a mix that "
+                     "quiet is usually quiet on purpose somewhere in the middle of it."),
+                 row("Measured over", "180 seconds from 5:00",
+                     "How much of a file is listened to for the number. Far enough past "
+                     "the titles to be the thing itself, short enough to measure in a "
+                     "few seconds, and done once per file - a file does not change."),
+             ]},
+            {"title": "Sharing the line",
+             "why": "How a copy running in the background gives way to somebody "
+                    "watching. Worked out from what the line is seen to carry, never "
+                    "from a number anybody typed.",
+             "rows": [
+                 row("Left clear for the films", "%.0f per cent" % ((1 - cls.SPARE) * 100),
+                     "Of whatever the line has been seen to carry, this much is kept "
+                     "clear above what the films are drawing. A film asks in bursts and "
+                     "a buffer that is filling wants more than its average."),
+                 row("Least a copy may have", "%.3g Mbit" % cls.LEAST_MBIT,
+                     "A copy is slowed, never stopped outright."),
+                 row("Backing off", "times %.3g" % cls.BACK_OFF,
+                     "What the ceiling is multiplied by while somebody watching is "
+                     "struggling."),
+                 row("Creeping back up", "plus %.3g Mbit" % cls.STEP_UP,
+                     "Added each second while nobody is."),
+                 row("Struggling", "under %.0f per cent of its own average"
+                     % (cls.STARVED * 100),
+                     "Measured against each viewer's own average rather than against "
+                     "the bitrate of the film: a direct play reads in bursts and idles "
+                     "between them, so below what the film needs is true of a healthy "
+                     "one half the time."),
+                 row("Seconds a player holds",
+                     "%.3g fed, %.3g hold, %.3g give back, %.3g floor"
+                     % (cls.FED_AHEAD, cls.EASE_AHEAD, cls.THIN, cls.PANIC_AHEAD),
+                     "A player fed properly keeps about fifty seconds of film in front "
+                     "of itself. Under forty a copy stops climbing, under thirty it "
+                     "halves, under twenty it drops to the floor - but only while the "
+                     "buffer is falling, or under %.3g seconds. A film out of the "
+                     "encoder arrives as it is made and its player holds whatever the "
+                     "encoder is ahead by, so a steady eight seconds there is healthy "
+                     "and nothing a copy is taking. A player that says it has stopped "
+                     "for want of anything to show goes to the floor whatever its "
+                     "depth." % cls.STALLED_AHEAD),
+                 row("How far it may climb", "twice what that side has carried",
+                     "What has been seen is not what the line can carry - it is what "
+                     "this ceiling has allowed so far, and a ceiling that never "
+                     "exceeds its own measurements can never learn a bigger number. "
+                     "Carrying more raises the figure, so it doubles every few seconds "
+                     "until the wire, a disk or somebody watching stops it."),
+                 row("Two lines, not one", "the network here, and the one out",
+                     "A film going out to somebody's phone and a copy to a machine in "
+                     "the next room take no megabits from each other, so each side is "
+                     "measured on its own and a copy gives way only to what shares its "
+                     "own path. Counting them together held a copy between two "
+                     "machines three metres apart to what was left of an upload."),
+             ]},
+            {"title": "Keeping copies",
+             "why": "What a second machine is asked to hold when nobody has set its "
+                    "own numbers.",
+             "rows": [
+                 row("Hours kept ahead", "4",
+                     "Of a programme somebody is part-way through."),
+                 row("Episodes kept ahead", "6",
+                     "And no more than this many, however many hours that comes to."),
+                 row("Part-way, each person", "%d films, %d days"
+                     % (cls.PARTWAY_EACH, cls.PARTWAY_DAYS),
+                     "How many things one person brings to a copy as \"part-way "
+                     "through\", and how old a place may be before it stops counting. "
+                     "Forty apiece with no age at all made a queue of a hundred and "
+                     "ten: somebody who sampled fifty films last winter was still in "
+                     "the middle of every one of them."),
+                 row("Least kept ahead", "%d episodes" % cls.LEAST_AHEAD,
+                     "However few hours are asked for: an evening is at least three "
+                     "episodes of anything."),
+                 row("The shuffle's next", "%d" % cls.SHUFFLE_DEEP,
+                     "How far down a shuffle's queue is copied, counting the title it "
+                     "is on - drawing one writes it down as played, and it was being "
+                     "swept while somebody watched it."),
+                 row("Asked how it is getting on", "every %d s" % pd_follow.ASK_EVERY,
+                     "How often the machine keeping copies asks the main server what it "
+                     "should be holding."),
+                 row("Read in lumps of", "%d MB" % (pd_follow.LUMP // (1024 * 1024)),
+                     "What a copy asks for at a time."),
+                 row("Given up on after", "%d tries" % pd_follow.GIVE_UP_AFTER,
+                     "A file that will not come across."),
+                 row("A file being read is kept", "%d s" % pd_follow.KEPT_FOR,
+                     "After the last request for it, so a sweep does not take a film out "
+                     "from under somebody between two of their own requests."),
+             ]},
+            {"title": "Films from a pack",
+             "why": "What counts as a film inside a torrent, and how it is fetched.",
+             "rows": [
+                 row("Smallest thing called a film",
+                     "%d MB" % (pd_torrents.FILM_BYTES // (1000 * 1000)),
+                     "Anything smaller in a pack is a sample, a trailer or an extra."),
+                 row("Asked for in blocks of", "%d kB" % (pd_torrents.BLOCK // 1024),
+                     "The unit a torrent client reads in."),
+             ]},
+            {"title": "Reading and waiting",
+             "why": "How long this server waits for things, and when it decides a disk "
+                    "is too busy to be given more to do.",
+             "rows": [
+                 row("First block of a film", "%.3g s" % cls.FIRST_BLOCK_WAIT,
+                     "How long a stream is given to send anything at all before it is "
+                     "taken to have failed."),
+                 row("A disk is busy at", "%.0f per cent of a block's time"
+                     % (cls.DISK_BUSY * 100),
+                     "How much of each block's time went on getting it off the disk "
+                     "rather than handing it on. Above this the disk is what a picture "
+                     "is waiting behind: more of the reading is handed to the machine "
+                     "keeping copies, and a copy running in the background stands back "
+                     "before anybody watching has had to notice."),
+                 row("And easy again at", "%.3g s a read" % cls.DISK_EASY,
+                     "Below this it is taken up again."),
+                 row("Artwork worth keeping", "5 kB",
+                     "A poster arriving smaller than this is not a picture of anything, "
+                     "and is asked for again rather than kept for good."),
+             ]},
+        ]
+
+    def stream_buffer(self):
+        """Buffer report from a player, and the split of what carried the film.
+
+        Answered on GET and POST. It existed on GET only and read the seconds from a
+        request body a GET does not have, so every POST returned 404 into the caller's
+        catch and AHEAD stayed empty. Seconds come from the body, else the query.
+        """
+        said = self.read_json() or {}
+        args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                if "?" in self.path else {})
+        # any player can report it, direct or transcoded; the sync ceiling backs off
+        # while anybody is low
+        try:
+            ahead = float(said.get("ahead", (args.get("ahead") or [None])[0]))
+        except (TypeError, ValueError):
+            ahead = -1.0
+        if ahead >= 0:
+            if len(Handler.AHEAD) > 200:
+                Handler.AHEAD.clear()
+            now = time.time()
+            # the previous report from the same screen: a buffer that is not moving is
+            # being held, at whatever height that way of watching holds
+            # keyed per screen: under the viewer's name alone, one person watching on
+            # two devices overwrote their own last report
+            who = self.watcher() + "/" + str(self.client_address[0])
+            had = Handler.AHEAD.get(who)
+            before = had[0] if (had and now - had[1] < 30) else -1.0
+            # and whether it stalled: depth is a guess, a stall is not
+            stalled = bool(said.get("stalled")
+                           or (args.get("stalled") or [""])[0] in ("1", "true"))
+            Handler.AHEAD[who] = (
+                ahead, now, Handler.side_of(self.client_address[0]), before, stalled)
+        if len(Handler.CARRIED) > 200:
+            Handler.CARRIED.clear()
+        # and the per-machine split, for the player's info line: the client cannot
+        # tell which server a block came from
+        mine, theirs, _ = Handler.CARRIED.get(self.watcher()) or (0, 0, 0)
+        out = {"ok": True, "ahead": ahead}
+        if theirs > 0:
+            whole = float(mine + theirs)
+            out["split"] = [int(round(mine * 100 / whole)),
+                            int(round(theirs * 100 / whole))]
+            out["with"] = (self.standby_now() or {}).get("name") or ""
+        self.reply_json(out)
 
     def name_of(self, who):
         """What to call a viewer in a list somebody reads. "me" is the owner."""
@@ -7154,6 +7785,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         Near the end is finished and the note is dropped, so coming back does not
         offer to resume something four seconds from its credits.
         """
+        import pd_localapi
         stored = self.settings_file()
         mine = self.viewer_settings(stored)
         one = self.shuffle_round(mine, cid)
@@ -7165,7 +7797,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if drawn:
             one["played"] = played + [str(key)]
             one["queue"] = [k for k in (one.get("queue") or []) if str(k) != str(key)]
-        done = duration and position / duration > 0.95
+        done = pd_localapi.LocalAPI.watched_through(position, duration)
         if done or position < 30:
             if str(key) not in places and not drawn:
                 return
@@ -7204,6 +7836,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 moved = True
         if moved:
             write_settings(stored)
+
+    #: keys that have already asked for what follows them, so a report every ten
+    #: seconds asks once. Cleared when it grows: this is a note, not a record.
+    ASKED_NEXT = {}
+
+    def keep_the_next_one_ready(self, key):
+        """Somebody is half way through an episode: fetch the one after it from a pack.
+
+        Only where the setting is on, only for an episode, and only where a pack has
+        the next one and this machine does not. Asked once per episode: the player
+        reports its place every few seconds, and every one of those reports is past the
+        middle once the first one is.
+        """
+        key = str(key or "")
+        import pd_torrents
+        if not key.startswith("e") or not pd_torrents.next_wanted():
+            return
+        now = time.time()
+        if now - (Handler.ASKED_NEXT.get(key) or 0) < 3600:
+            return
+        if len(Handler.ASKED_NEXT) > 200:
+            Handler.ASKED_NEXT.clear()
+        Handler.ASKED_NEXT[key] = now
+        try:
+            con = local().lib.db()
+            try:
+                row = con.execute(
+                    """SELECT i.title AS show, e.season AS season, e.number AS number
+                       FROM episode e JOIN item i ON i.id = e.item_id
+                       WHERE e.id = ?""", (key,)).fetchone()
+            finally:
+                con.close()
+            if not row or row["season"] is None or row["number"] is None:
+                return
+            token = self.bearer() or "me"
+            cap = self.weekly_limits("downloadGbWeek").get(
+                self.name_of(token).strip().lower(), 0.0)
+            said = pd_torrents.fetch_next(row["show"], row["season"], row["number"],
+                                          token, self.watcher(), cap)
+            if said and said.get("ok") and not said.get("already"):
+                with open(os.path.join(ROOT, "debug.log"), "a", encoding="utf-8") as f:
+                    f.write("%s fetching %s from a pack - %s is half way through %s%s"
+                            % (time.strftime("%H:%M:%S"), said.get("episode"),
+                               self.watcher(),
+                               "S%02dE%02d" % (int(row["season"]), int(row["number"])),
+                               chr(10)))
+        except Exception:
+            pass                    # a film being watched is not held up by this
 
     def title_finished(self, key):
         """A title finished or marked watched: its shelf places go, and it leaves the
@@ -7287,6 +7967,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ahead = []
         for one in sorted(rounds, key=lambda r: -self.round_stamp(r)):
             played = set(str(k) for k in (one.get("played") or []))
+            # The one the round is on comes first. Drawing a title writes it down as
+            # played there and then, so a copy stopped wanting it at the very moment
+            # somebody started watching it - and swept it while they were. It is the
+            # one thing on the list that is certainly about to be read.
+            now_on = self.shuffle_current(one)
+            if now_on and now_on not in ahead:
+                ahead.append(now_on)
             ahead += [str(k) for k in (one.get("queue") or [])
                       if str(k) not in played and str(k) not in ahead]
         return ahead[:10]
@@ -7306,7 +7993,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: The most this machine has been seen to shift at once, and when that was seen.
     #: Nobody can ask a network how fast it is; what it has actually carried is the
     #: only honest answer, and it is only learnt while something is pushing it.
-    LINK = {"seen": 0.0, "when": 0.0}
+    LINK = {"home": {"seen": 0.0, "when": 0.0},
+            "away": {"seen": 0.0, "when": 0.0}}
 
     #: How much of the line to leave alone above what the films are drawing. A film
     #: asks in bursts and a buffer that is filling wants more than its average.
@@ -7318,7 +8006,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: What a copy is allowed this second. Steered rather than calculated: the line is
     #: wireless and the number it carried an hour ago is not the number it carries
     #: when somebody walks between the aerials.
-    PACE = {"mbit": 0.0, "when": 0.0}
+    PACE = {"home": {"mbit": 0.0, "when": 0.0},
+            "away": {"mbit": 0.0, "when": 0.0}}
 
     #: The live rows the steering last saw. Handed in rather than fetched again: the
     #: caller has just taken the snapshot and taking a second one costs the lock.
@@ -7333,21 +8022,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: still open, is being starved rather than sitting on a full buffer.
     STARVED = 0.75
 
-    def wanted_keys(self, con, hours, deck, episodes, mine, casual, whole, watched=None):
+    #: Why a thing is copied, gathered under the name the settings use for it. A copy
+    #: says which of these it will take this minute - each can be off, kept only inside
+    #: its night hours, or kept always - and what it does not ask for is left out here
+    #: rather than fetched and swept later.
+    #: How many part-way films one person brings to a copy, and how old a place may
+    #: be before it stops counting as being in the middle of something. Forty apiece
+    #: with no age at all put a hundred and ten films in the queue - a guest who
+    #: sampled fifty things last winter was still "part-way through" every one.
+    PARTWAY_EACH = 6
+    PARTWAY_DAYS = 30
+
+    KINDS = {
+        "partway": ("part-way through",),
+        "watchlist": ("on their watchlist", "a favourite"),
+        "lately": ("watched lately",),
+        "shuffle": ("the shuffle's next", "left part-way in the shuffle"),
+        "screen": ("on a screen now",),
+    }
+
+    @classmethod
+    def kind_of(cls, why):
+        """Which kind a reason belongs to, or none when it belongs to none."""
+        for kind, reasons in cls.KINDS.items():
+            if why in reasons:
+                return kind
+        return ""
+
+    def wanted_keys(self, con, hours, deck, episodes, mine, casual, whole, watched=None,
+                    kinds=None):
         """What is worth copying, in the order to fetch it, as (key, why, who, live).
 
         One list of sources, asked in order. Nothing here reads a file or decides a
         rank: it says what the main server wants and why, and the order it says it in is
         the order it is wanted. Whether a thing is on a screen this minute travels
         with it, because that is the one fact that moves something to the front.
+
+        `kinds` is what the copy will take this minute, by the names in KINDS. None
+        means all of them, which is what every copy asked for before it could say.
         """
+        import pd_localapi
         out = []
         said = set()
+        taking = None if kinds is None else set(kinds)
 
         def want(key, why, who, live=False):
             key = str(key or "")
             if not key:
                 return
+            # a kind this copy is not taking now: off, or outside its hours
+            if taking is not None:
+                kind = self.kind_of(why)
+                if kind and kind not in taking:
+                    return
             if key in said:
                 # reached twice - a watchlist and a screen, say. It is the same file
                 # either way and it is wanted at the sooner of the two moments.
@@ -7371,9 +8098,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # the main server is theirs to copy.
             for row in con.execute(
                     """SELECT key FROM progress WHERE who = ?
-                       AND position > 30 AND position < duration * 0.95
-                       AND COALESCE(casual, 0) = 0
-                       ORDER BY updated DESC LIMIT 40""", (mine,)):
+                       AND position > 30
+                       AND position < """ + pd_localapi.FINISHED_SQL + """
+                       AND COALESCE(casual, 0) = 0 AND updated > ?
+                       ORDER BY updated DESC LIMIT ?""",
+                    (mine, int(time.time()) - self.PARTWAY_DAYS * 86400,
+                     self.PARTWAY_EACH)):
                 want(row["key"], "part-way through", self.name_of(mine))
             for key in self.watchlist_of(mine)[:40]:
                 want(key, "on their watchlist", self.name_of(mine))
@@ -7415,9 +8145,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for who in decks:
                 for row in con.execute(
                         """SELECT key FROM progress WHERE who = ? AND position > 30
-                           AND position < duration * 0.95
-                           AND COALESCE(casual, 0) = 0
-                           ORDER BY updated DESC LIMIT 40""", (who,)):
+                           AND position < """ + pd_localapi.FINISHED_SQL + """
+                           AND COALESCE(casual, 0) = 0 AND updated > ?
+                           ORDER BY updated DESC LIMIT ?""",
+                        (who, int(time.time()) - self.PARTWAY_DAYS * 86400,
+                         self.PARTWAY_EACH)):
                     want(row["key"], "part-way through", self.name_of(who))
             for who in lists:
                 marked = self.watchlist_of(who)[:40]
@@ -7602,18 +8334,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     @staticmethod
     def how_long(con, key):
-        """How long that episode runs, for counting an evening. Nought if unmeasured."""
+        """Episode runtime in seconds, for filling the hours window.
+
+        Falls back to the programme's average where this episode has no measured file.
+        Counted as zero, an unmeasured episode never filled the window, so "four hours
+        ahead" took ten episodes of a programme with 23 of its 55 unmeasured.
+        """
         if not is_episode(key):
             return 0.0
         try:
             row = con.execute("SELECT duration FROM file WHERE episode_id=? "
                               "AND duration > 0 LIMIT 1", (str(key),)).fetchone()
-            return float((row and row["duration"]) or 0)
+            if row and row["duration"]:
+                return float(row["duration"])
+            row = con.execute(
+                """SELECT AVG(f.duration) d FROM file f
+                   JOIN episode e ON e.id = f.episode_id
+                   WHERE f.duration > 0 AND e.item_id =
+                         (SELECT item_id FROM episode WHERE id = ?)""",
+                (str(key),)).fetchone()
+            return float((row and row["d"]) or 0)
         except Exception:
             return 0.0
 
     def worth_copying(self, hours=4.0, deck=False, episodes=6, mine=None,
-                      casual=0.0, whole=False, only=""):
+                      casual=0.0, whole=False, only="", kinds=None):
         """The files a machine keeping copies should have, in the order to fetch them.
 
         Three steps, and each is somewhere else: what the main server wants and why, the
@@ -7645,7 +8390,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     local().who = asking
 
             plan, listed = self.wanted_keys(con, hours, deck, episodes, mine,
-                                            casual, whole, watched)
+                                            casual, whole, watched, kinds)
             if not mine:
                 plan += self.episodes_after(con, plan, listed, hours, episodes,
                                             whole, watched)
@@ -10031,17 +10776,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def at_home(self):
-        """True for a caller on this machine or this home network."""
-        host = self.client_address[0]
+    @staticmethod
+    def side_of(host):
+        """"home" for an address on this network, "away" for one out in the world.
+
+        The two do not share a pipe: a film going out to somebody's phone is on the
+        line to the world, and a copy to a machine in the next room is on the network
+        here. Counting them together held a copy between two machines three metres
+        apart to what was left of an upload.
+        """
+        host = str(host or "")
         if host in ("127.0.0.1", "::1"):
-            return True
+            return "home"
         parts = host.split(".")
         if len(parts) == 4 and parts[0].isdigit():
             a, b = int(parts[0]), int(parts[1])
-            return (a == 10 or (a == 192 and b == 168)
-                    or (a == 172 and 16 <= b <= 31) or a == 169)
-        return False
+            if (a == 10 or (a == 192 and b == 168)
+                    or (a == 172 and 16 <= b <= 31) or a == 169):
+                return "home"
+        return "away"
+
+    def at_home(self):
+        """True for a caller on this machine or this home network."""
+        return self.side_of(self.client_address[0]) == "home"
 
     # ---- the owner's own password -------------------------------------------
     #
@@ -10319,9 +11076,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # for /follow alone - so following the build broke at the door.
         low = str(path).lower()
         build_file = low.startswith("/palladium-setup") and low.endswith(".exe")
+        # and who is watching, which is the one thing the pair cannot work out
+        # separately: a film read off both machines is two streams, and each machine
+        # can see only its own. Neither draws the pair honestly without asking the
+        # other, and this is a list of what is going out of a house to itself.
         if (invite and Handler.role_of(invite) == "cache"
                 and (str(path).startswith("/follow") or path == "/server"
-                     or build_file)):
+                     or path == "/watching" or build_file)):
             self.guest_name = invite["name"]
             return "owner"
         if invite and Handler.role_of(invite) == "admin":
@@ -10446,17 +11207,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         trouble = ""
                         break
                     seen = WATCHING.snapshot()
+                    # Only what shares this copy's own path. A film going out to the
+                    # world and a copy to the machine in the next room do not take
+                    # megabits from each other, and counting them together held a copy
+                    # between two machines three metres apart to what was left of an
+                    # upload.
+                    side = Handler.side_of(self.client_address[0])
+                    mine_side = [r for r in seen
+                                 if Handler.side_of(r.get("address")) == side]
+                    # Anybody watching anywhere brings a ceiling into it, because the
+                    # disk is shared even where the line is not; how big that ceiling
+                    # is comes from this copy's own side alone.
                     watching = sum(1 for r in seen if r.get("how") != "syncing")
                     if watching:
                         # What the films are drawing and what the cacheing is, both
                         # measured this second. The ceiling follows from the two.
-                        streaming = sum(float(r.get("mbit") or 0) for r in seen
+                        streaming = sum(float(r.get("mbit") or 0) for r in mine_side
                                         if r.get("how") != "syncing")
-                        syncing = sum(float(r.get("mbit") or 0) for r in seen
+                        syncing = sum(float(r.get("mbit") or 0) for r in mine_side
                                       if r.get("how") == "syncing")
                         Handler.WATCHING_NOW = seen
                         ceiling = Handler.sync_ceiling(local().lib.config(),
-                                                       streaming, syncing)
+                                                       streaming, syncing, side)
                         if ceiling > 0:
                             # how long these four blocks should have taken at the
                             # ceiling, less what they did take
@@ -10913,24 +11685,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              "tools": pd_ai_subs.tools()})
             return
         if path == "/stream/buffer":
-            # What each machine has carried of the film this viewer is watching. The
-            # screen used to send what it had left to play and this decided the share
-            # from it; the share is worked out where the reading happens now, and this
-            # only answers with what the two of them have carried.
-            self.read_json()
-            if len(Handler.CARRIED) > 200:
-                Handler.CARRIED.clear()
-            # and what each machine has carried, for the line along the top: the
-            # browser cannot see which disk a block came off, and this is the only
-            # place that can tell it.
-            mine, theirs, _ = Handler.CARRIED.get(self.watcher()) or (0, 0, 0)
-            out = {"ok": True}
-            if theirs > 0:
-                whole = float(mine + theirs)
-                out["split"] = [int(round(mine * 100 / whole)),
-                                int(round(theirs * 100 / whole))]
-                out["with"] = (self.standby_now() or {}).get("name") or ""
-            self.reply_json(out)
+            self.stream_buffer()
             return
         if path == "/copy/read":
             # One stretch of a file this machine holds, for the server it copies from
@@ -11111,6 +11866,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json({"invites": [
                 {"token": r.get("token"), "name": r.get("name"),
                  "expires": r.get("expires"), "language": r.get("language"),
+                 # and what the key is for. Sent as a bare guest, the owner's own key
+                 # opened nothing of theirs on their own second machine, and the panel
+                 # on the wall was refused the one thing it asks for.
+                 "role": r.get("role") or "",
                  # and what is kept for them, so the other machine can say on its
                  # own front page why its shelves are short
                  "shareLan": bool(r.get("shareLan", True)),
@@ -11169,6 +11928,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 casual = max(0.0, min(float((args.get("casual") or ["0"])[0]), 24.0))
             except ValueError:
                 casual = 0.0
+            # Which kinds of thing this copy will take this minute. Each kind is off,
+            # inside its hours, or always, and the machine keeping the copies works out
+            # which of them apply now - it is the one that knows what time it is there.
+            # A copy that says nothing gets all of them, as every copy did before.
+            these = (args.get("these") or [""])[0].strip()
+            kinds = ([k for k in these.split(",") if k in Handler.KINDS]
+                     if these else None)
             cfg = local().lib.config()
             # What the shuffle would play next is copied when the machine keeping the
             # copies asks for it, and not otherwise. It used to be asked and then
@@ -11191,7 +11957,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # worth copying, and nothing means the whole house's
             only = (args.get("for") or [""])[0][:60].strip()
             self.reply_json({"wanted": self.worth_copying(hours, deck, episodes, mine,
-                                                          casual, whole, only),
+                                                          casual, whole, only, kinds),
                              # who this house has, so the other machine can offer
                              # the names rather than asking somebody to type one
                              "house": self.everyone_here()[:40],
@@ -11273,6 +12039,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # and "not false" is what everybody who never chose should get -
                 # otherwise the next episode quietly stops following this one
                 "autoNext": self.settings_file().get("autoNext") is not False,
+                # whether one release is brought to the level of the next, and where
+                # that level is
+                "evenVolume": bool(self.settings_file().get("evenVolume")),
+                "volumeTarget": self.settings_file().get("volumeTarget", VOLUME_TARGET),
                 # whether this viewer takes part in watch parties at all
                 "watchParty": self.wants_a_party(),
                 # whether subtitles are put in step by themselves: the server's
@@ -11359,7 +12129,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if (said.get("device") or said.get("title")) in matched:
                     continue
                 live.append({
-                    "who": said.get("device") or "someone",
+                    # the person, and the machine they are on only if the report
+                    # cannot say who they are: a row drawn from a player's report
+                    # took the device's own model name, so the same person watching
+                    # one film appeared as themselves on one machine and as a
+                    # telephone's part number on the other. A report says who by
+                    # their key, which is not a thing to print at somebody.
+                    "who": (self.name_of(said.get("who")) if said.get("who")
+                            else said.get("device") or "someone"),
                     "title": said["title"], "episode": said.get("episode") or "",
                     "quality": "", "how": "waiting", "address": "",
                     "started": said.get("began") or 0,
@@ -11371,6 +12148,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     # what is playing it, for a row with no stream of its own
                     "app": said.get("app") or "", "kind": said.get("kind") or "",
                 })
+            # One shape for every row: the film and its year in brackets, the way a
+            # file is named. A player reports the name and the year apart, so the same
+            # person watching the same film read as two different films.
+            for row in live:
+                said = str(row.get("title") or "")
+                year = str(row.get("episode") or "").strip()
+                if (year.isdigit() and len(year) == 4
+                        and not said.endswith("(%s)" % year)):
+                    row["title"] = "%s (%s)" % (said, year)
+                    row["episode"] = ""
             live.sort(key=lambda r: r.get("started") or 0)
             self.reply_json({"live": live})
             return
@@ -11701,6 +12488,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             import pd_torrents
             now = time.time()
             rows = WATCHING.snapshot()
+            # which side the copying is on, so the line and the ceiling shown are the
+            # ones that decide it: the network here and the line to the world are two
+            # different pipes and only one of them is holding a copy back
+            copy_side = next((Handler.side_of(r.get("address")) for r in rows
+                              if r.get("how") == "syncing"), "home")
             self.reply_json({
                 "name": self.server_name(),
                 "machine": dict(pd_machine.state(PORT, LAN_IP),
@@ -11715,8 +12507,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "standby": dict(self.standby_now(), busy=self.copy_is_busy()),
                 # and the machine this one follows, for a drawing made on the
                 # cache: the other half of the pair is the main server, not a cache
-                # of its own that it does not have
-                "follows": self.house_doors(),
+                # of its own that it does not have - with what that machine is
+                # feeding, so the line from it to a screen can be drawn here too
+                "follows": dict(self.house_doors(), busy=self.house_is_busy()),
                 "state": dict(pd_follow.STATE),
                 "clients": [dict(row, ago=int(now - row["when"]))
                             for row in sorted(self.SEEN.values(),
@@ -11739,14 +12532,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # what the line has been seen to carry, and what a copy is allowed
                 # against it this second. Both are worked out rather than set, so
                 # there is nowhere else to read them.
-                "linkMbit": round(Handler.LINK["seen"], 1),
-                "syncGivingWay": bool(Handler.a_film_is_struggling(rows)),
+                # Per side, because they are two lines: the network here and the one
+                # to the world. Shown for the side the copying is actually on, which is
+                # the number that decides anything.
+                "linkMbit": round((Handler.LINK.get(copy_side) or {}).get("seen", 0), 1),
+                "linkSide": copy_side,
+                "syncGivingWay": bool(Handler.a_film_is_struggling(
+                    [r for r in rows if Handler.side_of(r.get("address")) == copy_side],
+                    copy_side)),
                 "syncCeiling": round(Handler.sync_ceiling(
                     local().lib.config(),
                     sum(float(r.get("mbit") or 0) for r in rows
-                        if r.get("how") != "syncing"),
+                        if r.get("how") != "syncing"
+                        and Handler.side_of(r.get("address")) == copy_side),
                     sum(float(r.get("mbit") or 0) for r in rows
-                        if r.get("how") == "syncing")), 1),
+                        if r.get("how") == "syncing"
+                        and Handler.side_of(r.get("address")) == copy_side),
+                    copy_side), 1),
             })
             return
         if path == "/skins":
@@ -12119,6 +12921,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # where a shuffled playing got to, kept on the shelf's round
             local().shelf_note = self.shuffle_note
             local().shelf_forget = self.title_finished
+            # and the next episode fetched from a pack while this one is still on
+            local().half_way = self.keep_the_next_one_ready
             # and what the client calls itself, so the watch log can say which build
             # was watching - a fault from a three-week-old one is a different
             # conversation from a fault on today's
@@ -12310,6 +13114,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _t.Thread(target=lambda: lib.scan(), daemon=True).start()
             self.reply_json({"started": True})
             return
+        if path == "/advanced":
+            self.reply_json({"groups": self.settled_numbers()})
+            return
+
         if path == "/library/status":
             said = local().lib.stats()
             try:
@@ -12901,6 +13709,8 @@ def main():
     with Server(("0.0.0.0", PORT), Handler) as httpd:
         print(f"Palladium serving {url}  (Ctrl-C to stop)")
         print(f"  video reachable on the network at http://{LAN_IP}:{PORT}/gpu/stream")
+        # the library can ask how far off a file's sound is
+        hand_over_the_gain()
         # what somebody set when 100% meant three different things
         rescale_subtitle_sizes()
         # and the subtitles inside films, lifted out while nobody is watching, so that

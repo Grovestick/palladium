@@ -1439,7 +1439,8 @@ function card(it, onDeck, coll) {
     // a favorite: a red heart in the corner, over the dot when there is one
     (isFav(it) ? '<div class="favheart' + (isCopied(it) ? " stack" : "") +
       (pct ? " over" : "") + '" title="Favorite">&#9829;</div>' : "") +
-    (it.offered ? '<div class="offerbadge">' + esc(offerWord(it)) + "</div>" : "") +
+    (it.offered ? '<div class="offerbadge">' + DOWNLOAD_MARK +
+      (offerWord(it) ? "<span>" + esc(offerWord(it)) + "</span>" : "") + "</div>" : "") +
     (isWatched(it) ? '<div class="seen">&#10003;</div>'
       : it.viewedLeafCount ? '<div class="seen part">' + it.viewedLeafCount + "/" +
         (it.leafCount || "?") + "</div>" : "") +
@@ -1570,6 +1571,18 @@ function card(it, onDeck, coll) {
         open_();
       };
     });
+  } else {
+    // and a film's words lead to the film's own page. On Continue watching the
+    // picture resumes where it left off, which is right for the picture and wrong
+    // for the name underneath it: reading the title and pressing it is how anybody
+    // asks what this is, not how they ask to carry on watching it.
+    el.querySelectorAll(".t, .s").forEach((line) => {
+      line.classList.add("link");
+      line.onclick = (e) => {
+        e.stopPropagation();
+        open(it);
+      };
+    });
   }
   return el;
 }
@@ -1587,6 +1600,112 @@ function grid(list, cols, onDeck, coll) {
   if (cols) g.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
   list.forEach((it) => g.appendChild(card(it, onDeck, coll)));
   return g;
+}
+
+/**
+ * More like this: the films carrying the same genres as this one.
+ *
+ * Matched the way the genre filter matches with those words marked - a title in the row
+ * carries every one of them - and newest first, because what is like this film and came
+ * out recently is a better offer than whatever shares its first letter. A rare word is
+ * dropped rather than leaving a shelf of two: one film was the only thing in the library
+ * that was science fiction, drama and a television film at once.
+ */
+async function moreLikeThis(m) {
+  let words = (m.genres || []).filter(Boolean);
+  if (!words.length) return null;
+  // Programmes are matched against programmes. Asking the film section for a show's
+  // genres listed films under a series, which is not what the row is for.
+  const asShow = ["show", "season", "episode"].indexOf(m.type) >= 0;
+  const ownKey = String(m.grandparentRatingKey || m.ratingKey || "");
+  const carrying = async (ws) => {
+    const list = await fromAll(async (srv) => {
+      const sec = await sectionsOf(srv);
+      const which = asShow ? sec.show : sec.movie;
+      if (!which) return [];
+      return api("/library/sections/" + which + "/all",
+        { sort: "originallyAvailableAt:desc", type: asShow ? 2 : 1,
+          genre: ws.join(",") }, srv);
+    });
+    // offers included: they are listed in the same sections, and a thin corner of
+    // the library fills the row with what can be fetched rather than nothing
+    return list.filter((x) => String(x.ratingKey) !== ownKey);
+  };
+  // AND filter on every genre the film carries. Dropping a genre to widen the row
+  // returned films of a different kind, so the row widens by year instead.
+  let found = await carrying(words);
+  if (!found.length) return null;
+  const mine = m.year || 0;
+  // Year order, cut around this film: equal numbers either side of it. Sorted by
+  // year, then release date within the year.
+  const yr = (x) => x.year || 0;
+  found.sort((a, b) => (!yr(a) - !yr(b)) || (yr(a) - yr(b)) ||
+    String(a.originallyAvailableAt || "").localeCompare(String(b.originallyAvailableAt || "")));
+  let at = found.findIndex((x) => yr(x) && yr(x) >= mine);
+  if (at < 0) at = found.length;
+  const box = document.createElement("section");
+  box.className = "cat alike";
+  const head = document.createElement("h2");
+  head.innerHTML = '<span class="ct">More like this</span>' +
+    words.map((w) => '<span class="tag">#' + esc(w.toLowerCase()) + "</span>").join("");
+  // One button, at the end of the line: the words in the tab they came from, where a
+  // word can be taken off or a decade put beside them. Expanding the row in place was
+  // a longer row of the same thing, and then a second button to do something with it.
+  const more = document.createElement("span");
+  more.className = "seeall makecoll";
+  more.textContent = "Show more ›";
+  more.onclick = (e) => {
+    e.stopPropagation();
+    const kind = m.type === "show" ? "show" : "movie";
+    genreWanted[kind] = words.join(",");
+    decadeWanted[kind] = "";
+    // whatever was last typed is not part of this question: left standing it narrowed
+    // the words to whichever of them had that in the title
+    listFilter.genre = "";
+    listFilter.decade = "";
+    const box = document.getElementById("search");
+    if (box) box.value = "";
+    go(kind === "show" ? "tv" : "movies");
+  };
+  const end = document.createElement("span");
+  end.className = "endbits";
+  end.appendChild(more);
+  head.appendChild(end);
+  box.appendChild(head);
+  const render = () => {
+    // five from before this film and five from after, or as many as one row holds
+    // where that is fewer. Where one side is short the other makes up the number.
+    const n = Math.min(fits(), 10);
+    // newest at the left, which is the end a row is read from
+    const from = Math.max(0, Math.min(at - Math.floor(n / 2), found.length - n));
+    const show = found.slice(from, from + n);
+    show.reverse();
+    const was = box.querySelector(".grid");
+    const g = grid(show, n);
+    if (was) box.replaceChild(g, was);
+    else box.appendChild(g);
+  };
+  // As low on the screen as it goes without starting a scrollbar: the gap under the
+  // film is whatever is left once the shelf itself is on the screen. Measured rather
+  // than worked out from the height of the window, because what is above it differs
+  // with the length of the description and with the width of the screen.
+  const sit = () => {
+    box.style.marginTop = "";
+    const doc = document.documentElement;
+    const room = window.innerHeight - box.getBoundingClientRect().bottom - 14;
+    if (room <= 0) return;
+    box.style.marginTop = (34 + room) + "px";
+    // and then against the page itself: the shelf is not the last thing on it - the
+    // column it sits in carries padding under it - so measuring the shelf alone put
+    // the page over the edge of the window and started the scrollbar this exists to
+    // avoid. Whatever it overflows by comes back off the gap.
+    const over = doc.scrollHeight - window.innerHeight;
+    if (over > 0) box.style.marginTop = Math.max(34, 34 + room - over) + "px";
+  };
+  box._fit = sit;
+  box._render = () => { render(); sit(); };
+  render();
+  return box;
 }
 
 /* one clipped line of cards, with a header that opens the full list */
@@ -1919,11 +2038,24 @@ const genreCache = {};
 const decadeWanted = { movie: "", show: "" };
 const decadeCache = {};
 
+/*
+ * The numbers beside each name are counted among whatever is already marked: mark
+ * Animation and every other number falls to how many of those are also that, which is
+ * what the filter does shown rather than explained. So what is marked is part of the
+ * question, and part of what the answer is filed under - the old key was the server
+ * and the kind alone, and the first answer stood for every filter after it.
+ *
+ * The decades are narrowed by the genres but not by the decades: a title has one year,
+ * so counting the eighties among titles already cut to the eighties would put a nought
+ * against every other decade.
+ */
 async function decadesFor(type, srv) {
-  const at = (srv ? srv.origin : "") + "|" + type;
+  const genre = genreWanted[type] || "";
+  const at = (srv ? srv.origin : "") + "|" + type + "|" + genre;
   if (decadeCache[at]) return decadeCache[at];
   try {
-    decadeCache[at] = items(await api("/library/decades", { type: type }, srv));
+    decadeCache[at] = items(await api("/library/decades",
+      { type: type, ...(genre ? { genre: genre } : {}) }, srv));
   } catch (e) {
     decadeCache[at] = [];
   }
@@ -1931,10 +2063,14 @@ async function decadesFor(type, srv) {
 }
 
 async function genresFor(type, srv) {
-  const at = (srv ? srv.origin : "") + "|" + type;
+  const genre = genreWanted[type] || "";
+  const decade = decadeWanted[type] || "";
+  const at = (srv ? srv.origin : "") + "|" + type + "|" + genre + "|" + decade;
   if (genreCache[at]) return genreCache[at];
   try {
-    genreCache[at] = items(await api("/library/genres", { type: type }, srv));
+    genreCache[at] = items(await api("/library/genres",
+      { type: type, ...(genre ? { genre: genre } : {}),
+        ...(decade ? { decade: decade } : {}) }, srv));
   } catch (e) {
     genreCache[at] = [];
   }
@@ -2032,6 +2168,17 @@ function decadeYear(d) {
   if (!n) return 0;
   const y = n < 100 ? n + (n >= 30 ? 1900 : 2000) : n;
   return y - (y % 10);
+}
+
+/** The decades a comma-joined mark names, as the year each one begins. */
+function decadeYears(said) {
+  return String(said || "").split(",").map(decadeYear).filter(Boolean);
+}
+
+/** Whether a year falls in any of them; none marked means every year. */
+function inDecades(firsts, year) {
+  if (!firsts.length) return true;
+  return !!year && firsts.some((f) => year >= f && year <= f + 9);
 }
 
 async function saveCollection(body) {
@@ -3218,10 +3365,10 @@ async function viewSearch(q) {
     if (h.type !== "movie" && h.type !== "show") return;
     const g = String(genreWanted[h.type] || "").toLowerCase().split(",")
       .map((n) => n.trim()).filter(Boolean);
-    const from = decadeYear(decadeWanted[h.type]);
+    const eras = decadeYears(decadeWanted[h.type]);
     h.Metadata = h.Metadata.filter((x) =>
       g.every((w) => (x.genres || []).some((n) => String(n).toLowerCase() === w)) &&
-      (!from || (x.year && x.year >= from && x.year <= from + 9)));
+      inDecades(eras, x.year));
     sortLike(h.Metadata);
   });
   // What the word spells comes before what it means: a title carrying the word is a
@@ -3795,7 +3942,10 @@ function playerBar(m, resume) {
       (pick && pick.id === s.id ? " selected" : "") + ">" +
       esc(subLabel(s, !!castSession())) + "</option>").join("") +
     "</select>" +
-    '<option value="get">Download…</option>' +
+    // A button beside the menu, as the app has it. It was a choice inside the menu,
+    // which reads as "the subtitle to use is: fetch one" - and a menu that puts itself
+    // back the moment it is chosen is a button wearing the wrong clothes.
+    '<button class="btn ghost" id="subget">Download…</button>' +
     (subs.length ? "" : '<span class="note">none in this file</span>') +
     "</div>";
 }
@@ -3815,13 +3965,20 @@ function etaShort(s) {
     : Math.floor(s / 3600) + " h " + Math.round((s % 3600) / 60) + " min";
 }
 
+/* An arrow into a tray, the shape everything else uses for a download. */
+const DOWNLOAD_MARK =
+  '<svg class="mark" viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M8 1.5v7"/><path d="M4.5 6l3.5 3 3.5-3"/>' +
+  '<path d="M2.6 11.5v3h10.8v-3"/></svg>';
+
 function offerWord(it) {
   const o = it.offer || {};
   return o.state === "downloading"
     ? Math.round((o.progress || 0) * 100) + "%" +
       (o.eta != null && o.eta >= 0 ? " \u00b7 " + etaShort(o.eta) : "")
     : o.state === "done" ? "Arriving" : o.state === "queued" ? "Queued"
-    : o.state === "failed" ? "Failed" : "\u2913";
+    : o.state === "failed" ? "Failed" : "";
 }
 
 /* A film on offer from a torrent pack: its page, and the one thing to do about it. */
@@ -3848,6 +4005,12 @@ async function viewOffer(m) {
     '<div class="note">Not in the library yet. Download fetches this film alone from its ' +
     "pack, and it appears in Films when it has arrived.</div></div>";
   main.appendChild(wrap);
+  // a film on offer is still a film: what else is like it goes under it too
+  moreLikeThis(m).then((box) => {
+    if (!box) return;
+    main.appendChild(box);
+    if (box._fit) box._fit();       // once it is on the page, and not before
+  });
   // one poster for a film its pack carries more than once: the release is chosen here,
   // and Download fetches the one chosen
   if ((o.versions || []).length > 1) {
@@ -4080,14 +4243,18 @@ async function viewMovie(key) {
     };
   }
   main.appendChild(wrap);
+  // and under it, what else is like this film
+  moreLikeThis(m).then((box) => {
+    if (!box) return;
+    main.appendChild(box);
+    if (box._fit) box._fit();       // once it is on the page, and not before
+  });
   // "Get subtitles" at the foot of the subtitle menu opens the same list the player
   // has: what can be fetched, and writing one from the sound of this film
   const subsel = $("#subpick");
-  if (subsel) {
-    const wasSub = subsel.value;
-    subsel.addEventListener("change", (e) => {
-      if (subsel.value !== "get") return;
-      subsel.value = wasSub;
+  const subget = $("#subget");
+  if (subget) {
+    subget.addEventListener("click", (e) => {
       e.stopPropagation();
       const old = document.getElementById("subpanel");
       if (old) { old.remove(); return; }
@@ -4103,7 +4270,7 @@ async function viewMovie(key) {
       shut.className = "btn ghost";
       shut.textContent = "Close";
       shut.onclick = () => box.remove();
-      subsel.parentNode.appendChild(box);
+      (subsel ? subsel.parentNode : subget.parentNode).appendChild(box);
       // the list draws itself, and knows how to write one from the sound
       downloadSubtitles(box, () => viewMovie(m.ratingKey), "", m);
       box.appendChild(shut);
@@ -4248,6 +4415,10 @@ async function loadEpisodes(seasonKey, findKey) {
         (isCopied(ep) ? '<i class="epcopy" title="Also on ' +
                         esc(standbyName || "the other server") + '"></i>'
                       : "") +
+        // not here yet: a pack can fetch it, and the row opens its page instead
+        // of trying to play a file that does not exist
+        (ep.offered ? '<span class="epget" title="Not downloaded">' +
+                      DOWNLOAD_MARK + "</span>" : "") +
         esc(ep.title) + "</div>" +
       '<div class="d">' + esc(ep.summary) + "</div>" +
       '<div class="s">' + [mins(ep.duration), off ? "resume " + clock(off) : ""].filter(Boolean).join(" &middot; ") +
@@ -4297,7 +4468,7 @@ async function loadEpisodes(seasonKey, findKey) {
       e.preventDefault();
       pickCollection(ep, row);
     };
-    row.onclick = () => play(ep, off, {});
+    row.onclick = () => (ep.offered ? viewOffer(ep) : play(ep, off, {}));
     list.appendChild(row);
     // the episode just watched: put it in the middle of the screen and mark it, so a
     // long season does not have to be scrolled through to find where you were
@@ -4452,10 +4623,11 @@ function genreBar(type, rerender, matching) {
  * chosen is comma-joined, options a promise of [value, label]. The menu stays open
  * while marking; the shelf is redrawn once, when it closes with something changed.
  */
-function genreMenu(chosen, options, apply, matching) {
+function genreMenu(chosen, options, apply, matching, named) {
+  const name = named || { label: "Genre:", joins: "Titles carrying all marked" };
   const wrap = document.createElement("span");
   wrap.className = "sortbar genrebar genremulti";
-  wrap.innerHTML = "<span class='lbl'>Genre:</span>";
+  wrap.innerHTML = "<span class='lbl'>" + name.label + "</span>";
   const marked = String(chosen || "").split(",").map((g) => g.trim()).filter(Boolean);
   const btn = document.createElement("button");
   btn.type = "button";
@@ -4484,6 +4656,13 @@ function genreMenu(chosen, options, apply, matching) {
   };
   btn.onclick = () => (menu.classList.contains("hidden") ? open() : close());
   wrap.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  // A tick-list reads as "any of these" to most people, and the genres mean "all of
+  // these" - which is why the number falls as more are marked. Said here, over the
+  // list, where somebody is about to mark a second one.
+  const joins = document.createElement("div");
+  joins.className = "genrejoins";
+  joins.textContent = name.joins;
+  menu.appendChild(joins);
   const clear = document.createElement("button");
   clear.type = "button";
   clear.className = "genreclear";
@@ -4529,23 +4708,15 @@ function genreMenu(chosen, options, apply, matching) {
  * nothing in it, and it says how many are there before you choose.
  */
 function decadeBar(type, rerender) {
-  const wrap = document.createElement("span");
-  wrap.className = "sortbar genrebar";
-  wrap.innerHTML = "<span class='lbl'>Decade:</span>";
-  const sel = document.createElement("select");
-  sel.className = "genrepick";
-  sel.add(new Option("All", ""));
-  sel.onchange = () => {
-    decadeWanted[type] = sel.value;
+  // Several at once, the same control the genres use. A title need only be from one
+  // of them: it has a single year, so wanting all the marked decades at once would
+  // answer nothing at all.
+  const options = decadesFor(type, CTX).then((list) =>
+    list.map((d) => [String(d.decade), d.title + " (" + d.count + ")"]));
+  return genreMenu(decadeWanted[type] || "", options, (v) => {
+    decadeWanted[type] = v;
     (rerender || (() => viewSection(type)))();
-  };
-  wrap.appendChild(sel);
-  decadesFor(type, CTX).then((list) => {
-    list.forEach((d) => sel.add(
-      new Option(d.title + " (" + d.count + ")", String(d.decade))));
-    sel.value = decadeWanted[type] || "";
-  });
-  return wrap;
+  }, -1, { label: "Decade:", joins: "Titles from any marked" });
 }
 
 /* ---------------- playback ---------------- */
@@ -5769,12 +5940,25 @@ async function handOver() {
     // is it there at all
     await fetch(there.origin + "/app/version", { cache: "no-store" });
     const m = S.meta;
-    const ask = m.type === "episode"
-      ? { type: "episode", show: m.grandparentTitle || "",
-          season: m.parentIndex || 0, episode: m.index || 0 }
-      : { type: "movie", title: m.title || "", year: m.year || "" };
-    const said = await api("/library/find", ask, there);
-    const found = said && said.key;
+    // By number first. Both machines work a key out from the title and the year and
+    // arrive at the same one, which is why the keys are made that way - and asking by
+    // name asked about the one thing that differs, since a machine keeping copies
+    // names films off the files it was sent. Six of twenty-seven shared films were
+    // filed under two spellings, and every one of them answered nothing.
+    let found = "";
+    if (m.ratingKey) {
+      const had = await api("/library/metadata/" + m.ratingKey, {}, there)
+        .catch(() => null);
+      if (had && (items(had) || []).length) found = String(m.ratingKey);
+    }
+    if (!found) {
+      const ask = m.type === "episode"
+        ? { type: "episode", show: m.grandparentTitle || "",
+            season: m.parentIndex || 0, episode: m.index || 0 }
+        : { type: "movie", title: m.title || "", year: m.year || "" };
+      const said = await api("/library/find", ask, there);
+      found = (said && said.key) || "";
+    }
     if (!found) {
       toast((standbyName || "The other machine") + " does not hold this one");
       return false;
@@ -5895,6 +6079,16 @@ function startKeepalive() {
     }
     // and before it comes to that: what is left to play, and whether it is going
     const ahead = bufferAhead();
+    // told to the machine the film is coming from. It cannot see this from its end -
+    // a film read in bursts and one arriving from the encoder look alike there - and
+    // it holds copying back while anybody is running low.
+    if (state === "playing" || state === "buffering") {
+      fetch("/stream/buffer" + (CFG && CFG.key ? "?t=" + CFG.key : ""), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ahead: Math.round(ahead), stalled: state === "buffering" }),
+      }).catch(() => {});
+    }
     if (state === "playing") {
       // playing along without standing still: whatever went wrong is behind us
       if (at > wasGood) { S.reopened = false; wasGood = at; }
@@ -6001,6 +6195,11 @@ window.__onGCastApiAvailable = function (ok) {
   });
   ctx.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, (e) => {
     const st = cast.framework.SessionState;
+    // connected: the element colours itself, so the page stops turning it over
+    document.querySelectorAll("#castbtn, #c-castbtn").forEach((b) => {
+      b.classList.toggle("on", e.sessionState === st.SESSION_STARTED ||
+                               e.sessionState === st.SESSION_RESUMED);
+    });
     if (e.sessionState === st.SESSION_STARTED) {
       toast("Connected to " + castSession().getCastDevice().friendlyName);
       if (S && !S.casting) {           // hand a local stream over to the TV
@@ -8514,6 +8713,11 @@ async function watchForReports() {
 /* an old tab left open runs old code and confuses everything it touches */
 function watchForNewBuild() {
   const myBuild = CFG.build;
+  // said once. The check runs every fifteen seconds and the page stays stale until
+  // somebody reloads it, so a tab left open overnight wrote the same line to the
+  // server's log four times a minute for as long as it was open - one page filled the
+  // end of the log and everything else scrolled off it.
+  let said = false;
   setInterval(async () => {
     try {
       const now = await (await fetch("/config")).json();
@@ -8528,7 +8732,10 @@ function watchForNewBuild() {
         const watching = !player.classList.contains("hidden");
         if (watching && note.parentElement !== player) player.appendChild(note);
         if (!watching && note.parentElement === player) document.body.appendChild(note);
-        dbg("stale-page", { mine: myBuild, server: now.build });
+        if (!said) {
+          said = true;
+          dbg("stale-page", { mine: myBuild, server: now.build });
+        }
       }
     } catch (e) { /* server restarting */ }
   }, 15000);

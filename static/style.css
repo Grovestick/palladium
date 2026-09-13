@@ -262,6 +262,13 @@ option.capped:disabled{color:#f0704f;opacity:.75}
 
 /* a tab left open from before the last edit announces itself rather than
    quietly behaving like an older build */
+/* Never over a film. A page that has fallen behind is worth saying so about, and
+   worth saying when the film ends: an orange band across a picture in full screen,
+   with a button nobody is going to press mid-scene, is an interruption offering to
+   interrupt further. */
+body.watching #stale,
+body:has(#player:not(.hidden)) #stale,
+:fullscreen #stale,:-webkit-full-screen #stale{display:none}
 #stale{position:fixed;top:0;left:0;right:0;z-index:200;background:#c2410c;color:#fff;
   text-align:center;padding:9px;font-size:14px}
 #stale button{text-decoration:underline;font-weight:600;margin-left:6px}
@@ -319,6 +326,11 @@ option.capped:disabled{color:#f0704f;opacity:.75}
 /* the cast button needs a box of its own or it collapses to nothing */
 google-cast-launcher{display:inline-block;width:26px;height:26px;flex:0 0 26px;
   background:none;border:0}
+/* Until Google's script claims the element it is an unknown tag with a size, which
+   the browser paints as an empty box - a grey square in the corner of the page,
+   there whenever the script is slow, blocked or on a browser that has no casting at
+   all. Nothing is shown until the element is defined and can draw itself. */
+google-cast-launcher:not(:defined){display:none}
 /* in the transport bar, at the size of the buttons beside it */
 #ctl #c-cast{display:flex;align-items:center;padding:0 2px;opacity:.85;color:var(--fg)}
 #ctl #c-cast:hover{opacity:1}
@@ -330,8 +342,27 @@ google-cast-launcher{display:inline-block;width:26px;height:26px;flex:0 0 26px;
    beside them, and wear the same colour. */
 #castbtn,#c-castbtn{--connected-color:var(--accent);--disconnected-color:#e8ecf1;
   width:26px;height:26px;vertical-align:middle;cursor:pointer;flex:none}
+/* Google's own element draws itself black whatever those two say - which on a dark
+   page is a black square in the corner, and reads as something broken. Turned over
+   so the glyph is light on the dark ground; a session in progress colours it itself,
+   and then it is left alone. */
+#castbtn:not(.on),#c-castbtn:not(.on){filter:invert(1);opacity:.72}
+#castbtn:not(.on):hover,#c-castbtn:not(.on):hover{opacity:1}
+/* In the bar under a film it stands with the other buttons and wears what they
+   wear: turning black over gives pure white, and the rest of the row is --fg. The
+   brightness brings it to the same tone, and the accent on hover is done the same
+   way - the element paints itself, so this is the only way to reach its colour. */
+#ctl #c-castbtn:not(.on){filter:invert(1) brightness(.91);opacity:1}
+#ctl #c-castbtn:not(.on):hover{filter:invert(1) brightness(.62) sepia(1)
+  saturate(6) hue-rotate(181deg)}
 #ctl #c-castbtn{width:24px;height:24px;margin:0 4px}
+/* Never over a film. The class is set while something is playing, and the player
+   being open at all is the safer test: paused, buffering, or full screen with the
+   page behind it, the library's own launcher has no business on top of the picture.
+   The one in the transport bar stays - that is where casting is asked for. */
 body.watching #castbtn{display:none}
+body:has(#player:not(.hidden)) #castbtn{display:none}
+:fullscreen #castbtn,:-webkit-full-screen #castbtn{display:none}
 
 /* back on top, but the page is pushed down so it covers nothing */
 #stale{top:0;bottom:auto}
@@ -547,7 +578,11 @@ h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
 .watchlog .what{color:var(--fg);font-size:14px}
 .watchlog .when{margin:0;font-size:12px;text-align:right;white-space:nowrap}
 .watchlog .how{grid-column:2/4;margin:0;font-size:12px}
-.livetotals{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 18px}
+/* Everything on Now playing stands in one column, as wide as a settings block:
+   the drawing, the totals under it and the rate at the end of each row all end on
+   the same line down the page. */
+.liverows{max-width:940px}
+.livetotals{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 18px;max-width:940px}
 .livetotals .total{background:var(--panel);border:1px solid var(--line);
   border-radius:10px;padding:10px 16px;min-width:120px}
 .livetotals .total b{display:block;color:var(--accent);font-size:20px;
@@ -1125,6 +1160,9 @@ body.has-copynote{padding-top:38px}
 /* An episode the machine that keeps copies is holding, beside its title. */
 .ep .epcopy{display:inline-block;width:7px;height:7px;border-radius:50%;
   background:#42c96a;margin-right:7px;vertical-align:middle}
+/* an episode a pack can fetch: the same mark the posters use */
+.ep .epget{display:inline-block;margin-right:7px;vertical-align:middle;opacity:.75}
+.ep .epget svg{width:13px;height:13px;vertical-align:middle}
 #copynote button{margin-left:10px;background:transparent;border:1px solid #2e7d46;
   color:#7ee2a0;border-radius:6px;padding:3px 12px;font-size:12.5px;cursor:pointer}
 #copynote button:hover{background:#2e7d46;color:#0b1410}
@@ -1324,11 +1362,16 @@ body.has-copynote{padding-top:38px}
 .favmenu button{background:transparent;border:0;color:var(--fg);text-align:left;
   padding:8px 10px;border-radius:7px;cursor:pointer;font:inherit}
 .favmenu button:hover{background:var(--panel2)}
-/* a film on offer from a torrent pack: greyed until it is here */
-.card.offered img{filter:grayscale(1);opacity:.5}
+/* A film on offer from a torrent pack keeps its colours: the artwork is what makes it
+   recognisable, and drained of it a shelf of them read as broken rather than as
+   something you can have. The mark in the corner says it is not here yet. */
 .card .offerbadge{position:absolute;right:6px;top:6px;z-index:4;background:rgba(7,10,14,.85);
-  color:var(--fg);font-size:11px;font-weight:600;padding:2px 6px;border-radius:5px}
-.detail.offer .poster img{filter:grayscale(1);opacity:.6}
+  color:var(--fg);font-size:11px;font-weight:600;padding:2px 6px;border-radius:5px;
+  display:flex;align-items:center;gap:4px}
+/* the download mark, drawn rather than typed: the character it was renders as a tick,
+   a full stop or nothing at all depending on the font the machine happens to have */
+.offerbadge .mark{width:12px;height:12px;flex:none;display:block}
+
 /* whether Palladium reaches the torrent client: a green dot, or a red one */
 .qbstate{display:flex;align-items:center;gap:8px;margin:6px 0 12px;font-size:13px;color:var(--dim)}
 .qbstate.on{color:var(--fg)}
@@ -1352,3 +1395,31 @@ body.has-copynote{padding-top:38px}
 #topbar .dlbanner{background:var(--panel2);color:var(--fg);border-radius:999px;padding:4px 12px;
   font-size:13px;white-space:nowrap;max-width:30vw;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 #topbar .dlbanner[hidden]{display:none}
+
+/* What else is like a film, under its page: the genres it was matched on, as tags.
+   A clear gap under the film and no more - pushed to the foot of the window it went
+   off the bottom of a tall screen, which is further than out of the way. */
+.cat.alike{margin-top:34px}
+.cat.alike h2{cursor:default}
+/* the two at the end of the line sit together, the shelf-maker last and hard
+   against the right whether or not there is a Show more beside it */
+.cat.alike h2 .endbits{margin-left:auto;display:inline-flex;align-items:baseline;
+  gap:16px;white-space:nowrap}
+.cat.alike h2 .endbits .seeall{margin-left:0;cursor:pointer}
+.cat.alike h2 .makecoll{cursor:pointer}
+.cat.alike h2 .makecoll:hover{color:var(--accent)}
+.cat.alike h2 .tag{color:var(--accent);font-size:12px;font-weight:600;margin-left:9px}
+
+/* the numbers the server was built with: read, never set */
+.setblock.advanced{margin-top:22px}
+.advancedlist{margin-top:12px}
+.advancedlist h4{margin:18px 0 4px;font-size:13px;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--accent)}
+.advancedlist h4:first-child{margin-top:6px}
+.advancedlist .note{margin:0 0 8px;max-width:62ch}
+.advrow{display:grid;grid-template-columns:minmax(150px,1fr) auto;gap:4px 16px;
+  padding:7px 0;border-top:1px solid var(--line)}
+.advname{font-size:13px;color:var(--fg)}
+.advvalue{font-size:13px;color:var(--accent);font-weight:600;text-align:right;
+  white-space:nowrap}
+.advwhat{grid-column:1 / -1;font-size:12px;color:var(--dim);max-width:70ch}

@@ -18,6 +18,7 @@ Exit code 0 when nothing failed, 1 otherwise, so it can sit in a build.
 """
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -96,6 +97,30 @@ POSTS = [
     # else here, and answered by somebody else's server
     ("/network/check", {}, 40),
     ("/setup/done", {}),
+    # what a player says it has left. It is posted, and for a while the server
+    # answered it on GET only: every report came back 404 and was swallowed
+    ("/stream/buffer", {"ahead": 30}),
+]
+
+#: The doors only another server knocks on. They are refused without a machine key,
+#: and a refusal is not a test - the one that answered 500 for a day did it behind a
+#: key nothing here had. These are asked again with one.
+MACHINE = [
+    ("/follow/whatis", {"names": ["Some.Film.2019.mkv"]}),
+]
+
+#: and the ones it reads, which are refused the same way
+MACHINE_GETS = ["/follow/queue", "/follow/playing"]
+
+#: What a guest's own screen writes about itself. Twice over, this has been listed
+#: among what a guest may write and not among what makes somebody a guest at all - the
+#: door then refuses it before the second list is ever read, and the only players that
+#: could report anything were the ones sitting at the machine.
+GUEST_POSTS = [
+    ("/stream/buffer", {"ahead": 30}),
+    ("/trace", {"t": "smoke"}),
+    ("/favorites", {"key": "l1", "on": False}),
+    ("/watchlist", {"key": "l1", "on": False}),
 ]
 
 
@@ -105,12 +130,13 @@ def free_port():
         return s.getsockname()[1]
 
 
-def ask(url, body=None, timeout=25):
+def ask(url, body=None, timeout=25, token=None):
     """(status, first line of the body) - never raises for an HTTP answer."""
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        url, data=data,
-        headers={"Content-Type": "application/json"} if data else {})
+    headers = {"Content-Type": "application/json"} if data else {}
+    if token:
+        headers["X-Palladium-Token"] = token
+    req = urllib.request.Request(url, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             said = r.read(400).decode("utf-8", "replace").replace("\n", " ")
@@ -168,6 +194,32 @@ def main():
             if code == 0 or code >= 500:
                 bad.append((path, code, said))
             print("  %s POST %-41s %s  %s" % (mark, path, code, said[:60]))
+        # and the doors another server knocks on, behind a key made for the purpose
+        code, said = ask(base + "/invites", {"name": "smoke", "kind": "machine"})
+        # the answer is cut short for printing, so the key is picked out of it
+        found = re.search(r'"token"\s*:\s*"([^"]+)"', said or "")
+        token = found.group(1) if found else ""
+        if not token:
+            bad.append(("/invites kind=machine", code, said))
+            print("  BAD no machine key: %s %s" % (code, said[:60]))
+        for path, body in MACHINE + [(p, None) for p in MACHINE_GETS]:
+            code, said = ask(base + path, body, token=token)
+            mark = "ok " if 200 <= code < 400 else "BAD"
+            if code == 0 or code >= 400:
+                bad.append((path, code, said))
+            print("  %s KEY  %-41s %s  %s" % (mark, path, code, said[:60]))
+        # and the same doors behind an ordinary invitation
+        code, said = ask(base + "/invites", {"name": "guest"})
+        found = re.search(r'"token"\s*:\s*"([^"]+)"', said or "")
+        guest = found.group(1) if found else ""
+        if not guest:
+            bad.append(("/invites", code, said))
+        for path, body in GUEST_POSTS:
+            code, said = ask(base + path, body, token=guest)
+            mark = "ok " if 200 <= code < 400 else "BAD"
+            if code == 0 or code >= 400:
+                bad.append((path + " as a guest", code, said))
+            print("  %s GUEST %-40s %s  %s" % (mark, path, code, said[:60]))
 
     time.sleep(1)
     proc.terminate()
@@ -190,7 +242,8 @@ def main():
         print("\nleft behind:", root)
 
     print("\n%d requests, %d failed, %d tracebacks"
-          % (len(GETS) + len(POSTS), len(bad), tracebacks))
+          % (len(GETS) + len(POSTS) + len(MACHINE) + len(MACHINE_GETS)
+             + len(GUEST_POSTS), len(bad), tracebacks))
     for path, code, said in bad:
         print("   %-46s %s  %s" % (path, code, said))
     return 1 if (bad or tracebacks) else 0

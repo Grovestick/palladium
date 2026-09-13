@@ -16,10 +16,9 @@ android {
         // small additions, the second is reserved for a real feature release, the first
         // for calling it done. versionCode is separate and only ever counts up, because
         // that is the number Android compares when deciding an APK is an update.
-        versionCode = 741
-        // A feature release rather than a patch: three subtitle profiles, per-title
-        // overrides, and a settings screen the app never had.
-        versionName = "0.18.23"     // one number for the app and the server it ships with
+        versionCode = 774
+        // A film's page says what else is like it, in its own years.
+        versionName = "0.18.56"     // one number for the app and the server it ships with
 
         // Where the app looks for its own updates, whatever server it happens to be
         // browsing. A friend's Palladium serves whatever APK they downloaded, which
@@ -53,6 +52,8 @@ android {
 }
 
 dependencies {
+    // the rules that decide how a film is read, tried here rather than on a television
+    testImplementation("junit:junit:4.13.2")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))

@@ -1,5 +1,351 @@
 [
   {
+    "version": "0.18.56",
+    "when": "2026-09-13",
+    "title": "Hours-ahead window counts unmeasured episodes",
+    "items": [
+      "More like this matches programmes against programmes. It asked the film section for any title's genres, so a series page listed films.",
+      "Web: an episode that is not downloaded opens its offer page with a Download button and carries the download mark in the season list. Clicking any episode called play(), which fails when there is no file.",
+      "how_long() falls back to the programme's average runtime when an episode has no measured file. Counted as zero, unmeasured episodes never filled the hours window, so a 4-hour setting queued 10 episodes of a 50-minute programme with 23 of its 55 unmeasured.",
+      "Changelog and today's code comments rewritten in plain technical language."
+    ]
+  },
+  {
+    "version": "0.18.55",
+    "when": "2026-09-13",
+    "title": "Loudness shown in the player's info line",
+    "items": [
+      "Player info line shows the file's measured loudness and the gain applied: \"-26.1 LUFS  +8.0 dB\", or \"+8.0 dB encoded\" when the transcoder applied it. Unmeasured files show nothing."
+    ]
+  },
+  {
+    "version": "0.18.54",
+    "when": "2026-09-13",
+    "title": "Episode pages, queue limits, watched threshold",
+    "items": [
+      "An offered episode now returns episode metadata (title, index, parentIndex, season) instead of movie metadata, so its page shows the episode and a Download button.",
+      "Part-way queue limited to 6 per viewer and places updated within 30 days. Was 40 per viewer with no age limit: 110 films queued, mostly abandoned starts. Now 39.",
+      "Watched threshold is now 95% or 3 minutes from the end, whichever is earlier, floor 85%. A 22-minute episode finishes at 86%, a 2-hour film stays at 95%. One helper, used by the watched mark, Continue watching, shelves, casual and the copy queue.",
+      "Repeated browser log lines are written at most once per 15 minutes (digits ignored when comparing). A stale tab was posting the same line every 15 seconds.",
+      "Loudness measuring waits until nothing is playing or copying, one file at a time. Two concurrent ffmpeg reads held a copy at 41 Mbit with the drive at 57 ms latency."
+    ]
+  },
+  {
+    "version": "0.18.53",
+    "when": "2026-09-13",
+    "title": "Volume normalisation, DVD subtitles burned in",
+    "items": [
+      "Setting under Playback: even out volume. Each file is measured once (ffmpeg ebur128, 180 s from 5:00) and cached in loudness.json; files more than 4 dB from the -18 LUFS target are corrected by up to 8 dB. Direct play applies the gain in an ExoPlayer AudioProcessor, transcodes apply -af volume. Passthrough bitstreams are left alone.",
+      "Offered programmes merge into the library's own: opening a show lists its seasons plus seasons only a pack has, and a season lists held episodes alongside offered ones, in order.",
+      "DVD (VobSub) subtitles are burned in instead of being passed to the player. Media3 decodes PGS but has no VobSub decoder: selecting one threw \"unsupported MIME type: application/vobsub\" and playback stopped. Legacy subtitle decoding is also enabled on the text renderer.",
+      "Loudness thresholds are listed under Settings > Advanced."
+    ]
+  },
+  {
+    "version": "0.18.52",
+    "when": "2026-09-13",
+    "title": "Torrent packs understand episodes",
+    "items": [
+      "Pack entries are parsed for SxxExx and matched against TMDB TV instead of movies; episode names come from one season lookup. All 34 files of a TV pack previously parsed as one film title and returned \"not found\".",
+      "A pack's programme appears in the TV section with its episodes, each fetchable, instead of one grouped movie row. Held and offered episodes are counted separately.",
+      "Existing packs are re-read once and their \"not found\" result cleared so they are matched again.",
+      "Setting under Downloads: keep the next episode ready. Past half an episode the next one is requested from its pack if a pack has it and the library does not. At a season end it takes the first of the next; once per episode.",
+      "Up from the top row moves to the tab above that card, measured from the card's position. The framework's search reached the server picker from the first two columns.",
+      "Holding select on a poster opens the menu and keeps it open: all events of that keypress (repeats and the release) are dropped, matched on downTime, in the activity and in the dialog window."
+    ]
+  },
+  {
+    "version": "0.18.51",
+    "when": "2026-09-13",
+    "title": "Guest writes, cache roles",
+    "items": [
+      "/stream/buffer and /favorites added to the guest path list. They were in GUEST_MAY_POST but not in GUEST_PREFIXES, so the door refused them first: 208 buffer reports from one guest rejected in a day, and sync only ever yielded to local viewers.",
+      "Invite roles are copied to the cache and refreshed each round. Without them the owner's key was a plain guest there and the wall panel was refused /watching.",
+      "A stale page reports itself once instead of every 15 seconds.",
+      "Smoke test now exercises guest-writable and machine-key endpoints."
+    ]
+  },
+  {
+    "version": "0.18.50",
+    "when": "2026-09-13",
+    "title": "Focus and key handling on the title page",
+    "items": [
+      "Down works on a film's page. The alike shelf loads after the page, and adding verticalScroll then rebuilt the column under the focused node; every direction key then threw ActiveParent must have a focusedChild and was dropped by the key guard. The column now scrolls from the start.",
+      "Up from the middle of a grid's top row goes straight up; only the left-hand card goes to the open tab.",
+      "\"More\" moved to the shelf heading: at the end of the row it was off-screen on a television.",
+      "Programme pages keep full text sizes; the reduced sizes are only for pages carrying a shelf.",
+      "Buffer reports are keyed per screen, not per viewer. One person watching on two devices overwrote their own last report.",
+      "A follower writes told titles under the post-rekey key. Written under the old key the update matched nothing, so titles just moved kept their file names."
+    ]
+  },
+  {
+    "version": "0.18.49",
+    "when": "2026-09-13",
+    "title": "More like this fits the screen",
+    "items": [
+      "The alike shelf fits a 1080p screen: title, year, plot and spacing reduced on television layouts, shelf positioned under the text rather than at the screen foot, cards at 5/8 of shelf size.",
+      "Detail pages scroll when a shelf sits below the fold.",
+      "Holding select opens a poster's menu on the hold rather than on release."
+    ]
+  },
+  {
+    "version": "0.18.48",
+    "when": "2026-09-13",
+    "title": "Up from the left-hand card",
+    "items": [
+      "Up from the leftmost card of the top shelf goes to the tab row. The framework's search found the server picker, which sits above and left of the tabs."
+    ]
+  },
+  {
+    "version": "0.18.47",
+    "when": "2026-09-13",
+    "title": "Buffer reports reach the server",
+    "items": [
+      "/stream/buffer is answered on GET and POST and reads the seconds from body or query. It existed on GET only and read the body a GET does not have, so every report returned 404 into the caller's catch: AHEAD was always empty and sync never yielded. A viewer sat on 1 s of buffer while a copy took 270 Mbit.",
+      "Graded response instead of one threshold: 50 s is fed, under 40 s the ceiling stops climbing, under 30 s it halves, under 20 s it drops to the floor.",
+      "A transcode is judged by buffer direction, not depth - it holds whatever the encoder is ahead by - and only a falling buffer, or one under 5 s, counts as starved.",
+      "A player reporting a stall drops the ceiling to the floor regardless of depth.",
+      "Thresholds listed under Settings > Advanced."
+    ]
+  },
+  {
+    "version": "0.18.46",
+    "when": "2026-09-13",
+    "title": "A film is looked for by its key, not by its name",
+    "items": [
+      "A player looking for the same film on another machine asks for it by number. Every machine works a key out from the title and the year for itself and they all arrive at the same one, which is the whole reason the keys are made that way - and the question being asked was the one thing that differs. The main server has its titles from the catalogue; a machine keeping copies reads them off the files it was sent, punctuation and misspellings and all, so a film both machines held under one key was two different names to a search. It was read off one machine when two had it.",
+      "The name is still asked for afterwards, for a machine that has not been given the same keys yet.",
+      "A machine keeping copies takes its titles from the one it follows, in the round where it already takes its keys. It had only the files it was sent to go on and named them as the releases did - no colon, the odd misspelling - so six of the twenty-seven films both machines held were filed under two different names.",
+      "A disk holding a picture up pulls a copy back before anybody has to notice. How much of each block's time went on getting it off the disk rather than handing it on was already measured, and used only to decide how much of the reading to hand over; above a third of it the copy now stands back as well.",
+      "The web and the server ask by key too. Three places asked another machine what it called a film by name; one was fixed and the other two would have gone on failing the same way.",
+      "Out of the top row of Films or TV, up goes to the row of buttons over the posters rather than past them. Straight up from the left-hand column reached the server picker, which sits above them and to the left.",
+      "A list opens with the cursor on that row. It opened with the focus nowhere in particular, so the first press of any direction went hunting rather than moving.",
+      "The answer a copy is given carries the title it asks about. It was added to what is sent without being fetched from the index, so the question a copy asks about every file it holds answered with nothing at all."
+    ]
+  },
+  {
+    "version": "0.18.44",
+    "when": "2026-09-13",
+    "title": "Two lines, and a ceiling that finds out",
+    "items": [
+      "A copy gives way only to what shares its own path. A film going out to somebody's phone is on the line to the world and a copy to a machine in the next room is on the network here, and neither takes megabits from the other - but they were counted together, so somebody watching from away at seven megabits held a copy between two machines three metres apart to eleven. Each side is measured on its own now, and where nothing on the copy's own side is watching there is no ceiling at all.",
+      "The ceiling finds out how much there is rather than believing what it has seen. What had been seen was never the line's capacity - it was what the ceiling had allowed so far, and a ceiling that never exceeds its own measurements cannot learn a bigger number, because the traffic that would teach it is the traffic it prevents. It may climb to twice what that side has carried, which doubles every few seconds until the wire, a disk or somebody watching stops it: a copy sat at sixteen megabits on a network measured at a hundred.",
+      "A thin buffer counts on its own side only. A phone on mobile data running low says nothing about a copy between two machines in the house, and holding that copy back would not give the phone a single megabit.",
+      "Both rules are on the Advanced list under Settings, with the rest of the numbers."
+    ]
+  },
+  {
+    "version": "0.18.43",
+    "when": "2026-09-13",
+    "title": "One answer to when a copy is taken",
+    "items": [
+      "Each kind of thing a copy keeps decides for itself when it may be taken, and nothing else does. Under the five of them sat a switch that could say nothing at all moves before night whatever they said - two answers to one question, and the quieter one won without saying so. It is gone, and everything set to Always is taken now.",
+      "Start the night now sits with the rows that offer Inside hours, which is where somebody reading those three words looks for the way to make them mean now. It also counts as the hours: a kind told to wait for them no longer waits through it.",
+      "The machine's own three rows stay on the page beside the cache's settings. What that machine is set to copy is drawn by clearing whatever box it is handed, and it was handed the one they had just been put in - so they were built, added and wiped off the page before anybody saw them."
+    ]
+  },
+  {
+    "version": "0.18.42",
+    "when": "2026-09-13",
+    "title": "What a copy keeps, one kind at a time",
+    "items": [
+      "Each kind of thing a second machine keeps can be off, kept only through the hours that machine is the one awake, or kept always: what people are part-way through, watchlists and favourites, what has been watched lately, the shuffle's next, and whatever is on a screen this minute. It was all or nothing, so a machine wanting one person's watchlist took everybody's half-watched series with it and the only way to stop that was to stop copying. The machine keeping the copies decides which apply, because it is the one that knows what time it is there.",
+      "The sound is taken off the top before a picture is measured, and an old codec is not asked to spend what it used to. The library keeps the whole container's rate, so a film with DTS carried a megabit and a half that is not picture - and a broadcast MPEG-2 at twenty-one megabits was being re-encoded at twenty-one, where h264 holds the same picture at eight.",
+      "Settings has an Advanced button: every number the server settles on when nobody has said otherwise, in the places they belong and with a line each on what they do. Read from the running server rather than written out again, so the page cannot come to disagree with the machine."
+    ]
+  },
+  {
+    "version": "0.18.41",
+    "when": "2026-09-13",
+    "title": "Show more opens the filter",
+    "items": [
+      "Show more, at the end of the shelf of what is like a film, hands its words to the tab they came from: Films or TV with those genres already marked, where one can be taken off or a decade put beside them. It is there however short the row is - a shelf of four is exactly where somebody wants to widen it - and a longer row of the same thing was not what anybody was after.",
+      "Show more clears whatever was last searched for. Left standing it narrowed the genres to whichever of them had that word in the title, which is two questions at once.",
+      "A re-encode is never asked for more than the picture carries. Away from home with no ceiling set, anything going out was given eight megabits whatever it was - a fallback in the code, not a setting anybody made. A fifty-minute episode of 367 megabytes, a DVD rip running at one megabit, was re-encoded at eight and had sent three times its own size before it was half watched, over mobile data, with nothing gained. Only an x265 encode is given more than the file holds, half as much again; anything else is held to what came in."
+    ]
+  },
+  {
+    "version": "0.18.38",
+    "when": "2026-09-13",
+    "title": "More like this, and a download button that is one",
+    "items": [
+      "A film's page carries a shelf of what else is like it: the titles holding every one of its genres, written over the shelf as tags. In year order around this film - five from before it and five from after, newest at the left - and where one side has nothing, the other makes up the ten. It widens in time, never in words: letting a word go put films in the row that were not that kind of film at all.",
+      "The whole matching set is asked for rather than the first page of it. A page is a hundred and twenty and it arrives newest first, so for a common pair of words everything older was never fetched - and a film from 1987 cannot sit in the middle of a list that begins in 2015.",
+      "Show more opens the rest of them, and a button beside it makes a collection of what is shown.",
+      "A film that runs to its end comes back to its page at that shelf, with the remote on the first of them.",
+      "Download for subtitles is a button beside the menu rather than a choice inside it. It was written after the menu closed, so the browser dropped it out of the list and drew it as a line of text: there was nothing to press, and the thing listening for it could never hear a thing.",
+      "A poster that arrives too small to be a picture is asked for again. The same address answers with the real one and with a near-black stand-in depending on which edge of their network replies, and whatever arrived first was kept for good.",
+      "Marking a decade or a genre leaves the remote on the line it just ticked."
+    ]
+  },
+  {
+    "version": "0.18.37",
+    "when": "2026-09-13",
+    "title": "More like this, under a film",
+    "items": [
+      "A film's page carries a shelf of what else is like it, newest first: the titles holding the same genres, matched the way the genre filter matches when those words are marked. The words are written over it as tags, and a rare one is dropped rather than leaving a shelf of two - one film was the only thing in the library that was science fiction, drama and a television film at once.",
+      "A poster that arrives too small to be a picture is asked for again. The same address answers with the real one and with a near-black stand-in depending on which edge of their network replies, and whatever arrived first was kept for good: one film in a library of four thousand had a black poster since the fifth of September.",
+      "The shelf is newest first, and its words wrap on a phone standing up rather than running off the side.",
+      "A film that runs to its end comes back to its page at that shelf, with the remote on the first of them. It came back to the top of the page with the play button under the remote, which is the one thing nobody wants next.",
+      "The web carries the same shelf under a film, with the same tags over it.",
+      "Marking a decade or a genre leaves the remote on the line it just ticked. The lists are read again when something is marked - that is what makes the numbers fall - and the row under the remote stopped existing, so the focus fell out of the menu onto the button beside it."
+    ]
+  },
+  {
+    "version": "0.18.36",
+    "when": "2026-09-13",
+    "title": "The copy keeps what the shuffle is on",
+    "items": [
+      "A machine keeping copies holds on to the title a shuffle has drawn until it is finished. Drawing one writes it down as played, and the list of what to keep was the queue less what had been played - so the copy stopped wanting an episode at the very moment somebody started watching it, and swept it while they were. That is why a film read off one machine when both held it.",
+      "A shelf reads again when a film is backed out of, so pressing the poster carries on where it was left. It was told to read again and the instruction went nowhere unless the tab had changed as well - which is why going to another tab and back made it work.",
+      "The web marks several decades at once as it already did genres, and each list says how it joins them.",
+      "The numbers beside a genre or a decade in the web fall to what is left once something is marked, as they do in the app.",
+      "A film on offer keeps its colours in the web too, and its mark is drawn rather than typed."
+    ]
+  },
+  {
+    "version": "0.18.35",
+    "when": "2026-09-13",
+    "title": "One rule for where a press of the remote goes",
+    "items": [
+      "Where the remote goes at the edge of a list is decided in one place now. It was four handlers and five hints to the framework's own search, all answering the same three questions differently: up out of a list, down into one, and shelf to shelf. The shelves on Home did it a press at a time and were right; the lists hinted at the search instead, and a hint fires from every row rather than the edge.",
+      "Up out of a list goes straight up, to whatever is over that poster, and down goes straight down. Both were being sent to one named button instead, so a press in a corner of the screen crossed it.",
+      "Down from a tab goes straight down, into whatever is under that button - the same as the sort, the genre and the search box beside it. Naming one poster for the whole row sent every tab to the first one, so two buttons on the same line did two different things.",
+      "A press at an edge is taken before the search runs rather than after it. Answering afterwards meant the focus had already moved.",
+      "The download mark is drawn rather than typed: an arrow into a tray, the shape everything else uses. It was a character the television rendered with whatever font it had.",
+      "A film on offer keeps its colours. Drained of them it read as broken rather than as something you can have.",
+      "A press of the remote no longer closes the app. A direction pointing at a row that has scrolled away throws inside the framework's focus search; one such failure was already survived and this is the other.",
+      "A download that finishes reads as arriving rather than blinking nought per cent.",
+      "Several decades can be marked at once, the way genres already could. A title need only be from one of them - a film has one year, so asking for all of them at once would answer nothing.",
+      "The genre button says what its number is: twelve matches, not twelve. A bare number beside the word read as how many genres were marked, which is the one thing it was not.",
+      "The decade list has a Clear, named and coloured as the one on genres is.",
+      "Up leaves an open genre or decade list, the same as it leaves anything else on the screen. Back was the only way out, and back on a remote means leave the app to most people.",
+      "Each filter says how it joins what is marked: genres want a title carrying all of them, decades want one from any of them. A tick-list reads as any of these to most people, which is why the number fell as more were marked and nobody could see why.",
+      "The number against a genre or a decade counts the films on offer as well, because that is what picking it shows. It counted only what was on the disk: three hundred against a word that then filled the screen with two thousand."
+    ]
+  },
+  {
+    "version": "0.18.34",
+    "when": "2026-09-13",
+    "title": "The app survives a press it cannot answer",
+    "items": [
+      "A press of the remote no longer closes the app. A direction pointing at a row that has scrolled away throws inside the framework's own focus search; one such failure was already survived and this is the other, seen four times in three minutes on a television.",
+      "A download that finishes reads as arriving rather than blinking nought per cent. The live row goes the moment the file is complete and every screen fell back to the shelf's snapshot, which was taken before the download began.",
+      "From the top of Films or TV, up goes to the tab the screen is on. Home already did; these two let the search run, and it found the picker and the search box that sit above the tabs.",
+      "A film on offer keeps its colours. Its poster was drained of them, which on a shelf read as broken rather than as something you can have; the mark in the corner already says it is not here yet."
+    ]
+  },
+  {
+    "version": "0.18.33",
+    "when": "2026-09-13",
+    "title": "Copying gives way to the picture, and a copy can serve its episodes",
+    "items": [
+      "A player says how many seconds of film it has in hand, and copying stands aside while that number is low. Until now a machine worked it out from the rate falling away, which is only true once the picture has already stopped; the same measure holds whether a film is read straight off the disk or made by the encoder.",
+      "A machine keeping copies can serve an episode it fetched after the programme was re-keyed. Every such file named an episode that did not exist, so the pair read as one machine and the second was never asked for it.",
+      "Files are pointed back at the episode they belong to wherever that link was broken, at every scan and after every re-key.",
+      "A place in an episode follows it when two copies of a programme are folded together."
+    ]
+  },
+  {
+    "version": "0.18.32",
+    "when": "2026-09-13",
+    "title": "Seasons say which season, and up goes to the tabs",
+    "items": [
+      "A machine that keeps copies may ask the one it follows who is watching. It could not, so the pair could never draw itself: a film read off both machines is two streams and each machine sees only its own half.",
+      "A season carries its name under it, and an episode its number: the pictures alone could not say, because one programme's seasons are the same artwork four times over. Films stay as they are - their poster is their name.",
+      "From the top shelf, up goes to the tab the screen is on. The picker and the search box sit above the tabs, and the nearest thing upwards was one of those.",
+      "The container image is published: ghcr.io/grovestick/palladium, built from the source this build came from.",
+      "One viewing reads by one name whichever machine reports it. A machine keeping copies knows an episode as \"Episode 32\" until it is told otherwise, so the same film appeared under two names side by side.",
+      "The drawing keeps up with the list beside it: what the other machine is feeding was kept for half a minute and asked for every two seconds, so a film had been coming off both machines for twenty seconds before the line appeared."
+    ]
+  },
+  {
+    "version": "0.18.31",
+    "when": "2026-09-13",
+    "title": "Posters, and a screen that fits what is on it",
+    "items": [
+      "No names under the pictures in the app. A poster is the title written large by somebody paid to make it recognisable, and a shelf of names cut off halfway said nothing the artwork had not. What the words took, the pictures get.",
+      "How big a poster is drawn is decided by the height of the screen rather than its width. A television is wide and short - 960 points by 540 - so it was being given the size meant for a tablet, and the second shelf began below the bottom of the screen. Two whole shelves on a television, five to a row on a phone lying down, three standing up, whatever size the phone is.",
+      "On a screen that short the name, the machine picker and the search box stand on one line, the tabs are the smaller size, and the air above each shelf name is one line of it.",
+      "The remote starts on Home, a press of down goes down rather than sideways, and down and up keep the column they are in - each shelf remembers where the remote was on it.",
+      "A machine that keeps copies can draw its own wiring again: asking the main server what it is feeding was written into the answer before the method that does the asking existed, so the whole answer failed and the drawing lost its way out and its second machine.",
+      "A machine that lists a title but holds no file for it is not a second source. The one that keeps copies mirrors the whole catalogue, so it answers for every episode of a programme and holds the file for three of them - and a film being played said the other machine had a different file when it had no file at all."
+    ]
+  },
+  {
+    "version": "0.18.30",
+    "when": "2026-09-13",
+    "title": "Both machines drawn, and every viewing says which one sends it",
+    "items": [
+      "A machine that keeps copies draws the line from the main server to whoever is watching. It asks that machine what it is feeding, with the key it follows with - the key a browser holds there is that machine's own and the main server has never heard of it - so a film read off both showed the main server sitting idle while it carried half the picture.",
+      "Every row in Now playing says which machine is sending it.",
+      "The band that says a page has fallen behind stays off a film: not while something is playing, not while the player is open, and never in full screen."
+    ]
+  },
+  {
+    "version": "0.18.29",
+    "when": "2026-09-13",
+    "title": "A download's numbers move while you watch them",
+    "items": [
+      "The percentage, the rate and the time left of a download move on screen instead of standing at whatever the first reading said. The title carries those figures in fields the language leaves out of its own equals, so a film at nought per cent and the same film at ninety-nine compared as equal - and the screen was told nothing had changed. Watched on a television: the rate went from 104 to 221 Mbit and the time left from five minutes to one, on screen, as it happened.",
+      "The cast button is a light glyph rather than a black square: Google's own element draws itself black whatever it is asked, which on a dark page reads as something broken. Nothing at all is drawn until that element is ready, and it never sits over a film.",
+      "In Now playing the drawing keeps up with the figures beside it - two seconds, as they do - and everything on the page ends on the same line down the right.",
+      "The name of a film leads to the film's page. On Continue watching the picture carries on where it left off, which is right for the picture and wrong for the words under it.",
+      "A machine that keeps copies draws the line from the main server to whoever is watching: it asks that machine what it is feeding, the way the viewer list already does."
+    ]
+  },
+  {
+    "version": "0.18.28",
+    "when": "2026-09-13",
+    "title": "A machine that goes away comes back to the film",
+    "items": [
+      "A machine dropped mid-film is asked again every few seconds and rejoins as soon as it answers. Dropping one is what marked it not alive, and asking it again was the job of the very thread that ended when it did - so one connection that timed out put a machine out of the film for good, however well it answered a second later. Watched on a television: the main server stopped for forty seconds, was asked five times while it was down, and was carrying its share again three seconds after it came back, with the picture never stopping.",
+      "Every machine that has the film carries it, up to four, asked again every twenty seconds. That is the whole rule - the separate one that moved a film back to the main server is gone, and so is the one that kept a machine measured as slower off the work.",
+      "A viewing drawn from a player's report is named after the person and carries its year in brackets, like every other row.",
+      "The app waits six seconds to reach a server rather than three."
+    ]
+  },
+  {
+    "version": "0.18.27",
+    "when": "2026-09-13",
+    "title": "One rule for which machines carry a film",
+    "items": [
+      "Every machine that has the film carries it, up to four, and is asked again every twenty seconds. That is the whole rule. After a machine has been away there is nothing to restore: it answers, it has the file, it takes its share again.",
+      "The rule that moved a film back to the main server is gone. It was a second way of saying the same thing, and it moved the picture to do it - a special case where the general one already applies.",
+      "The two ways a film could quietly end up on one machine now say so in the log, with every machine found and what became of its address.",
+      "The app waits six seconds to reach a server rather than three. Three was long enough for a machine beside it and not for a telephone on wi-fi, which then read its own main server as away."
+    ]
+  },
+  {
+    "version": "0.18.26",
+    "when": "2026-09-12",
+    "title": "A film says why it is coming off one machine",
+    "items": [
+      "The two ways a film could quietly end up on one machine now say so. One returned without a word when splitting was turned off or the film was being encoded; the other when every machine found had been dropped for a reason nothing wrote down. A film that could have come off two machines and did not looked exactly like one where nothing had been asked - which is hours of an evening.",
+      "A viewing drawn from a player's report is named after the person, and its title carries the year in brackets like every other row."
+    ]
+  },
+  {
+    "version": "0.18.25",
+    "when": "2026-09-12",
+    "title": "Now playing says the same thing twice the same way",
+    "items": [
+      "A viewing drawn from a player's report is named after the person, not after the telephone's model number. The same person watching one film appeared as themselves on one machine and as a part number on the other.",
+      "And a title reads the same whichever machine reports it: the film with its year in brackets, the way a file is named. A player sends the name and the year apart, so one film looked like two.",
+      "The app waits six seconds to reach a server rather than three. Three was long enough for a machine beside it and not for a telephone on wi-fi, which then read its own main server as away and stayed on the machine keeping copies."
+    ]
+  },
+  {
+    "version": "0.18.24",
+    "when": "2026-09-12",
+    "title": "One rule: a machine holding the file carries the film",
+    "items": [
+      "Every machine holding a film carries it, up to four of them, and a machine is left out only by not answering. The rule that kept a machine measured as slower off the stretch about to be played is gone: a speed is measured once and never decays, so a machine that happened to be busy for its first stretch was left out of every stretch after it - paired, connected and carrying nothing. What that rule was written for is already answered better: a stretch that has not arrived in about twice the time the quickest machine would have taken is given up and fetched again.",
+      "A film being played by the app is written down as the app. The player's own requests carried no name, so they were filed as a browser: one viewing appeared twice in Now playing under two different names.",
+      "Every machine known is asked whether it has the film every twenty seconds while it plays, rather than every minute - so one that has just come back joins what is already playing instead of being found a minute later."
+    ]
+  },
+  {
     "version": "0.18.23",
     "when": "2026-09-12",
     "title": "The copy stops deleting what somebody is watching",

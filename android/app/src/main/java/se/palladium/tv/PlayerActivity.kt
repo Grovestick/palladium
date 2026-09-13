@@ -96,6 +96,17 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         @Volatile
         @JvmStatic
         var settling: kotlinx.coroutines.Job? = null
+
+        /**
+         * The film that just ran to its end, for the page it came from.
+         *
+         * A film that finishes has nowhere to go - no next episode, no draw from a
+         * hat - so it closes and leaves somebody looking at the top of the page they
+         * started from. What they want next is on the same page, further down.
+         */
+        @Volatile
+        @JvmStatic
+        var ranOut: String = ""
     }
 
     private var local: ExoPlayer? = null
@@ -300,7 +311,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     //: whether the next episode's subtitle is fetched before it starts: the server's
     //: setting, shown beside Download because that is where somebody thinks about it
     private val fetchAhead = androidx.compose.runtime.mutableStateOf(true)
-    private val title = androidx.compose.runtime.mutableStateOf<Media?>(null)
+    // never equal: what changes about a title while it plays - its download, its
+    // place - lives in Media's body, which its equals() does not look at
+    private val title = androidx.compose.runtime.mutableStateOf<Media?>(
+        null, androidx.compose.runtime.neverEqualPolicy())
     // the episode after this one, and the seconds left before it starts itself
     private val nextUp = androidx.compose.runtime.mutableStateOf<Media?>(null)
     private val countdown = androidx.compose.runtime.mutableIntStateOf(0)
@@ -337,6 +351,19 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private var stopped = 0
     private var looking = false
     private var askedAt = 0L
+    /** when this screen last said how much film it had in hand */
+    private var saidBuffer = 0L
+
+    /** How much the sound of this file is lifted or held back, in decibels. */
+    private val gain = Gain()
+
+    /** Set from what the server measured, each time a film is opened. */
+    private fun evenTheVolume() {
+        gain.decibels = intent.getFloatExtra("gainDb", 0f)
+        if (gain.decibels != 0f) {
+            log("evening the sound by " + gain.decibels + " dB")
+        }
+    }
     /**
      * Whether the copy already held this film when it started playing.
      *
@@ -1356,6 +1383,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             // it can answer and a card with something else on it takes a while.
             .setConnectTimeoutMs(5_000)
             .setReadTimeoutMs(30_000)
+            // and it says what it is. The player's own requests carried no name at
+            // all, so a film the app was reading went down as a browser - one
+            // viewing under two names in Now playing, and two evenings of looking
+            // for a program on the television that was never there.
+            .setDefaultRequestProperties(mapOf("X-Palladium-App" to Api.appName()))
         val counter = object : androidx.media3.datasource.TransferListener {
             override fun onTransferInitializing(
                 source: androidx.media3.datasource.DataSource,
@@ -1394,7 +1426,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // it in lumps when a twin is known, and is a plain http source otherwise
         ways = TwoWaysFactory(http, counter)
         offerTwo()
-        local = ExoPlayer.Builder(this)
+        // Renderers of our own: sound that can be evened out between one release and
+        // the next, and a subtitle renderer that will draw a DVD's bitmaps - the
+        // framework refuses them by default and the film stops where one is chosen.
+        evenTheVolume()
+        local = ExoPlayer.Builder(this, Renderers(this, gain))
             .setMediaSourceFactory(
                 androidx.media3.exoplayer.source.DefaultMediaSourceFactory(ways!!)
                     .setLoadErrorHandlingPolicy(patientLoading()))
@@ -1535,18 +1571,24 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         findTheOtherOne()
         if (android.os.SystemClock.elapsedRealtime() - startedAt < 15_000) return
         if (ready == null) return
-        // and home again once the main server is answering. A film moves to the copy
-        // when the machine it was reading from goes away - and stayed there for the
-        // rest of the evening, with the whole app following it onto a machine that
-        // holds a fraction of the library. Only from a picture that is playing well:
-        // a move costs a second of black, and paying that to leave a machine that is
-        // coping is not worth it.
-        if (comeHome()) return
         watchTheCopying()
         val left = p.duration
         if (left > 0 && p.currentPosition > left - 20_000) return   // it is ending anyway
         if (!p.playWhenReady) { thin = 0; stopped = 0; return }
         val ahead = (p.bufferedPosition - p.currentPosition) / 1000
+        // told to the machine the film is coming off, every five seconds: it holds
+        // copying back while anybody is low, and it cannot see this from its end -
+        // a film read in bursts and one made by the encoder look the same from there
+        val tick = android.os.SystemClock.elapsedRealtime()
+        if (tick - saidBuffer > 5_000) {
+            saidBuffer = tick
+            // and whether the picture has stopped for want of anything to show. A
+            // transcode arrives as it is made and its buffer is thin whatever the
+            // network is doing, so how deep it is says little; having run out says
+            // everything, and says it the same way for both ways of watching.
+            val stalled = p.playbackState == Player.STATE_BUFFERING && p.playWhenReady
+            lifecycleScope.launch { Api.sayBuffer(ahead, playingOn(), stalled) }
+        }
         stopped = if (p.playbackState == Player.STATE_BUFFERING) stopped + 1 else 0
         thin = if (ahead in 0..7) thin + 1 else 0
         // While the reader still has a machine, it is dealing with this and nothing
@@ -1640,6 +1682,16 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             else String.format(java.util.Locale.US, "%.0f MB used", mb)
         } else null
         val dropped = if (droppedFrames > 0) "dropped " + droppedFrames else null
+        // How loud the file is and what is being done about it. A file nobody has
+        // measured yet says nothing at all rather than a nought that means "unknown".
+        val loud = intent.getFloatExtra("lufs", Float.NaN).takeIf { !it.isNaN() }?.let {
+            val put = intent.getFloatExtra("gainUsed", 0f)
+            String.format(java.util.Locale.US, "%.1f LUFS", it) + when {
+                put == 0f -> ""
+                direct -> String.format(java.util.Locale.US, "  %+.1f dB", put)
+                else -> String.format(java.util.Locale.US, "  %+.1f dB encoded", put)
+            }
+        }
         // Grouped left to right, nearest thing first: where the film is coming from,
         // then what it is, then how it is being decoded, then how it is flowing, then
         // anything wrong with it. The order used to be the order each was added, so
@@ -1649,7 +1701,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                       sourceFacts, decodedSize, frameRate(),
                       decoderName, audioDecoder,
                       rate, used, buffered,
-                      dropped, subtitleName())
+                      loud, dropped, subtitleName())
             .filter { !it.isNullOrEmpty() }
             .joinToString("   \u00b7   ")
     }
@@ -2190,7 +2242,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     // something put on casually leads to the next draw; a series rolls
                     // on; a film on its own has nowhere to go
                     if (casually()) step(forward = true)
-                    else if (autoNext && showKey.isNotEmpty()) offerNext() else finish()
+                    else if (autoNext && showKey.isNotEmpty()) offerNext()
+                    else {
+                        ranOut = title.value?.ratingKey.orEmpty()
+                        finish()
+                    }
                 } else {
                     report()                       // buffering and ready, as they happen
                 }
@@ -2567,6 +2623,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             reader.main = ""
             reader.twins = emptyList()
             whyNotSplit = if (!direct) "being encoded" else null
+            // said out loud. This was the quietest of the ways out of here, and a
+            // film that could have come off two machines and did not looked exactly
+            // like one where nothing had been asked.
+            log("not splitting - " + (if (!Api.maySplit) "turned off in settings"
+                                      else "being encoded"))
             return
         }
         reader.main = streamUrl
@@ -2603,8 +2664,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 // words stayed on the screen after the split had started.
                 other == null && hadItAtStart == null -> null
                 other == null -> null
-                other.fileName.isNullOrEmpty() || other.fileName != film?.fileName ->
-                    copy + " holds a different file"
+                other.fileName.isNullOrEmpty() -> copy + " has not got this one"
+                other.fileName != film?.fileName -> copy + " holds a different file"
                 elsewhere == here -> null
                 else -> null
             }
@@ -2646,7 +2707,15 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 }
             if (urls == reader.twins) return@launch      // said once, not once a minute
             reader.twins = urls
-            log(if (urls.isEmpty()) "nothing to split with"
+            log(if (urls.isEmpty())
+                    // and why there is nothing: every machine that was found, and
+                    // what became of its address. An empty list said nothing at all.
+                    "nothing to split with - " + readies.size + " found [" +
+                        readies.joinToString("; ") {
+                            (it.srv?.name ?: "?") + " file=" + (it.fileName ?: "none") +
+                                " part=" + (it.partKey ?: "none") +
+                                " direct=" + it.canDirectPlay()
+                        } + "] mine=" + (film?.fileName ?: "none")
                 else "splitting with " + urls.joinToString(", "))
         }
     }
@@ -2657,7 +2726,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // that has this film at ten past is not the set that had it at ten.
         if (looking || onCastNow()) return
         val now = android.os.SystemClock.elapsedRealtime()
-        if (now - askedAt < 60_000) return
+        // Every twenty seconds, not every minute. One small question to each machine
+        // known - has it this film - and a minute is a long time to carry a film off
+        // one machine while another that has it sits there, which is what happens
+        // every time the main server is restarted under a film.
+        if (now - askedAt < 20_000) return
         askedAt = now
         looking = true
         lifecycleScope.launch {
@@ -2782,38 +2855,6 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             .firstOrNull { !Servers.sameMachine(it, Server("", here, "")) }
             ?: return ""
         return them.name.ifBlank { Servers.hostOf(them.base) }
-    }
-
-    /** Whether this film is being read off the machine that keeps copies. */
-    private fun onTheCopy(): Boolean {
-        val here = Servers.hostOf(srvBase.trimEnd('/').ifEmpty { Api.base })
-        return here.isNotEmpty() &&
-            (here == Servers.hostOf(Api.standby) || here == Servers.hostOf(Api.standbyOut))
-    }
-
-    /**
-     * Back to the main server, if that is where this film came from.
-     *
-     * The same move that brought it here, the other way round: the machine found
-     * holding this film is the main server, this one is the copy, and the picture is
-     * healthy enough to pay for a move. Once per player - the move starts a new one,
-     * and that one is not on the copy any more, so there is nothing to come back from.
-     */
-    private fun comeHome(): Boolean {
-        if (!Api.mayMove || switching || handedOver || onCastNow()) return false
-        if (!onTheCopy()) return false
-        val other = ready ?: return false
-        val there = other.srv?.base.orEmpty().trimEnd('/')
-        if (there.isEmpty()) return false
-        val host = Servers.hostOf(there)
-        if (host == Servers.hostOf(Api.standby) ||
-            host == Servers.hostOf(Api.standbyOut)) return false
-        val p = current() ?: return false
-        if (p.playbackState != Player.STATE_READY || !p.playWhenReady) return false
-        if (p.bufferedPosition - p.currentPosition < 15_000) return false
-        log("the main server is back - moving home to " + there)
-        leanOnTheCopy("Back on " + (other.srv?.name.orEmpty().ifBlank { "the main server" }))
-        return true
     }
 
     private fun leanOnTheCopy(why: String) {

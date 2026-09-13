@@ -150,6 +150,52 @@ def film_of(path):
     return " ".join(t for t in re.split(r"[._ ]+", base) if t), 0
 
 
+#: SxxExx anywhere in a name, bounded by a non-digit, so a resolution or a year is
+#: not read as an episode number.
+EPISODE_AT = re.compile(r"(?:^|[^A-Za-z0-9])[sS](\d{1,2})[eE](\d{1,3})(?![0-9])")
+
+
+def episode_of(path):
+    """(show, year, season, number) for a file naming an episode, else None.
+
+    Pack entries were parsed by film_of(), which drops SxxExx with the quality words:
+    all 34 files of a TV pack came out as one title and matched no film in TMDB.
+    """
+    parts = str(path or "").replace("\\", "/").split("/")
+    base = os.path.splitext(parts[-1])[0]
+    found = EPISODE_AT.search(base)
+    before = base[:found.start()] if found else ""
+    if not found:
+        return None
+
+    def name_and_year(text):
+        words = [w for w in re.split(r"[._ \-()\[\]]+", text) if w]
+        # drop a trailing season marker: "Show.Name.2019.S01" -> "Show Name", 2019
+        while words:
+            if (len(words) > 1 and re.fullmatch(r"\d{1,2}", words[-1])
+                    and words[-2].lower() == "season"):
+                words = words[:-2]           # "Season 3", written out
+            elif (re.fullmatch(r"[sS]\d{1,2}", words[-1])
+                    or words[-1].lower() in ("season", "complete")):
+                words = words[:-1]
+            else:
+                break
+        year = 0
+        if words and re.fullmatch(r"(19|20)\d{2}", words[-1]):
+            year = int(words[-1])
+            words = words[:-1]
+        return " ".join(words).strip(" -"), year
+
+    show, year = name_and_year(before)
+    if not show and len(parts) > 1:
+        # no show name before SxxExx: take it from the parent folder
+        folder = EPISODE_AT.split(parts[-2])[0]
+        show, year = name_and_year(folder)
+    if not show:
+        return None
+    return show, year, int(found.group(1)), int(found.group(2))
+
+
 def piece_bytes(raw):
     """The piece size a .torrent is cut into, in bytes."""
     try:
@@ -236,9 +282,16 @@ def add_pack(raw=None, path=None):
             if not low.endswith(VIDEO) or one["size"] < FILM_BYTES or "sample" in low:
                 continue
             title, year = film_of(one["path"])
-            films.append({"index": one["index"], "path": one["path"], "size": one["size"],
-                          "title": title, "year": year,
-                          "key": key_for(info_hash, one["index"]), "tmdb": None})
+            entry = {"index": one["index"], "path": one["path"], "size": one["size"],
+                     "title": title, "year": year,
+                     "key": key_for(info_hash, one["index"]), "tmdb": None}
+            # episode entries are matched against TMDB TV, not movies
+            told = episode_of(one["path"])
+            if told:
+                show, made, season, number = told
+                entry.update({"title": show, "year": made or year, "kind": "episode",
+                              "season": season, "episode": number})
+            films.append(entry)
         pack = {"hash": info_hash, "name": name, "file": kept,
                 "added": int(time.time()), "films": films}
         refused(pack)
@@ -247,6 +300,36 @@ def add_pack(raw=None, path=None):
     ensure_worker()
     return {"ok": True, "hash": info_hash, "name": name, "films": len(films),
             "refused": refused(pack)}
+
+
+def read_episodes():
+    """Mark the episodes in packs added before any of this was read. Once per pack.
+
+    Their entries were matched against the catalogue's films and found nothing, and the
+    answer was written down as "not found" - so nothing would ask again. The mark is
+    cleared with it, and the next pass asks the right catalogue.
+    """
+    data = load()
+    changed = False
+    with LOCK:
+        for pack in data["packs"]:
+            if pack.get("episodesRead"):
+                continue
+            pack["episodesRead"] = True
+            changed = True
+            for film in pack.get("films") or []:
+                told = episode_of(film.get("path") or "")
+                if not told:
+                    continue
+                show, made, season, number = told
+                film.update({"title": show, "year": made or film.get("year") or 0,
+                             "kind": "episode", "season": season, "episode": number})
+                # cleared so _match_some asks TMDB TV for it
+                film["tmdb"] = None
+                film.pop("rechecked", None)
+        if changed:
+            save()
+    return changed
 
 
 def remove_pack(info_hash):
@@ -264,6 +347,9 @@ def set_config(body):
         for name in ("url", "user", "saveTo"):
             if name in body:
                 cfg[name] = str(body[name] or "").strip()
+        # nextEpisode: fetch the following episode at the half-way point of one
+        if "nextEpisode" in body:
+            cfg["nextEpisode"] = bool(body["nextEpisode"])
         if body.get("password") is not None and body.get("password") != "":
             cfg["password"] = str(body["password"])
         if body.get("clearPassword"):
@@ -440,7 +526,7 @@ def _owned():
     """What the library already holds, by TMDB number and by name and year."""
     if STATE["owned"] is not None and time.time() - STATE["owned_at"] < 60:
         return STATE["owned"]
-    tmdb, named = set(), set()
+    tmdb, named, episodes = set(), set(), set()
     lib = STATE["lib"]() if STATE["lib"] else None
     if lib:
         con = lib.db()
@@ -449,9 +535,18 @@ def _owned():
                 if row["tmdb_id"]:
                     tmdb.add(int(row["tmdb_id"]))
                 named.add(((row["title"] or "").strip().lower(), int(row["year"] or 0)))
+            # episodes with a file on disk. item rows exist for a whole programme
+            # whether or not its files are here, so the title says nothing
+            for row in con.execute(
+                    """SELECT i.title AS show, e.season AS season, e.number AS number
+                       FROM episode e JOIN item i ON i.id = e.item_id
+                       JOIN file f ON f.episode_id = e.id
+                       WHERE e.season IS NOT NULL AND e.number IS NOT NULL"""):
+                episodes.add(((row["show"] or "").strip().lower(),
+                              int(row["season"] or 0), int(row["number"] or 0)))
         finally:
             con.close()
-    STATE["owned"] = {"tmdb": tmdb, "named": named}
+    STATE["owned"] = {"tmdb": tmdb, "named": named, "episodes": episodes}
     STATE["owned_at"] = time.time()
     return STATE["owned"]
 
@@ -479,6 +574,22 @@ def unfinished(path):
                     names.add(os.path.normcase(os.path.basename(film["path"])))
         STATE["unfinished"], STATE["unfinished_at"] = names, time.time()
     return os.path.normcase(os.path.basename(path)) in names
+
+
+def held_here(film, owned=None):
+    """True when the library already holds this entry.
+
+    Episodes by (show, season, number); films by TMDB id, else name and year.
+    """
+    owned = owned or _owned()
+    if film.get("kind") == "episode":
+        return ((str(film.get("name") or film.get("title") or "").strip().lower(),
+                 int(film.get("season") or 0), int(film.get("episode") or 0))
+                in owned["episodes"])
+    if film.get("tmdb") and int(film["tmdb"]) in owned["tmdb"]:
+        return True
+    return ((str(film.get("name") or film.get("title") or "").strip().lower(),
+             int(film.get("year") or 0)) in owned["named"])
 
 
 def _same(film):
@@ -586,10 +697,11 @@ def offered():
     groups, order = {}, []
     for pack in load()["packs"]:
         for film in pack.get("films") or []:
-            if film.get("tmdb") and int(film["tmdb"]) in owned["tmdb"]:
+            # episodes are offered through the TV section, not here: grouped as
+            # films they showed as one row standing for a whole pack
+            if film.get("kind") == "episode":
                 continue
-            if ((film.get("name") or film.get("title") or "").strip().lower(),
-                    int(film.get("year") or 0)) in owned["named"]:
+            if held_here(film, owned):
                 continue
             # a pack can carry a film twice: a restored cut, a second disc, its trailers.
             # One poster, showing the release asked for or else the largest.
@@ -610,10 +722,136 @@ def offered():
     return out
 
 
+def show_key(name):
+    """Stable key for an offered programme: "os" + sha1(name)[:10]."""
+    return "os" + hashlib.sha1(str(name or "").strip().lower().encode("utf-8")
+                               ).hexdigest()[:10]
+
+
+def _episodes_by_show():
+    """Every episode a pack holds that the library does not, by programme."""
+    owned = _owned()
+    out = {}
+    for pack in load()["packs"]:
+        for film in pack.get("films") or []:
+            if film.get("kind") != "episode" or held_here(film, owned):
+                continue
+            name = str(film.get("name") or film.get("title") or "").strip()
+            if name:
+                out.setdefault(name, []).append((film, pack))
+    return out
+
+
+def offered_shows():
+    """Offered programmes, shaped as the library shapes a show row."""
+    if house_is_up():
+        return []                     # the main server offers them while it is up
+    out = []
+    for name, holds in _episodes_by_show().items():
+        film = holds[0][0]
+        seasons = sorted({int(f.get("season") or 0) for f, _ in holds})
+        got = [latest_download(f["key"]) or {} for f, _ in holds]
+        out.append({
+            "ratingKey": show_key(name), "type": "show", "title": name,
+            "titleSort": re.sub(r"^(the|a|an) ", "", name.lower()),
+            "year": film.get("year") or None,
+            "originallyAvailableAt": str(film.get("released") or ""),
+            "summary": film.get("overview") or "",
+            "genres": list(film.get("genres") or []),
+            "rating": film.get("rating"),
+            "leafCount": len(holds), "childCount": len(seasons),
+            "viewedLeafCount": 0, "viewCount": 0,
+            "thumb": "/art/%s/poster" % film["key"] if film.get("poster") else None,
+            "art": "/art/%s/backdrop" % film["key"] if film.get("backdrop") else None,
+            "addedAt": max([int(g.get("when") or 0) for g in got] or [0]) or
+                       int(holds[0][1].get("added") or 0),
+            "maxHeight": 1080 if "1080p" in (film.get("path") or "").lower() else 0,
+            "offered": True,
+            "offer": {"size": sum(int(f.get("size") or 0) for f, _ in holds),
+                      "episodes": len(holds), "seasons": len(seasons),
+                      "free": free_cached()},
+        })
+    return sorted(out, key=lambda x: x["titleSort"])
+
+
+def offered_seasons(key):
+    """Seasons of one offered programme, shaped as library season rows."""
+    for name, holds in _episodes_by_show().items():
+        if show_key(name) != key:
+            continue
+        film = holds[0][0]
+        by_season = {}
+        for f, _ in holds:
+            by_season.setdefault(int(f.get("season") or 0), []).append(f)
+        return [{
+            "ratingKey": "%s-s%d" % (key, season), "type": "season",
+            "title": "Season %d" % season, "index": season,
+            "leafCount": len(these), "viewedLeafCount": 0,
+            "parentRatingKey": key,
+            "thumb": "/art/%s/poster" % film["key"] if film.get("poster") else None,
+            "offered": True,
+        } for season, these in sorted(by_season.items())]
+    return []
+
+
+def episode_item(film, show, pack=None):
+    """One offered episode, shaped as a library episode row."""
+    got = latest_download(film["key"]) or {}
+    key = show_key(show)
+    season = int(film.get("season") or 0)
+    return {
+        "ratingKey": film["key"], "type": "episode",
+        "title": film.get("episodeName") or ("Episode %d" % int(film.get("episode") or 0)),
+        "index": int(film.get("episode") or 0),
+        "parentIndex": season,
+        "parentRatingKey": "%s-s%d" % (key, season),
+        "parentTitle": "Season %d" % season,
+        "grandparentRatingKey": key, "grandparentTitle": show,
+        "summary": film.get("overview") or "",
+        "originallyAvailableAt": str(film.get("aired") or ""),
+        "duration": 0, "viewCount": 0,
+        "addedAt": int(got.get("when") or 0) or int((pack or {}).get("added") or 0),
+        "thumb": "/art/%s/poster" % film["key"] if film.get("poster") else None,
+        "art": "/art/%s/backdrop" % film["key"] if film.get("backdrop") else None,
+        "maxHeight": 1080 if "1080p" in (film.get("path") or "").lower() else 0,
+        "offered": True,
+        "offer": {"size": int(film.get("size") or 0),
+                  "state": got.get("state") or "",
+                  "progress": float(got.get("progress") or 0),
+                  "mbit": float(got.get("mbit") or 0),
+                  "eta": got.get("eta"),
+                  "who": got.get("who") or "",
+                  "place": _place(film["key"]) if got.get("state") == "queued" else 0,
+                  "file": film.get("path") or "",
+                  "free": free_cached(),
+                  "refused": ("qBittorrent cannot load this pack: " + refused(pack))
+                             if pack and refused(pack) else "",
+                  "versions": []},
+    }
+
+
+def offered_episodes(key, season):
+    """Offered episodes of one season, in episode order."""
+    for name, holds in _episodes_by_show().items():
+        if show_key(name) != key:
+            continue
+        these = [(f, p) for f, p in holds if int(f.get("season") or 0) == int(season)]
+        return [episode_item(f, name, p)
+                for f, p in sorted(these, key=lambda x: int(x[0].get("episode") or 0))]
+    return []
+
+
 def metadata(key):
+    # an offered programme, not one of its files
+    if str(key).startswith("os"):
+        return next((s for s in offered_shows() if s["ratingKey"] == key), None)
     pack, film = by_key(key)
     if not film:
         return None
+    # episode entries return episode metadata: as movie metadata the page showed
+    # the programme's name with no episode number
+    if film.get("kind") == "episode":
+        return episode_item(film, str(film.get("name") or film.get("title") or ""), pack)
     same = _same(film)
     group = [(f, p) for p in load()["packs"] for f in (p.get("films") or []) if _same(f) == same]
     return item(film, pack, free_cached(), _versions(group))
@@ -747,6 +985,13 @@ def status():
                 latest[d["key"]] = d
         done = [d for d in latest.values() if d.get("state") == "done"]
         busy = [d for d in latest.values() if d.get("state") in ("queued", "downloading")]
+        # Episodes are not on the film shelves, so the count of what is on offer
+        # cannot come from that list: each one is held or it is not.
+        owned = _owned()
+        eps = [f for f in films if f.get("kind") == "episode"]
+        eps_held = sum(1 for f in eps if held_here(f, owned))
+        eps_done = sum(1 for f in eps
+                       if (latest.get(f["key"]) or {}).get("state") == "done")
         packs.append({"hash": pack["hash"], "name": pack.get("name"),
                       "added": pack.get("added"), "films": len(films),
                       "matched": sum(1 for f in films if f.get("tmdb")),
@@ -758,13 +1003,17 @@ def status():
                       "downloaded": len(done),
                       "downloadedGb": round(sum(d.get("size") or 0 for d in done) / 1e9, 1),
                       "downloading": len(busy),
-                      "offered": len(keys & on_offer),
-                      "held": len(films) - len(keys & on_offer) - len(done),
+                      "offered": len(keys & on_offer) + max(
+                          0, len(eps) - eps_held - eps_done),
+                      "episodes": len(eps),
+                      "held": len(films) - (len(keys & on_offer) + max(
+                          0, len(eps) - eps_held - eps_done)) - len(done),
                       "refused": refused(pack),
                       "pieceMiB": round((pack.get("pieceBytes") or 0) / 1048576)})
     return {"config": {"url": cfg.get("url") or "http://127.0.0.1:8080",
                        "user": cfg.get("user") or "",
                        "hasPassword": bool(cfg.get("password")),
+                       "nextEpisode": bool(cfg.get("nextEpisode")),
                        "saveTo": cfg.get("saveTo") or (folders[0] if folders else "")},
             "folders": folders, "qbittorrent": qb, "packs": packs,
             "offered": len(offered()),
@@ -772,6 +1021,72 @@ def status():
 
 
 # ---------------------------------------------------------------- asking for one film
+
+def next_wanted():
+    """Whether the next episode should be fetched while one is being watched."""
+    try:
+        return bool(load()["config"].get("nextEpisode"))
+    except Exception:
+        return False
+
+
+def episode_in_a_pack(show, season, number):
+    """The pack entry for one episode of one programme, or nothing.
+
+    Matched on the name the catalogue gave the programme where there is one, and on the
+    name read off the file where there is not - the library's own title is the catalogue's.
+    """
+    want = str(show or "").strip().lower()
+    if not want:
+        return None
+    for pack in load()["packs"]:
+        for film in pack.get("films") or []:
+            if film.get("kind") != "episode":
+                continue
+            if int(film.get("season") or 0) != int(season):
+                continue
+            if int(film.get("episode") or 0) != int(number):
+                continue
+            for name in (film.get("name"), film.get("title")):
+                if str(name or "").strip().lower() == want:
+                    return film
+    return None
+
+
+def next_after(show, season, number):
+    """The episode after this one, if a pack has it and the library does not.
+
+    The next number in the season, and failing that the first of the season after it -
+    which is what "the next episode" means to somebody watching the last one of a season.
+    """
+    # The one after this, and the first of the season after it only where the season
+    # has ended - not where the next number is simply already here. Falling through on
+    # "already held" jumped a whole season the moment the next episode had arrived.
+    film = (episode_in_a_pack(show, int(season), int(number) + 1)
+            or episode_in_a_pack(show, int(season) + 1, 1))
+    if not film or held_here(film, _owned()):
+        return None
+    was = latest_download(film["key"]) or {}
+    if was.get("state") in ("queued", "downloading"):
+        return None                        # already on its way, and once is enough
+    if was.get("state") == "done" and not was.get("off"):
+        return None                        # fetched already; the scan will pick it up
+    return film
+
+
+def fetch_next(show, season, number, token="me", who="", cap_gb=0.0):
+    """Ask for the episode after this one. Nothing at all when there is none to ask for."""
+    if not next_wanted():
+        return None
+    film = next_after(show, season, number)
+    if not film:
+        return None
+    said = request(film["key"], token, who or "the next episode", cap_gb)
+    said["key"] = film["key"]
+    said["episode"] = "S%02dE%02d" % (int(film.get("season") or 0),
+                                      int(film.get("episode") or 0))
+    return said
+
 
 def request(key, token, who, cap_gb=0.0):
     """Fetch one film of a pack for somebody: that file on, everything else off."""
@@ -954,10 +1269,15 @@ def arrived(key):
     lib = STATE["lib"]() if STATE["lib"] else None
     if not lib or not name:
         return None
+    # An episode is filed against its own row rather than a title of its own, so the
+    # file that has arrived is looked for either way - without this an episode that had
+    # come in and been scanned read as still on its way.
+    where = ("SELECT f.item_id FROM file f JOIN item i ON i.id = f.item_id "
+             "WHERE f.path LIKE ?"
+             + ("" if (film or {}).get("kind") == "episode" else " AND f.episode_id IS NULL"))
     con = lib.db()
     try:
-        row = con.execute("SELECT f.item_id FROM file f JOIN item i ON i.id = f.item_id "
-                          "WHERE f.path LIKE ? AND f.episode_id IS NULL", ("%" + name,)).fetchone()
+        row = con.execute(where, ("%" + name,)).fetchone()
     finally:
         con.close()
     return str(row["item_id"]) if row else None
@@ -976,6 +1296,12 @@ def _name_arrivals():
     changed = False
     for d in pending:
         _, film = by_key(d.get("key"))
+        # An episode takes its name from the programme it belongs to, which the library
+        # does for itself; there is no title of its own here to write.
+        if (film or {}).get("kind") == "episode":
+            d["named"] = True
+            changed = True
+            continue
         tmdb = int((film or {}).get("tmdb") or 0)
         name = os.path.basename((film or {}).get("path") or "")
         if not tmdb or not name:
@@ -1145,6 +1471,9 @@ def _match_some(most=40):
             genres = {}
     for _, film in waiting[:most]:
         year = int(film.get("year") or 0)
+        if film.get("kind") == "episode":
+            _match_episode(lib, film)
+            continue
         try:
             # year= also matches re-releases, so a remake could take the original's match
             results = []
@@ -1179,6 +1508,76 @@ def _match_some(most=40):
         time.sleep(0.1)
     with LOCK:
         save()
+    return True
+
+
+def _match_episode(lib, film):
+    """Match one episode to its programme, and take its own name from the season.
+
+    Asked of the catalogue's programmes rather than its films - there is no film called
+    by a programme's name, which is why every episode of a pack came back "not found".
+    The programme is looked up once; the season is read once and answers every episode
+    in it.
+    """
+    show = str(film.get("title") or "")
+    year = int(film.get("year") or 0)
+    genres = STATE.get("tv_genres")
+    if genres is None:
+        try:
+            genres = {g["id"]: g["name"]
+                      for g in lib.tmdb("/genre/tv/list").get("genres") or []}
+        except Exception:
+            genres = {}
+        STATE["tv_genres"] = genres
+    found = STATE.setdefault("shows", {}).get((show.lower(), year))
+    if found is None:
+        try:
+            results = []
+            if year:
+                results = lib.tmdb("/search/tv", query=show,
+                                   first_air_date_year=year).get("results") or []
+            if not results:
+                results = lib.tmdb("/search/tv", query=show).get("results") or []
+        except Exception:
+            return False                     # asked again on the next pass
+        found = results[0] if results else {}
+        STATE["shows"][(show.lower(), year)] = found
+        time.sleep(0.1)
+    with LOCK:
+        film["rechecked"] = True
+        if not found:
+            if film.get("tmdb") is None:
+                film["tmdb"] = 0
+            return True
+        film.update({"tmdb": int(found.get("id") or 0),
+                     "name": found.get("name") or show,
+                     "poster": found.get("poster_path") or "",
+                     "backdrop": found.get("backdrop_path") or "",
+                     "overview": found.get("overview") or "",
+                     "rating": found.get("vote_average"),
+                     "released": found.get("first_air_date") or "",
+                     "genres": [genres.get(g) for g in found.get("genre_ids") or []
+                                if genres.get(g)]})
+    # and the episode's own name, from the season it is in
+    season = int(film.get("season") or 0)
+    where = (int(found.get("id") or 0), season)
+    told = STATE.setdefault("seasons", {}).get(where)
+    if told is None:
+        try:
+            told = {int(e.get("episode_number") or 0): e
+                    for e in (lib.tmdb("/tv/%d/season/%d" % where).get("episodes") or [])}
+        except Exception:
+            told = {}
+        STATE["seasons"][where] = told
+        time.sleep(0.1)
+    one = told.get(int(film.get("episode") or 0)) or {}
+    if one:
+        with LOCK:
+            film["episodeName"] = one.get("name") or ""
+            if one.get("overview"):
+                film["overview"] = one["overview"]
+            if one.get("air_date"):
+                film["aired"] = one["air_date"]
     return True
 
 
@@ -1317,6 +1716,7 @@ def _work():
         try:
             _mirror_house()
             _notice_removed()
+            read_episodes()
             matching = _match_some()
             fetching = _follow_downloads()
             _start_next()

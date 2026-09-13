@@ -74,6 +74,14 @@ GUEST_PREFIXES = (
     "/config",          # sanitised for a guest: nothing about how this is set up
     "/settings",        # how subtitles are drawn; readable, not writable
     "/watchlist",       # what they mean to watch: their own list, in their own corner
+    "/favorites",       # and which of those they keep: the same shelf, the same corner
+    # How many seconds of film a screen has left, which is the screen's own business
+    # and the one thing only it knows. It was listed among what a guest may write and
+    # not among what makes somebody a guest at all - the same mistake as /trace above -
+    # so every report from a guest was refused at the door. Copying gave way only to
+    # whoever was sitting at the machine, and a guest on the far side of the line is
+    # exactly who it should be giving way to.
+    "/stream/buffer",
     "/marks",           # how much of a programme is on either of those shelves
     "/casual",          # and which of those are for putting on without choosing
     "/ondeck",          # and what they have put aside from Continue watching

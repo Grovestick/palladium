@@ -266,13 +266,33 @@ def prove():
     print("--- the build answers everything ---" + chr(10))
 
 
+#: the smallest a real installer has been. One short of this has lost something.
+LEAST_SETUP_MB = 28
+
+
 def wrap():
     """Inno Setup turns the folder into one Palladium-Setup.exe."""
     where = iscc()
     if not where:
         raise SystemExit("Inno Setup 6 is not installed")
+    # The script takes the folder by wildcard, so a file that is not there is simply
+    # not in the installer and the compile still says it succeeded. The virus scanner
+    # takes the freshly built server away every few builds - it has been doing it for
+    # weeks - and the installer that came out was five megabytes short and held no
+    # server at all. Nothing about it said so.
+    server = os.path.join(OUT, "Palladium", "palladium-server.exe")
+    if not os.path.exists(server) or os.path.getsize(server) < 2_000_000:
+        raise SystemExit(
+            "the built server is missing from %s - the virus scanner takes it, and an "
+            "installer without it compiles quite happily. Restore it (Windows Security "
+            "> Protection history > Allow) or exclude the build folder, and run this "
+            "again." % os.path.dirname(server))
     run([where, "/DMyVersion=" + VERSION, os.path.join(HERE, "palladium.iss")], cwd=HERE)
     made = os.path.join(OUT, "Palladium-Setup-%s.exe" % VERSION)
+    # and the same check from the other end: what came out is the size an installer is
+    if os.path.getsize(made) < LEAST_SETUP_MB * 1_000_000:
+        raise SystemExit("the installer is only %.1f MB - something was left out of it"
+                         % (os.path.getsize(made) / 1e6))
     print("installer in", made)
     announce(made)
     hand_over(made)

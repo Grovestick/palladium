@@ -156,6 +156,39 @@ def find_ffmpeg():
 FFMPEG, ENCODER = find_ffmpeg()
 
 
+def loudness(path, index=None, seconds=180):
+    """Integrated loudness in LUFS, or None when it cannot be measured.
+
+    180 s from 5:00 in: past the titles, and a few seconds of ffmpeg. Reference
+    points: EBU R128 broadcast is -23, streaming around -16, a cinema mix near -27.
+    """
+    if not FFMPEG or not path or not os.path.exists(path):
+        return None
+    where = ["-ss", "300"]
+    cmd = [FFMPEG, "-nostdin", "-hide_banner"] + where + [
+        "-t", str(int(seconds)), "-i", path]
+    if index is not None:
+        cmd += ["-map", "0:a:%d" % int(index)]
+    else:
+        cmd += ["-map", "0:a:0"]
+    cmd += ["-af", "ebur128=framelog=quiet", "-f", "null", "-"]
+    try:
+        done = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=180,
+                              creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    said = (done.stderr or b"").decode("utf-8", "replace")
+    # ebur128 summary line: "  I:         -23.4 LUFS"
+    found = re.findall(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", said, re.M)
+    if not found:
+        return None
+    try:
+        return float(found[-1])
+    except ValueError:
+        return None
+
+
 def rescan():
     """Look for ffmpeg again, after somebody has just put one there.
 
@@ -342,7 +375,7 @@ class Engine:
 
     def command(self, src, offset, height, burn_index=None, audio_mode="aac",
                 sub_look=None, audio_index=None, mbit=0, channels=0, hevc=False,
-                dts=False, copy_video=False):
+                dts=False, copy_video=False, gain_db=0.0):
         # 10-bit HEVC has to come down to 8-bit: no h264 encoder on any of these
         # cards takes it. On Nvidia that happens on the card, in the same filter that
         # resizes; elsewhere the frames are in system memory and this is an ordinary
@@ -454,6 +487,10 @@ class Engine:
             dolby = True
         else:
             cmd += ["-c:a", "aac", "-ac", str(ch), "-b:a", "448k" if ch == 6 else "192k"]
+            # gain only on an encoded track: a passed-through bitstream cannot be
+            # changed without decoding it
+            if gain_db:
+                cmd += ["-af", "volume=%.1fdB" % float(gain_db)]
             dolby = False
         # delay_moov whenever the track being written is Dolby, copied or encoded here.
         # An AC-3 track cannot be described until its first packets exist, and ffmpeg
@@ -815,7 +852,7 @@ class Engine:
 
     def start(self, rating_key, offset=0, height=0, media_index=0, burn_index=None,
               src=None, audio_mode="aac", sub_look=None, audio_index=None, mbit=0,
-              channels=0, hevc=False, dts=False, copy_video=False):
+              channels=0, hevc=False, dts=False, copy_video=False, gain_db=0.0):
         # the library hands in the file to play; there is nowhere else to ask
         if not src:
             raise FileNotFoundError("no file was given to play")
@@ -826,7 +863,7 @@ class Engine:
         log = open(os.path.join(self.root, sid + ".log"), "wb")
         proc = subprocess.Popen(self.command(src, offset, height, burn_index, audio_mode,
                                              sub_look, audio_index, mbit, channels,
-                                             hevc, dts, copy_video),
+                                             hevc, dts, copy_video, gain_db),
                                 creationflags=NO_WINDOW,
                                 stdout=subprocess.PIPE, stderr=log, bufsize=0)
         info = {

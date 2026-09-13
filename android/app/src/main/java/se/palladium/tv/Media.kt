@@ -128,6 +128,10 @@ data class Copy(
     val bitrate: Int,
     val partKey: String?,
     val fileName: String?,
+    /** decibels this file wants to sit where everything else sits; nought leaves it */
+    val gainDb: Float = 0f,
+    /** how loud it was measured to be, in LUFS, or nothing while it is unmeasured */
+    val lufs: Float? = null,
     val audioChannels: Int,
     val subtitleStreams: List<SubTrack>,
     val audioStreams: List<AudioTrack>,
@@ -179,6 +183,10 @@ data class Media(
     val partKey: String?,
     /** what this copy is called on disk - the release a subtitle has to match */
     val fileName: String? = null,
+    /** decibels this file wants, measured against everything else in the library */
+    val gainDb: Float = 0f,
+    /** and how loud it was measured to be */
+    val lufs: Float? = null,
     /** how far the file's own episode number is from this episode's, if it says one */
     val numberShift: Int? = null,
     val subtitleStreams: List<SubTrack>,
@@ -397,6 +405,16 @@ data class Media(
                                           "dvd_subtitle")
         }
 
+    /** Picture tracks the device itself can draw: Blu-ray subtitles, and no other.
+     *
+     * A DVD's own are pictures too and the framework has no decoder for them at all -
+     * handed one, it threw "unsupported MIME type: application/vobsub" and the episode
+     * stopped where the subtitle was chosen. Those are burned in. */
+    fun deviceCanDraw(index: Int): Boolean =
+        subtitleStreams.any {
+            it.index == index && it.codec.lowercase() in setOf("pgs", "hdmv_pgs_subtitle")
+        }
+
     /** A bitmap track has no text to hand the player, so the server burns it in. */
     fun burnSubtitleIndex(): Int? =
         subtitleStreams.firstOrNull {
@@ -459,6 +477,9 @@ data class Media(
                 height = media?.optInt("height")?.takeIf { it > 0 },
                 bitrate = media?.optInt("bitrate") ?: 0,
                 partKey = part?.optString("key")?.takeIf { it.isNotEmpty() },
+                gainDb = (part?.optDouble("gainDb", 0.0) ?: 0.0).toFloat(),
+                lufs = part?.optDouble("lufs", Double.NaN)?.takeIf { !it.isNaN() }
+                    ?.toFloat(),
                 fileName = part?.optString("file")?.takeIf { it.isNotEmpty() }
                     ?.substringAfterLast(Char(92))?.substringAfterLast(Char(47)),
                 audioChannels = media?.optInt("audioChannels")?.takeIf { it > 0 } ?: 2,
@@ -542,6 +563,8 @@ data class Media(
                 bitrate = first.bitrate,
                 partKey = first.partKey,
                 fileName = first.fileName,
+                gainDb = first.gainDb,
+                lufs = first.lufs,
                 // nought means the two agree; absent means the name does not say
                 numberShift = if (o.has("numberShift") && !o.isNull("numberShift"))
                     o.optInt("numberShift") else null,

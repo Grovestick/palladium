@@ -28,6 +28,34 @@ import java.util.concurrent.atomic.AtomicLongArray
  * nothing restarts. Only when both sides are gone does this fail, and then it fails as
  * an ordinary read and the film moves house the old way.
  */
+/**
+ * Who takes the next stretch of film.
+ *
+ * One rule: every machine holding this file carries it. Up to [TwoWays.WAYS] of them,
+ * and a machine is left out only by not answering.
+ *
+ * There used to be a second rule here - a machine measured as much slower than
+ * another was kept off the stretch the player was about to need - and it cost an
+ * evening. A speed is measured once and never decays, so a machine that happened to
+ * be busy for its first stretch was left out of every stretch after it: paired,
+ * connected, carrying nothing. The case it was written for is already answered
+ * elsewhere and better: a stretch that has not arrived in about twice the time the
+ * quickest machine would have taken is given up and fetched again (see
+ * `patienceFor`), so a slow machine costs one late stretch, not a rule of its own.
+ */
+internal object Share {
+
+    /**
+     * Whether this machine should leave the stretch to another.
+     *
+     * It should not. Kept as a named rule rather than no rule at all, because this is
+     * the thing that decides whether a film on two machines is read off two machines,
+     * and it is worth being able to say what it does in one line.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun leaveIt(ours: Double, best: Double, near: Boolean, idleMs: Long): Boolean = false
+}
+
 class TwoWays(
     private val make: () -> DataSource,
     //: The machines to read from, asked for rather than handed over once. The second
@@ -237,7 +265,15 @@ class TwoWays(
                 val best = (0 until minOf(sides, alive.size))
                     .filter { alive[it] && (it == side || fetched[it] > warm) }
                     .map { speed(it) }.maxOrNull() ?: 0.0
-                if (ours > 0.0 && best > ours * 2 && at - head < AHEAD * LUMP / 2) {
+                // ...unless this side has been standing idle. A speed once measured
+                // is kept - nothing is ever subtracted - so a machine that was busy
+                // for its first lump was left out of the near work for the rest of the
+                // film, and on an easy film there is no far work either: it sat there
+                // with the film open and carried nothing. One lump every so often is
+                // how it earns its speed back, and how a film on two machines is read
+                // off both of them rather than one.
+                val idle = android.os.SystemClock.elapsedRealtime() - fetched[side]
+                if (Share.leaveIt(ours, best, at - head < AHEAD * LUMP / 2, idle)) {
                     claimed = at                    // leave the near work to the quick one
                     gate.wait(50)
                     continue
@@ -253,7 +289,31 @@ class TwoWays(
     private fun fetchFor(side: Int) {
         val src = make()
         var wait = 5_000L               // how long before a failed side is tried again
-        while (!stop.get() && alive[side]) {
+        // Not "while this side is alive". Dropping a side is what sets that false, so
+        // a thread that had just dropped its own machine ended at the next turn of the
+        // loop - and asking the machine again, and letting it back in, are both things
+        // only this thread does. One connection that timed out therefore put a machine
+        // out of the film for good, however well it was answering a second later.
+        // It runs until the film does; being dropped only means it waits and asks.
+        while (!stop.get()) {
+            if (!alive[side]) {
+                // dropped: wait, ask, and come back in when it answers
+                runCatching { Thread.sleep(wait) }
+                val url0 = where().getOrNull(side).orEmpty()
+                if (url0.isEmpty()) continue
+                val alone = synchronized(gate) { standing() } <= 1
+                wait = if (alone) minOf(wait, 5_000L) else minOf(wait * 2, 60_000L)
+                if (!answers(url0)) {
+                    android.util.Log.i("Palladium", "way " + side +
+                        " still not answering (" + Servers.hostOf(url0) + ")")
+                    continue
+                }
+                android.util.Log.i("Palladium", "way " + side + " asked again (" +
+                    Servers.hostOf(url0) + ")")
+                revive(side)
+                wait = 5_000L
+                continue
+            }
             // Asked for every lump. The second machine is found a quarter of a minute
             // into the film, and a side that read its address once was still holding
             // an empty one long after there was something there.
@@ -331,31 +391,13 @@ class TwoWays(
                 // on again while one film plays, and a side that gave up for good
                 // meant the second half of the evening came off one machine however
                 // many were back. The lump it dropped is already with the other one.
+                // and the loop above takes it from here: it waits, asks the
+                // machine whether it is there, and lets it back in when it answers.
+                // Asked before being let back in because a machine that has been
+                // switched off drops the packets rather than refusing them, so
+                // letting it straight back in hands it the very stretch the picture
+                // is waiting on and then spends five seconds finding out.
                 if (stop.get() || fault != null) break
-                runCatching { Thread.sleep(wait) }
-                // Backing off further and further suits a machine nobody needs. Down
-                // to one machine it is the opposite: that is exactly when the second
-                // one is wanted back, because the one that is left going away for a
-                // moment - a restart, a busy disk - then has nothing behind it. So
-                // the wait stops growing while this is the only side answering.
-                val alone = synchronized(gate) { standing() } <= 1
-                wait = if (alone) minOf(wait, 5_000L) else minOf(wait * 2, 60_000L)
-                // Asked whether it is there before it is let back in. A machine that
-                // has been switched off drops the packets rather than refusing them,
-                // so letting it straight back into the rotation handed it the very
-                // stretch the picture was waiting on and then spent five seconds
-                // finding out - over and over, while the machine that was answering
-                // sat there able to fetch it. The picture ran dry and the film moved
-                // house, with a live machine holding the whole film.
-                if (!answers(url)) {
-                    android.util.Log.i("Palladium",
-                        "way " + side + " still not answering (" +
-                        Servers.hostOf(url) + ")")
-                    continue
-                }
-                android.util.Log.i("Palladium",
-                    "way " + side + " asked again (" + Servers.hostOf(url) + ")")
-                revive(side)
             }
         }
         runCatching { src.close() }

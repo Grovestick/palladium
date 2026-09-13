@@ -472,9 +472,50 @@ def media_block(rows, key_prefix="/parts/", aside="", picked="", proved="",
             "duration": int((r["duration"] or 0) * 1000),
             "Part": [{"id": r["id"], "key": key_prefix + str(r["id"]),
                       "file": r["path"], "size": r["size"],
+                      # how many decibels this file is under or over what everything
+                      # else sits at, for a player to make up on its way out, and how
+                      # loud it was measured to be
+                      "gainDb": gain_of(r["id"], r["path"], r["size"]),
+                      "lufs": loudness_of(r["id"]),
                       "container": container_of(r), "Stream": streams}],
         })
     return out
+
+
+#: Set by the server: how far one file's sound is from everything else's. The library
+#: knows nothing about loudness - it is measured beside the files, and the server holds
+#: what has been measured.
+GAIN_OF = [None]
+
+
+def gain_of(part, path, size):
+    """Decibels for this file, or nought where there is nothing to do about it."""
+    if not GAIN_OF[0]:
+        return 0.0
+    try:
+        return GAIN_OF[0](part, path, size)
+    except Exception:
+        return 0.0
+
+
+#: Set by the server as well: how loud a file was measured to be, in LUFS.
+LOUDNESS_OF = [None]
+
+
+def loudness_of(part):
+    """What this file measured, or nothing where it has not been measured yet."""
+    if not LOUDNESS_OF[0]:
+        return None
+    try:
+        return LOUDNESS_OF[0](part)
+    except Exception:
+        return None
+
+
+#: The same rule in SQL, for the queries that ask about places rather than files:
+#: ninety-five per cent, or three minutes from the end, whichever comes first, and
+#: never before eighty-five per cent.
+FINISHED_SQL = "MAX(duration * 0.85, MIN(duration * 0.95, duration - 180))"
 
 
 class LocalAPI:
@@ -556,6 +597,17 @@ class LocalAPI:
     @shelf_forget.setter
     def shelf_forget(self, value):
         self._asking.shelf_forget = value
+
+    #: Set by the server: somebody has passed the middle of an episode. What is done
+    #: about it is the server's business - it is the only side that knows about packs -
+    #: and this is the only place that knows where a playing has got to.
+    @property
+    def half_way(self):
+        return self._mine("half_way", None)
+
+    @half_way.setter
+    def half_way(self, value):
+        self._asking.half_way = value
 
     #: what the client asking calls itself, set per request by the server
     @property
@@ -640,10 +692,32 @@ class LocalAPI:
         return out
 
     WATCHED = 0.95            # finished, once this much of it has gone by
+    #: or with this long left, whichever comes first. Ninety-five per cent of a
+    #: twenty-two minute episode is a minute of credits still to go, so an episode
+    #: somebody watched to the end sat in Continue watching for ever; three minutes
+    #: from the end of a film is still the film, which is why it is the earlier of the
+    #: two that counts.
+    WATCHED_TAIL = 180.0
+    #: and never before this, for something too short for either to mean anything
+    WATCHED_FLOOR = 0.85
     #: and how much of it has to have been played to say so. Skipping to the end of an
     #: episode puts the resume point past the mark without a minute of it having been
     #: watched, and pressing next or previous from near the end did the same.
     SAT_THROUGH = 0.6
+
+    @staticmethod
+    def finished_at(duration):
+        """The second a file counts as having been watched through."""
+        whole = float(duration or 0)
+        if whole <= 0:
+            return 0.0
+        return max(whole * LocalAPI.WATCHED_FLOOR,
+                   min(whole * LocalAPI.WATCHED, whole - LocalAPI.WATCHED_TAIL))
+
+    @staticmethod
+    def watched_through(position, duration):
+        """Whether a place is far enough in to call the thing finished."""
+        return bool(duration) and float(position or 0) >= LocalAPI.finished_at(duration)
 
     def _watched(self, con, key):
         """Has this viewer finished it?
@@ -664,7 +738,7 @@ class LocalAPI:
         if row and row["marked"]:
             return True                    # said by hand, which settles it
         if not (row and row["duration"] and
-                row["position"] / row["duration"] > self.WATCHED):
+                self.watched_through(row["position"], row["duration"])):
             return False
         try:
             seen = con.execute(
@@ -929,17 +1003,35 @@ class LocalAPI:
                 return {"size": 0, "matches": [], "error": str(e)[:200]}
 
         if path == "/library/genres":
-            # what is on the shelves, and how much of it: a genre nobody has is not
-            # worth offering
+            # What is on the shelves and how much of it, counted among whatever is
+            # already marked rather than across the whole library. Mark Animation and
+            # every other number falls to how many of those are also that - which is
+            # what the filter does, shown rather than explained.
+            #
+            # The films on offer from the packs are counted too, because the shelf
+            # lists them: the number against a genre is what picking it will show, and
+            # it counted only what was on the disk - three hundred against a word that
+            # then filled the screen with two thousand.
             kind = one("type", "movie")
-            rows = con.execute("SELECT genres FROM item WHERE type=? AND genres <> ''",
-                               (kind,)).fetchall()
+            wants = {g.strip().lower() for g in one("genre", "").split(",") if g.strip()}
+            firsts = self.decades_asked(one("decade", ""))
             tally = {}
-            for r in rows:
-                for g in (r["genres"] or "").split(","):
-                    g = g.strip()
-                    if g:
-                        tally[g] = tally.get(g, 0) + 1
+
+            def count_in(names, year):
+                mine = {str(g).strip() for g in names if str(g).strip()}
+                if wants and not wants <= {g.lower() for g in mine}:
+                    return
+                if firsts and not (year and any(f <= year <= f + 9 for f in firsts)):
+                    return
+                for one_name in mine:
+                    tally[one_name] = tally.get(one_name, 0) + 1
+
+            for r in con.execute("SELECT genres, year FROM item "
+                                 "WHERE type=? AND genres <> ''", (kind,)).fetchall():
+                count_in((r["genres"] or "").split(","), int(r["year"] or 0))
+            if kind == "movie":
+                for o in self._offered_quietly():
+                    count_in(o.get("genres") or [], int(o.get("year") or 0))
             listed = [{"title": g, "count": n} for g, n in
                       sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
             return {"size": len(listed), "Directory": listed}
@@ -948,14 +1040,29 @@ class LocalAPI:
             # which decades the shelves actually hold, newest first. A decade nobody
             # has anything from is not worth offering, and a title with no year is
             # from no decade rather than from the first one.
+            # Narrowed by the genres marked, but not by the decades: a title has one
+            # year, so counting the eighties among titles already cut to the eighties
+            # would put a nought against every other decade. The packs are counted for
+            # the same reason the genres count them - it is what picking one shows.
             kind = one("type", "movie")
-            rows = con.execute("SELECT year, COUNT(*) c FROM item "
-                               "WHERE type=? AND year > 0 GROUP BY year",
-                               (kind,)).fetchall()
+            wants = {g.strip().lower() for g in one("genre", "").split(",") if g.strip()}
             tally = {}
-            for r in rows:
-                era = (r["year"] // 10) * 10
-                tally[era] = tally.get(era, 0) + r["c"]
+
+            def count_year(names, year):
+                if not year:
+                    return
+                if wants and not wants <= {str(g).strip().lower() for g in names
+                                           if str(g).strip()}:
+                    return
+                era = (year // 10) * 10
+                tally[era] = tally.get(era, 0) + 1
+
+            for r in con.execute("SELECT genres, year FROM item "
+                                 "WHERE type=? AND year > 0", (kind,)).fetchall():
+                count_year((r["genres"] or "").split(","), int(r["year"] or 0))
+            if kind == "movie":
+                for o in self._offered_quietly():
+                    count_year(o.get("genres") or [], int(o.get("year") or 0))
             listed = [{"title": "%ds" % era, "decade": era, "count": n}
                       for era, n in sorted(tally.items(), reverse=True)]
             return {"size": len(listed), "Directory": listed}
@@ -1019,22 +1126,22 @@ class LocalAPI:
                 rows = [r for r in rows
                         if wants <= {g.strip().lower()
                                      for g in (r["genres"] or "").split(",")}]
-            # and one decade at a time, read the way people say it: 80 or 1980 both
-            # mean the eighties. A title with no year is in no decade rather than in
+            # decades, read the way people say them: 80 or 1980 both mean the
+            # eighties. Several may be asked for at once and a title need only be from
+            # one of them - a film has one year, so asking for all of them at once
+            # would answer nothing. A title with no year is in no decade rather than in
             # the first one - a nought is what an unidentified film is written down
             # as, not a claim about when it was made.
             era = one("decade", "").strip()
-            if era.isdigit():
-                first = int(era)
-                if first < 100:
-                    first += 1900 if first >= 30 else 2000
-                first -= first % 10
+            firsts = self.decades_asked(era)
+            if firsts:
                 rows = [r for r in rows
-                        if (r["year"] or 0) and first <= r["year"] <= first + 9]
+                        if (r["year"] or 0) and any(f <= r["year"] <= f + 9
+                                                    for f in firsts)]
             items = [self._movie(con, r, brief=True) if kind == "movie" else self._show(con, r)
                      for r in rows]
-            if kind == "movie" and not sort.startswith("quality:"):
-                items = self._with_offered(items, sort, want, era)
+            if not sort.startswith("quality:"):
+                items = self._with_offered(items, sort, want, era, kind)
             return self._page(items, q)
 
         m = re.match(r"^/library/sections/(\d+)/recentlyReleased$", path)
@@ -1146,8 +1253,8 @@ class LocalAPI:
                     continue
                 # a mark made by hand is finished however little of it was played:
                 # it says so, and the shelf hands over to the next episode
-                finished = bool(r["marked"]) or (
-                    r["duration"] and r["position"] / r["duration"] > 0.95)
+                finished = bool(r["marked"]) or self.watched_through(
+                    r["position"], r["duration"])
                 # and a row at the very beginning is not something to carry on with:
                 # nobody resumes a film at nought. It is what a tick leaves behind,
                 # or a player that reported once and stopped.
@@ -1282,18 +1389,34 @@ class LocalAPI:
         m = re.match(r"^/library/metadata/([^/]+)/children$", path)
         if m:
             key = m.group(1)
+            # a programme on offer, and one of its seasons
+            if key.startswith("os"):
+                import pd_torrents
+                offer = re.match(r"^(os[0-9a-f]{10})-s(\d+)$", key)
+                rows = (pd_torrents.offered_episodes(offer.group(1), int(offer.group(2)))
+                        if offer else pd_torrents.offered_seasons(key))
+                return {"size": len(rows), "Metadata": rows}
             season = re.match(r"^([0-9a-f]{12})-s(\d+)$", key)
             if season:                                   # a season: its episodes
                 rows = con.execute("""SELECT * FROM episode WHERE item_id=? AND season=?
                                       ORDER BY number""",
                                    (season.group(1), int(season.group(2)))).fetchall()
-                return {"size": len(rows),
-                        "Metadata": [self._episode(con, r, brief=True) for r in rows]}
+                out = [self._episode(con, r, brief=True) for r in rows]
+                # and the ones a pack can give that this machine has not got. A
+                # programme is listed whole whether or not its files are here, so
+                # without this the missing half of a season is simply not there.
+                show = con.execute("SELECT title FROM item WHERE id=?",
+                                   (season.group(1),)).fetchone()
+                out += self._offered_episodes_of(show["title"] if show else "",
+                                                 int(season.group(2)),
+                                                 {int(r["number"] or 0) for r in rows})
+                out.sort(key=lambda e: int(e.get("index") or 0))
+                return {"size": len(out), "Metadata": out}
             if is_title(key):                            # a show: its seasons
                 show = con.execute("SELECT * FROM item WHERE id=?", (str(key),)).fetchone()
                 rows = con.execute("""SELECT season, COUNT(*) c FROM episode WHERE item_id=?
                                       GROUP BY season ORDER BY season""", (str(key),)).fetchall()
-                return {"size": len(rows), "Metadata": [{
+                out = {"size": len(rows), "Metadata": [{
                     "ratingKey": "%s-s%d" % (key, r["season"]), "type": "season",
                     "viewedLeafCount": sum(
                         1 for e in con.execute(
@@ -1304,6 +1427,18 @@ class LocalAPI:
                     "leafCount": r["c"], "parentRatingKey": key,
                     "thumb": f"/art/{key}/poster" if show and show["poster"] else None,
                 } for r in rows]}
+                # and a season this machine has none of, which a pack can give whole
+                mine = {int(r["season"]) for r in rows}
+                for extra in self._offered_seasons_of(
+                        show["title"] if show else "", mine):
+                    out["Metadata"].append(dict(
+                        extra, parentRatingKey=key,
+                        ratingKey="%s-s%d" % (key, int(extra.get("index") or 0)),
+                        thumb=(f"/art/{key}/poster" if show and show["poster"]
+                               else extra.get("thumb"))))
+                out["Metadata"].sort(key=lambda s: int(s.get("index") or 0))
+                out["size"] = len(out["Metadata"])
+                return out
             return None
 
         if path == "/hubs/search":
@@ -1472,8 +1607,11 @@ class LocalAPI:
             # Near the end is finished, whoever was playing it and from wherever. The
             # shelf's own rule only ran for a playing that named the shelf, so an
             # episode watched from its page stayed on the shelf as half-watched.
-            if key and dur and pos / dur > 0.95 and self.shelf_forget:
+            if key and dur and self.watched_through(pos, dur) and self.shelf_forget:
                 self.shelf_forget(key)
+            # half way through, which is where somebody is watching rather than sampling
+            if key and dur and pos / dur >= 0.5 and self.half_way:
+                self.half_way(key)
             if key and one("state", "playing") != "stopped":
                 self.log_watch(con, key, pos, dur, one("device", "") or "",
                                one("client", ""),
@@ -1494,7 +1632,7 @@ class LocalAPI:
                     # a shelf keeps its own place: it is what Carry on reads, and what
                     # the one row on Continue watching is built out of
                     self.shelf_note(shelf, key, pos, dur)
-                if (dur and pos / dur > 0.95) or pos < 30:
+                if self.watched_through(pos, dur) or pos < 30:
                     # the rule the shuffle's own notes keep: near the end is finished,
                     # and the first half minute is not a place worth coming back to.
                     # Only a casual row - a film somebody chose is not touched here.
@@ -1545,7 +1683,10 @@ class LocalAPI:
                                         AND excluded.updated - progress.updated > 60
                                         AND excluded.position > 30
                                         AND (excluded.duration <= 0
-                                             OR excluded.position < 0.95 * excluded.duration)
+                                             OR excluded.position <
+                                                MAX(excluded.duration * 0.85,
+                                                    MIN(excluded.duration * 0.95,
+                                                        excluded.duration - 180)))
                                        THEN 0 ELSE progress.marked END,
                                    position=excluded.position, duration=excluded.duration,
                                    updated=excluded.updated, casual=0""",
@@ -1923,25 +2064,94 @@ class LocalAPI:
         best.pop("moved", None)          # bookkeeping, not something to show
         return {k: v for k, v in best.items() if v is not None}
 
-    def _with_offered(self, items, sort, genre, era):
-        """Films on offer from torrent packs, among the library's own in its order."""
+    @staticmethod
+    def decades_asked(said):
+        """The decades a request names, as the year each one begins.
+
+        Comma-separated, and each read the way people say it: 80 or 1980 both mean the
+        eighties. Anything that is not a number is passed over rather than refused - a
+        filter nobody can spell is not worth an error page.
+        """
+        out = []
+        for part in str(said or "").split(","):
+            part = part.strip()
+            if not part.isdigit():
+                continue
+            first = int(part)
+            if first < 100:
+                first += 1900 if first >= 30 else 2000
+            out.append(first - first % 10)
+        return out
+
+    @staticmethod
+    def _offered_seasons_of(title, already):
+        """Seasons of this programme a pack can give that are not here at all."""
+        if not title:
+            return []
         try:
             import pd_torrents
-            offers = pd_torrents.offered()
+            key = pd_torrents.show_key(title)
+            return [s for s in pd_torrents.offered_seasons(key)
+                    if int(s.get("index") or 0) not in already]
         except Exception:
-            return items
+            return []
+
+    @staticmethod
+    def _offered_episodes_of(title, season, already):
+        """Episodes of one season a pack can give that this machine has not got."""
+        if not title:
+            return []
+        try:
+            import pd_torrents
+            key = pd_torrents.show_key(title)
+            return [e for e in pd_torrents.offered_episodes(key, season)
+                    if int(e.get("index") or 0) not in already]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _offered_shows_quietly():
+        """Programmes a pack can give. Never worth a failure on a shelf."""
+        try:
+            import pd_torrents
+            return pd_torrents.offered_shows() or []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _offered_quietly():
+        """The films on offer from the packs, or none if they cannot be read."""
+        try:
+            import pd_torrents
+            return pd_torrents.offered() or []
+        except Exception:
+            return []
+
+    def _with_offered(self, items, sort, genre, era, kind="movie"):
+        """What a pack can give, among the library's own and in its order.
+
+        Films for the film shelf and programmes for the other: a film on offer has
+        always stood on the shelf whether it was here or not, and a programme from a
+        pack of episodes is the same offer in another shape.
+        """
+        offers = (self._offered_shows_quietly() if kind == "show"
+                  else self._offered_quietly())
+        if kind == "show" and offers:
+            # a programme this machine already has stands once: its own row, with the
+            # pack's episodes inside it rather than a second row beside it
+            here = {str(x.get("title") or "").strip().lower() for x in items}
+            offers = [o for o in offers
+                      if str(o.get("title") or "").strip().lower() not in here]
         if not offers:
             return items
         wants = {g.strip().lower() for g in str(genre or "").split(",") if g.strip()}
         if wants:
             offers = [o for o in offers
                       if wants <= {g.strip().lower() for g in o.get("genres") or []}]
-        if era.isdigit():
-            first = int(era)
-            if first < 100:
-                first += 1900 if first >= 30 else 2000
-            first -= first % 10
-            offers = [o for o in offers if o.get("year") and first <= o["year"] <= first + 9]
+        firsts = self.decades_asked(era)
+        if firsts:
+            offers = [o for o in offers
+                      if o.get("year") and any(f <= o["year"] <= f + 9 for f in firsts)]
         field, _, way = sort.partition(":")
         back = way == "desc"
         named = lambda x: (x.get("titleSort") or x.get("title") or "").lower()
@@ -2272,7 +2482,7 @@ class LocalAPI:
                         """SELECT key, position, duration, updated,
                                   COALESCE(casual, 0) casual FROM progress
                            WHERE who = ? AND updated > ? AND position > 30
-                             AND position < duration * 0.95
+                             AND position < """ + FINISHED_SQL + """
                            ORDER BY updated DESC LIMIT ?""",
                         (who, int(since), int(limit))):
                     said = self.what_it_is(con, row["key"])

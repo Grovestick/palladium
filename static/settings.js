@@ -254,6 +254,31 @@
       box.appendChild(delay);
     }
 
+    /* The same level from one release to the next, where one is far off it. */
+    const even = document.createElement("div");
+    even.className = "addrow subrow";
+    even.innerHTML = "<span class='sublabel'>Volume</span>";
+    [[true, "Even it out"], [false, "As it was made"]].forEach(([value, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (!!playback.evenVolume === value ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/settings", { evenVolume: value });
+        render();
+      };
+      even.appendChild(b);
+    });
+    box.appendChild(even);
+    const evenNote = document.createElement("div");
+    evenNote.className = "note";
+    evenNote.style.margin = "2px 0 6px 82px";
+    evenNote.textContent = playback.evenVolume
+      ? "A file more than 4 dB from the usual level is brought towards it, by up to " +
+        "8 dB. Anything already near it is left exactly as it was made, and sound " +
+        "passed through untouched to an amplifier cannot be changed at all."
+      : "Every release plays at whatever level it was mixed at.";
+    box.appendChild(evenNote);
+
     const note = document.createElement("div");
     note.className = "note";
     note.style.margin = "2px 0 6px 82px";
@@ -519,6 +544,26 @@
       room.textContent = said.free + " GB free on " + (cfg.saveTo || "that drive") + ".";
       box.appendChild(room);
     }
+    // the next episode, fetched while the one before it is still on
+    const nextRow = document.createElement("div");
+    nextRow.className = "addrow subrow";
+    nextRow.innerHTML =
+      '<label class="onoff"><input type="checkbox"><span></span></label>' +
+      "<span class='sublabel'>Keep the next episode ready</span>";
+    const nextBox = nextRow.querySelector("input");
+    nextBox.checked = !!cfg.nextEpisode;
+    nextBox.onchange = async () => {
+      await post("/torrents/config", { nextEpisode: nextBox.checked });
+      toast(nextBox.checked
+        ? "The next episode is fetched from its pack once somebody is half way through one"
+        : "Episodes are fetched only when somebody asks for them");
+    };
+    box.appendChild(nextRow);
+    const why = document.createElement("div");
+    why.className = "note";
+    why.textContent = "Half way through an episode, the one after it is asked for from " +
+      "the pack it came in - if a pack has it and this machine does not.";
+    box.appendChild(why);
     // connected or not, at a glance: a green dot while Palladium reaches qBittorrent
     const state = document.createElement("div");
     state.className = "qbstate " + (qb.ok ? "on" : "off");
@@ -1352,20 +1397,29 @@
     // pointed at showed a row with no position - or nothing at all, on the machine
     // that was only carrying lumps, while somebody was plainly watching.
     let copy = null;
+    let copyName = "the other machine";
+    let hereName = "this server";
     try {
       const c = await get("/standby");
       copy = c && c.where ? c.where.replace(/\/$/, "") : null;
+      if (c && c.name) copyName = c.name;
+      if (c && c.mine && c.mine.name) hereName = c.mine.name;
     } catch (e) { copy = null; }
     const asked = [get("/watching").catch(() => ({ live: [] }))];
     if (copy) {
       asked.push(fetch(copy + "/watching" + (CFG && CFG.key ? "?t=" + CFG.key : ""))
                    .then((r) => r.json()).catch(() => ({ live: [] })));
     }
+    // which machine each answer came from, in the order they were asked
+    const whose = [hereName, copyName];
     try {
       const answers = await Promise.all(asked);
       const byViewing = new Map();
-      answers.forEach((one) => {
-        ((one && one.live) || []).forEach((w) => {
+      answers.forEach((one, which) => {
+        ((one && one.live) || []).forEach((w0) => {
+          // the machine that answered, carried on the row: a film read off two of
+          // them is two rows, and neither said which was which
+          const w = Object.assign({}, w0, { from: whose[which] || "" });
           // On the film, not on the name: the row a stream raises is named for the
           // viewer and the row a player's report raises is named for the device, so
           // one person watching one thing arrived as "Olof" with no position and
@@ -1376,6 +1430,10 @@
           // both are carrying it, so both rates are real and they add up
           had.mbit = (had.mbit || 0) + (w.mbit || 0);
           had.mb = (had.mb || 0) + (w.mb || 0);
+          // both machines, named in the order they were asked
+          if (w.from && had.from && had.from.indexOf(w.from) < 0) {
+            had.from += " + " + w.from;
+          }
           // where the film has got to comes from the machine the player reports to
           if (!had.position && w.position) {
             had.position = w.position;
@@ -1393,6 +1451,32 @@
           }
         });
       });
+      // One film, one name. The machine that keeps copies knows an episode as
+      // "Episode 32" until it has been told otherwise, so the same viewing read as
+      // two different programmes depending on which machine was reporting it. The
+      // fullest name any machine has is the name for all of them.
+      {
+        const best = new Map();
+        byViewing.forEach((w) => {
+          const k = w.key || w.title;
+          const had = best.get(k) || "";
+          const mine = (w.title || "") + (w.episode ? " " + w.episode : "");
+          if (mine.length > had.length) best.set(k, mine);
+        });
+        byViewing.forEach((w) => {
+          const k = w.key || w.title;
+          const full = best.get(k);
+          if (!full) return;
+          const mine = (w.title || "") + (w.episode ? " " + w.episode : "");
+          if (full.length > mine.length) {
+            const other = Array.from(byViewing.values())
+              .find((x) => (x.key || x.title) === k &&
+                           ((x.title || "") + (x.episode ? " " + x.episode : ""))
+                               === full);
+            if (other) { w.title = other.title; w.episode = other.episode; }
+          }
+        });
+      }
       data = { live: Array.from(byViewing.values()) };
     } catch (e) { /* server restarting */ }
     into.innerHTML = "";
@@ -1466,6 +1550,9 @@
       const build = (w.app || "").match(/\d+\.\d+\.\d+/);
       el.querySelector(".pmeta .note").textContent = [
         w.who,
+        // which machine is sending it: with two of them answering for one library,
+        // a row that does not say is a rate with nowhere to put it
+        w.from ? "from " + w.from : "",
         [on, build ? "v" + build[0] : ""].filter(Boolean).join(" "),
         began ? "since " + began : "",
         // a file on its way to the machine that keeps copies is not being watched:
@@ -2117,6 +2204,53 @@
     row("Keep copies in", one.folder, "D:\\Palladium cache",
         (v) => put({ folder: v }));
 
+    // What to keep, before how much of it. Each kind is off, kept only through the
+    // hours this machine is the one awake, or kept always. It was all or nothing:
+    // a machine wanting one person's watchlist took everybody's half-watched series
+    // with it, and the only way to stop that was to stop copying.
+    const kindsHead = document.createElement("div");
+    kindsHead.className = "sublabel addinhead";
+    kindsHead.textContent = "What to keep";
+    followBox.appendChild(kindsHead);
+    [["partway", "Part-way through",
+      "A series or a film somebody stopped in the middle of."],
+     ["watchlist", "Watchlists and favourites",
+      "What people have marked to watch. Kept whether or not it has been seen."],
+     ["lately", "Watched lately",
+      "What has been on recently, for carrying on with."],
+     ["shuffle", "The shuffle's next",
+      "What a collection shuffle would draw next, and the one it is on."],
+     ["screen", "On a screen now",
+      "Whatever is playing this minute. Kept where it is, never fetched."]
+    ].forEach(([kind, label, what]) => {
+      const r = document.createElement("div");
+      r.className = "addrow subrow";
+      r.innerHTML = "<span class='sublabel' title='" + esc(what) + "'>" +
+        esc(label) + "</span>";
+      const now = String(((one.kinds || {})[kind]) || "always");
+      [["off", "Off"], ["night", "Inside hours"], ["always", "Always"]]
+        .forEach(([mode, text]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" + (now === mode ? " on" : "");
+          b.textContent = text;
+          b.title = mode === "night"
+            ? "Only through the hours below, while the main server is asleep"
+            : what;
+          b.onclick = async () => {
+            const send = {};
+            send[kind] = mode;
+            await put({ kinds: send });
+            again();
+          };
+          r.appendChild(b);
+        });
+      followBox.appendChild(r);
+    });
+    // and the way to make "inside hours" mean now: it belongs with the rows that
+    // offer it rather than beside the clock further down, which is where somebody
+    // reading those three words would look for it
+    if (opts.house) followBox.appendChild(opts.house.tonight(opts.name || "the cache"));
+
     const much = document.createElement("div");
     much.className = "sublabel addinhead";
     much.textContent = "How much to keep";
@@ -2407,26 +2541,9 @@
       "will miss; largest empties the most room in the fewest deletions.";
     followBox.appendChild(dropNote);
 
-    // Whether watchlists may fill while people are up. What somebody is watching
-    // this minute always waits for the night; this is about the rest.
-    const dayRow = document.createElement("div");
-    dayRow.className = "addrow subrow";
-    dayRow.innerHTML = "<span class='sublabel'>By day</span>";
-    [[true, "Watchlists may fill"], [false, "Nothing until night"]]
-      .forEach(([on, label]) => {
-        const b = document.createElement("button");
-        b.className = "btn ghost kind" +
-          ((one.listByDay !== false) === on ? " on" : "");
-        b.textContent = label;
-        b.onclick = async () => { await put({ listByDay: on }); again(); };
-        dayRow.appendChild(b);
-      });
-    followBox.appendChild(dayRow);
-    const dayNote = document.createElement("div");
-    dayNote.className = "note";
-    dayNote.textContent = "What somebody starts watching now is fetched at night " +
-      "either way - by then this machine is the one that will be awake.";
-    followBox.appendChild(dayNote);
+    // "By day" was here: one switch under all of them that could say nothing at all
+    // before night whatever the kinds said. Two answers to one question, and the
+    // quieter one won without saying so. Each kind says when it may be taken now.
 
     // And whether the machine this one follows may change these settings from
     // there, so nobody has to walk to a computer in a cupboard.
@@ -2453,7 +2570,6 @@
     row("Night from, hour", String(one.nightFrom), "22",
         (v) => put({ nightFrom: v }));
     row("Night until, hour", String(one.nightTo), "8", (v) => put({ nightTo: v }));
-    if (opts.house) followBox.appendChild(opts.house.tonight(opts.name || "the cache"));
     // What the other server hands to viewers outside the main server. Empty is right when
     // both servers sit behind the one router.
     row("This machine from outside", one.outside, "http://203.0.113.7:8764",
@@ -3206,7 +3322,29 @@
     // what the cache is feeding, by screen: address and megabits, as it reports
     // them about itself. This machine cannot see any of it - a player reading part
     // of a film off the cache talks to the cache.
-    const busyRows = Array.isArray(other.busy) ? other.busy : [];
+    // On the main server this arrives with the answer: it asks the machine that
+    // keeps copies what it is feeding. The machine that keeps copies has no such
+    // list about the one it follows - so it drew a screen taking a film off both of
+    // them with a line from itself only, and the main server looked idle while it
+    // carried half the picture. Asked here instead, the same way the viewer list is.
+    let busyRows = Array.isArray(other.busy) ? other.busy : [];
+    // on a machine that keeps copies the pair's other half is the one it follows,
+    // and its answer carries what that machine is feeding
+    if (!busyRows.length && followingUp && Array.isArray(upstream.busy)) {
+      busyRows = upstream.busy;
+    }
+    // and if it did not arrive with the answer - an older server, or one whose
+    // wiring call is failing - ask the other machine outright. The rows below this
+    // drawing are made that way, and a drawing that disagrees with the list beside it
+    // is worse than no drawing.
+    if (!busyRows.length && other.where) {
+      try {
+        const at = other.where.replace(/\/$/, "") +
+          "/watching" + (CFG && CFG.key ? "?t=" + CFG.key : "");
+        const said2 = await (await fetch(at)).json();
+        busyRows = (said2.live || []).filter((r) => r.how !== "syncing");
+      } catch (e) { /* the other machine is off, or will not have us: no lines */ }
+    }
     const busyFor = (where) => busyRows.find(
       (r) => String((r && r.address) || r) === String(where));
     const busy = busyRows.length;
@@ -3493,9 +3631,15 @@
       const called = f.name || "the cache";
       inside.appendChild(house.share(called));
       inside.appendChild(house.keys(called));
-      inside.appendChild(house.tonight(called));
       if (f.managed) {
-        drawFollow(inside, remoteApi(f.where), { remote: true, name: called });
+        // its own box: what that machine is set to copy is drawn by clearing whatever
+        // it is given, and it was given the box this server's own three rows had just
+        // been put in - so Share reading, the keys and Tonight were built, added, and
+        // wiped off the page before anybody saw them
+        const theirs = document.createElement("div");
+        inside.appendChild(theirs);
+        drawFollow(theirs, remoteApi(f.where),
+                   { remote: true, name: called, house: house });
         return;
       }
       const note = document.createElement("div");
@@ -4878,6 +5022,71 @@
     else if (tab === "remote") await paneRemote(main);
     else if (tab === "reports") await paneReports(main);
     else paneSubs(main);
+    // on Settings and nowhere else: it is about the machine as a whole, and under
+    // Library or Users it read as belonging to what was above it
+    if (tab === "quality" && !(CFG && CFG.guest)) main.appendChild(advancedBox());
+  }
+
+  /* ---------------- what the machine was built with ---------------- */
+
+  /**
+   * Every number the server settles on when nobody has said otherwise.
+   *
+   * Not settings: there is nothing to change here, and that is the point. The numbers
+   * are read from the running server rather than written out a second time in this
+   * file, so the page cannot come to disagree with the machine it describes.
+   */
+  function advancedBox() {
+    const box = block("");
+    box.className = "setblock advanced";
+    const open = document.createElement("button");
+    open.className = "btn ghost";
+    open.textContent = "Advanced \u2013 the numbers this server was built with";
+    const holder = document.createElement("div");
+    holder.className = "advancedlist";
+    let shown = false;
+    open.onclick = async () => {
+      shown = !shown;
+      holder.innerHTML = "";
+      if (!shown) return;
+      holder.textContent = "Reading\u2026";
+      let said = {};
+      try {
+        said = await get("/advanced");
+      } catch (e) {
+        holder.textContent = "The server did not answer for these.";
+        return;
+      }
+      holder.innerHTML = "";
+      (said.groups || []).forEach((g) => {
+        const h = document.createElement("h4");
+        h.textContent = g.title;
+        holder.appendChild(h);
+        if (g.why) {
+          const why = document.createElement("div");
+          why.className = "note";
+          why.textContent = g.why;
+          holder.appendChild(why);
+        }
+        (g.rows || []).forEach((r) => {
+          const line = document.createElement("div");
+          line.className = "advrow";
+          const name = document.createElement("span");
+          name.className = "advname";
+          name.textContent = r.name;
+          const value = document.createElement("span");
+          value.className = "advvalue";
+          value.textContent = r.value;
+          const what = document.createElement("div");
+          what.className = "advwhat";
+          what.textContent = r.what || "";
+          line.append(name, value, what);
+          holder.appendChild(line);
+        });
+      });
+    };
+    box.append(open, holder);
+    return box;
   }
 
   /* The other machine, for whoever is watching from away.
@@ -5616,10 +5825,13 @@
     map.appendChild(canvas);
     into.appendChild(map);
     drawWiring(canvas);
+    // the same two seconds the rows below it use: a drawing that is ten seconds
+    // behind the numbers beside it is worse than no drawing, because it is read as
+    // now. One answer from each machine, which is what the rows cost anyway.
     const beat = setInterval(() => {
       if (!document.body.contains(canvas)) return clearInterval(beat);
       drawWiring(canvas);
-    }, 12000);
+    }, 2000);
   }
 
   async function paneNow(main) {
@@ -5629,6 +5841,9 @@
     sum.className = "livetotals";
     main.appendChild(sum);
     const live = document.createElement("div");
+    // the same column as the drawing above, so the rate on the right of a row lines
+    // up with the right edge of the box rather than running out to the window
+    live.className = "liverows";
     main.appendChild(live);
     drawLive(live, sum);
   }

@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.horizontalScroll
@@ -44,14 +45,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -108,8 +114,17 @@ class MainActivity : AppCompatActivity() {
         val marksTouched = androidx.compose.runtime.mutableStateOf(0)
     }
 
-    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
-        safeKey(event) { super.dispatchKeyEvent(event) }
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        // Everything still belonging to the press that opened a menu by being held is
+        // dropped here: its repeats, and the release at the end of it. The menu is
+        // already up and has the focus, and that release is not a press of anything
+        // on it - it is the end of the press that asked for it.
+        if (fromTheHold(event)) {
+            if (event.action == android.view.KeyEvent.ACTION_UP) holdIsOver()
+            return true
+        }
+        return safeKey(event) { super.dispatchKeyEvent(event) }
+    }
 
     /** When the short way was last looked for, so coming back to the app is cheap. */
     private var lastLookedForTheShortWay = 0L
@@ -202,6 +217,16 @@ private fun App() {
     val stack = remember { mutableStateListOf<Media>() }
     val browse = remember { Browse() }          // outlives the detail screen
 
+    // One screen is swapped for another here, and whatever had the remote goes out of
+    // the composition with it - leaving its parent in the focus tree marked as holding
+    // focus with nothing inside it to hold. Every search by direction after that throws
+    // "ActiveParent must have a focusedChild"; the guard on the key dispatcher keeps the
+    // app alive and drops the press, so down did nothing at all on a title's page - the
+    // shelf under it could not be reached by any number of presses. Cleared at the swap,
+    // before the screen that follows asks for the focus it wants.
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    LaunchedEffect(screen, stack.size) { focus.clearFocus(force = true) }
+
     // An episode started by auto-next: its page replaces the page of the episode it
     // followed, so Back leads to what is playing and then out to the season.
     LaunchedEffect(Opening.key) {
@@ -268,7 +293,21 @@ private fun App() {
                 BackHandler { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
                 DetailScreen(stack.last(),
                              onBack = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) },
-                             onOpen = { stack.add(it) })
+                             onOpen = { stack.add(it) },
+                             // the same words in the tab where they can be worked on:
+                             // taken off, added to, a decade put beside them
+                             onFilter = { kind, words ->
+                                 browse.tab = kind
+                                 browse.collectionOn = null
+                                 // whatever was last typed is not part of this
+                                 // question: left standing it narrowed the words
+                                 // to whichever of them had that in the title
+                                 browse.query = ""
+                                 browse.genre = words.joinToString(",")
+                                 browse.decade = ""
+                                 browse.loaded = ""
+                                 stack.clear()
+                             })
             }
             else -> {
                 // One press at the top level is too easy to hit by accident, on a remote
@@ -1794,8 +1833,8 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                    onPeople: (() -> Unit)? = null,
                    onSetup: (() -> Unit)? = null,
                    tabFocus: Map<String, FocusRequester> = emptyMap(),
-                   /** what a press of down from the tabs should reach, if anything */
-                   belowTabs: FocusRequester? = null,
+                   //: filled in as the row is laid out: where each tab sits across it
+                   tabAt: MutableMap<String, Float>? = null,
                    picks: (@Composable RowScope.() -> Unit)? = null,
                    search: (@Composable RowScope.() -> Unit)? = null,
                    filters: (@Composable RowScope.() -> Unit)? = null) {
@@ -1821,8 +1860,26 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
         Row(verticalAlignment = Alignment.CenterVertically) {
             // The version on a line of its own above the name, so the P and the word
             // keep the height and the spacing they had; the search box takes the width
-            // that leaves.
-            Column {
+            // that leaves - except on a short screen, where the two stand side by side
+            // and smaller. On a television every point of height above the shelves is
+            // a shelf that does not fit under them.
+            val squat = LocalConfiguration.current.screenHeightDp < 560
+            // and the name at the left with the picker after it: the word is what
+            // says where you are, and it belongs where reading starts
+            val holder: @Composable (@Composable () -> Unit) -> Unit =
+                if (squat) { inner -> Row(verticalAlignment = Alignment.CenterVertically,
+                                          content = { inner() }) }
+                else { inner -> Column(content = { inner() }) }
+            holder {
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = if (squat) Modifier.padding(end = 12.dp) else Modifier) {
+                    Text("P", color = Skin.Accent, fontSize = if (squat) 16.sp else 22.sp,
+                         fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
+                    Text("PALLADIUM", color = Skin.Fg,
+                         fontSize = if (squat) 10.sp else 13.sp,
+                         letterSpacing = if (squat) 2.sp else 2.5.sp,
+                         modifier = Modifier.padding(start = if (squat) 6.dp else 8.dp))
+                }
                 // Which machine this shelf came off, beside the version. With two
                 // servers in the list and a film that can be on either, the question
                 // "where am I" was answered only by going back to the server list.
@@ -1869,13 +1926,6 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                              fontSize = 10.sp)
                     }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("P", color = Skin.Accent, fontSize = 22.sp,
-                         fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
-                    Text("PALLADIUM", color = Skin.Fg, fontSize = 13.sp,
-                         letterSpacing = 2.5.sp,
-                         modifier = Modifier.padding(start = 8.dp))
-                }
                 if (picking) WhichServer { picking = false }
             }
             // Beside the name rather than at the end of the tabs: the row below is
@@ -1892,7 +1942,7 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
             Box(Modifier.padding(top = 8.dp).fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(along),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Tabs(tab, onTab, tabFocus, picks, belowTabs)
+                    Tabs(tab, onTab, tabFocus, picks, where = tabAt)
                     filters?.let { Spacer(Modifier.width(8.dp)); it() }
                     if (housekeeping) {
                         Spacer(Modifier.width(10.dp))
@@ -1923,7 +1973,11 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
 private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
                           focus: Map<String, FocusRequester> = emptyMap(),
                           picks: (@Composable RowScope.() -> Unit)? = null,
-                          below: FocusRequester? = null) {
+                          below: FocusRequester? = null,
+                          /* where each of them ended up across the screen, so a card
+                             below can go to the one standing over it rather than to
+                             whatever the framework finds up and to the left */
+                          where: MutableMap<String, Float>? = null) {
     /** Each tab can be asked for the focus by name - back, from a scrolled list. */
     // A phone has no room for six full-width pills and the two controls that go with
     // them; a television has the room and the remote, which wants the bigger target.
@@ -1935,10 +1989,15 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
     @Composable
     fun tabPill(id: String, label: String) {
         val f = focus[id]
+        // Down goes straight down, into whatever is under this button - the same as
+        // the sort, the genre and the search box beside it. Naming one poster for the
+        // whole row instead sent every tab to the first one, so two buttons on one
+        // line did two different things.
         Pill(label, tab == id, narrow = tight, small = squeeze,
              modifier = (if (f == null) Modifier else Modifier.focusRequester(f))
-                 .then(if (below == null) Modifier
-                       else Modifier.focusProperties { down = below })) {
+                 .then(if (where == null) Modifier else Modifier.onGloballyPositioned {
+                     where[id] = it.boundsInWindow().center.x
+                 })) {
             onTab(id)
         }
     }
@@ -1978,7 +2037,7 @@ private fun DownloadLine(up: FocusRequester? = null, inline: Boolean = false) {
                  (if (!inline && d.offerWho.isNotEmpty()) " · " + d.offerWho else "") +
                  (if (more > 0) "  +$more" else ""),
              filled = true, small = true,
-             modifier = if (up == null) Modifier else Modifier.focusProperties { this.up = up }) {
+             modifier = Modifier.edge(up = { moveTo(up) })) {
             Api.openWanted.value = d
         }
     }
@@ -2025,6 +2084,25 @@ private const val PAGE = 120
  */
 private class Browse {
     var tab by mutableStateOf("home")
+    /** Where each card on the screen actually is, across it, by the title it shows.
+     *
+     * Worked out from the list and the item's offset within it, it came out short by
+     * the list's own padding, which is enough to put a card nearer the tab to its left
+     * than the one standing over it. Measured where it is drawn instead. Not state
+     * anything is drawn from: written while the cards are laid out and read when a key
+     * is pressed. */
+    val cardAt = mutableMapOf<String, Float>()
+    /** Where the remote was on each shelf, and how to ask for it back.
+     *
+     * A press of down looks for whatever lies nearest below, and shelves scroll on
+     * their own - so from the left of one shelf it landed on a title well to the
+     * right of the next, and the press after that came back left. Each shelf keeps
+     * the card the remote was last on; up and down go to that, or to the first card
+     * of a shelf nobody has been on. */
+    val shelfWas = mutableMapOf<Int, String>()
+    val shelfAsk = mutableMapOf<Int, FocusRequester>()
+    /** Which column the remote is in, so down and up stay in it. */
+    var column by mutableStateOf(0)
     var rows by mutableStateOf<List<Pair<String, List<Media>>>>(emptyList())
     var grid by mutableStateOf<List<Media>>(emptyList())
     /** What stands behind the shelves: the last title opened, or failing that
@@ -2041,7 +2119,10 @@ private class Browse {
     var sortAsc by mutableStateOf(false)
     var genre by mutableStateOf("")            // "" is everything
     var genres by mutableStateOf<List<Pair<String, Int>>>(emptyList())
-    var decade by mutableStateOf("")           // "" is every year
+    var decade by mutableStateOf("")           // comma-joined; "" is every year
+
+    /** the tab the genre and decade lists were last built for */
+    var filtersFor by mutableStateOf("")
     var decades by mutableStateOf<List<Pair<String, Int>>>(emptyList())
     var query by mutableStateOf("")
     var loaded by mutableStateOf("")           // which tab and order the lists hold
@@ -2141,7 +2222,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             browse.noticeAsked = true
             if (word != null && word.id != MainActivity.noticeSeen.value) {
                 MainActivity.noticeSeen.value = word.id
-                browse.notice = word.text
+                // and no words takes it off the screen
+                browse.notice = word.text.ifEmpty { null }
             } else if (word == null) {
                 kotlinx.coroutines.delay(10_000)
             }
@@ -2164,31 +2246,42 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
              "|" + MainActivity.marksTouched.value else "")
 
     // which genres exist, for the tab in hand: asked once per tab
-    LaunchedEffect(browse.tab) {
+    // and again whenever a mark changes: the numbers are counted among what is
+    // already marked, so they are only true for the marks that were sent
+    LaunchedEffect(browse.tab, browse.genre, browse.decade) {
+        // a mark that empties a list is still the mark somebody just made; a tab that
+        // has never heard of it is another matter
+        val tabChanged = browse.filtersFor != browse.tab
+        browse.filtersFor = browse.tab
         browse.genres = when (browse.tab) {
-            "films" -> Api.genres("movie")
+            "films" -> Api.genres("movie", browse.genre, browse.decade)
             // the tab is called "tv"; asking for "shows" here matched nothing, so the
             // genre control on TV has been empty since the day it was added
-            "tv" -> Api.genres("show")
+            "tv" -> Api.genres("show", browse.genre, browse.decade)
             // a list's own genres are worked out from the list when it loads
             "watchlist", "collections" -> browse.genres
             else -> emptyList()
         }
         browse.decades = when (browse.tab) {
-            "films" -> Api.decades("movie")
-            "tv" -> Api.decades("show")
+            "films" -> Api.decades("movie", browse.genre)
+            "tv" -> Api.decades("show", browse.genre)
             "watchlist", "collections" -> browse.decades
             else -> emptyList()
         }
-        // a decade the other tab has nothing from is not a decade to carry across
-        if (browse.decade.isNotEmpty() &&
-            browse.decades.none { it.first == browse.decade }) {
-            browse.decade = ""
+        // A decade the other tab has nothing from is not a decade to carry across.
+        // Only when the tab itself changed: the lists are narrowed by what is marked
+        // now, so a mark missing from one of them means the filter is empty, not that
+        // the mark was never any good - and dropping it there would undo the press
+        // that emptied it.
+        if (browse.decade.isNotEmpty() && tabChanged) {
+            browse.decade = browse.decade.split(",").map { it.trim() }.filter { era ->
+                era.isNotEmpty() && browse.decades.any { it.first == era }
+            }.joinToString(",")
         }
         // A genre chosen on one tab is not a genre on the other: films have Western
         // and television has Talk Show, and carrying one across showed an empty
         // library with no hint as to why. It is kept when the new tab has it too.
-        if (browse.genre.isNotEmpty()) {
+        if (browse.genre.isNotEmpty() && tabChanged) {
             browse.genre = browse.genre.split(",").filter { g ->
                 g.isNotBlank() && browse.genres.any { it.first.equals(g, ignoreCase = true) }
             }.joinToString(",")
@@ -2244,7 +2337,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             browse.loaded = ""
         }
     }
-    LaunchedEffect(want) {
+    // Keyed on what was loaded as well as on what is wanted. Coming back from a film
+    // clears the first to ask for a fresh read, and on the tab the film was started
+    // from the second does not change - so nothing re-ran, the shelf kept the place
+    // it had before the film, and pressing the poster started it from the beginning.
+    // Going to another tab and back changed it twice, which is why that worked.
+    LaunchedEffect(want, browse.loaded) {
         if (browse.loaded == want) return@LaunchedEffect
         browse.loading = true; browse.failed = null
         browse.matching = -1
@@ -2262,12 +2360,16 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     g.isNotBlank() && browse.genres.any { it.first.equals(g, ignoreCase = true) }
                 }.joinToString(",")
             }
-            if (browse.decade.isNotEmpty() && browse.decades.none { it.first == browse.decade }) {
-                browse.decade = ""
+            if (browse.decade.isNotEmpty()) {
+                browse.decade = browse.decade.split(",").map { it.trim() }.filter { era ->
+                    era.isNotEmpty() && browse.decades.any { it.first == era }
+                }.joinToString(",")
             }
             return all.filter { m ->
                 (browse.genre.isEmpty() || browse.genre.split(",").filter { it.isNotBlank() }.all { want -> m.genres.any { it.equals(want, ignoreCase = true) } }) &&
-                (browse.decade.isEmpty() || ((m.year ?: 0) / 10 * 10).toString() == browse.decade)
+                // every genre marked, but any one of the decades: a film has one year
+                (browse.decade.isEmpty() || browse.decade.split(",").map { it.trim() }
+                     .any { it == ((m.year ?: 0) / 10 * 10).toString() })
             }
         }
         val query = browse.query
@@ -2363,8 +2465,33 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // one per tab, kept for the life of this screen: back needs to hand the focus to
     // the tab it came from, and a requester has to be the same object to work
     val tabFocus = remember {
-        listOf("home", "films", "tv", "watchlist", "collections")
+        listOf("home", "films", "tv", "watchlist", "collections", "reports")
             .associateWith { FocusRequester() }
+    }
+    //: where each of those ended up across the screen. A card at the top of a list
+    //: goes to the button standing over it - which is what "up" means to anybody
+    //: looking at it - and the framework's own search cannot be asked for that: it
+    //: takes the nearest thing up and to the left, which is the server picker.
+    val tabAt = remember { mutableStateMapOf<String, Float>() }
+
+    /** The tab standing over this point across the screen, if any of them is. */
+    fun tabOver(x: Float): FocusRequester? {
+        // only the ones that can be asked for by name: a button with no requester is
+        // not an answer, and answering with nothing sends the press back to the
+        // framework, which finds the server picker
+        val near = tabAt.entries.filter { tabFocus.containsKey(it.key) }
+            .minByOrNull { kotlin.math.abs(it.value - x) } ?: return null
+        return tabFocus[near.key]
+    }
+    // and the remote starts on Home. It started wherever the framework put it, which
+    // on a television is nowhere in particular: the first press of any direction went
+    // hunting instead of moving.
+    val remoteHere = onTv()
+    LaunchedEffect(Unit) {
+        if (remoteHere) {
+            kotlinx.coroutines.delay(350)
+            runCatching { tabFocus["home"]?.requestFocus() }
+        }
     }
     // Inside the library - focus on a poster, or the list scrolled away from the top
     // - back means "out of this list", not "out of the app". The grid refuses to let
@@ -2385,6 +2512,17 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // not at the beginning of the library. Only the focus moves - to the tab you
         // are on, Films from Films and TV from TV.
         runCatching { tabFocus[browse.tab]?.requestFocus() }
+    }
+
+    // A list opens with the cursor on the row of buttons over it, on the tab it is
+    // showing. It opened with the focus nowhere in particular, and the first press of
+    // any direction went hunting rather than moving.
+    LaunchedEffect(browse.tab, browse.loaded) {
+        if (browse.tab in setOf("films", "tv") && browse.loaded.isNotEmpty()
+                && !inContent) {
+            kotlinx.coroutines.delay(80)
+            runCatching { tabFocus[browse.tab]?.requestFocus() }
+        }
     }
 
     val behind = browse.backdrop
@@ -2417,6 +2555,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                // nothing to give it to: it asked an unattached requester, the request
                // threw, and the press did nothing at all
                tabFocus = tabFocus,
+               tabAt = tabAt,
+               // what a press of down from the tabs reaches: the first thing on the
+               // first shelf. Without it the remote asked the framework to find
+               // something below, it found nothing laid out there yet, and fell back
+               // to the next thing in order - the tab to the right.
                // Sorting a shuffle means nothing; putting something on is the whole
                // point of the shelf, so that is what the Watchlist tab offers instead.
                picks = if (browse.tab == "films" || browse.tab == "tv") ({
@@ -2609,6 +2752,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             val shelf = one.shuffleId
             val shelfName = one.shuffle.ifBlank { one.title }
             AlertDialog(
+                // The menu is a window of its own, so the rest of the press that
+                // opened it arrives here rather than at the activity - and the release
+                // pressed the first thing in it. Dropped where it lands.
+                modifier = Modifier.stillHeld(),
                 onDismissRequest = { browse.held = null },
                 containerColor = Skin.Panel,
                 title = { Text(if (shelf.isNotEmpty()) shelfName else one.title,
@@ -2674,6 +2821,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         browse.favHeld?.let { one ->
             val kept = one.ratingKey in Api.favKeys.value
             AlertDialog(
+                modifier = Modifier.stillHeld(),
                 onDismissRequest = { browse.favHeld = null },
                 containerColor = Skin.Panel,
                 title = { Text(one.title, color = Skin.Fg) },
@@ -2839,9 +2987,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 state = browse.rowsState,
                 modifier = Modifier.onFocusChanged { inContent = it.hasFocus },
                 contentPadding = PaddingValues(bottom = 28.dp)) {
-                items(browse.rows) { (title, list) ->
-                    SectionTitle(title, Modifier.padding(start = 21.dp, top = 16.dp, bottom = 2.dp))
-                    val w = if (LocalConfiguration.current.screenWidthDp < 600) 108 else 140
+                itemsIndexed(browse.rows) { shelf, (title, list) ->
+                    val topShelf = shelf == 0
+                    // asked for by the shelf above and the shelf below
+                    val ask = browse.shelfAsk.getOrPut(shelf) { FocusRequester() }
+                    // the gap above a shelf's name, which on a short screen is the
+                    // difference between two whole shelves and one and a half
+                    // one line of the heading's own size above it, no more: the air
+                    // over a shelf name is a shelf's worth of height down the page
+                    val gap = if (LocalConfiguration.current.screenHeightDp < 560) 2 else 16
+                    SectionTitle(title,
+                                 Modifier.padding(start = 21.dp, top = gap.dp, bottom = 2.dp))
+                    val w = shelfPoster()
                     val rowState = browse.rowStates.getOrPut(title) {
                         androidx.compose.foundation.lazy.LazyListState() }
                     // back from a title opened in this row: scroll the row to it, then focus it
@@ -2856,16 +3013,64 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             }
                         }
                     }
-                    LazyRow(state = rowState, contentPadding = PaddingValues(horizontal = 16.dp)) {
-                        items(list) { m ->
+                    // A shelf remembers where the remote was on it. Without that,
+                    // a press of down looks for whatever lies nearest below - and the
+                    // shelves scroll on their own, so nearest is rarely the same
+                    // column: it landed on a title further right, and the next press
+                    // came back left. Each shelf is one group now, and entering it
+                    // goes to where you were on it, or to its first card.
+                    LazyRow(state = rowState,
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            modifier = Modifier.focusGroup()) {
+                        itemsIndexed(list) { at, m ->
                             val here = remember { FocusRequester() }
+                            // the one the tabs hand down to
+                            val first = topShelf &&
+                                m.ratingKey == list.firstOrNull()?.ratingKey
+                            // the card this shelf answers with: the one in the
+                            // column the remote is in, or the last of a short shelf
+                            val leads = at == browse.column.coerceAtMost(list.lastIndex)
                             LaunchedEffect(browse.focusKey) {
                                 if (browse.focusKey == m.ratingKey) {
                                     runCatching { here.requestFocus() }
                                     browse.focusKey = ""
                                 }
                             }
-                            Poster(m, width = w, modifier = Modifier.focusRequester(here),
+                            Poster(m, width = w,
+                                   modifier = Modifier.focusRequester(here)
+                                       .onGloballyPositioned {
+                                           browse.cardAt[m.ratingKey] =
+                                               it.boundsInWindow().center.x
+                                       }
+                                       .then(if (leads) Modifier.focusRequester(ask)
+                                             else Modifier)
+
+                                       // where the remote is, kept for the next time
+                                       // this shelf is come to
+                                       .onFocusChanged {
+                                           if (it.isFocused) {
+                                               browse.shelfWas[shelf] = m.ratingKey
+                                               browse.column = at
+                                           }
+                                       }
+                                       // up and down go shelf to shelf, to the card
+                                       // each one was left on - the shelves scroll
+                                       // under the remote, so nearest is rarely the
+                                       // same column. Off the top shelf it is not
+                                       // ours: up goes straight up, to whatever is
+                                       // over that card.
+                                       .edge(up = {
+                                                if (shelf > 0)
+                                                    moveTo(browse.shelfAsk[shelf - 1])
+                                                // Off the top shelf, up is the tab
+                                                // standing over this card. What the
+                                                // framework finds instead is the
+                                                // server picker, above and to the
+                                                // left of all of them.
+                                                else moveTo(tabOver(
+                                                    browse.cardAt[m.ratingKey] ?: 0f))
+                                            },
+                                            down = { moveTo(browse.shelfAsk[shelf + 1]) }),
                                    onHold = if (title == DECK)
                                        ({ browse.held = m })
                                        else ({
@@ -2960,12 +3165,26 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         if (at >= 0) browse.focusKey = key
                     }
                 }
-                // three across on a phone, six or so on a television
-                val cell = if (LocalConfiguration.current.screenWidthDp < 600) 108.dp
-                           else 140.dp
+                // the same size the shelves on Home use, so a film is the same film
+                // whichever tab it is looked at from - and on a television that means
+                // more of them on the screen at once rather than six large ones
+                val cell = shelfPoster().dp
+                // and on a phone standing up it is three to a row exactly, rather
+                // than as many as happen to fit with a gap left over
+                val standing = LocalConfiguration.current.screenWidthDp < 600 &&
+                    LocalConfiguration.current.screenHeightDp >
+                        LocalConfiguration.current.screenWidthDp
+                // a phone lying down: five to a row, the same as its shelves
+                val onItsSide = LocalConfiguration.current.screenHeightDp < 400 &&
+                    LocalConfiguration.current.screenWidthDp >
+                        LocalConfiguration.current.screenHeightDp
                 LazyVerticalGrid(
                     state = gridState,
-                    columns = GridCells.Adaptive(cell),
+                    columns = when {
+                        standing -> GridCells.Fixed(3)
+                        onItsSide -> GridCells.Fixed(5)
+                        else -> GridCells.Adaptive(cell)
+                    },
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                     modifier = Modifier.fillMaxSize()
                         .onFocusChanged { inContent = it.hasFocus }
@@ -2974,11 +3193,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             // Deep in the list the rows above have been recycled, so a
                             // focus search upwards finds nothing and leaps to the menu.
                             // Refuse the exit while scrolled: up then moves by rows.
-                            up = if (gridState.firstVisibleItemIndex > 0)
-                                FocusRequester.Cancel else FocusRequester.Default
-                            // The row below has not been composed yet either, and the
-                            // search then leaves the grid upwards - onto the Casual
-                            // play button. Refuse it while there are rows left.
+                            // Where up goes is decided a press at a time, on the
+                            // poster itself - see Modifier.edge. Down is the one thing
+                            // left to the framework, because refusing the exit is also
+                            // what makes the list scroll to the row below.
+                            //
+                            // The row below has not been composed yet, and the search
+                            // then leaves the grid upwards - onto the Casual play
+                            // button. Refuse it while there are rows left.
                             down = if (gridState.layoutInfo.visibleItemsInfo.isNotEmpty() &&
                                        gridState.layoutInfo.visibleItemsInfo.last().index <
                                            gridState.layoutInfo.totalItemsCount - 1)
@@ -2989,7 +3211,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         collectionOrder(browse.grid, browse.collSortKey,
                                         browse.collSortAsc)
                         else browse.grid
-                    items(shown) { m ->
+                    itemsIndexed(shown) { at, m ->
                         // Sorted by release, a series is placed by its newest
                         // episode, so that is what the card says. The year a
                         // programme began, above one that began later, reads as a
@@ -3007,7 +3229,30 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             }
                         }
                         Poster(m, fill = true, instead = instead,
-                               modifier = Modifier.focusRequester(here),
+                               modifier = Modifier.focusRequester(here)
+                                   .onGloballyPositioned {
+                                       browse.cardAt[m.ratingKey] =
+                                           it.boundsInWindow().center.x
+                                   }
+                                   // Out of the top row, up belongs to the row of
+                                   // buttons over the posters - the tab this screen
+                                   // is on. Straight up from the left-hand column
+                                   // reached the server picker instead, which sits
+                                   // above them and to the left. From any other row
+                                   // this answers nothing and up moves by rows.
+                                   // Out of the top row, to the button standing
+                                   // over this card: the first is under Home, the
+                                   // third under TV, and that is what up means to
+                                   // anybody looking at the screen. The framework's
+                                   // own search takes the nearest thing up and to the
+                                   // left, which from the first cards is the server
+                                   // picker - so the row is not left to find out.
+                                   .edge(up = {
+                                       val across = columnsNow(gridState.layoutInfo)
+                                       val x = browse.cardAt[m.ratingKey]
+                                       at < maxOf(across, 1) && x != null &&
+                                           moveTo(tabOver(x))
+                                   }),
                                // held: the title's own page, and on the watchlist
                                // the choice to make it a favorite
                                onHold = {
@@ -3211,11 +3456,23 @@ private fun RowScope.GenreControl(
 ) {
     if (genres.isEmpty()) return
     var genreOpen by remember { mutableStateOf(false) }
+    //: the line last ticked, to put the remote back on it when the list is read again
+    var touched by remember { mutableStateOf("") }
     // several can be marked: comma-joined, a title must carry all of them
     val marked = genre.split(",").map { it.trim() }.filter { it.isNotEmpty() }
     Box {
-        Pill(when (marked.size) { 0 -> "Genre"; 1 -> marked[0]
-                                  else -> if (matching >= 0) "Genres · " + matching else "Genres" },
+        // A tick-list reads as "any of these" to most people, and this one means
+        // "all of these" - which is why the number falls as more are marked. The plus
+        // says so on the button and the line over the list says so in words. A bare
+        // number beside a word read as how many were marked, which it never was.
+        Pill(when (marked.size) {
+                 0 -> "Genre"
+                 1 -> marked[0]
+                 2 -> marked.joinToString(" + ") +
+                      (if (matching >= 0) "  ·  " + matching else "")
+                 else -> marked.size.toString() + " genres" +
+                         (if (matching >= 0) "  ·  " + matching + " matches" else "")
+             },
              narrow = !onTv(),
              small = !onTv() && LocalConfiguration.current.screenWidthDp < 400) {
             genreOpen = true
@@ -3224,20 +3481,33 @@ private fun RowScope.GenreControl(
             expanded = genreOpen, onDismissRequest = { genreOpen = false },
             modifier = Modifier.background(Skin.Panel)
                 .width(260.dp).heightIn(max = 360.dp)) {
+            // what marking two of them does, said before anybody marks the second
+            Text("Titles carrying all marked", color = Skin.Dim, fontSize = 11.sp,
+                 modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 2.dp))
             DropdownMenuItem(
                 contentPadding = MENU_PAD,
+                // up off the top line is the way out, the same as it is everywhere
+                // else on the screen. Back was the only way, and back on a remote
+                // means leave the app to most people.
+                modifier = Modifier.edge(up = { genreOpen = false; true }),
                 text = { Text("Clear", fontSize = 14.sp,
                               color = if (marked.isEmpty()) Skin.Dim else Skin.Accent) },
                 onClick = { onGenre(""); genreOpen = false })
             genres.forEach { (name, count) ->
                 val on = marked.any { it.equals(name, ignoreCase = true) }
+                val here = remember(name) { FocusRequester() }
+                LaunchedEffect(name, touched, genres) {
+                    if (touched == name) runCatching { here.requestFocus() }
+                }
                 DropdownMenuItem(
                     contentPadding = MENU_PAD,
+                    modifier = Modifier.focusRequester(here),
                     text = { Text((if (on) "✓  " else "     ") + name + "  (" + count + ")",
                                   fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                   color = if (on) Skin.Accent else Skin.Fg) },
                     // toggles and stays open, so several can be marked in one visit
                     onClick = {
+                        touched = name
                         val next = if (on) marked.filterNot { it.equals(name, ignoreCase = true) }
                                    else marked + name
                         onGenre(next.joinToString(","))
@@ -3256,8 +3526,24 @@ private fun RowScope.DecadeControl(
 ) {
     if (decades.isEmpty()) return
     var open by remember { mutableStateOf(false) }
+    // Which line was last ticked. Marking one sends for the lists again - the numbers
+    // are counted among what is marked - and the list that comes back is a new set of
+    // rows, so the one under the remote stops existing and the focus falls out of the
+    // menu onto whatever is nearest, which is the button beside it. It is put back on
+    // the line that was ticked.
+    var touched by remember { mutableStateOf("") }
+    // several can be marked, comma-joined, the same way genres are. A title need only
+    // be from one of them: a film has one year, so asking for all at once would answer
+    // nothing at all.
+    val marked = decade.split(",").map { it.trim() }.filter { it.isNotEmpty() }
     Box {
-        Pill(if (decade.isEmpty()) "Decade" else decade + "s", narrow = !onTv(),
+        Pill(when (marked.size) {
+                 0 -> "Decade"
+                 1 -> marked[0] + "s"
+                 2 -> marked[0] + "s, " + marked[1] + "s"
+                 else -> marked.size.toString() + " decades"
+             },
+             narrow = !onTv(),
              small = !onTv() && LocalConfiguration.current.screenWidthDp < 400) {
             open = true
         }
@@ -3265,17 +3551,36 @@ private fun RowScope.DecadeControl(
             expanded = open, onDismissRequest = { open = false },
             modifier = Modifier.background(Skin.Panel)
                 .width(200.dp).heightIn(max = 360.dp)) {
+            // the opposite of the genres, and for a reason worth one line: a film has
+            // one year, so asking for all the marked decades at once answers nothing
+            Text("Titles from any marked", color = Skin.Dim, fontSize = 11.sp,
+                 modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 2.dp))
             DropdownMenuItem(
                 contentPadding = MENU_PAD,
-                text = { Text("All", fontSize = 14.sp,
-                              color = if (decade.isEmpty()) Skin.Accent else Skin.Fg) },
+                modifier = Modifier.edge(up = { open = false; true }),
+                // named and coloured as the genres are: two lists that do the same
+                // thing should not be worked out twice
+                text = { Text("Clear", fontSize = 14.sp,
+                              color = if (marked.isEmpty()) Skin.Dim else Skin.Accent) },
                 onClick = { onDecade(""); open = false })
             decades.forEach { (era, count) ->
+                val on = marked.contains(era)
+                val here = remember(era) { FocusRequester() }
+                LaunchedEffect(era, touched, decades) {
+                    if (touched == era) runCatching { here.requestFocus() }
+                }
                 DropdownMenuItem(
                     contentPadding = MENU_PAD,
-                    text = { Text(era + "s  (" + count + ")", fontSize = 14.sp,
-                                  color = if (era == decade) Skin.Accent else Skin.Fg) },
-                    onClick = { onDecade(era); open = false })
+                    modifier = Modifier.focusRequester(here),
+                    text = { Text((if (on) "✓  " else "     ") + era + "s  (" + count + ")",
+                                  fontSize = 14.sp,
+                                  color = if (on) Skin.Accent else Skin.Fg) },
+                    // toggles and stays open, so several can be marked in one visit
+                    onClick = {
+                        touched = era
+                        val next = if (on) marked.filterNot { it == era } else marked + era
+                        onDecade(next.joinToString(","))
+                    })
             }
         }
     }
@@ -3330,7 +3635,8 @@ private val MENU_PAD = androidx.compose.foundation.layout.PaddingValues(
 // FocusRequester.Cancel - refusing a direction - is still marked experimental
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) {
+private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
+                         onFilter: (String, List<String>) -> Unit = { _, _ -> }) {
     val ctx = LocalContext.current
     val portrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     // A phone on its side has about three hundred and sixty points of height, and the
@@ -3338,6 +3644,13 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
     // title at thirty, and the facts and the subtitle line below all of it, off the
     // bottom of the screen. Everything comes up and in.
     val cramped = !portrait && LocalConfiguration.current.screenHeightDp < 500
+    // A television has one screen and nothing to scroll, and what else is like this
+    // film sits at the foot of it. The film's own words have to leave room for that,
+    // so on a television everything above the shelf comes down a size - which is the
+    // difference between a row of posters and a strip of their tops.
+    // A series has no shelf under it - its page is a list of its own episodes - so
+    // there is nothing there to make room for.
+    val roomForShelf = !portrait && !cramped && !m.isFolder
     var full by remember(m.ratingKey) { mutableStateOf(m) }
     var children by remember(m.ratingKey) { mutableStateOf<List<Media>>(emptyList()) }
     //: which mark is waiting to be confirmed: true for watched, false for unwatched
@@ -3366,6 +3679,18 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
     var picking by remember(m.ratingKey) { mutableStateOf(false) }
     var inCollection by remember(m.ratingKey) { mutableStateOf(false) }
 
+    // More like this: the genres this film carries, asked of the library the same way
+    // the genre filter asks - every one of them, so three words narrow to the films
+    // that are all three. Rare corners of the library answer with nothing and the row
+    // is left off rather than filled with something looser.
+    var alike by remember(m.ratingKey) { mutableStateOf<List<Media>>(emptyList()) }
+    var likeOn by remember(m.ratingKey) { mutableStateOf<List<String>>(emptyList()) }
+    // the first of them, for a film that has just run to its end: the page it comes
+    // back to is the one it started from, and what to watch next is further down it
+    val firstAlike = remember(m.ratingKey) { FocusRequester() }
+    //: where this film falls among them in time, so the row can be cut around it
+    var alikeAt by remember(m.ratingKey) { mutableStateOf(0) }
+
     // and again on the way back from the player: the button says "Resume 7:19", and
     // after watching another twenty minutes it should not still say 7:19
     val cameBack = MainActivity.returned.value
@@ -3382,6 +3707,52 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                 ?: it.openWith(Api.myLanguage)?.index
                 ?: sub
         }
+        // once the film is known, what else carries its genres
+        val genres = full.genres.filter { it.isNotBlank() }
+        if (!full.isFolder && genres.isNotEmpty()) {
+            // Films to download among the ones here, as the Films tab lists them: an
+            // old corner of the library is thin, and what is on offer is what fills a
+            // row of a film's own years rather than ten from the last decade.
+            //
+            // All of them, not the first page. A page is a hundred and twenty and it
+            // comes newest first, so for a common pair of words everything older than
+            // the last few years was never asked for - and a film from 1987 cannot sit
+            // in the middle of a list that begins in 2015.
+            // Programmes are matched against programmes: an episode's page asking the
+            // film section listed films under it.
+            val asShow = full.type in setOf("show", "season", "episode")
+            val ownKey = full.grandparentKey?.takeIf { it.isNotEmpty() } ?: full.ratingKey
+            suspend fun carrying(words: List<String>) = runCatching {
+                if (asShow) Api.shows(ctx, "originallyAvailableAt:desc", size = 600,
+                                      genre = words.joinToString(","))
+                else Api.movies(ctx, "originallyAvailableAt:desc", size = 600,
+                                genre = words.joinToString(","))
+            }.getOrDefault(emptyList())
+                .filter { it.ratingKey != ownKey }
+            // Every word this film carries, and only films carrying all of them. The
+            // row widens in time rather than in words: where there is nothing older -
+            // nothing tagged action, comedy, horror and science fiction is older than
+            // 1987 - it takes more from the newer side. Letting a word go instead put
+            // films in the row that were not this kind of film at all.
+            val words = genres
+            val found = carrying(words)
+            val mine = full.year ?: 0
+            likeOn = words
+            android.util.Log.i("Palladium", "more like " + full.title + " (" + mine +
+                ") tags=" + words.joinToString("|") + " found=" + found.size)
+            // In year order, around this one: as many from before it as from after,
+            // so a film from 1983 is shown among its own years rather than under a row
+            // of last season's. By the year rather than the day - a film is of a year,
+            // and a March release is not older than a September one in any way anybody
+            // means. The date only settles the order within a year; anything with no
+            // year at all goes to the end of the line.
+            fun yearOf(x: Media) = x.year ?: 0
+            val inOrder = found.sortedWith(
+                compareBy({ yearOf(it) == 0 }, { yearOf(it) }, { it.released }))
+            alike = inOrder
+            alikeAt = inOrder.indexOfFirst { yearOf(it) >= mine && yearOf(it) > 0 }
+                .let { if (it < 0) inOrder.size else it }
+        }
         seen = full.watched
         // a mark may have been changed on another screen, or on the television, since
         // this page was last looked at
@@ -3395,7 +3766,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
         // Six chips - year, size, codecs, rate, how it will play - are wider than a
         // phone held upright. A Row does not wrap, so the last one was squeezed to a
         // single column of letters running down the edge of the screen.
-        FlowRow(Modifier.padding(top = if (cramped) 4.dp else 10.dp),
+        FlowRow(Modifier.padding(top = if (cramped || roomForShelf) 4.dp else 10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)) {
             full.year?.let { Chip(it.toString()) }
             if (full.isFolder) {
@@ -3430,8 +3801,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
         ).filter { it.isNotEmpty() }.joinToString("  ·  ")
         if (line.isNotEmpty()) {
             // straight under the title, not adrift below the buttons
-            Text(line, color = Skin.Dim, fontSize = 15.sp,
-                 modifier = Modifier.padding(top = 4.dp))
+            Text(line, color = Skin.Dim,
+                 fontSize = if (roomForShelf) 13.sp else 15.sp,
+                 modifier = Modifier.padding(top = if (roomForShelf) 2.dp else 4.dp))
         }
     }
 
@@ -3514,7 +3886,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
      * the shuffle without ever being something anybody is waiting to watch.
      */
     val marks: @Composable () -> Unit = {
-        Row(Modifier.padding(top = if (cramped) 6.dp else 12.dp),
+        Row(Modifier.padding(top = if (cramped || roomForShelf) 6.dp else 12.dp),
             verticalAlignment = Alignment.CenterVertically) {
             // one button stepping through three: off, on the watchlist, a favorite
             val favorite = m.ratingKey in Api.favKeys.value
@@ -3667,9 +4039,13 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                     // progress from the live list: the metadata re-read every 5 s carries no
                     // download progress for a pack film, so the page stayed at 0%
                     val live = Api.liveOffer(full)
+                    // the live row goes when the download finishes; the metadata still
+                    // says downloading, at the per cent it was read at
+                    val showing = if (live === full && Api.cameIn(full.ratingKey)) "done"
+                                  else live.offerState
                     val busy = full.offerRefused.isNotEmpty() ||
-                        live.offerState in setOf("queued", "downloading", "done")
-                    Pill(if (full.offerRefused.isNotEmpty()) "Cannot download" else when (live.offerState) {
+                        showing in setOf("queued", "downloading", "done")
+                    Pill(if (full.offerRefused.isNotEmpty()) "Cannot download" else when (showing) {
                              "downloading" -> "Downloading " + (live.offerProgress * 100).toInt() + "%" +
                                  (if (live.offerMbit > 0)
                                       String.format(java.util.Locale.US, "  \u00b7  %.1f Mbit/s",
@@ -3765,12 +4141,15 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
     val blurb: @Composable () -> Unit = {
         if (full.summary.isNotEmpty()) {
             Text(full.summary, color = Color(0xFFBFC9D4),
-                 fontSize = if (cramped) 12.5.sp else 14.sp,
-                 lineHeight = if (cramped) 18.sp else 21.sp,
-                 maxLines = if (portrait) 8 else if (cramped) 3 else 6,
+                 fontSize = if (cramped) 12.5.sp else if (roomForShelf) 13.sp else 14.sp,
+                 lineHeight = if (cramped) 18.sp else if (roomForShelf) 17.sp else 21.sp,
+                 // Three lines on a television. The rest of the plot is worth less
+                 // than seeing what else is like it, which is what the room went to.
+                 maxLines = if (portrait) 8 else if (cramped) 3
+                            else if (roomForShelf) 3 else 6,
                  overflow = TextOverflow.Ellipsis,
                  // close under the facts it belongs to, rather than adrift below them
-                 modifier = Modifier.padding(top = if (cramped) 6.dp else 8.dp))
+                 modifier = Modifier.padding(top = if (cramped) 6.dp else 6.dp))
         }
     }
 
@@ -3911,14 +4290,30 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
         // One column, sized to fit: with nothing to scroll, moving focus cannot drag
         // the page about. The scroller stays for a series, whose episodes go past the
         // bottom, and for a phone held upright.
+        //
+        // And for a shelf of what else is like this one, which is the same case: a
+        // television has about a hundred points left under the film's own words and
+        // the shelf wants twice that, so without this it was a strip of cropped
+        // posters at the bottom edge that no amount of pressing down could bring into
+        // view - and the page a finished film comes back to could not scroll down to
+        // it either, because there was nowhere to scroll to.
         val scroll = rememberScrollState()
         Column(
             Modifier.fillMaxSize()
-                // and it scrolls on a short screen too, whatever is on it
-                .then(if (portrait || cramped || children.isNotEmpty())
-                          Modifier.verticalScroll(scroll) else Modifier)
+                // Always, rather than only where there is something below the fold.
+                // The shelf arrives a moment after the page does, and adding the
+                // scroller then rebuilt the column under whatever had the remote: the
+                // tree kept a parent marked as holding focus with nothing inside it,
+                // and the next press down threw inside the framework's own search.
+                // The guard caught it and dropped the press, so down did nothing at
+                // all on a film's page. Where everything fits there is nothing to
+                // scroll and this changes nothing.
+                .verticalScroll(scroll)
                 .padding(horizontal = if (portrait) 20.dp else if (cramped) 18.dp else 28.dp,
-                         vertical = if (portrait) 18.dp else if (cramped) 8.dp else 22.dp)
+                         // less air at the top and bottom where a shelf has to fit
+                         // under everything else: the last line of names sat in it
+                         vertical = if (portrait) 18.dp else if (cramped) 8.dp
+                                    else if (roomForShelf) 12.dp else 22.dp)
         ) {
             Row { Pill("Back") { onBack() } }
             if (portrait) {
@@ -3933,10 +4328,12 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                 // the year belongs to the title, so it goes with it; then the button
                 when_(); buttons(); marks(); subtitles(); facts(); blurb()
             } else {
-                Row(Modifier.padding(top = if (cramped) 4.dp else 12.dp)) {
+                Row(Modifier.padding(top = if (cramped || roomForShelf) 4.dp else 12.dp)) {
                     Box(Modifier
-                            .width(if (cramped) 110.dp else 180.dp)
-                            .height(if (cramped) 165.dp else 270.dp)
+                            .width(if (cramped) 110.dp
+                                   else if (roomForShelf) 150.dp else 180.dp)
+                            .height(if (cramped) 165.dp
+                                    else if (roomForShelf) 225.dp else 270.dp)
                             .clip(RoundedCornerShape(10.dp))) {
                         Art(Api.artUrl(full), full.title, Modifier.fillMaxSize(),
                             mark = if (cramped) 40 else 60)
@@ -3944,10 +4341,21 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                     }
                     Column(Modifier.padding(start = if (cramped) 16.dp else 24.dp)) {
                         Text(full.title, color = Skin.Fg,
-                             fontSize = if (cramped) 21.sp else 30.sp,
+                             fontSize = if (cramped) 21.sp
+                                        else if (roomForShelf) 25.sp else 30.sp,
                              fontWeight = FontWeight.SemiBold)
                         when_(); buttons(); marks(); subtitles(); facts(); blurb()
                     }
+                }
+            }
+            // A film that ran to its end comes back here with the page at the top and
+            // the Play button under the remote, which is the one thing nobody wants
+            // next. Down to what is like it instead, once the shelf is actually there.
+            LaunchedEffect(alike, PlayerActivity.ranOut) {
+                if (PlayerActivity.ranOut == full.ratingKey && alike.isNotEmpty()) {
+                    PlayerActivity.ranOut = ""
+                    scroll.animateScrollTo(scroll.maxValue)
+                    runCatching { firstAlike.requestFocus() }
                 }
             }
             if (children.isNotEmpty()) {
@@ -4050,7 +4458,16 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                     contentPadding = PaddingValues(end = 180.dp),
                 ) {
                     items(children) { c ->
-                        Poster(c, width = if (portrait) 120 else 140,
+                        // one programme's seasons are one picture four times over, and
+                        // its episodes one still each: say which is which under them
+                        val say = when {
+                            c.type == "season" ->
+                                c.title.ifBlank { "Season " + (c.index ?: "") }
+                            c.type == "episode" ->
+                                "E" + (c.index ?: "") + "  " + c.title
+                            else -> ""
+                        }
+                        Poster(c, width = shelfPoster(), instead = say,
                                modifier = if (c.ratingKey == standing)
                                               Modifier.focusRequester(standOn)
                                           else Modifier) { onOpen(c) }
@@ -4058,11 +4475,120 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit) 
                 }
                 Spacer(Modifier.height(16.dp))
             }
+            // More like this: films carrying the same genres as this one. A programme
+            // is left out - its page is a list of its own episodes already.
+            if (!full.isFolder && alike.isNotEmpty()) {
+                // The shelf sits at the foot of the screen, with the film above it.
+                // Written as a gap rather than as a weight: this column scrolls on a
+                // phone and for a series, and a weight in a scrolling column has
+                // nothing to push against. What is left of the screen once the poster,
+                // its words and the shelf itself have had their share is the gap.
+                // A little smaller than a shelf on the home page: this row shares
+                // its screen with a whole film's worth of words above it.
+                val likeWide = if (roomForShelf) shelfPoster() * 5 / 8 else shelfPoster()
+                // On a television the shelf follows the words rather than the foot of
+                // the screen: measuring the gap from what was left meant that every
+                // point taken off the cards was handed straight back as air above
+                // them, and the row sat exactly where it had been, with its names off
+                // the bottom. What is left over stays at the bottom now.
+                val roomTaken = (if (cramped) 300 else 400) + likeWide * 3 / 2
+                val gap = if (roomForShelf) 10
+                          else (LocalConfiguration.current.screenHeightDp - roomTaken)
+                              .coerceIn(if (cramped) 10 else 8, 220)
+                Spacer(Modifier.height(gap.dp))
+                FlowRow(Modifier.fillMaxWidth()
+                            .padding(start = 7.dp, end = 14.dp, bottom = 2.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    SectionTitle("More like this",
+                                 Modifier.align(Alignment.CenterVertically)
+                                     .padding(end = 10.dp))
+                    likeOn.forEach { word ->
+                        Text("#" + word.lowercase(), color = Skin.Accent, fontSize = 12.sp,
+                             fontWeight = FontWeight.SemiBold,
+                             modifier = Modifier.align(Alignment.CenterVertically)
+                                 .padding(end = 9.dp))
+                    }
+                    // These words in the tab they came from, where one can be taken
+                    // off or a decade put beside them. On the heading rather than at
+                    // the end of the row: a row of ten cards fills a television and
+                    // the pill after them began past the edge of the screen, where it
+                    // showed as a single stray letter.
+                    Pill("More ›", small = true,
+                         modifier = Modifier.align(Alignment.CenterVertically)) {
+                        onFilter(if (full.type == "show") "tv" else "films", likeOn)
+                    }
+                }
+                // the tail of air is for a remote, which scrolls the row under a
+                // fixed point; a finger drags the row itself and the gap is waste
+                LazyRow(modifier = Modifier.focusGroup()
+                            .focusProperties {
+                                right = FocusRequester.Cancel
+                                left = FocusRequester.Cancel
+                            },
+                        contentPadding = PaddingValues(
+                            start = 7.dp, end = if (onTv()) 180.dp else 14.dp)) {
+                    // The window around this film: five from before it and five from
+                    // after, and where one side is short the other makes up the ten.
+                    // Newest at the left, which is the end a row is read from.
+                    val from = (alikeAt - ALIKE_EACH_WAY)
+                        .coerceIn(0, maxOf(0, alike.size - ROW_OF_ALIKE))
+                    val shown = alike.subList(from, minOf(alike.size, from + ROW_OF_ALIKE))
+                        .reversed()
+                    itemsIndexed(shown) { at, m ->
+                        Poster(m, width = likeWide,
+                               modifier = if (at == 0) Modifier.focusRequester(firstAlike)
+                                          else Modifier) { onOpen(m) }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
         }
     }
 }
 
 /** How long a film or an episode runs: "1 h 42 min", or "23 min" for a short one. */
+/** Five from after this film and five from before it. Where one side runs out - the
+ *  oldest thing in the library has nothing before it - the other side makes up the ten. */
+private const val ALIKE_EACH_WAY = 5
+private const val ROW_OF_ALIKE = ALIKE_EACH_WAY * 2
+
+/**
+ * How wide a poster on a shelf is drawn.
+ *
+ * Decided by the height there is, not the width. A television is 540 points tall
+ * whatever its inches, and at the old size the second shelf began below the bottom of
+ * the screen - Continue watching and nothing else, on a screen two metres wide. A
+ * phone lying down has less height still and was showing a row cut off halfway.
+ * Widths that leave room for two whole shelves under the tabs, and for one on a phone
+ * on its side.
+ */
+@Composable
+private fun shelfPoster(): Int {
+    val cfg = LocalConfiguration.current
+    val tall = cfg.screenHeightDp
+    // A phone standing up shows three across, whatever width the phone is: the
+    // shelves and the grid then agree, and a narrow phone gets three small ones
+    // rather than two and a sliver of a third.
+    // 32 for the shelf's own margins and 10 for the air each card carries, three
+    // times over: without those a "third" card was half off the side of the screen
+    val threeAcross = ((cfg.screenWidthDp - 32 - 30) / 3).coerceIn(76, 132)
+    // and on its side, five: the width is there, and seven of them was a contact
+    // sheet. Never taller than the room under the tabs, whatever the width allows.
+    // Measured rather than guessed: on a phone lying down the shelf starts about
+    // 170 points down - status bar, the one header line, the tabs, the shelf's name -
+    // and the picture is half again as tall as it is wide, so this is what leaves a
+    // whole row on the screen.
+    val fiveAcross = ((cfg.screenWidthDp - 32 - 50) / 5)
+        .coerceIn(76, 150)
+        .coerceAtMost(((tall - 190) / 1.5).toInt())
+    return when {
+        tall < 400 -> fiveAcross     // a phone on its side: one shelf of five
+        tall < 560 -> 124        // a television: two whole shelves of picture
+        tall < 720 -> threeAcross    // a phone standing up
+        else -> 132              // a tablet standing up
+    }
+}
+
 private fun runtime(ms: Long): String? {
     val mins = Math.round(ms / 60000.0).toInt()
     if (mins < 1) return null
@@ -4121,13 +4647,16 @@ fun playIntent(ctx: Context, m: Media, positionSec: Long, subIndex: Int? = null,
                audioIndex: Int? = null, height: Int = 0, mbit: Int = 0,
                plainSound: Boolean? = null): Intent {
     // A picture track - PGS off a disc, VobSub off a DVD - is a set of images, and
-    // only something that can decode them can show it. Media3 can, so a film played
-    // straight from disk has its subtitle drawn by the device and never touches the
-    // encoder. Burning is what is left for the cases that cannot: a browser, a cast
-    // receiver, or a film being encoded anyway for its sound or its size.
+    // only something that can decode them can show it. The framework decodes the
+    // first kind, so a film played straight from disk has its Blu-ray subtitle drawn
+    // by the device and never touches the encoder. It has no decoder for the second:
+    // a DVD's own subtitle handed to the player threw "unsupported MIME type:
+    // application/vobsub" and the episode stopped. Burning is what is left - for
+    // those, and for a browser, a cast receiver, or a film being encoded anyway.
     val picture = subIndex?.takeIf { idx -> m.bitmapSubs().any { it.index == idx } }
     val ears0 = plainSound ?: throughHeadphones(ctx)
-    val drawable = picture != null && !ears0 && audioIndex == null &&
+    val drawable = picture != null && m.deviceCanDraw(picture) &&
+                   !ears0 && audioIndex == null &&
                    height == 0 && mbit == 0 && m.canDirectPlay() && m.partKey != null
     val burn = if (drawable) null else picture
     val textSub = subIndex?.takeIf { idx -> m.textSubs().any { it.index == idx } }
@@ -4181,6 +4710,14 @@ fun playIntent(ctx: Context, m: Media, positionSec: Long, subIndex: Int? = null,
                      m.subtitleStreams.filter { it.index >= 0 }
                          .indexOfFirst { it.index == picture }.coerceAtLeast(0))
         }
+        // How far this file's sound is from the rest, for the player to make up on
+        // the way out. Only where the film is played as it lies: where it is encoded
+        // the encoder has already done it, and doing it twice is twice as loud.
+        putExtra("gainDb", if (direct) m.gainDb else 0f)
+        // and what it measured, for the line along the top. Sent whichever way it is
+        // played: where the encoder evened it out, that is worth seeing too.
+        m.lufs?.let { putExtra("lufs", it) }
+        putExtra("gainUsed", m.gainDb)
         putExtra("durationMs", m.durationMs)
         putExtra("source", listOfNotNull(
             m.height?.let { h -> if (h >= 1700) "4K" else h.toString() + "p" },

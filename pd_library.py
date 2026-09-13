@@ -827,6 +827,56 @@ class Library:
         except OSError:
             pass
 
+    def name_as_told(self, named):
+        """Write the names another machine uses for these titles.
+
+        A copy reads its names off the files it was sent and the machine it follows has
+        them from the catalogue. The keys are already the same - they are worked out
+        from the title, and a copy is told which key each file belongs under - so this
+        is only the words, and it is the words everything asking by name compares.
+        Returns how many were changed.
+        """
+        if not named:
+            return 0
+        con = self.db()
+        try:
+            done = 0
+            for key, said in named.items():
+                title = str((said or {}).get("title") or "").strip()
+                if not title:
+                    continue
+                row = con.execute("SELECT title, year FROM item WHERE id=?",
+                                  (str(key),)).fetchone()
+                if not row or (str(row["title"] or "") == title
+                               and (row["year"] or 0) == ((said or {}).get("year") or 0)):
+                    continue
+                con.execute("UPDATE item SET title=?, sort_title=?, year=? WHERE id=?",
+                            (title, (said.get("sort") or title), said.get("year"),
+                             str(key)))
+                done += 1
+            con.commit()
+            return done
+        finally:
+            con.close()
+
+    @staticmethod
+    def mend_links(con):
+        """Point files at the episode row that holds their slot.
+
+        The key worked out here and the key a row carries differ wherever rows were
+        moved onto another machine's keys; a file written with the first names no
+        episode. Returns how many were mended.
+        """
+        mended = 0
+        for e in con.execute(
+                "SELECT id, item_id, season, number FROM episode").fetchall():
+            mine = episode_key(e["item_id"], e["season"], e["number"])
+            if mine == e["id"]:
+                continue
+            mended += con.execute("UPDATE file SET episode_id=? WHERE episode_id=?",
+                                  (e["id"], mine)).rowcount
+        return mended
+
     @staticmethod
     def _carry_places(con, moved):
         """Move progress and watch log rows onto new keys.
@@ -907,6 +957,7 @@ class Library:
                                  (old,)).fetchone()
                 if ep:
                     move_episode(old, new, ep["item_id"], ep["season"], ep["number"])
+            self.mend_links(con)
             self._carry_places(con, moved)
             con.commit()
         except Exception:
@@ -994,6 +1045,7 @@ class Library:
             if not os.path.exists(row["path"]) or under_a_live_root:
                 con.execute("DELETE FROM file WHERE id=?", (row["id"],))
         con.execute("DELETE FROM item WHERE id NOT IN (SELECT DISTINCT item_id FROM file)")
+        self.mend_links(con)
         con.commit()
         con.close()
         if probe:
@@ -1039,6 +1091,13 @@ class Library:
                 "INSERT OR IGNORE INTO episode (id, item_id, season, number) "
                 "VALUES (?,?,?,?)",
                 (episode_id, item_id, season, number))
+            # whatever row already holds that season and number keeps its id. On a
+            # cache the rows carry the main server's keys, so the key worked out here
+            # names no row, and a file indexed after they moved pointed at nothing.
+            held = con.execute("SELECT id FROM episode WHERE item_id=? AND season=? "
+                               "AND number=?", (item_id, season, number)).fetchone()
+            if held:
+                episode_id = held["id"]
         elif kind == "show":
             return                       # nothing in the name or the folders to go on
         else:
@@ -1666,7 +1725,7 @@ class Library:
                                               season=? AND number=?""",
                                            (keep, ep["season"], ep["number"])).fetchone()
                     if existing and existing["id"] != ep["id"]:
-                        moved["episodes"]["e" + str(ep["id"])] = "e" + str(existing["id"])
+                        moved["episodes"][str(ep["id"])] = str(existing["id"])
                     if existing:
                         con.execute("UPDATE file SET episode_id=?, item_id=? WHERE episode_id=?",
                                     (existing["id"], keep, ep["id"]))
@@ -1707,17 +1766,34 @@ class Library:
             return None
         name = size + "_" + tmdb_path.strip("/").replace("/", "_")
         local = os.path.join(self.root, "cache", name)
-        if os.path.exists(local) and os.path.getsize(local) > 0:
+        # Anything this small is not a picture of anything. One poster arrived at two
+        # and a half kilobytes - the same address answers with the real one and with a
+        # near-black stand-in, depending on which edge of their network replies - and
+        # it was kept for good, because what is here is never looked at again. A
+        # thousand posters and one of them black is worse than one slow morning.
+        enough = 5000 if size.startswith("w") and size != "w92" else 400
+        if os.path.exists(local) and os.path.getsize(local) >= enough:
             return local
         url = f"https://image.tmdb.org/t/p/{size}{tmdb_path}"
-        try:
-            with urllib.request.urlopen(url, timeout=30) as r:
-                data = r.read()
-            with open(local, "wb") as f:
-                f.write(data)
-            return local
-        except Exception:
+        data = b""
+        for go in range(2):
+            try:
+                with urllib.request.urlopen(url, timeout=30) as r:
+                    got = r.read()
+            except Exception:
+                got = b""
+            if len(got) > len(data):
+                data = got
+            if len(data) >= enough:
+                break
+        if not data:
             return None
+        # kept even when it is small, so a picture that really is this size is not
+        # fetched again on every request; the size check above lets the next start
+        # have another go at it
+        with open(local, "wb") as f:
+            f.write(data)
+        return local
 
     # ---- reading ------------------------------------------------------------
     def stats(self):

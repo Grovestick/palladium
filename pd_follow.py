@@ -98,11 +98,16 @@ def settings(cfg):
     one.setdefault("hours", 4)            # of episodes to keep ahead, at most
     one.setdefault("episodes", 6)         # and no more than this many of them
     one.setdefault("cap", 200)            # gigabytes to use at most
+    # each kind kept always unless somebody says otherwise: off, night, or always
+    one.setdefault("kinds", {})
     one.setdefault("coverNight", True)    # enough to last the hours the main server sleeps
     one.setdefault("wholeList", False)    # every unwatched episode of a watchlisted
                                           # programme, rather than the night's worth
     one.setdefault("deleteBy", "oldest")  # oldest untouched first, or biggest first
-    one.setdefault("listByDay", True)     # watchlists may fill in daylight
+    # listByDay was a switch under all of the kinds saying nothing moves before
+    # night. Each kind says when it may be taken now; the setting is left in
+    # place so an older machine reading this file is not surprised by its absence.
+    one.setdefault("listByDay", True)
     one.setdefault("allowRemote", False)  # the main server may change this machine's own
     one.setdefault("nightFrom", 22)       # the hours this server is the one awake
     one.setdefault("nightTo", 8)
@@ -148,6 +153,33 @@ def hours_wanted(one):
     if not one.get("coverNight", True):
         return asked
     return max(asked, night_length(one))
+
+
+#: What this machine keeps a copy of, each of which is off, kept only inside the
+#: hours this machine is the one awake, or kept always. The main server is told which
+#: of them apply this minute and leaves the rest out of its answer: it was all or
+#: nothing before, so a machine wanting one person's watchlist took everybody's
+#: half-watched series along with it.
+KINDS = ("partway", "watchlist", "lately", "shuffle", "screen")
+KIND_OTHERWISE = "always"
+
+
+def kinds_now(one, now=None):
+    """The kinds this machine will take at this moment, as the main server names them.
+
+    A kind nobody has set is kept always, which is what every machine did before there
+    was anything to set.
+    """
+    modes = one.get("kinds") or {}
+    # Early counts as night: it is the way to say "the hours are now", and a kind set
+    # to wait for them should not go on waiting through it.
+    night = stocking_up(one, now)
+    out = []
+    for kind in KINDS:
+        mode = str(modes.get(kind) or KIND_OTHERWISE).lower()
+        if mode == "always" or (mode == "night" and night):
+            out.append(kind)
+    return out
 
 
 def in_the_night(one, now=None):
@@ -1314,6 +1346,7 @@ def take_the_house_keys(one, lib, api=None, carry=None):
     if not by_name:
         return 0
     titles, episodes, owner, clash, sure = {}, {}, {}, set(), []
+    named = {}
     names = list(by_name)
     for at in range(0, len(names), 400):
         said = tell(one, "/follow/whatis", {"names": names[at:at + 400]}, 40) or {}
@@ -1328,6 +1361,9 @@ def take_the_house_keys(one, lib, api=None, carry=None):
             if titles.get(here, item) != item:
                 clash.add(here)
             titles[here] = item
+            told = (said.get("titles") or {}).get(name)
+            if told and item:
+                named[item] = told
             key = str((said.get("keys") or {}).get(name) or "")
             if row["episode_id"] and key.startswith("e"):
                 episodes[str(row["episode_id"])] = key
@@ -1336,6 +1372,20 @@ def take_the_house_keys(one, lib, api=None, carry=None):
     titles = {k: v for k, v in titles.items() if k and k != v and k not in clash}
     episodes = {k: v for k, v in episodes.items() if k != v and owner.get(k) not in clash}
     moved = lib.rekey(titles, episodes) if (titles or episodes) else {}
+    # and the words, under whichever key the title ended up with. Only the words: the
+    # keys were settled above, by file name, which is the one thing both machines see
+    # the same.
+    if named:
+        # under whichever key the title ended up with. They were collected against the
+        # key each file had before the round, and the round moves them: written under
+        # the old one, the rename found no such title and did nothing - so the titles
+        # that had just been moved, which are the ones most likely to be misnamed, kept
+        # their file names until some later round happened to need no move at all.
+        settled = {titles.get(k, k): v for k, v in named.items()}
+        try:
+            lib.name_as_told(settled)
+        except Exception:
+            pass                      # a name is not worth a failed round
     if carry and (moved.get("titles") or moved.get("episodes")):
         carry(moved)
     HOUSE_KEYS["ok"].update(sure)
@@ -1585,9 +1635,10 @@ def light_round(one, lib=None, api=None):
         except Exception:
             pass
     try:
-        forward = "hours=%s&eps=%s&casual=%s&whole=%d&for=%s" % (
+        forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s" % (
             hours_wanted(one), one.get("episodes") or 6,
             one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
+            ",".join(kinds_now(one)),
             urllib.parse.quote(for_whom(one)))
         said = ask(one, "/follow/playing?deck=1&" + forward, 30)
         wanted = said.get("wanted") or []
@@ -1657,9 +1708,10 @@ def _round(one, lib, api, folder):
                     lib.save_config(cfg)
         except Exception:
             pass
-    forward = "hours=%s&eps=%s&casual=%s&whole=%d&for=%s" % (
+    forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s" % (
         hours_wanted(one), one.get("episodes") or 6,
         one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
+        ",".join(kinds_now(one)),
         urllib.parse.quote(for_whom(one)))
     # One question, always the whole of it: what is on a screen, what people are
     # part-way through, and every watchlist. Asking a short question first and a
@@ -1716,20 +1768,18 @@ def _round(one, lib, api, folder):
     # At night this machine is the one that will be awake, so the episode after the
     # one on screen has to be here before the main server sleeps. By day the main server is
     # answering for itself, and chasing every episode somebody starts spends the link
-    # on a copy nobody is going to need for hours. The rest of the list - watchlists,
-    # what people are part-way through - goes on quietly either way.
+    # on a copy nobody is going to need for hours.
+    #
+    # When a kind may be taken is the kind's own setting now - off, inside the hours,
+    # or always - and the main server has already left out whatever this machine is
+    # not taking this minute. There used to be a switch under all of them that said
+    # nothing at all before night, whatever the kinds said: two answers to one
+    # question, and the quieter one won without saying so.
     # A key may be for reading only. Then this machine still knows the library and
     # still answers for it, and takes no copies of anything.
     if not ALLOWED.get("mayCopy", True):
         STATE["why"] = "this key may read the library but not copy it"
         wanted = []
-
-    if not stock:
-        wanted = [w for w in wanted if not w.get("hot")]
-        # and a watchlist can be told to wait for the night as well: a house on a
-        # thin line would rather nothing at all moved while people are up.
-        if not one.get("listByDay", True):
-            wanted = []
 
     # Everything on the list is kept, whether this pass gets to it or not.
     #

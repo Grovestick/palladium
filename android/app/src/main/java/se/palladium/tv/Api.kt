@@ -460,9 +460,13 @@ object Api {
     }
 
     private fun get(path: String, srv: Server? = null, patience: Int = 30000): String {
-        // asked for quickly means reached for quickly: eight seconds to connect is
-        // eight more the screen spends showing what it had
-        val reach = if (patience <= 5000) 3000 else 8000
+        // Asked for quickly means reached for quickly - but not so quickly that a
+        // phone on wi-fi cannot answer at all. Three seconds timed out again and
+        // again against a server that accepts a connection in eleven milliseconds
+        // from the machine beside it: the wait is the radio waking up, not the
+        // server. Six, against a four-second read, so a poll that misses costs ten
+        // seconds of numbers that stand still rather than a freeze.
+        val reach = if (patience <= 5000) 6000 else 8000
         val b = srv?.base ?: base
         val t = srv?.token ?: token
         // Away on the cache: try the server with the library on it about once a
@@ -759,7 +763,7 @@ object Api {
     private suspend fun page(ctx: Context, section: Int, sort: String,
                              start: Int, size: Int, genre: String = "",
                              decade: String = ""): List<Media> {
-        // one genre and one decade at a time, asked of each server: the shelf is the
+        // the genres and decades marked, asked of each server: the shelf is the
         // question, the order is how it is answered
         val shelf = (if (genre.isEmpty()) ""
                      else "&genre=" + URLEncoder.encode(genre, "UTF-8")) +
@@ -1065,6 +1069,25 @@ object Api {
     }
 
     /** Say something into one of the rooms. */
+    /**
+     * How many seconds of film this screen has in hand.
+     *
+     * Said every few seconds while something plays, and true whichever way it is
+     * being watched: a film read straight off the disk buffers ahead, one out of the
+     * encoder arrives as it is made, and both of them can say how long the picture
+     * would keep going if everything stopped now. The server uses it to hold back
+     * copying while somebody is running low - which is the one thing that made a
+     * film stutter on a machine with plenty of everything.
+     */
+    suspend fun sayBuffer(seconds: Long, srv: Server? = null, stalled: Boolean = false) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                postTo(srv, "/stream/buffer", JSONObject().put("ahead", seconds)
+                    .put("stalled", stalled))
+            }
+        }
+    }
+
     suspend fun say(text: String, from: String = "", room: String = "party"): Boolean =
         withContext(Dispatchers.IO) {
         try {
@@ -1126,7 +1149,10 @@ object Api {
             val o = JSONObject(get("/notice?since=" + since + "&wait=" + hold,
                                    patience = (hold + 12) * 1000))
             val said = o.optString("text")
-            if (said.isEmpty()) null else Notice(o.optInt("id"), said)
+            // No words is a notice too: it is the one that takes the last one down.
+            // Read as nothing at all, a notice could only be got rid of by pressing
+            // Right on every screen showing it - the server had already let it go.
+            if (o.optInt("id") == 0) null else Notice(o.optInt("id"), said)
         } catch (e: Exception) { null }
     }
 
@@ -1432,10 +1458,46 @@ object Api {
     }
 
     /** Films coming in now - everyone's for the owner, a guest's own - for the line in the menu. */
-    val downloading = androidx.compose.runtime.mutableStateOf<List<Media>>(emptyList())
+    /**
+     * Films coming in now, and the rule for when that counts as news.
+     *
+     * Media is a data class and everything about a download - how far, how fast, how
+     * long left - is a var in its body rather than one of its constructor properties,
+     * which its own equals() does not look at. So the ordinary policy called a film at
+     * nought per cent and the same film at ninety-nine equal, and the screen kept the
+     * first numbers it ever saw. Never-equal moves them, and redraws every few seconds
+     * whether or not anything has happened, which is a flicker of its own. This says
+     * what a change actually is.
+     */
+    private val movedOn = object :
+        androidx.compose.runtime.SnapshotMutationPolicy<List<Media>> {
+        override fun equivalent(a: List<Media>, b: List<Media>): Boolean =
+            a.size == b.size && a.indices.all { i ->
+                a[i].ratingKey == b[i].ratingKey &&
+                    a[i].offerState == b[i].offerState &&
+                    a[i].offerProgress == b[i].offerProgress &&
+                    a[i].offerEta == b[i].offerEta &&
+                    a[i].offerMbit == b[i].offerMbit &&
+                    a[i].offerPlace == b[i].offerPlace &&
+                    a[i].offerWho == b[i].offerWho
+            }
+    }
+
+    val downloading = androidx.compose.runtime.mutableStateOf<List<Media>>(
+        emptyList(), movedOn)
 
     /** a film to open, asked for from the menu's download line */
     val openWanted = androidx.compose.runtime.mutableStateOf<Media?>(null)
+
+    /** Films seen almost in, so the end of a download does not read as nought per cent.
+     *  The live row goes the moment the file is complete, and everything then fell back
+     *  to the shelf's snapshot - taken before the download began. It blinked 0% and then
+     *  the film appeared. Only a film that got near the end is remembered: one cancelled
+     *  at a tenth is not arriving. */
+    private val nearlyIn = HashSet<String>()
+
+    /** whether this film's download went away because it finished, not because it stopped */
+    fun cameIn(key: String): Boolean = nearlyIn.contains(key)
 
     /** this title's download as the live list has it (refreshed app-wide), else as it was loaded */
     fun liveOffer(m: Media): Media = downloading.value.firstOrNull { it.ratingKey == m.ratingKey } ?: m
@@ -1476,7 +1538,13 @@ object Api {
         // minute - and each blank fell back to the shelf's snapshot, which has no time
         // left in it at all. What was last seen stays until something answers.
         val blind = list.isEmpty() && servers.isNotEmpty() && trouble.size == servers.size
-        if (!blind) downloading.value = list
+        if (!blind) {
+            downloading.value = list
+            for (r in list) {
+                if (r.offerProgress >= 0.9 || r.offerState == "done") nearlyIn.add(r.ratingKey)
+            }
+            if (nearlyIn.size > 200) nearlyIn.clear()
+        }
         // what this screen received, into the server log when it changes
         val key = list.joinToString(",") { it.ratingKey + ":" + it.offerState } + "|" +
                   trouble.joinToString() + "|" + blind
@@ -1585,6 +1653,26 @@ object Api {
      * mid-film knows the programme, the season and the number, which is enough.
      */
     suspend fun keyThere(srv: Server, m: Media): String? = withContext(Dispatchers.IO) {
+        // By number first. Every machine works a key out from the title and the year
+        // for itself and they all arrive at the same one, which is the whole reason
+        // the keys are made that way - so the same film is the same key on both.
+        //
+        // Asking by name was asking about the one thing that differs. The main server
+        // has its titles from the catalogue and a machine keeping copies reads them off
+        // the files it was sent, so "Die Hard: With a Vengeance" is "Die Hard With A
+        // Vengence" over there - no colon, and misspelled on the disk it came from.
+        // The film was on both machines, under the same key, and the search by name
+        // found nothing.
+        val mine = m.ratingKey
+        if (mine.isNotEmpty()) {
+            val holds = runCatching {
+                val arr = JSONObject(get("/local/library/metadata/" + mine, srv))
+                    .getJSONObject("MediaContainer").optJSONArray("Metadata")
+                arr != null && arr.length() > 0
+            }.getOrDefault(false)
+            if (holds) return@withContext mine
+        }
+        // and by name for a machine that has not been given the same keys yet
         val path = if (m.type == "episode")
             "/local/library/find?type=episode&show=" +
                 URLEncoder.encode(m.grandparentTitle ?: m.title, "UTF-8") +
@@ -1733,7 +1821,15 @@ object Api {
                 val srv = Servers.withKey(list, row)
                 async(Dispatchers.IO) {
                     runCatching {
-                        withTimeoutOrNull(8_000L) { keyThere(srv, m)?.let { item(it, srv) } }
+                        withTimeoutOrNull(8_000L) {
+                            keyThere(srv, m)?.let { item(it, srv) }
+                                // A machine that lists a title but holds no file for
+                                // it is not another source: the one that keeps copies
+                                // mirrors the whole catalogue, so it answers for
+                                // every episode of a programme and has the file for
+                                // three of them.
+                                ?.takeIf { !it.fileName.isNullOrEmpty() }
+                        }
                     }.getOrNull()
                 }
             }
@@ -2337,9 +2433,12 @@ object Api {
     }
 
     /** The decades this library holds, newest first, with how many are in each. */
-    suspend fun decades(kind: String): List<Pair<String, Int>> = withContext(Dispatchers.IO) {
+    suspend fun decades(kind: String, genre: String = ""): List<Pair<String, Int>> =
+      withContext(Dispatchers.IO) {
         try {
-            val arr = JSONObject(get("/local/library/decades?type=" + kind))
+            // narrowed by the genres marked, so each number says what picking it shows
+            val arr = JSONObject(get("/local/library/decades?type=" + kind +
+                (if (genre.isEmpty()) "" else "&genre=" + URLEncoder.encode(genre, "UTF-8"))))
                 .getJSONObject("MediaContainer").optJSONArray("Directory") ?: JSONArray()
             (0 until arr.length()).map {
                 val d = arr.getJSONObject(it)
@@ -2353,9 +2452,15 @@ object Api {
     }
 
     /** The genres this library holds, most-stocked first, with how many are in each. */
-    suspend fun genres(kind: String): List<Pair<String, Int>> = withContext(Dispatchers.IO) {
+    suspend fun genres(kind: String, genre: String = "",
+                       decade: String = ""): List<Pair<String, Int>> =
+      withContext(Dispatchers.IO) {
         try {
-            val arr = JSONObject(get("/local/library/genres?type=" + kind))
+            // counted among what is already marked: mark one and every other number
+            // falls to how many of those are also that
+            val arr = JSONObject(get("/local/library/genres?type=" + kind +
+                (if (genre.isEmpty()) "" else "&genre=" + URLEncoder.encode(genre, "UTF-8")) +
+                (if (decade.isEmpty()) "" else "&decade=" + decade)))
                 .getJSONObject("MediaContainer").optJSONArray("Directory") ?: JSONArray()
             (0 until arr.length()).map {
                 val g = arr.getJSONObject(it)
