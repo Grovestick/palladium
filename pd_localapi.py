@@ -1309,17 +1309,24 @@ class LocalAPI:
                     return (int(value.get("at") or 0) if isinstance(value, dict)
                             else int(value or 0))
 
-                key, at = "", 0
-                # the title the round is on - the last drawn, until it is finished - and
-                # where it was left. Other titles left part-way on the shelf are not it.
+                # The title the round is on - the last drawn, until it is finished -
+                # and otherwise whatever it would draw next. Tried in that order and
+                # the first one the library can resolve wins: a key it cannot was
+                # taken as the answer and the shelf then had no row at all.
                 played = [str(k) for k in (round_now.get("played") or [])]
+                tries = []
                 if played and played[-1] != str(round_now.get("done") or ""):
-                    key = played[-1]
-                    at = seconds(places[key]) if key in places else 0
-                if not key:
-                    ahead = round_now.get("queue") or []
-                    key = str(ahead[0]) if ahead else ""
-                if not key:
+                    tries.append(played[-1])
+                tries.extend(str(k) for k in (round_now.get("queue") or [])[:5])
+                one, key, at = None, "", 0
+                for maybe in tries:
+                    one = self.metadata_for(con, str(maybe), brief=True)
+                    if one:
+                        key = str(maybe)
+                        # where it was left, which only the title the round is on has
+                        at = seconds(places[key]) if key in places else 0
+                        break
+                if not one:
                     continue
                 name = (self._mine("shelf_names", {}) or {}).get(str(cid)) or "Shuffle"
                 # The shelf's own place stands beside an ordinary one for the same
@@ -1327,9 +1334,6 @@ class LocalAPI:
                 # choosing it are two viewings of one title at two different seconds,
                 # and collapsing them into one row is what made it impossible to see
                 # which was which. Both stand; the badge says which is the shelf's.
-                one = self.metadata_for(con, str(key), brief=True)
-                if not one:
-                    continue
                 # what the card says across its poster, and where pressing it starts
                 one["shuffle"] = name
                 one["shuffleId"] = str(cid)
@@ -1794,8 +1798,15 @@ class LocalAPI:
 
     def note_playing(self, key, position, duration, state, device, client="",
                      kind="", casual=False, shelf=""):
-        """Remember what one client is doing. Keyed by device, so two do not fight."""
-        who = device or "player"
+        """Remember what one client is doing.
+
+        Keyed by the viewer and the device together. Under the device alone, two
+        televisions that call themselves the same thing - and every Google TV
+        Streamer does - wrote over each other every five seconds, so of two people
+        watching only whichever reported last had a position on Now playing, and the
+        two rows took turns showing one.
+        """
+        who = (self.who or "") + "\u0000" + (device or "player")
         if state == "stopped":
             NOW.pop(who, None)
             return
@@ -1871,7 +1882,10 @@ class LocalAPI:
         """The same, one entry per client rather than one per way of finding it."""
         seen, out = set(), []
         for said in LocalAPI.playing_now().values():
-            mark = said.get("device") or said.get("title")
+            # the viewer as well as the device: two screens of the same name are two
+            # clients, and one of them was dropped here as a repeat of the other
+            mark = (said.get("who") or "",
+                    said.get("device") or said.get("title"))
             if mark in seen:
                 continue
             seen.add(mark)

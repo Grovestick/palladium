@@ -21,6 +21,10 @@
 
   const OWNER_TABS = [["quality", "Settings"],
                       ["library", "Library"],
+                      // its own tab: qBittorrent, where downloads land and what is
+                      // offered from each pack is a subject of its own, and it sat at
+                      // the foot of the folder lists
+                      ["torrents", "Torrents"],
                       ["people", "Users"], ["subs", "Subtitles"],
                       ["now", "Now playing"], ["log", "Log"],
                       ["reports", "Reports"],
@@ -273,9 +277,9 @@
     evenNote.className = "note";
     evenNote.style.margin = "2px 0 6px 82px";
     evenNote.textContent = playback.evenVolume
-      ? "A file more than 4 dB from the usual level is brought towards it, by up to " +
-        "8 dB. Anything already near it is left exactly as it was made, and sound " +
-        "passed through untouched to an amplifier cannot be changed at all."
+      ? "Every measured file is brought to the same level, by up to 8 dB. Sound " +
+        "passed through untouched to an amplifier cannot be changed at all, and a " +
+        "file is measured the first time the machine is quiet enough to read it."
       : "Every release plays at whatever level it was mixed at.";
     box.appendChild(evenNote);
 
@@ -544,25 +548,29 @@
       room.textContent = said.free + " GB free on " + (cfg.saveTo || "that drive") + ".";
       box.appendChild(room);
     }
-    // the next episode, fetched while the one before it is still on
+    // the next episode, fetched while the one before it is still on. Two buttons, the
+    // chosen one lit: the same control every other setting on these pages uses. A
+    // checkbox here was the browser's own, which matches nothing else on the page.
     const nextRow = document.createElement("div");
     nextRow.className = "addrow subrow";
-    nextRow.innerHTML =
-      '<label class="onoff"><input type="checkbox"><span></span></label>' +
-      "<span class='sublabel'>Keep the next episode ready</span>";
-    const nextBox = nextRow.querySelector("input");
-    nextBox.checked = !!cfg.nextEpisode;
-    nextBox.onchange = async () => {
-      await post("/torrents/config", { nextEpisode: nextBox.checked });
-      toast(nextBox.checked
-        ? "The next episode is fetched from its pack once somebody is half way through one"
-        : "Episodes are fetched only when somebody asks for them");
-    };
+    nextRow.innerHTML = "<span class='sublabel'>Next episode</span>";
+    [[true, "Keep it ready"], [false, "Only when asked"]].forEach(([value, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (!!cfg.nextEpisode === value ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/torrents/config", { nextEpisode: value });
+        render();
+      };
+      nextRow.appendChild(b);
+    });
     box.appendChild(nextRow);
     const why = document.createElement("div");
     why.className = "note";
-    why.textContent = "Half way through an episode, the one after it is asked for from " +
-      "the pack it came in - if a pack has it and this machine does not.";
+    why.textContent = cfg.nextEpisode
+      ? "Half way through an episode, the one after it is asked for from the pack it " +
+        "came in - if a pack has it and this machine does not."
+      : "Episodes are fetched only when somebody asks for one.";
     box.appendChild(why);
     // connected or not, at a glance: a green dot while Palladium reaches qBittorrent
     const state = document.createElement("div");
@@ -698,9 +706,6 @@
       "One list per folder. <b>Film</b> folders give films, <b>series</b> folders give " +
       "episodes, <b>mixed</b> reads the filename. An inner folder beats an outer one.";
     main.appendChild(rule);
-    // how qBittorrent is reached and where films go; the packs are on the Torrents tab
-    main.appendChild(await downloadsBlock());
-
     const key = block("Metadata");
     key.innerHTML +=
       "<div class='note'>Posters, plots and IMDb ids come from TMDB. IMDb itself has " +
@@ -991,6 +996,16 @@
   /* What each person has downloaded in the last seven days, by name, counted the way the
      weekly limit counts it: whole films asked for, failed and cancelled ones aside. */
   let weekBook = null;
+  /* What a download is called. A programme's name is the same on every episode of
+     it, so which episode goes wherever a download is named. */
+  function downloadName(d, fallback) {
+    const name = d.title || fallback || "";
+    if (!d.episode) return name + (d.year ? " (" + d.year + ")" : "");
+    return name + "  S" + String(d.season || 0).padStart(2, "0") +
+      "E" + String(d.episode).padStart(2, "0") +
+      (d.episodeName ? "  " + d.episodeName : "");
+  }
+
   function weekDownloads() {
     if (!weekBook) {
       weekBook = get("/torrents/log").then((said) => {
@@ -1587,8 +1602,7 @@
           el.className = "person live";
           el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
             '<div class="rate"><b></b><span>Mbit/s</span></div>';
-          el.querySelector("b").textContent =
-            (d.title || "a film") + (d.year ? " (" + d.year + ")" : "");
+          el.querySelector("b").textContent = downloadName(d, "a film");
           const eta = d.eta != null && d.eta >= 0
             ? (d.eta < 60 ? d.eta + " s left" : d.eta < 3600 ? Math.round(d.eta / 60) + " min left"
                : Math.floor(d.eta / 3600) + " h " + Math.round((d.eta % 3600) / 60) + " min left")
@@ -3464,7 +3478,8 @@
 
     const bar = document.createElement("div");
     bar.className = "sortbar collbar";
-    [["server", "Cache"], ["cache", "Server"]].forEach(([id, label]) => {
+    [["server", "Cache"], ["cache", "Server"],
+     ["copying", "Being copied"]].forEach(([id, label]) => {
       const b = document.createElement("button");
       b.className = "btn ghost kind" + (remoteTab === id ? " on" : "");
       b.textContent = label;
@@ -3472,6 +3487,32 @@
       bar.appendChild(b);
     });
     main.appendChild(bar);
+
+    /* ---- what the cache is taking, and what is next ---- */
+    if (remoteTab === "copying") {
+      // Its own half. The queue is watched while something is copying and it sat at
+      // the foot of a page of settings, so reading it meant scrolling past every
+      // one of them and back again.
+      const copying = document.createElement("div");
+      main.appendChild(copying);
+      const drawCopying = async () => {
+        if (!document.body.contains(copying)) return;      // the tab was left
+        const next = document.createElement("div");
+        await nowCopying(next);
+        if (!document.body.contains(copying)) return;
+        if (!next.childNodes.length) {
+          const none = document.createElement("div");
+          none.className = "note";
+          none.textContent = "Nothing is queued. The machine that keeps copies has " +
+            "everything it is asked to hold, or no machine is following this one.";
+          next.appendChild(none);
+        }
+        copying.replaceChildren(...next.childNodes);
+        setTimeout(drawCopying, 5000);
+      };
+      drawCopying();
+      return;
+    }
 
     /* ---- this computer copies from another ---- */
     if (remoteTab === "cache") {
@@ -3648,20 +3689,6 @@
         ". Turn Managed from the main server on there to set it from here.";
       inside.appendChild(note);
     });
-
-    // what that machine is taking now, and what is next
-    const copying = document.createElement("div");
-    main.appendChild(copying);
-    const drawCopying = async () => {
-      if (!document.body.contains(copying)) return;      // the tab was left
-      const next = document.createElement("div");
-      await nowCopying(next);
-      if (!document.body.contains(copying)) return;
-      copying.replaceChildren(...next.childNodes);
-      setTimeout(drawCopying, 5000);
-    };
-    setTimeout(drawCopying, 300);
-
 
     // a cache that lets this server set how it copies has those settings here,
     // and asleep on that machine
@@ -5015,6 +5042,7 @@
     main.appendChild(h);
     main.appendChild(tabBar());
     if (tab === "library") await paneLibrary(main);
+    else if (tab === "torrents") main.appendChild(await downloadsBlock());
     else if (tab === "quality") await paneQuality(main);
     else if (tab === "people") await panePeople(main);
     else if (tab === "now") await paneNow(main);
@@ -5611,7 +5639,7 @@
       el.className = "trow";
       const name = document.createElement("span");
       name.style.whiteSpace = "pre-line";
-      name.textContent = (r.title || r.key) + (r.year ? " (" + r.year + ")" : "") + "\n" +
+      name.textContent = downloadName(r, r.key) + "\n" +
         new Date((r.when || 0) * 1000).toLocaleString();
       const who = document.createElement("b");
       who.textContent = r.who || "someone";
@@ -5679,7 +5707,7 @@
     try {
       fetched = ((await get("/torrents/log")).downloads || []).map((d) => ({
         download: d, who: d.who || "someone", key: d.key, started: d.when || 0,
-        title: (d.title || d.key) + (d.year ? " (" + d.year + ")" : "") }));
+        title: downloadName(d, d.key) }));
     } catch (e) {
       fetched = [];                    // a server with no torrents
     }
@@ -5961,12 +5989,18 @@
       into.appendChild(note);
       return;
     }
+    // How much the whole queue comes to, not just the row being fetched: the column
+    // gives each file's size and nothing added them up, so an hour's work and a
+    // night's read the same.
+    const whole = rows.reduce((sum, r) => sum + (Number(r.gb) || 0), 0);
     const box = block(takenBy ? "Being copied to " + takenBy : "Being copied");
     box.innerHTML += "<div class='note'>What " + (takenBy || "the machine that keeps " +
       "copies") + " is taking, in the order it will take it. Whoever is watching " +
       "leads it; then anything moved up by hand." +
       (sides ? "  " + sides + " subtitle" + (sides > 1 ? "s" : "") +
-               " travel with them." : "") + "</div>";
+               " travel with them." : "") +
+      "<br><b>" + rows.length + (rows.length === 1 ? " title" : " titles") + ", " +
+      whole.toFixed(1) + " GB in all.</b></div>";
     // Full to the cap is not the same as broken, and it looks the same from here:
     // a queue that does not move. The disk usually has room; the cap is a number
     // somebody chose, and this says so rather than leaving it to be worked out.

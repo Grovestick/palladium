@@ -1441,8 +1441,6 @@ MEASURING = set()
 #: Target loudness. Not EBU's -23: this library holds two copies of one episode 13 dB
 #: apart, and the usual level here is nearer streaming's -16 to -18.
 VOLUME_TARGET = -18.0
-#: dead band: files within this of the target are left alone
-VOLUME_LEEWAY = 4.0
 #: and the maximum correction applied
 VOLUME_MOST = 8.0
 
@@ -1505,7 +1503,9 @@ def measure_loudness(part, path, size):
 def volume_gain(part, path=None, size=0, cfg=None):
     """Correction in dB for this file, or 0.
 
-    0 unless evenVolume is on, the file is measured, and it is outside the dead band.
+    Every measured file is corrected, to the cap. A dead band left anything within
+    4 dB of the target alone, which put two files measuring 0.2 dB apart 3.9 dB apart
+    out of the speakers - the opposite of what evening out is for.
     """
     stored = cfg if cfg is not None else (read_settings() or {})
     if not stored.get("evenVolume"):
@@ -1521,8 +1521,6 @@ def volume_gain(part, path=None, size=0, cfg=None):
     except (TypeError, ValueError):
         target = VOLUME_TARGET
     off = target - float(known.get("lufs") or target)
-    if abs(off) <= VOLUME_LEEWAY:
-        return 0.0
     return round(max(-VOLUME_MOST, min(VOLUME_MOST, off)), 1)
 
 
@@ -7389,54 +7387,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "Each of these is a ceiling, never a target to fill.",
              "rows": [
                  row("Away, with nothing set", "8 Mbit",
-                     "What somebody outside the house is given when no ceiling has been "
-                     "chosen for them. Inside the house there is no ceiling."),
+                     "Ceiling for a viewer outside this network when none is set. On "
+                     "this network there is no ceiling."),
                  row("x265 headroom", "%.2g times" % cls.HEVC_HEADROOM,
-                     "The one encode allowed more than the picture carries, because a "
-                     "re-encode is never free. Everything else is held to what came in: "
-                     "spending more cannot put back what was never there."),
+                     "The only encode allowed above the source rate, since a re-encode "
+                     "costs bitrate. Every other codec is capped at what came in."),
                  row("Sound taken off the top", sound + " Mbit",
                      "The library keeps the whole container's rate, so the sound comes "
                      "off before the picture is measured - it is re-encoded to a "
-                     "fraction of this anyway. These are the costs at six channels; "
-                     "eight cost a third more, two a good deal less, and anything "
-                     "unnamed is reckoned at %.2g." % cls.SOUND_OTHERWISE),
+                     "fraction of this anyway. Figures are for 6 channels; 8 cost about "
+                     "a third more, 2 about half; an unnamed codec counts as %.2g."
+                     % cls.SOUND_OTHERWISE),
                  row("What an old codec costs", ", ".join(costs),
                      "How much of the old bitrate a modern encoder needs for the same "
-                     "picture. MPEG-2 spends about three times what h264 does, so a "
-                     "broadcast at twenty-one megabits is redone at eight."),
+                     "picture. MPEG-2 spends about 3x h264, so a 21 Mbit broadcast is "
+                     "re-encoded at 8."),
                  row("Least given to a picture", "1 Mbit",
-                     "However small the file, a picture still has to arrive."),
+                     "Floor on the video ceiling, however small the source."),
                  row("Sound aimed at", "%.4g LUFS" % VOLUME_TARGET,
-                     "Where a file's sound is put, when evening it out is on. LUFS is "
-                     "how loud something is over its whole length rather than at its "
-                     "peak: broadcasting works to -23, streaming sits nearer -18, a "
-                     "cinema mix lands around -27. This library holds two copies of "
-                     "one episode fifteen decibels apart, and the ear is set by "
-                     "whatever is played most."),
-                 row("Left alone within", "%.3g dB" % VOLUME_LEEWAY,
-                     "How far off a file may be before anything is done to it. Most "
-                     "releases are within a few decibels of each other and are better "
-                     "left exactly as they were made; this is about the one that is "
-                     "eight decibels under the rest."),
+                     "Where a file's loudness is put when evening out is on. LUFS "
+                     "measures loudness over the whole file rather than at its peak: "
+                     "broadcast works to -23, streaming to about -18, a cinema mix to "
+                     "about -27. Two files of one episode here measure 15 dB apart."),
                  row("Most ever added or taken", "%.3g dB" % VOLUME_MOST,
-                     "The end of the lift. A file far below everything else is brought "
-                     "most of the way up rather than all of it, because a mix that "
-                     "quiet is usually quiet on purpose somewhere in the middle of it."),
+                     "Cap on the correction: a file far below the target is brought "
+                     "most of the way up, not all of it."),
                  row("Measured over", "180 seconds from 5:00",
-                     "How much of a file is listened to for the number. Far enough past "
-                     "the titles to be the thing itself, short enough to measure in a "
-                     "few seconds, and done once per file - a file does not change."),
+                     "How much of the file is analysed: past the titles, a few seconds "
+                     "of ffmpeg, once per file."),
              ]},
             {"title": "Sharing the line",
-             "why": "How a copy running in the background gives way to somebody "
-                    "watching. Worked out from what the line is seen to carry, never "
-                    "from a number anybody typed.",
+             "why": "How a background copy gives way to playback. Derived from "
+                    "measured throughput, not from a configured figure.",
              "rows": [
                  row("Left clear for the films", "%.0f per cent" % ((1 - cls.SPARE) * 100),
-                     "Of whatever the line has been seen to carry, this much is kept "
-                     "clear above what the films are drawing. A film asks in bursts and "
-                     "a buffer that is filling wants more than its average."),
+                     "Of measured throughput, kept clear above what playback is "
+                     "drawing. A player reads in bursts, and a filling buffer wants "
+                     "more than its average."),
                  row("Least a copy may have", "%.3g Mbit" % cls.LEAST_MBIT,
                      "A copy is slowed, never stopped outright."),
                  row("Backing off", "times %.3g" % cls.BACK_OFF,
@@ -7446,57 +7433,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                      "Added each second while nobody is."),
                  row("Struggling", "under %.0f per cent of its own average"
                      % (cls.STARVED * 100),
-                     "Measured against each viewer's own average rather than against "
-                     "the bitrate of the film: a direct play reads in bursts and idles "
-                     "between them, so below what the film needs is true of a healthy "
-                     "one half the time."),
+                     "Measured against each viewer's own average, not the film's "
+                     "bitrate: direct play reads in bursts and idles between them, so a "
+                     "healthy session sits under the film's bitrate half the time."),
                  row("Seconds a player holds",
                      "%.3g fed, %.3g hold, %.3g give back, %.3g floor"
                      % (cls.FED_AHEAD, cls.EASE_AHEAD, cls.THIN, cls.PANIC_AHEAD),
-                     "A player fed properly keeps about fifty seconds of film in front "
-                     "of itself. Under forty a copy stops climbing, under thirty it "
-                     "halves, under twenty it drops to the floor - but only while the "
-                     "buffer is falling, or under %.3g seconds. A film out of the "
-                     "encoder arrives as it is made and its player holds whatever the "
-                     "encoder is ahead by, so a steady eight seconds there is healthy "
-                     "and nothing a copy is taking. A player that says it has stopped "
-                     "for want of anything to show goes to the floor whatever its "
-                     "depth." % cls.STALLED_AHEAD),
+                     "A fed player holds about 50 s. Under 40 the ceiling stops "
+                     "climbing, under 30 it halves, under 20 it drops to the floor - but "
+                     "only while the buffer is falling, or under %.3g s. A transcode "
+                     "arrives as it is made, so its player holds whatever the encoder is "
+                     "ahead by and a steady 8 s is healthy. A player reporting a stall "
+                     "goes to the floor whatever its depth." % cls.STALLED_AHEAD),
                  row("How far it may climb", "twice what that side has carried",
-                     "What has been seen is not what the line can carry - it is what "
-                     "this ceiling has allowed so far, and a ceiling that never "
-                     "exceeds its own measurements can never learn a bigger number. "
-                     "Carrying more raises the figure, so it doubles every few seconds "
-                     "until the wire, a disk or somebody watching stops it."),
+                     "Measured throughput is what this ceiling has allowed so far, so "
+                     "a ceiling capped by its own measurements can never learn a higher "
+                     "one. It doubles every few seconds until the link, a disk or a "
+                     "viewer stops it."),
                  row("Two lines, not one", "the network here, and the one out",
-                     "A film going out to somebody's phone and a copy to a machine in "
-                     "the next room take no megabits from each other, so each side is "
-                     "measured on its own and a copy gives way only to what shares its "
-                     "own path. Counting them together held a copy between two "
-                     "machines three metres apart to what was left of an upload."),
+                     "A stream going out and a copy between two machines here take no "
+                     "megabits from each other, so each side is measured separately and "
+                     "a copy gives way only to traffic on its own path. One combined "
+                     "figure held a local copy to what was left of the upload."),
              ]},
             {"title": "Keeping copies",
-             "why": "What a second machine is asked to hold when nobody has set its "
-                    "own numbers.",
+             "why": "Limits on what a second machine holds. Hours ahead and episodes "
+                    "ahead are per-machine settings, under the cache machine in "
+                    "Settings; these are the bounds around them.",
              "rows": [
-                 row("Hours kept ahead", "4",
-                     "Of a programme somebody is part-way through."),
-                 row("Episodes kept ahead", "6",
-                     "And no more than this many, however many hours that comes to."),
                  row("Part-way, each person", "%d films, %d days"
                      % (cls.PARTWAY_EACH, cls.PARTWAY_DAYS),
-                     "How many things one person brings to a copy as \"part-way "
-                     "through\", and how old a place may be before it stops counting. "
-                     "Forty apiece with no age at all made a queue of a hundred and "
-                     "ten: somebody who sampled fifty films last winter was still in "
-                     "the middle of every one of them."),
+                     "How many titles one person contributes as \"part-way through\", "
+                     "and how old a stored position may be before it stops counting. "
+                     "40 each with no age limit made a queue of 110."),
                  row("Least kept ahead", "%d episodes" % cls.LEAST_AHEAD,
-                     "However few hours are asked for: an evening is at least three "
-                     "episodes of anything."),
+                     "Floor on the episode count, whatever the hours setting works out "
+                     "to."),
                  row("The shuffle's next", "%d" % cls.SHUFFLE_DEEP,
-                     "How far down a shuffle's queue is copied, counting the title it "
-                     "is on - drawing one writes it down as played, and it was being "
-                     "swept while somebody watched it."),
+                     "How far down the shuffle queue is copied, counting the title "
+                     "playing: drawing a title marks it played, and it was swept while "
+                     "it was on screen."),
                  row("Asked how it is getting on", "every %d s" % pd_follow.ASK_EVERY,
                      "How often the machine keeping copies asks the main server what it "
                      "should be holding."),
@@ -7505,8 +7481,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                  row("Given up on after", "%d tries" % pd_follow.GIVE_UP_AFTER,
                      "A file that will not come across."),
                  row("A file being read is kept", "%d s" % pd_follow.KEPT_FOR,
-                     "After the last request for it, so a sweep does not take a film out "
-                     "from under somebody between two of their own requests."),
+                     "After the last request, so a sweep does not delete a file "
+                     "between two requests for it."),
              ]},
             {"title": "Films from a pack",
              "why": "What counts as a film inside a torrent, and how it is fetched.",
@@ -7526,16 +7502,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                      "taken to have failed."),
                  row("A disk is busy at", "%.0f per cent of a block's time"
                      % (cls.DISK_BUSY * 100),
-                     "How much of each block's time went on getting it off the disk "
-                     "rather than handing it on. Above this the disk is what a picture "
-                     "is waiting behind: more of the reading is handed to the machine "
-                     "keeping copies, and a copy running in the background stands back "
-                     "before anybody watching has had to notice."),
+                     "How much of each block's time went on reading rather than "
+                     "sending. Above this the disk is the bottleneck: more reads are "
+                     "handed to the cache machine, and a background copy backs off "
+                     "before any viewer's buffer falls."),
                  row("And easy again at", "%.3g s a read" % cls.DISK_EASY,
                      "Below this it is taken up again."),
                  row("Artwork worth keeping", "5 kB",
-                     "A poster arriving smaller than this is not a picture of anything, "
-                     "and is asked for again rather than kept for good."),
+                     "A poster smaller than this is not an image; it is fetched again "
+                     "rather than cached."),
              ]},
         ]
 
@@ -7753,7 +7728,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             rest = [k for k in left if k not in queue]
             random.shuffle(rest)
             queue = queue + rest[:max(0, self.SHUFFLE_DEEP - len(queue))]
-        key = queue[0] if queue else random.choice(left)
+        # Drawn from what this machine can actually play. Every title on a shelf has
+        # a file on the main server and this changes nothing there; on a copy holding
+        # part of the shelf it is the difference between carrying on and a shuffle
+        # that stops at the first title the copy has not got yet.
+        playable = [k for k in queue if self.can_be_played(k)]
+        if playable:
+            key = playable[0]
+        elif queue:
+            key = queue[0]
+        else:
+            here = [k for k in left if self.can_be_played(k)]
+            key = random.choice(here or left)
         if peek:
             one["queue"] = queue
             Handler.round_moved(one)
@@ -7765,6 +7751,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         write_settings(stored)
         self.fetch_ahead(one["queue"][:3])
         return self.shuffle_said(one, key, pool, left, drawn=True)
+
+    def can_be_played(self, key):
+        """Whether this machine holds a file for one title.
+
+        True for everything on the main server. A copy holds part of a shelf, and
+        drawing a title it has not got yet ends the evening: the film cannot be
+        fetched from a main server that is off, which is the only time a copy is
+        answering a draw at all.
+        """
+        try:
+            return bool(local().file_for(str(key), 0))
+        except Exception:
+            return True               # unanswerable is not the same as missing
 
     def shuffle_said(self, one, key, pool, left, at=0, drawn=False):
         """One answer about a shelf: what to play, where to start, and how far in."""
@@ -7790,6 +7789,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         mine = self.viewer_settings(stored)
         one = self.shuffle_round(mine, cid)
         places = dict(one.get("at") or {})
+        # Only a key the library holds. A player reported a file id once and it went
+        # into the round as the title being played, which left the shelf with no row
+        # on Continue watching at all: nothing could be looked up for it.
+        con = local().lib.db()
+        try:
+            if not local().metadata_for(con, str(key), brief=True):
+                return
+        finally:
+            con.close()
         # whatever plays off the shelf is drawn, however it was started: a row pressed
         # on Continue watching plays its episode without asking the hat
         played = [str(k) for k in (one.get("played") or [])]
@@ -12117,7 +12125,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # stream knows the bytes; only the client knows the film.
                 said = doing.get(row.get("key") or "") or doing.get(row["title"]) or {}
                 if said:
-                    matched.add(said.get("device") or said.get("title"))
+                    matched.add((said.get("who") or "",
+                                 said.get("device") or said.get("title")))
                 for k in ("state", "position", "duration", "episode",
                           "client", "device", "app", "kind"):
                     if said.get(k) not in (None, ""):
@@ -12126,7 +12135,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # transcode is stopped to save the GPU - but they are still watching, and
             # their player says so. They belong in the list.
             for said in local().playing_reports():
-                if (said.get("device") or said.get("title")) in matched:
+                if (said.get("who") or "",
+                        said.get("device") or said.get("title")) in matched:
                     continue
                 live.append({
                     # the person, and the machine they are on only if the report
@@ -12151,12 +12161,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # One shape for every row: the film and its year in brackets, the way a
             # file is named. A player reports the name and the year apart, so the same
             # person watching the same film read as two different films.
+            #
+            # The year is dropped whether or not the title had to be rewritten. Cleared
+            # only on the rewrite, a row whose title already carried its year kept the
+            # label - and rows are gathered per machine under key plus that label, so
+            # one film read off both machines was two rows on the page: the machine the
+            # player reports to had the year, the other had nothing.
             for row in live:
                 said = str(row.get("title") or "")
                 year = str(row.get("episode") or "").strip()
-                if (year.isdigit() and len(year) == 4
-                        and not said.endswith("(%s)" % year)):
-                    row["title"] = "%s (%s)" % (said, year)
+                if year.isdigit() and len(year) == 4:
+                    if not said.endswith("(%s)" % year):
+                        row["title"] = "%s (%s)" % (said, year)
                     row["episode"] = ""
             live.sort(key=lambda r: r.get("started") or 0)
             self.reply_json({"live": live})

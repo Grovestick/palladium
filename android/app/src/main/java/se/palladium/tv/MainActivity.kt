@@ -189,7 +189,9 @@ class MainActivity : AppCompatActivity() {
         Cast.warmUp(this)                      // discovery needs a nudge and a permission
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Skin.Accent,
-                                                        background = Skin.Bg)) { App() }
+                                                        background = Skin.Bg)) {
+                CompositionLocalProvider(LocalIndication provides PressOnly) { App() }
+            }
         }
     }
 
@@ -2163,6 +2165,15 @@ private class Browse {
     val rowStates = HashMap<String, androidx.compose.foundation.lazy.LazyListState>()
     /** poster to focus once the list is drawn again after back; cleared when used */
     var focusKey by mutableStateOf("")
+    /** whether the remote has been put somewhere once already.
+     *
+     * This screen leaves the composition while a title's page is open and comes back
+     * when it closes, so an effect keyed on Unit runs again on every return - and the
+     * one that places the remote at the start dragged it to Home 350 ms after back had
+     * put it on the poster it came from. */
+    var landed = false
+    /** the build whose offer has already been given the remote once */
+    var offerTaken = 0
 }
 
 // FocusRequester.Cancel - refusing a direction - is still marked experimental
@@ -2488,7 +2499,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // hunting instead of moving.
     val remoteHere = onTv()
     LaunchedEffect(Unit) {
-        if (remoteHere) {
+        if (remoteHere && !browse.landed) {
+            browse.landed = true
             kotlinx.coroutines.delay(350)
             runCatching { tabFocus["home"]?.requestFocus() }
         }
@@ -2518,8 +2530,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // showing. It opened with the focus nowhere in particular, and the first press of
     // any direction went hunting rather than moving.
     LaunchedEffect(browse.tab, browse.loaded) {
+        // Not while a poster is waiting to be returned to. Back reloads the tab, which
+        // is a change of browse.loaded, so this fired on the way back and took the
+        // remote off the poster that had just been given it.
         if (browse.tab in setOf("films", "tv") && browse.loaded.isNotEmpty()
-                && !inContent) {
+                && !inContent && browse.focusKey.isEmpty() && browse.openedKey.isEmpty()) {
             kotlinx.coroutines.delay(80)
             runCatching { tabFocus[browse.tab]?.requestFocus() }
         }
@@ -2699,7 +2714,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // it when the app opens, not three presses away.
                 val takeIt = remember { FocusRequester() }
                 LaunchedEffect(u.versionCode) {
-                    runCatching { takeIt.requestFocus() }
+                    // Once per build on offer. This bar is drawn again every time a
+                    // title's page closes, and the effect took the remote off whatever
+                    // back had just put it on - which on a day of several builds is
+                    // every time anybody backs out of anything.
+                    if (browse.offerTaken != u.versionCode) {
+                        browse.offerTaken = u.versionCode
+                        runCatching { takeIt.requestFocus() }
+                    }
                 }
                 // Downloaded and waiting: white, because it is a different act from
                 // fetching it - one press and the app is replaced.
@@ -2826,11 +2848,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 containerColor = Skin.Panel,
                 title = { Text(one.title, color = Skin.Fg) },
                 text = {
-                    Text(if (kept) "A favorite stays on the watchlist when it is watched, " +
-                                   "and is kept on both machines."
-                         else "Make it a favorite: it stays on the watchlist when it is " +
-                              "watched, and is kept on both machines.",
-                         color = Skin.Dim, fontSize = 14.sp)
+                    androidx.compose.foundation.layout.Column {
+                        Text(if (kept) "A favorite stays on the watchlist when it is " +
+                                       "watched, and is kept on both machines."
+                             else "Make it a favorite: it stays on the watchlist when " +
+                                  "it is watched, and is kept on both machines.",
+                             color = Skin.Dim, fontSize = 14.sp)
+                        Spacer(Modifier.height(12.dp))
+                        Pill("\u2192 Go to title") {
+                            browse.favHeld = null
+                            goToTitle(ctx, one, onOpen)
+                        }
+                    }
                 },
                 confirmButton = {
                     Pill(if (kept) "\u2661 Remove favorite" else "\u2665 Favorite",
@@ -2844,9 +2873,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     }
                 },
                 dismissButton = {
-                    Pill("\u2192 Go to title") {
+                    // Off the list from where it is shown. Taking it off was only on
+                    // the title's own page, so the way off the watchlist was to open
+                    // the thing you were trying to stop meaning to watch.
+                    Pill("\u2715 Off the watchlist") {
                         browse.favHeld = null
-                        goToTitle(ctx, one, onOpen)
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            // a favorite is a watchlist entry that stays: it goes with it
+                            if (kept) Api.favorite(one, false)
+                            Api.mark(one, false)
+                            MainActivity.marksTouched.value++
+                            browse.loaded = ""
+                        }
                     }
                 })
         }
@@ -3001,12 +3039,17 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     val w = shelfPoster()
                     val rowState = browse.rowStates.getOrPut(title) {
                         androidx.compose.foundation.lazy.LazyListState() }
-                    // back from a title opened in this row: scroll the row to it, then focus it
-                    LaunchedEffect(title) {
-                        if (browse.openedRow == title && browse.openedKey.isNotEmpty()) {
+                    // Back from a title opened in this row: scroll the row to it, then
+                    // focus it. Keyed on the list as well, and the key held until the
+                    // row has one: coming back reloads the shelves, so the effect ran
+                    // against an empty row, found nothing, and cleared the key it would
+                    // have needed a moment later - which left the remote on the tabs.
+                    LaunchedEffect(title, list) {
+                        if (browse.openedRow == title && browse.openedKey.isNotEmpty() &&
+                            list.isNotEmpty()) {
                             val key = browse.openedKey
-                            browse.openedRow = ""; browse.openedKey = ""
                             val at = list.indexOfFirst { it.ratingKey == key }
+                            browse.openedRow = ""; browse.openedKey = ""
                             if (at >= 0) {
                                 runCatching { rowState.scrollToItem(at) }
                                 browse.focusKey = key
@@ -3140,12 +3183,15 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // Back from a title opened here: the grid is put back on its poster,
                 // whatever else moved while the title's page was open. Run when the grid
                 // is drawn again, not when the poster is pressed.
-                LaunchedEffect(Unit) {
+                LaunchedEffect(browse.grid) {
                     val key = browse.openedKey
                     val was = browse.openedAt
-                    browse.openedKey = ""
-                    browse.openedAt = null
-                    if (key.isNotEmpty()) {
+                    // not cleared until there is a grid to look in: back reloads the
+                    // tab, and against the empty one this found nothing and threw the
+                    // key away, so the remote landed on the tabs instead of the poster
+                    if (key.isNotEmpty() && browse.grid.isNotEmpty()) {
+                        browse.openedKey = ""
+                        browse.openedAt = null
                         val order = if (browse.collectionOn != null || browse.tab == "watchlist")
                             collectionOrder(browse.grid, browse.collSortKey, browse.collSortAsc)
                         else browse.grid

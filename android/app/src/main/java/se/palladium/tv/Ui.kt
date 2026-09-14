@@ -34,6 +34,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.IndicationNodeFactory
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.node.DelegatableNode
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.invalidateDraw
+import kotlinx.coroutines.launch
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -232,12 +241,14 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
            onHold: (() -> Unit)? = null,
            onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
+    // drawn only where a ring means something; see focusShows()
+    val ring = focused && focusShows()
     // held on the remote: the select button kept down repeats its press
     var heldByKey by remember { mutableStateOf(false) }
     // and pressed here: a release whose press landed on another screen is not a click
     var downByKey by remember { mutableStateOf(false) }
     val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "posterScale")
+    val scale by animateFloatAsState(if (ring) 1.06f else 1f, label = "posterScale")
     // the pixels this will actually occupy, so the server can send that and no more
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     val pixels = remember(width, density) { ((width * density).toInt() / 20) * 20 }
@@ -310,8 +321,8 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 .clip(RoundedCornerShape(10.dp))
                 // white, not accent: half the things on screen are already accent, and
                 // on a television the only question is which one the remote is pointing at
-                .border(if (focused) 3.dp else 0.dp,
-                        if (focused) Color.White else Color.Transparent,
+                .border(if (ring) 3.dp else 0.dp,
+                        if (ring) Color.White else Color.Transparent,
                         RoundedCornerShape(10.dp))
         ) {
             // A film on offer is shown in full colour like any other: the artwork is
@@ -439,7 +450,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
         // line - a season, an episode - because "Season 3" is nowhere in the art: one
         // programme's seasons are the same picture four times over.
         if (instead != null && instead.isNotEmpty()) {
-            Text(instead, color = if (focused) Skin.Fg else Color(0xFFD3DAE2),
+            Text(instead, color = if (ring) Skin.Fg else Color(0xFFD3DAE2),
                  fontSize = if (width < 110) 11.sp else 12.5.sp,
                  fontWeight = FontWeight.Medium, maxLines = 2,
                  overflow = TextOverflow.Ellipsis,
@@ -485,9 +496,11 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
          dim: Boolean = false,
          modifier: Modifier = Modifier, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
+    // drawn only where a ring means something; see focusShows()
+    val ring = focused && focusShows()
     val bg = when {
         active || primary -> Skin.Accent
-        focused || filled -> Skin.Panel2
+        ring || filled -> Skin.Panel2
         else -> Color.Transparent
     }
     Box(
@@ -499,9 +512,9 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
             // A yellow pill on a dark ground reads as "chosen", which is not the same as
             // "the remote is here". The white ring says the second, over either state,
             // and an accent outline marks a second action that is not the main one.
-            .border(if (focused || outline || ready) 2.dp else 0.dp,
+            .border(if (ring || outline || ready) 2.dp else 0.dp,
                     when {
-                        focused -> Color.White
+                        ring -> Color.White
                         ready -> Color.White
                         outline -> Skin.Accent
                         else -> Color.Transparent
@@ -534,6 +547,19 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
              fontWeight = if (active || primary) FontWeight.SemiBold else FontWeight.Normal)
     }
 }
+
+/**
+ * Whether a focus ring is worth drawing: something is steering by remote or keyboard.
+ *
+ * A ring says where the remote is, and on a phone there is no remote. Focus is still
+ * handed out there - the app asks for it by name, a tab asks for it when pressed - so
+ * the ring sat on whatever was touched last and stayed after the screen changed.
+ */
+@Composable
+fun focusShows(): Boolean =
+    onTv() ||
+    androidx.compose.ui.platform.LocalInputModeManager.current.inputMode ==
+        androidx.compose.ui.input.InputMode.Keyboard
 
 /** True on a television, where the remote is the only input device. */
 @Composable
@@ -789,3 +815,54 @@ fun Modifier.stillHeld(): Modifier = this.then(
             true
         }
     })
+
+
+/**
+ * The indication every control is drawn with: a press, and nothing else.
+ *
+ * The default draws a state layer for focus and hover as well, and on a phone
+ * something always holds focus - so a white patch sat on whichever icon had it with
+ * nobody having touched it. Where the remote is is shown by this app's white ring,
+ * which leaves the press as the only thing an indication has to draw.
+ */
+object PressOnly : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode =
+        PressNode(interactionSource)
+
+    override fun equals(other: Any?): Boolean = other === PressOnly
+
+    override fun hashCode(): Int = 1
+}
+
+private class PressNode(private val source: InteractionSource) :
+    Modifier.Node(), DrawModifierNode {
+
+    // counted, not a flag: a second finger down and one up left it drawn or not drawn
+    // depending on which arrived last
+    private var down = 0
+
+    override fun onAttach() {
+        coroutineScope.launch {
+            source.interactions.collect { i ->
+                when (i) {
+                    is PressInteraction.Press -> down++
+                    is PressInteraction.Release -> down--
+                    is PressInteraction.Cancel -> down--
+                    else -> return@collect
+                }
+                invalidateDraw()
+            }
+        }
+    }
+
+    override fun ContentDrawScope.draw() {
+        drawContent()
+        if (down > 0) {
+            // rounded to half the short side: round on an icon, a stadium on a pill,
+            // and never a square laid over something with corners
+            drawRoundRect(
+                Color.White.copy(alpha = 0.13f),
+                cornerRadius = CornerRadius(minOf(size.width, size.height) / 2f))
+        }
+    }
+}

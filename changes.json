@@ -1,5 +1,80 @@
 [
   {
+    "version": "0.18.64",
+    "when": "2026-09-14",
+    "title": "A shuffle carries on when the main server goes",
+    "items": [
+      "App: a draw that fails is asked of the standby machine before giving up. It was asked of the server the film was opened from and given up on, so with the main server off the picture failed over to the copy and the next episode came back \"Could not draw from the shelf\" - while the copy, which holds the round and answers for itself when the main server cannot be reached, was never asked.",
+      "A draw prefers titles the machine answering it holds a file for. Every title on a shelf has a file on the main server, so this changes nothing there; a copy holds part of a shelf, and drawing one it has not got yet ends the evening, since the film cannot be fetched from a server that is off."
+    ]
+  },
+  {
+    "version": "0.18.63",
+    "when": "2026-09-14",
+    "title": "One film read off two machines is one row again",
+    "items": [
+      "Now playing drops a player's year label whether or not the title had to be rewritten to carry it. Rows from the two machines are gathered under key plus that label, and a title that already ended in its year kept the label - so the machine the player reported to had \"key|2011\" and the other had \"key|\", and one viewing appeared as two rows with the rate split between them.",
+      "What each client is doing is filed under the viewer and the device together. Under the device alone, two televisions calling themselves the same thing - every Google TV Streamer does - overwrote each other every five seconds, so of two people watching only the one that reported last had a position: the two rows took turns showing progress, and anything reading the list saw one of them blinking. Measured over three minutes: exactly one row carried a position at any sample, alternating."
+    ]
+  },
+  {
+    "version": "0.18.62",
+    "when": "2026-09-14",
+    "title": "Back from a title leaves the remote on the poster",
+    "items": [
+      "App: three effects took the remote back after a title's page closed. The browse screen leaves the composition while a title is open and re-enters when it closes, so effects keyed on Unit or on values that change during the reload all ran again: the opening placement moved focus to Home 350 ms after back had put it on the poster, the per-tab placement moved it to the Films or TV button, and the update bar claimed it once per redraw rather than once per build. All three now run once and give way to a poster being restored."
+    ]
+  },
+  {
+    "version": "0.18.61",
+    "when": "2026-09-14",
+    "title": "Every measured file is levelled, not only the outliers",
+    "items": [
+      "Loudness correction has no dead band: every measured file is brought to -18 LUFS, capped at 8 dB. The 4 dB band put two files measuring 0.2 dB apart 3.9 dB apart out of the speakers - one at -22.1 was corrected to -18.0 and one at -21.9 was left where it was.",
+      "Settings > Advanced drops the \"Left alone within\" row with the constant behind it.",
+      "App: backing out of a title returns the remote to the poster it was opened from. Coming back reloads the shelf or the tab, so the effect that restores it ran against an empty list, found nothing and cleared the key it needed a moment later - which left the remote on the tab row."
+    ]
+  },
+  {
+    "version": "0.18.60",
+    "when": "2026-09-14",
+    "title": "A shelf with an unresolvable key keeps its row",
+    "items": [
+      "Continue watching tries the title a shuffle is on, then the next few in its queue, and shows the first the library can resolve. A player had reported a file id as the key it was playing; that went into the round as the current title, nothing could be looked up for it, and the shelf lost its row entirely.",
+      "A shuffle records a place only for a key the library holds, so a report naming something else cannot enter the round.",
+      "Torrents is its own tab under Settings, right of Library. It was a box at the foot of the folder lists."
+    ]
+  },
+  {
+    "version": "0.18.59",
+    "when": "2026-09-14",
+    "title": "Next-episode setting uses the same control as the rest",
+    "items": [
+      "Settings > Library > Torrents: \"Next episode\" is now two buttons, Keep it ready and Only when asked, with the note under the row saying what the chosen one does. It was a browser checkbox - the styled switch in the stylesheet is scoped to the friends list, so class=\"onoff\" elsewhere fell back to the platform's own tick box."
+    ]
+  },
+  {
+    "version": "0.18.58",
+    "when": "2026-09-14",
+    "title": "Focus ring only where something is steering by remote",
+    "items": [
+      "App: the white focus ring on posters and pills is drawn only when a remote or keyboard is in use. Focus is handed out on a phone too - a tab asks for it when pressed - so the ring stayed on the last thing touched after the screen changed."
+    ]
+  },
+  {
+    "version": "0.18.57",
+    "when": "2026-09-14",
+    "title": "Copy queue on its own tab, episodes named in the download log",
+    "items": [
+      "Settings > Advanced no longer lists hours ahead and episodes ahead. They are per-machine settings, and the page showed hardcoded defaults that disagreed with what was set.",
+      "The copy queue is its own sub-tab under Remote computer, and gives the number of titles and total GB. It sat at the foot of the cache settings page.",
+      "Download log names the episode: season, number and episode title beside the programme's name. The row carried the programme's name alone, which reads the same for every episode of it. Filled in from the pack entry for rows written before packs read episodes.",
+      "App: the indication under every control draws on press only. The default also draws a state layer for focus and hover, and on a phone something always holds focus, so a white patch sat on an untouched icon.",
+      "App: holding a poster on the watchlist offers Off the watchlist. Taking something off was only on the title's own page.",
+      "Advanced page text rewritten in plain technical language."
+    ]
+  },
+  {
     "version": "0.18.56",
     "when": "2026-09-13",
     "title": "Hours-ahead window counts unmeasured episodes",

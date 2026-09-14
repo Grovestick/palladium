@@ -1006,6 +1006,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 androidx.compose.material3.MaterialTheme(
                     colorScheme = androidx.compose.material3.darkColorScheme(
                         primary = Skin.Accent, background = Skin.Bg)) {
+                  androidx.compose.runtime.CompositionLocalProvider(
+                      androidx.compose.foundation.LocalIndication provides PressOnly) {
                     nextUp.value?.let { next ->
                         NextEpisodeCard(next, countdown.intValue,
                                         onPlay = { startNext(next) },
@@ -1242,6 +1244,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                             // they look, CC is which one, and CC is next to it
                             onTracks = null)
                     }
+                  }
                 }
             }
         }
@@ -3645,6 +3648,32 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
      * pointed at is how a film played from the copy answered "cannot read this title
      * just now" the moment anybody opened the subtitle menu.
      */
+    /**
+     * Draw the next thing off a shelf, from the machine playing it or from the other.
+     *
+     * A draw was asked of one machine and given up on. The bytes fail over and the
+     * shuffle did not: with the main server off, the film carried on off the copy and
+     * the next episode came back "Could not draw from the shelf" - while the copy,
+     * which holds the round and answers for itself when the main server cannot be
+     * reached, was never asked.
+     */
+    private suspend fun drawFrom(shelf: String, back: Boolean): Api.Draw? {
+        val here = playingOn()
+        Api.shelfDraw(shelf, here, resume = false, back = back)?.let { return it }
+        val other = standbyServer() ?: return null
+        if (other.base.trimEnd('/') == (here?.base ?: "").trimEnd('/')) return null
+        log("shelf draw fell back to " + other.base)
+        return Api.shelfDraw(shelf, other, resume = false, back = back)
+    }
+
+    /** The machine to fall back on, as a server: the copy this house keeps. */
+    private fun standbyServer(): Server? {
+        val where = (Api.standby.ifEmpty { Api.standbyOut }).trimEnd('/')
+        if (where.isEmpty()) return null
+        return Servers.all(this).firstOrNull { it.base.trimEnd('/') == where }
+            ?: Server(Servers.hostOf(where), where, srvToken)
+    }
+
     private fun playingOn(): Server? {
         val where = srvBase.trimEnd('/')
         if (where.isEmpty() || where == Api.base) return null
@@ -3939,8 +3968,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 // played something plausible and the hat never moved.
                 val shelf = offTheShelf()
                 val drawn = if (shelf.isNotEmpty())
-                                Api.shelfDraw(shelf, playingOn(), resume = false,
-                                              back = !forward)
+                                drawFrom(shelf, back = !forward)
                             else null
                 startAt = drawn?.resumeAt ?: 0L
                 drawn?.media

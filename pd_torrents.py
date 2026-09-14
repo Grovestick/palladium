@@ -1127,6 +1127,12 @@ def request(key, token, who, cap_gb=0.0):
                "year": film.get("year"), "size": film["size"], "who": who,
                "token": token, "when": int(time.time()), "state": "queued",
                "progress": 0.0, "why": ""}
+        if film.get("kind") == "episode":
+            # which episode, on the row itself: the title is the programme's name and
+            # is the same for all of them
+            row.update({"kind": "episode", "season": film.get("season"),
+                        "episode": film.get("episode"),
+                        "episodeName": film.get("episodeName") or ""})
         # one film at a time: behind another, it waits its turn with its file off
         ahead = sum(1 for d in data["downloads"] if d.get("state") in ("queued", "downloading"))
         if not ahead:
@@ -1437,9 +1443,23 @@ def _guard_packs():
 
 
 def downloads():
-    """Every download, newest first, without the key it was asked with."""
-    return [{k: v for k, v in d.items() if k != "token"}
-            for d in reversed(load()["downloads"])]
+    """Every download, newest first, without the key it was asked with.
+
+    Season and episode are filled in from the pack entry where the row has none: rows
+    written before packs read episodes carry the programme's name alone, which is the
+    same for every episode of it.
+    """
+    out = []
+    for d in reversed(load()["downloads"]):
+        one = {k: v for k, v in d.items() if k != "token"}
+        if not one.get("episode"):
+            film = by_key(d.get("key") or "")[1] or {}
+            if film.get("kind") == "episode":
+                one.update({"kind": "episode", "season": film.get("season"),
+                            "episode": film.get("episode"),
+                            "episodeName": film.get("episodeName") or ""})
+        out.append(one)
+    return out
 
 
 # ---------------------------------------------------------------- the worker
