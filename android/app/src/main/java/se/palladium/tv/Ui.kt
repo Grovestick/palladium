@@ -396,6 +396,27 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // what makes it recognisable, and drained of it a shelf of them read as
             // broken rather than available. The mark below says it is not here yet.
             Art(Api.artUrl(m, pixels), m.title, Modifier.fillMaxSize(), mark = width / 3)
+            // A band across the corner for anything that is not here and cannot be
+            // played: it reads at a glance on a shelf where everything else can be.
+            // The poster is clipped, so the band ends at its edges.
+            // Only something that can be asked for and nothing else. A film on a
+            // pack wears the download mark it always wore: the band is for titles
+            // with no file anywhere, and put on both it covered the whole library.
+            if (m.askable) {
+                Box(Modifier.align(Alignment.TopEnd)
+                        .offset(x = (width * 0.30f).dp, y = (width * 0.11f).dp)
+                        .rotate(45f)
+                        .width((width * 0.95f).dp)
+                        .background(if (m.asked) Color(0xFF2F6B35) else Skin.Accent),
+                    contentAlignment = Alignment.Center) {
+                    Text(if (m.asked) "ASKED" else "REQUEST",
+                         color = Color.White,
+                         fontSize = (width / 13).coerceIn(8, 13).sp,
+                         fontWeight = FontWeight.Bold,
+                         maxLines = 1,
+                         modifier = Modifier.padding(vertical = 2.dp))
+                }
+            }
             // a film on offer from a torrent pack: how far its download has got, from the live
             // download list (refreshed every 10 s); the shelf row is a snapshot from when the
             // grid loaded and kept showing Queued or 0% while the film came in

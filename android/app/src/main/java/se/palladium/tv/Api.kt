@@ -705,6 +705,9 @@ object Api {
                 it.genres = genresOf(o)
                 it.shelfView = o.optJSONObject("view")?.toString() ?: ""
                 it.offered = o.optBoolean("offered", false)
+                it.askable = o.optBoolean("askable", false)
+                it.asked = o.optBoolean("asked", false)
+                it.askWhere = o.optString("where", "")
                 o.optJSONObject("offer")?.let { offer ->
                     it.offerState = offer.optString("state", "")
                     it.offerProgress = offer.optDouble("progress", 0.0)
@@ -909,6 +912,36 @@ object Api {
     suspend fun recentEpisodes(ctx: Context) = fromAll(ctx) { srv ->
         listFrom("/local/library/sections/2/recentlyAdded?count=30", srv)
     }.sortedByDescending { it.addedAt }.take(40)
+
+    /**
+     * What has just arrived on streaming, which this house has none of.
+     *
+     * The main server only: the list is a reading of a website rather than anything
+     * in a library, and asking every machine would put the same row on the screen
+     * three times over.
+     */
+    suspend fun streaming(ctx: Context): List<Media> = withContext(Dispatchers.IO) {
+        runCatching {
+            items(json("/local/library/streaming").getJSONObject("MediaContainer"), null)
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Ask for a film this house has not got.
+     *
+     * It is written down for the owner to answer. Nothing is fetched by asking -
+     * what comes into the house is theirs to decide, and a request that downloaded
+     * by itself would be a download button under another name.
+     */
+    suspend fun askFor(m: Media): Boolean = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("key", m.ratingKey)
+            .put("title", m.title)
+            .put("year", m.year ?: JSONObject.NULL)
+            .put("where", m.askWhere)
+        val said = runCatching { JSONObject(postTo(m.srv, "/requests", body)) }.getOrNull()
+        said != null && (said.optBoolean("asked") || said.optBoolean("already"))
+    }
 
     /** Newest first by release date: for a series that is its most recent episode. */
     suspend fun releasedFilms(ctx: Context) =

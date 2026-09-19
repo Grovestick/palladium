@@ -240,6 +240,12 @@ data class Media(
 
     /** A film offered from a torrent pack: not here yet, fetched when asked for. */
     var offered: Boolean = false
+    /** New on streaming and nowhere in this house: it can only be asked for. */
+    var askable: Boolean = false
+    /** Somebody has asked for it already. */
+    var asked: Boolean = false
+    /** where it was read about, kept with the request so it can be found again */
+    var askWhere: String = ""
     /** its download as the server last said: "", queued, downloading, done or failed */
     var offerState: String = ""
     var offerProgress: Double = 0.0

@@ -74,6 +74,8 @@ import coil.compose.AsyncImage
 import com.google.android.gms.cast.framework.CastButtonFactory
 import com.google.android.gms.cast.framework.CastContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -112,9 +114,46 @@ class MainActivity : AppCompatActivity() {
          * held list out of date, and it is fetched again on the way back.
          */
         val marksTouched = androidx.compose.runtime.mutableStateOf(0)
+
+        /**
+         * Whether the home screen is up with nothing on it.
+         *
+         * Read from dispatchKeyEvent, which runs whatever the screen is doing - so
+         * leaving the app does not depend on a list arriving, a server answering, or
+         * a focus request finding something to land on. A shelf that never came back
+         * left back with nowhere to go and the app could not be closed at all.
+         */
+        @Volatile
+        @JvmStatic
+        var homeBare = false
+
+        /** Whether the first focus of the run has been placed. Until it has, the
+         *  server picker refuses it, so the tab is what the remote starts on. */
+        //: state, not a plain field: the picker's answer to "may I be focused" is
+        //: read while composing, and a field nothing follows never changes it back
+        val focusLanded = androidx.compose.runtime.mutableStateOf(false)
     }
 
+    /** When back was last pressed on a bare home screen. */
+    private var lastBareBack = 0L
+
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        // Nothing on the screen to go back into: twice closes the app, from here
+        // rather than from a handler inside the list that may not be there. This is
+        // the one key that has to work when nothing else does.
+        if (homeBare && event.keyCode == android.view.KeyEvent.KEYCODE_BACK &&
+                event.action == android.view.KeyEvent.ACTION_DOWN &&
+                event.repeatCount == 0) {
+            val now = System.currentTimeMillis()
+            if (now - lastBareBack < 2000) {
+                finish()
+            } else {
+                lastBareBack = now
+                Toast.makeText(this, "Press back again to exit",
+                               Toast.LENGTH_SHORT).show()
+            }
+            return true
+        }
         // Everything still belonging to the press that opened a menu by being held is
         // dropped here: its repeats, and the release at the end of it. The menu is
         // already up and has the focus, and that release is not a press of anything
@@ -138,6 +177,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // the picker steps aside again: coming back to the app is an arrival like any
+        // other, and the flag being left true from the last one was why the ring still
+        // appeared in the corner on anything but the very first start
+        focusLanded.value = false
         returned.value = returned.value + 1
         // A phone that opened this app away from home filed the server under the
         // address the router forwards, and Android resumes a process rather than
@@ -319,6 +362,17 @@ private fun App() {
                              })
             }
             else -> {
+                // Back from a title's page. The list underneath is the same list, so
+                // an effect watching it does not run again - and the poster somebody
+                // came from was never given the focus back, which left the remote on
+                // the server picker in the corner.
+                LaunchedEffect(Unit) { browse.cameBack = browse.cameBack + 1 }
+                // Whether there is anything on this screen to go back into, kept
+                // where the key dispatcher can see it. Empty means back closes the
+                // app on the second press however wedged the rest of this is.
+                androidx.compose.runtime.DisposableEffect(Unit) {
+                    onDispose { MainActivity.homeBare = false }
+                }
                 // One press at the top level is too easy to hit by accident, on a remote
                 // especially; the second press within a couple of seconds means it.
                 var lastBack by remember { mutableStateOf(0L) }
@@ -1912,6 +1966,12 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                 Row(verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .onFocusChanged { lit = it.hasFocus || it.isFocused }
+                        // Not until the screen has given the focus to a tab. This is
+                        // the first focusable thing in the layout, and the framework
+                        // hands the first focus to the first thing it finds - so the
+                        // ring appeared here on every start and was moved off a moment
+                        // later. It cannot be first if it cannot be focused.
+                        .focusProperties { canFocus = MainActivity.focusLanded.value }
                         .clip(pill)
                         .border(if (lit) 2.dp else 0.dp,
                                 if (lit) Color.White else Color.Transparent, pill)
@@ -2112,6 +2172,17 @@ private class Browse {
     val shelfAsk = mutableMapOf<Int, FocusRequester>()
     /** Which column the remote is in, so down and up stay in it. */
     var column by mutableStateOf(0)
+    /** Which shelf it is on, and where it is in the grid: what back steps back
+     *  through - along the row to its first card, then out to the tabs. */
+    var rowNow by mutableStateOf(0)
+    /** A row opened whole, by its name: the page shows everything it holds. */
+    var moreRow by mutableStateOf<String?>(null)
+    /** How many times a title's page has been left. What is under it does not change
+     *  while it is open, so nothing else says the list is being looked at again. */
+    var cameBack by mutableStateOf(0)
+    /** Whether the shelves have been shown once already this run. */
+    var opened by mutableStateOf(false)
+    var gridAt by mutableStateOf(0)
     var rows by mutableStateOf<List<Pair<String, List<Media>>>>(emptyList())
     var grid by mutableStateOf<List<Media>>(emptyList())
     /** What stands behind the shelves: the last title opened, or failing that
@@ -2198,6 +2269,19 @@ private fun named(u: Updates.Available): String =
 
 /** The row that resumes rather than opens. */
 private const val DECK = "Continue watching"
+
+/** How many of a shelf are drawn on it; the rest are behind Show more. */
+private const val SHELF_SHOWS = 10
+
+/**
+ * How far in something has to be before it counts as started, in seconds.
+ *
+ * The same number the shelf of what to carry on with uses: below it a row is a tick
+ * left by a player that reported once, not a viewing. Offering Resume at five seconds
+ * while the shelf dropped the same film at thirty said two different things about one
+ * film.
+ */
+private const val RESUME_FROM = 30
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -2434,13 +2518,26 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // loaded - so one slow answer as the app opens left the home screen
                 // without Continue watching until another tab was opened and come
                 // back from, which is the only thing that asks again.
-                tab == "home" -> browse.rows = listOf(
-                    DECK to askAgain { Api.onDeck(ctx) },
-                    "Recently added films" to askAgain { Api.recentFilms(ctx) },
-                    "Recently released films" to askAgain { Api.releasedFilms(ctx) },
-                    "Recently added TV" to askAgain { Api.recentEpisodes(ctx) },
-                    "Recently released series" to askAgain { Api.releasedShows(ctx) },
-                ).filter { it.second.isNotEmpty() }
+                // All at once, not one after another. Each shelf is a request of its
+                // own and they were asked in order, so the screen waited for the sum
+                // of seven round trips - and for every retry of a slow one - before it
+                // drew anything. Asked together it waits for the slowest.
+                tab == "home" -> browse.rows = coroutineScope {
+                    listOf<Pair<String, suspend () -> List<Media>>>(
+                        DECK to { Api.onDeck(ctx) },
+                        "Recently added films" to { Api.recentFilms(ctx) },
+                        "Recently released films" to { Api.releasedFilms(ctx) },
+                        "Recently added TV" to { Api.recentEpisodes(ctx) },
+                        "Recently released series" to { Api.releasedShows(ctx) },
+                        // last, and last on purpose: none of it is in the house, so it
+                        // belongs under everything that is
+                        "New on streaming" to { Api.streaming(ctx) },
+                    ).map { (name, get) ->
+                        name to async { askAgain(get) }
+                    }.map { (name, job) ->
+                        name to job.await()
+                    }.filter { it.second.isNotEmpty() }
+                }
                 tab == "watchlist" -> {
                     // marked for later, newest mark first: the order it was thought of
                     // in, which is not an order worth re-sorting
@@ -2561,11 +2658,96 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             browse.gridState.firstVisibleItemScrollOffset > 0
     // only while focus is in the list: enabled on scroll as well, a scrolled list kept Back
     // moving focus to the tab and it never reached the press-twice exit
+    // Nothing holds the focus when this screen is first drawn, nor when it is come
+    // back to from Settings or Reports - and the framework then takes the first
+    // focusable thing in the layout, which is the server picker up in the corner.
+    // The tab is where anybody would expect to be, so it is asked for by name.
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(40)
+        if (!inContent && browse.focusKey.isEmpty() && browse.openedKey.isEmpty()
+                && !browse.typing) {
+            // whatever happens below, the picker is a place the remote may go from
+            // here on: refusing it for ever would be a server nobody can change
+            MainActivity.focusLanded.value = true
+            // and at the top of the shelves, the first time. A card that took the
+            // focus for a moment while they were arriving scrolled the page to itself,
+            // so the app opened half way down its own front page.
+            if (!browse.opened) {
+                browse.opened = true
+                runCatching { browse.rowsState.scrollToItem(0) }
+            }
+            runCatching { tabFocus[browse.tab]?.requestFocus() }
+        }
+    }
+
+    // Whether back has anywhere to go: the Home tab, with no shelves on it and no
+    // row opened whole. Read here, where these are read during composition and the
+    // effect runs again when any of them changes. In a SideEffect up the tree they
+    // were not followed at all, so moving to Films never cleared it and the key
+    // dispatcher went on closing the app from every screen.
+    LaunchedEffect(browse.tab, browse.rows.size, browse.moreRow) {
+        MainActivity.homeBare = browse.tab == "home" &&
+            browse.moreRow == null && browse.rows.isEmpty()
+    }
+
+    // On a tab that is not Home, the rung above the tabs is Home itself. Only from
+    // there does back start to mean leaving: quitting from Films because the cursor
+    // happened to be on the tab row is not what anybody means by back.
+    BackHandler(enabled = !inContent && browse.tab != "home") {
+        browse.tab = "home"
+        runCatching { tabFocus["home"]?.requestFocus() }
+    }
+
+    // Back steps out one landing at a time, rather than all the way at once: along
+    // the row to its first card, out of the row to the tabs, and from there the two
+    // presses that close the app. Somebody deep in a shelf wants the beginning of
+    // that shelf far more often than they want to quit.
+    val backScope = androidx.compose.runtime.rememberCoroutineScope()
     BackHandler(enabled = inContent) {
-        // The place in the list is kept: coming back down should land where you were,
-        // not at the beginning of the library. Only the focus moves - to the tab you
-        // are on, Films from Films and TV from TV.
-        runCatching { tabFocus[browse.tab]?.requestFocus() }
+        // A row opened whole is left first, before anything else is considered. Asked
+        // after the walk along a shelf, the walk answered instead - the column it reads
+        // is the one from the shelf this page was opened from - and back did nothing at
+        // all, which left the front page showing this list and no way off it.
+        if (browse.moreRow != null) {
+            browse.moreRow = null
+            browse.grid = emptyList()
+            // and the front page as it is first met: the shelves from the top, with
+            // the remote on Home. Left where it was, the page came back half way down
+            // itself with the focus wherever the search happened to put it.
+            backScope.launch {
+                runCatching { browse.rowsState.scrollToItem(0) }
+                kotlinx.coroutines.delay(60)
+                runCatching { tabFocus["home"]?.requestFocus() }
+            }
+            return@BackHandler
+        }
+        // On the shelves, back walks along the row before it leaves it: a shelf is
+        // read left to right and its beginning is where somebody means to return to.
+        // In a list of hundreds that is not true - the tab is what they want - so
+        // there back goes straight to the tab this list belongs to.
+        if (browse.tab == "home" && browse.column > 0) {
+            val shelf = browse.rows.getOrNull(browse.rowNow)
+            val name = shelf?.first.orEmpty()
+            val firstKey = shelf?.second?.firstOrNull()?.ratingKey.orEmpty()
+            if (firstKey.isNotEmpty()) {
+                // scrolled to before it is asked for: a card off the left-hand side of
+                // the row is not drawn, and nothing that is not drawn can take focus
+                backScope.launch {
+                    runCatching { browse.rowStates[name]?.scrollToItem(0) }
+                    browse.focusKey = firstKey
+                }
+                return@BackHandler
+            }
+        }
+        // At the beginning of the row: out to the tabs, which is the way home.
+        //
+        // Unless there is nothing to move it to. A tab row that has not been drawn
+        // yet - a screen still waiting on its shelves - swallowed every back press
+        // here and the app could not be left. When the focus cannot go, this handler
+        // stands down and the next press reaches the one that closes.
+        val to = tabFocus[browse.tab]
+        val moved = to != null && runCatching { to.requestFocus() }.isSuccess
+        if (!moved) inContent = false
     }
 
     // A list opens with the cursor on the row of buttons over it, on the tab it is
@@ -2585,6 +2767,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
 
     val behind = browse.backdrop
         ?: browse.rows.firstOrNull { it.first == DECK }?.second?.firstOrNull()
+    // Not a focusProperties { enter } here: that answers every entry into this screen,
+    // not the first one, so pressing down out of the tabs was sent straight back to
+    // them and the shelves could not be reached at all. Where the focus starts is
+    // settled by the effect above instead.
     Box(Modifier.fillMaxSize()) {
     // The title last opened, or the one somebody stopped, kept behind the shelves.
     // Faint on purpose: every poster drawn over it has to stay legible.
@@ -2602,6 +2788,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                    // library stays on whichever tab it was
                    if (chosen == "reports") onReports() else {
                        browse.tab = chosen; browse.query = ""
+                       // and closes a row that was opened whole, so a tab pressed
+                       // while that page is up cannot leave the front page showing it
+                       if (browse.moreRow != null) {
+                           browse.moreRow = null
+                           browse.grid = emptyList()
+                       }
                        // leaving the tab closes whatever shelf was open in it
                        if (chosen != "collections") browse.collectionOn = null
                    }
@@ -3077,11 +3269,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             browse.failed != null -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                 Text(browse.failed!!, color = Skin.Dim, fontSize = 15.sp)
             }
-            browse.tab == "home" && browse.query.trim().length < 2 -> LazyColumn(
+            browse.tab == "home" && browse.moreRow == null &&
+                browse.query.trim().length < 2 -> LazyColumn(
                 state = browse.rowsState,
                 modifier = Modifier.onFocusChanged { inContent = it.hasFocus },
                 contentPadding = PaddingValues(bottom = 28.dp)) {
-                itemsIndexed(browse.rows) { shelf, (title, list) ->
+                // keyed by the shelf's name. Without a key a lazy list reuses its
+                // rows by position, so a shelf arriving or leaving handed one row's
+                // state to another - and a card that had the focus was released twice
+                // while the list was being measured, which took the app down.
+                itemsIndexed(browse.rows, key = { _, row -> row.first },
+                             contentType = { _, row -> row.first }) {
+                        shelf, (title, list) ->
                     val topShelf = shelf == 0
                     // asked for by the shelf above and the shelf below
                     val ask = browse.shelfAsk.getOrPut(shelf) { FocusRequester() }
@@ -3100,7 +3299,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     // row has one: coming back reloads the shelves, so the effect ran
                     // against an empty row, found nothing, and cleared the key it would
                     // have needed a moment later - which left the remote on the tabs.
-                    LaunchedEffect(title, list) {
+                    LaunchedEffect(title, list, browse.cameBack) {
                         if (browse.openedRow == title && browse.openedKey.isNotEmpty() &&
                             list.isNotEmpty()) {
                             val key = browse.openedKey
@@ -3118,17 +3317,22 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     // column: it landed on a title further right, and the next press
                     // came back left. Each shelf is one group now, and entering it
                     // goes to where you were on it, or to its first card.
+                    // Ten to a shelf. A shelf of forty is forty cards to walk past
+                    // to reach the one below it; the rest are a press away on the card
+                    // at the end.
+                    val shown = list.take(SHELF_SHOWS)
                     LazyRow(state = rowState,
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             modifier = Modifier.focusGroup()) {
-                        itemsIndexed(list, key = { _, m -> m.ratingKey }) { at, m ->
+                        itemsIndexed(shown, key = { _, m -> m.ratingKey },
+                                        contentType = { _, m -> m.ratingKey }) { at, m ->
                             val here = remember { FocusRequester() }
                             // the one the tabs hand down to
                             val first = topShelf &&
-                                m.ratingKey == list.firstOrNull()?.ratingKey
+                                m.ratingKey == shown.firstOrNull()?.ratingKey
                             // the card this shelf answers with: the one in the
                             // column the remote is in, or the last of a short shelf
-                            val leads = at == browse.column.coerceAtMost(list.lastIndex)
+                            val leads = at == browse.column.coerceAtMost(shown.lastIndex)
                             LaunchedEffect(browse.focusKey) {
                                 if (browse.focusKey == m.ratingKey) {
                                     runCatching { here.requestFocus() }
@@ -3156,6 +3360,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                            if (it.isFocused) {
                                                browse.shelfWas[shelf] = m.ratingKey
                                                browse.column = at
+                                               browse.rowNow = shelf
                                            }
                                        }
                                        // up and down go shelf to shelf, to the card
@@ -3175,7 +3380,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                                 else moveTo(tabOver(
                                                     browse.cardAt[m.ratingKey] ?: 0f))
                                             },
-                                            down = { moveTo(browse.shelfAsk[shelf + 1]) }),
+                                            down = { moveTo(browse.shelfAsk[shelf + 1]) },
+                                            // The first card of a shelf is the end of
+                                            // it. Left from there had nothing beside
+                                            // it, so the search took the nearest thing
+                                            // on the screen - the server picker, up in
+                                            // the corner - and a held left walked
+                                            // straight out of the list into it.
+                                            left = { at == 0 }),
                                    // held: the menu, wherever the poster is. It
                                    // used to open the title's own page on every
                                    // shelf but Continue watching - so a hold went
@@ -3192,14 +3404,20 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                 // away, and a shuffle lost its shelf on the way: the
                                 // page carries no shelf, so Next handed over the next
                                 // episode of the programme rather than drawing.
-                                if (title == DECK && m.shuffleId.isNotEmpty() &&
-                                    m.isFolder) {
-                                    // A shuffle's own row, standing for a shelf. What
-                                    // it shows is whatever the hat drew last, and for
-                                    // a programme that is a folder - so pressing it
-                                    // opened the list of seasons rather than putting
-                                    // something on, which is the one thing the row is
-                                    // there for. Draw from its shelf instead.
+                                if (title == DECK && m.shuffleId.isNotEmpty()) {
+                                    // A shuffle's own row, standing for a shelf: it
+                                    // asks the shelf rather than playing the card.
+                                    // What the row shows is whatever the hat drew
+                                    // last, so pressing it played that again from its
+                                    // beginning once the round had moved on. The
+                                    // shelf decides between the two - carrying on
+                                    // with one left part-way, or drawing the next.
+                                    //
+                                    // This used to ask for a folder as well, on the
+                                    // reasoning that a programme's row is one. A row
+                                    // on this shelf is the episode itself, folder or
+                                    // not, so the test was never true and none of it
+                                    // ran.
                                     (ctx as AppCompatActivity).lifecycleScope.launch {
                                         val drew = Api.shelfDraw(m.shuffleId, m.srv,
                                                                  resume = true)
@@ -3242,6 +3460,45 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                 }
                             }
                         }
+                        // The end of a row, where there is more than fits on it:
+                        // everything it holds, on a page. A shelf shows what the
+                        // screen has room for and the rest was simply not reachable.
+                        if (list.size > shown.size) {
+                            // keyed, like the cards beside it: an item a lazy row
+                            // cannot name is one it reuses by position
+                            item(key = "more:" + title) {
+                                var lit by remember { mutableStateOf(false) }
+                                Box(Modifier.padding(horizontal = 5.dp, vertical = 8.dp)
+                                        .width(w.dp).height((w * 1.5).dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Skin.Panel)
+                                        .border(if (lit) 3.dp else 0.dp,
+                                                if (lit) Color.White else Color.Transparent,
+                                                RoundedCornerShape(10.dp))
+                                        .onFocusChanged { lit = it.isFocused }
+                                        // clickable brings its own focus node. Adding
+                                        // focusable() as well put two on one item, and
+                                        // a lazy row reusing it released the same
+                                        // pinned container twice - "Release should only
+                                        // be called once", which took the app down on
+                                        // any quick move along the shelves.
+                                        .clickable {
+                                            browse.grid = list
+                                            browse.moreRow = title
+                                            // and the remote on the first of them.
+                                            // Nothing asking for it means the page
+                                            // opens with the ring in the corner, on
+                                            // the server picker.
+                                            browse.focusKey =
+                                                list.firstOrNull()?.ratingKey.orEmpty()
+                                        },
+                                    contentAlignment = Alignment.Center) {
+                                    Text("Show more  \u203a", color = Skin.Dim,
+                                         fontSize = 14.sp,
+                                         modifier = Modifier.padding(8.dp))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3279,7 +3536,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // Back from a title opened here: the grid is put back on its poster,
                 // whatever else moved while the title's page was open. Run when the grid
                 // is drawn again, not when the poster is pressed.
-                LaunchedEffect(browse.grid) {
+                LaunchedEffect(browse.grid, browse.cameBack) {
                     val key = browse.openedKey
                     val was = browse.openedAt
                     // not cleared until there is a grid to look in: back reloads the
@@ -3353,7 +3610,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         collectionOrder(browse.grid, browse.collSortKey,
                                         browse.collSortAsc)
                         else browse.grid
-                    itemsIndexed(shown) { at, m ->
+                    itemsIndexed(shown, key = { _, m -> m.ratingKey },
+                                    contentType = { _, m -> m.ratingKey }) { at, m ->
                         // Nothing under the card but its own line. Sorted by
                         // release a series is placed by its newest episode, and the
                         // card used to say "last aired" and the date to explain the
@@ -3370,6 +3628,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         }
                         Poster(m, fill = true, instead = instead,
                                modifier = Modifier.focusRequester(here)
+                                   .onFocusChanged {
+                                       if (it.isFocused) browse.gridAt = at
+                                   }
                                    .onGloballyPositioned {
                                        browse.cardAt[m.ratingKey] =
                                            it.boundsInWindow().center.x
@@ -3651,17 +3912,37 @@ private fun RowScope.SortControl(
                         "quality" to "Quality")
     var open by remember { mutableStateOf(false) }
     val chosen = orders.firstOrNull { it.first == sortKey }?.second ?: "Sort"
+    // Where the remote goes when the list closes. Without this the focus falls out of
+    // a menu that is no longer there onto whatever is nearest - which from here is the
+    // next tab along, so choosing an order landed somebody on TV.
+    val pill = remember { FocusRequester() }
+    var wasOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(open) {
+        if (open) wasOpen = true
+        else if (wasOpen) {
+            kotlinx.coroutines.delay(60)
+            runCatching { pill.requestFocus() }
+        }
+    }
     Box {
         // the order and its direction on one control: the arrows belong to the thing
         // they describe rather than sitting beside it
         Pill(chosen + " " + (if (sortAsc) "⇅" else "⇵"), narrow = !onTv(),
-             small = !onTv() && LocalConfiguration.current.screenWidthDp < 400) {
+             small = !onTv() && LocalConfiguration.current.screenWidthDp < 400,
+             modifier = Modifier.focusRequester(pill)) {
             open = true
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false },
                      modifier = Modifier.background(Skin.Panel)) {
-            orders.forEach { (key, label) ->
+            orders.forEachIndexed { n, (key, label) ->
                 DropdownMenuItem(
+                    // Out of the list without pressing Back: up off the top line, and
+                    // left or right from any of them. A list that can only be left by
+                    // Back is a list somebody is stuck in, and back on a remote means
+                    // leave the app to most people.
+                    modifier = Modifier.edge(up = { n == 0 && run { open = false; true } },
+                                             left = { open = false; true },
+                                             right = { open = false; true }),
                     text = {
                         Text(label + (if (key == sortKey)
                                           (if (sortAsc) "  ↑" else "  ↓") else ""),
@@ -3688,6 +3969,17 @@ private fun RowScope.GenreControl(
 ) {
     if (genres.isEmpty()) return
     var genreOpen by remember { mutableStateOf(false) }
+    //: where the remote goes when the list closes, so it is not left to the nearest
+    //: thing on the screen - which is the next tab along
+    val pill = remember { FocusRequester() }
+    var wasOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(genreOpen) {
+        if (genreOpen) wasOpen = true
+        else if (wasOpen) {
+            kotlinx.coroutines.delay(60)
+            runCatching { pill.requestFocus() }
+        }
+    }
     //: the line last ticked, to put the remote back on it when the list is read again
     var touched by remember { mutableStateOf("") }
     // several can be marked: comma-joined, a title must carry all of them
@@ -3706,7 +3998,8 @@ private fun RowScope.GenreControl(
                          (if (matching >= 0) "  ·  " + matching + " matches" else "")
              },
              narrow = !onTv(),
-             small = !onTv() && LocalConfiguration.current.screenWidthDp < 400) {
+             small = !onTv() && LocalConfiguration.current.screenWidthDp < 400,
+             modifier = Modifier.focusRequester(pill)) {
             genreOpen = true
         }
         DropdownMenu(
@@ -3721,7 +4014,9 @@ private fun RowScope.GenreControl(
                 // up off the top line is the way out, the same as it is everywhere
                 // else on the screen. Back was the only way, and back on a remote
                 // means leave the app to most people.
-                modifier = Modifier.edge(up = { genreOpen = false; true }),
+                modifier = Modifier.edge(up = { genreOpen = false; true },
+                                         left = { genreOpen = false; true },
+                                         right = { genreOpen = false; true }),
                 text = { Text("Clear", fontSize = 14.sp,
                               color = if (marked.isEmpty()) Skin.Dim else Skin.Accent) },
                 onClick = { onGenre(""); genreOpen = false })
@@ -3733,7 +4028,9 @@ private fun RowScope.GenreControl(
                 }
                 DropdownMenuItem(
                     contentPadding = MENU_PAD,
-                    modifier = Modifier.focusRequester(here),
+                    modifier = Modifier.focusRequester(here)
+                        .edge(left = { genreOpen = false; true },
+                              right = { genreOpen = false; true }),
                     text = { Text((if (on) "✓  " else "     ") + name + "  (" + count + ")",
                                   fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                   color = if (on) Skin.Accent else Skin.Fg) },
@@ -3758,6 +4055,16 @@ private fun RowScope.DecadeControl(
 ) {
     if (decades.isEmpty()) return
     var open by remember { mutableStateOf(false) }
+    //: where the remote goes when the list closes
+    val pill = remember { FocusRequester() }
+    var wasOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(open) {
+        if (open) wasOpen = true
+        else if (wasOpen) {
+            kotlinx.coroutines.delay(60)
+            runCatching { pill.requestFocus() }
+        }
+    }
     // Which line was last ticked. Marking one sends for the lists again - the numbers
     // are counted among what is marked - and the list that comes back is a new set of
     // rows, so the one under the remote stops existing and the focus falls out of the
@@ -3776,7 +4083,8 @@ private fun RowScope.DecadeControl(
                  else -> marked.size.toString() + " decades"
              },
              narrow = !onTv(),
-             small = !onTv() && LocalConfiguration.current.screenWidthDp < 400) {
+             small = !onTv() && LocalConfiguration.current.screenWidthDp < 400,
+             modifier = Modifier.focusRequester(pill)) {
             open = true
         }
         DropdownMenu(
@@ -3789,7 +4097,9 @@ private fun RowScope.DecadeControl(
                  modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 2.dp))
             DropdownMenuItem(
                 contentPadding = MENU_PAD,
-                modifier = Modifier.edge(up = { open = false; true }),
+                modifier = Modifier.edge(up = { open = false; true },
+                                         left = { open = false; true },
+                                         right = { open = false; true }),
                 // named and coloured as the genres are: two lists that do the same
                 // thing should not be worked out twice
                 text = { Text("Clear", fontSize = 14.sp,
@@ -3803,7 +4113,9 @@ private fun RowScope.DecadeControl(
                 }
                 DropdownMenuItem(
                     contentPadding = MENU_PAD,
-                    modifier = Modifier.focusRequester(here),
+                    modifier = Modifier.focusRequester(here)
+                        .edge(left = { open = false; true },
+                              right = { open = false; true }),
                     text = { Text((if (on) "✓  " else "     ") + era + "s  (" + count + ")",
                                   fontSize = 14.sp,
                                   color = if (on) Skin.Accent else Skin.Fg) },
@@ -4162,8 +4474,14 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             // On a television nothing has focus until something asks for it, and the
             // first press of the remote should start the film rather than hunt for it.
             val playFocus = remember { FocusRequester() }
-            LaunchedEffect(full.ratingKey) {
-                runCatching { playFocus.requestFocus() }
+            // and for a title with no file, the button that is there instead: Download
+            // on something a pack carries, Request on something nobody has at all
+            val actFocus = remember { FocusRequester() }
+            LaunchedEffect(full.ratingKey, full.offered, full.askable) {
+                runCatching {
+                    if (full.offered || full.askable) actFocus.requestFocus()
+                    else playFocus.requestFocus()
+                }
             }
             // Wrapping, not a straight row: an episode has a fourth button and four
             // of them do not fit. Off a television the three that matter - Resume,
@@ -4298,7 +4616,11 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                              (if (full.offerFree >= 0)
                                   String.format(java.util.Locale.US, "  ·  %.0f GB free",
                                                 full.offerFree) else ""),
-                         primary = !busy) {
+                         primary = !busy,
+                         modifier = Modifier.focusRequester(actFocus)) {
+                        // A film on a pack is fetched from here, as it always was.
+                        // Asking is for a title with no file anywhere - there is
+                        // nothing to fetch for one of those.
                         if (!busy) (ctx as AppCompatActivity).lifecycleScope.launch {
                             val (ok, words) = Api.torrentGet(full)
                             said = if (ok) "Downloading - it appears in Films when it has arrived"
@@ -4336,19 +4658,39 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                              modifier = Modifier.padding(start = 4.dp, top = 8.dp))
                     }
                 }
-                if (!full.offered) Pill(if (resume > 5) "Resume " + fmt(resume) else "Play", primary = true,
-                     narrow = narrowRow && resume > 5, small = smallRow && resume > 5,
+                // New on streaming and nowhere in this house: no file, no pack, and
+                // nothing to play. Asking is the whole of what this page can do.
+                if (full.askable) {
+                    var said by remember(m.ratingKey) { mutableStateOf("") }
+                    var askedAlready by remember(m.ratingKey) { mutableStateOf(full.asked) }
+                    Pill(if (askedAlready) "Asked for" else "Request",
+                         primary = !askedAlready,
+                         modifier = Modifier.focusRequester(actFocus)) {
+                        if (!askedAlready) (ctx as AppCompatActivity).lifecycleScope.launch {
+                            val ok = Api.askFor(full)
+                            askedAlready = ok
+                            said = if (ok) "Asked for. The owner decides what comes in."
+                                   else "Could not ask for that just now"
+                        }
+                    }
+                    if (said.isNotEmpty()) {
+                        Text(said, color = Skin.Dim, fontSize = 13.sp,
+                             modifier = Modifier.padding(start = 4.dp, top = 8.dp))
+                    }
+                }
+                if (!full.offered && !full.askable) Pill(if (resume > RESUME_FROM) "Resume " + fmt(resume) else "Play", primary = true,
+                     narrow = narrowRow && resume > RESUME_FROM, small = smallRow && resume > RESUME_FROM,
                      modifier = Modifier.focusRequester(playFocus)) {
                     startIt(resume)
                 }
-                if (resume > 5 && !full.offered) Pill("From start", narrow = narrowRow,
+                if (resume > RESUME_FROM && !full.offered && !full.askable) Pill("From start", narrow = narrowRow,
                                      small = smallRow) {
                     startIt(0)
                 }
                 // filled in once the film has been watched; otherwise plain, with
                 // the white ring under the remote like everything else
-                if (!full.offered) Pill(if (seen) "\u2713 Watched" else "Mark watched",
-                     active = seen, narrow = narrowRow, small = smallRow && resume > 5) {
+                if (!full.offered && !full.askable) Pill(if (seen) "\u2713 Watched" else "Mark watched",
+                     active = seen, narrow = narrowRow, small = smallRow && resume > RESUME_FROM) {
                     seen = !seen
                     // Watched means finished, so there is nothing left to resume and
                     // the button goes back to Play. The server drops the resume point
@@ -4364,7 +4706,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // in, standing on the episode itself, not a row of season posters.
                 if (full.type == "episode" &&
                     !(full.parentKey ?: full.grandparentKey).isNullOrEmpty()) {
-                    Pill("Go to show", narrow = narrowRow, small = smallRow && resume > 5) {
+                    Pill("Go to show", narrow = narrowRow, small = smallRow && resume > RESUME_FROM) {
                         (ctx as AppCompatActivity).lifecycleScope.launch {
                             val where = full.parentKey ?: full.grandparentKey!!
                             MainActivity.reveal.value = full.ratingKey
@@ -4784,7 +5126,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         .coerceIn(0, maxOf(0, alike.size - ROW_OF_ALIKE))
                     val shown = alike.subList(from, minOf(alike.size, from + ROW_OF_ALIKE))
                         .reversed()
-                    itemsIndexed(shown) { at, m ->
+                    itemsIndexed(shown, key = { _, m -> m.ratingKey },
+                                    contentType = { _, m -> m.ratingKey }) { at, m ->
                         Poster(m, width = likeWide,
                                modifier = if (at == 0) Modifier.focusRequester(firstAlike)
                                           else Modifier) { onOpen(m) }
@@ -4887,6 +5230,21 @@ fun throughHeadphones(ctx: Context): Boolean {
         ears += setOf(android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
                       android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER)
     }
+    // Where the sound would actually go, rather than everything the box can list.
+    //
+    // A television box reports the wired and Bluetooth types whether or not anything
+    // is plugged into them - Bluetooth being switched on is enough - so this was true
+    // on a box whose only connected output was HDMI. Every Dolby film then had its
+    // sound decoded and downmixed to stereo AAC for headphones nobody was wearing.
+    if (android.os.Build.VERSION.SDK_INT >= 31) {
+        val attrs = android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
+            .build()
+        val routed = runCatching { am.getAudioDevicesForAttributes(attrs) }.getOrNull()
+        if (!routed.isNullOrEmpty()) return routed.any { it.type in ears }
+    }
+    // Older boxes have no way to ask: the list of outputs is all there is.
     return runCatching {
         am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
             .any { it.type in ears }

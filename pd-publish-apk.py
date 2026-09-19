@@ -15,7 +15,24 @@ import time
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APK = os.path.join(ROOT, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+#: The release build, and the debug one only if that is all there is.
+#:
+#: A debug build is debuggable, which turns off what the runtime would otherwise do
+#: with the code: the same app took 5938ms to reach its first screen as a debug build
+#: and 1138ms as a release one, on the same television, with one frame in the debug
+#: build taking 4.3 seconds on its own. Both are signed with the same key, so one
+#: installs over the other.
+def _apk():
+    made = os.path.join(ROOT, "android", "app", "build", "outputs", "apk")
+    release = os.path.join(made, "release", "app-release.apk")
+    debug = os.path.join(made, "debug", "app-debug.apk")
+    if os.path.exists(release) and (not os.path.exists(debug)
+                                    or os.path.getmtime(release) >= os.path.getmtime(debug)):
+        return release
+    return debug
+
+
+APK = _apk()
 DEST = os.path.join(ROOT, "static", "palladium.apk")
 #: where a build installed on this machine keeps the files it serves. A phone on the
 #: house network asks that server for updates, not this tree, so an APK published only

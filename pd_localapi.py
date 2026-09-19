@@ -1223,6 +1223,21 @@ class LocalAPI:
                 return {"key": str(row["id"])}
             return {"key": ""}
 
+        if path == "/library/streaming":
+            # What has just turned up to watch at home, which this house has none of.
+            # Read twice a day; asking the page again while somebody waits would put a
+            # website between them and their own front page, so a list already in hand
+            # is answered with and the reading is done behind it.
+            import pd_streaming
+            if one("fresh", "") in ("1", "true", "yes"):
+                pd_streaming.refresh(self.lib, force=True)   # read it again now
+            elif not pd_streaming.read():
+                pd_streaming.refresh(self.lib)
+            elif time.time() - pd_streaming.STATE["at"] > pd_streaming.EVERY:
+                threading.Thread(target=lambda: pd_streaming.refresh(self.lib),
+                                 daemon=True).start()
+            return self._page(pd_streaming.rows(), q)
+
         if path == "/library/watchlist":
             # the keys come from the caller's own settings; this only turns them into
             # things with posters, and quietly drops any that have left the library
@@ -1581,6 +1596,20 @@ class LocalAPI:
                              "Metadata": listed(dated)})
             return {"size": len(hubs), "Hub": hubs}
 
+        m = re.match(r"^/art/(rt[0-9a-f]{10})/(poster|backdrop)$", path)
+        if m:
+            import pd_streaming
+            local = self.lib.artwork(pd_streaming.art_of(m.group(1), m.group(2)),
+                                     "w500" if m.group(2) == "poster" else "w780")
+            if not local:
+                return None
+            want = int(one("w", "0") or 0)
+            if want:
+                sized = self._resized(local, want)
+                if sized:
+                    local = sized
+            with open(local, "rb") as f:
+                return ("image/jpeg", f.read())
         m = re.match(r"^/art/(o[0-9a-f]{12})/(poster|backdrop)$", path)
         if m:
             # a film on offer from a torrent pack: its picture from TMDB, kept like any
@@ -2309,6 +2338,12 @@ class LocalAPI:
                 "Metadata": items[start:start + size]}
 
     def metadata_for(self, con, key, brief=False):
+        if str(key).startswith("rt"):
+            # new on streaming and nowhere near this house: it has a page so it can be
+            # asked for, and nothing else
+            import pd_streaming
+            one = pd_streaming.one_of(str(key))
+            return pd_streaming.item(one) if one else None
         if str(key).startswith("o"):
             # a film on offer from a torrent pack, wherever a title is asked for - and once
             # it has come in, the film itself: a page left open on the offer turns into it

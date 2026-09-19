@@ -317,6 +317,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         null, androidx.compose.runtime.neverEqualPolicy())
     // the episode after this one, and the seconds left before it starts itself
     private val nextUp = androidx.compose.runtime.mutableStateOf<Media?>(null)
+    //: a draw asked for and not yet answered: the picture is held over until it is
+    private val drawing = androidx.compose.runtime.mutableStateOf(false)
     private val countdown = androidx.compose.runtime.mutableIntStateOf(0)
     private var autoNext = true
     //: how long the card waits before starting the next episode itself
@@ -1021,6 +1023,21 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                         NextEpisodeCard(next, countdown.intValue,
                                         onPlay = { startNext(next) },
                                         onStop = { nextUp.value = null; finish() })
+                    }
+                    // Over the picture from the moment the button is pressed. The
+                    // shelf is asked twice before anything can start, and the film
+                    // went on playing through both - so pressing shuffle at the end
+                    // of one thing showed the thing just watched for another second
+                    // or two, which reads as the wrong answer rather than a wait.
+                    if (drawing.value) {
+                        Box(Modifier.fillMaxSize()
+                                .background(androidx.compose.ui.graphics.Color.Black),
+                            contentAlignment = Alignment.Center) {
+                            androidx.compose.material3.Text(
+                                "Drawing from the shelf",
+                                color = androidx.compose.ui.graphics.Color(0xFF9AA3AE),
+                                fontSize = 15.sp)
+                        }
                     }
                     // the same arrangement the browser uses: the tracks, a tick to
                     // vouch for one, and a way to fetch another
@@ -4031,6 +4048,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
      * person pressing "previous" means what they were just watching.
      */
     private fun step(forward: Boolean) {
+        if (drawing.value) return            // one press, one draw
+        // The picture and the sound stop with the press, not when the answer comes.
+        drawing.value = true
+        runCatching { current()?.pause() }
         lifecycleScope.launch {
             val here = title.value
                 ?: runCatching { Api.item(ratingKey, playingOn()) }.getOrNull()
@@ -4064,6 +4085,9 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                           else "Nothing before this one"
                 android.widget.Toast.makeText(this@PlayerActivity, why,
                                               android.widget.Toast.LENGTH_SHORT).show()
+                // nothing is coming: the film that was stopped for it carries on
+                drawing.value = false
+                runCatching { current()?.play() }
                 return@launch
             }
             // the next thing needs its own subtitle chosen: passing none turned them

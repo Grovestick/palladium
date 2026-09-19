@@ -1,11 +1,167 @@
 [
   {
+    "version": "0.18.154",
+    "when": "2026-09-19",
+    "title": "Show more opens on its first poster",
+    "items": [
+      "App: opening a shelf whole puts the remote on its first poster instead of leaving it to find the server picker."
+    ]
+  },
+  {
+    "version": "0.18.153",
+    "when": "2026-09-19",
+    "title": "The ring starts on Home, every time",
+    "items": [
+      "App: the server picker stands aside for the first focus on every arrival, not only the first of a run - which is why the ring still appeared in the corner when the app was returned to rather than started."
+    ]
+  },
+  {
+    "version": "0.18.152",
+    "when": "2026-09-19",
+    "title": "Home is the first thing the remote can be on",
+    "items": [
+      "App: the server picker cannot take the first focus of a run, so the remote starts on the tab instead of arriving in the corner and being moved off."
+    ]
+  },
+  {
+    "version": "0.18.150",
+    "when": "2026-09-19",
+    "title": "The cursor starts on Home",
+    "items": [
+      "App: the focus enters the screen on the tab rather than landing on the server picker and being moved a moment later, in full view."
+    ]
+  },
+  {
+    "version": "0.18.149",
+    "when": "2026-09-19",
+    "title": "One rule for Resume and Continue watching",
+    "items": [
+      "App: Resume is offered from thirty seconds in, the same place the shelf of what to carry on with starts. Resume appeared at five seconds while the shelf dropped the film at thirty.",
+      "App: the shelves and grids are keyed and are no longer recycled between titles, which is what a fast press at launch was crashing on. It is better, not gone: the fault is in the drawing library, and the version that fixes it makes every control need two presses."
+    ]
+  },
+  {
+    "version": "0.18.147",
+    "when": "2026-09-19",
+    "title": "Leaving Show more lands on Home",
+    "items": [
+      "App: back from a shelf opened whole shows the front page as it is first met - the shelves from the top, with the remote on Home."
+    ]
+  },
+  {
+    "version": "0.18.146",
+    "when": "2026-09-19",
+    "title": "No crash on fast pressing",
+    "items": [
+      "App: the shelves are keyed by name. The list reused its rows by position, so a shelf arriving handed one row's state to another and a card holding the focus was released twice while the list was measured. 150 fast presses with clicks, no crash."
+    ]
+  },
+  {
+    "version": "0.18.145",
+    "when": "2026-09-19",
+    "title": "Show more can be left again",
+    "items": [
+      "App: back leaves a shelf opened whole. The walk along a shelf answered first, reading a column from the page underneath, so back did nothing and the front page was left showing that list.",
+      "App: pressing a tab closes such a page as well."
+    ]
+  },
+  {
+    "version": "0.18.144",
+    "when": "2026-09-19",
+    "title": "Download is back on a film a pack carries",
+    "items": [
+      "App: a film on a pack has its Download button again. Asking is for a title with no file anywhere, where there is nothing to fetch.",
+      "App: opening such a page puts the remote on that button."
+    ]
+  },
+  {
+    "version": "0.18.143",
+    "when": "2026-09-19",
+    "title": "Choosing a sort or a genre keeps the remote",
+    "items": [
+      "App: closing the sort, genre or decade list puts the remote back on that control. It fell out onto the nearest thing, which was the next tab along."
+    ]
+  },
+  {
+    "version": "0.18.142",
+    "when": "2026-09-19",
+    "title": "The app opens at the top of its shelves",
+    "items": [
+      "App: the front page opens at the top. A card taking the focus for a moment while the shelves arrived scrolled the page to itself."
+    ]
+  },
+  {
+    "version": "0.18.141",
+    "when": "2026-09-19",
+    "title": "The remote starts on the tab, not the picker",
+    "items": [
+      "App: opening the app, and leaving Settings or Reports, puts the remote on the tab rather than the server picker. Nothing held the focus, so the first thing in the layout took it."
+    ]
+  },
+  {
+    "version": "0.18.140",
+    "when": "2026-09-19",
+    "title": "Back from a film lands on its poster",
+    "items": [
+      "App: leaving a title's page puts the remote back on the poster it was opened from, rather than on the server picker.",
+      "App: one press activates a tab or a poster again."
+    ]
+  },
+  {
+    "version": "0.18.139",
+    "when": "2026-09-19",
+    "title": "No more crashes on quick navigation",
+    "items": [
+      "App: two presses of back only close the app from an empty Home; it read every tab as empty and closed from anywhere."
+    ]
+  },
+  {
+    "version": "0.18.138",
+    "when": "2026-09-19",
+    "title": "Sound and picture pass through again",
+    "items": [
+      "Sound goes out as it is unless headphones are really connected. The box lists outputs it has not got.",
+      "Picture passes through whenever the sound does; the two are never split.",
+      "New on streaming: a row from Rotten Tomatoes at the foot of the front page.",
+      "A title with no file is asked for, not fetched, and carries a corner band.",
+      "A title with no file no longer offers Play.",
+      "The corner band is only on titles with no file anywhere.",
+      "Removed eleven duplicate imports that made a module name local and broke the lines above them.",
+      "The machine keeping copies is told each title's categories, not just its name.",
+      "Back: to the first card of the row, then the tabs, then twice to close.",
+      "Season numbering works; the setting stripped the letters out of the key.",
+      "New on streaming holds a hundred titles rather than twenty-six, each with its categories, so it sorts and filters like Films.",
+      "App: the end of a shelf has Show more, which opens everything on that shelf as a page.",
+      "The version list on What is new is one to a line.",
+      "App: the home shelves are fetched together, not one after another - it waited on seven round trips before drawing anything.",
+      "App: fixed a crash on quick moves along a shelf; the new Show more card carried two focus nodes and the row released one twice.",
+      "New on streaming can be read again on demand rather than twice a day.",
+      "App: a shelf shows ten, with the rest behind Show more at the end of it.",
+      "App: left stops at the first card of a shelf instead of leaving the list for the server picker.",
+      "App: shipped as a release build rather than a debug one. Cold start on the television went from 5938ms to 1138ms, and the APK from 18.5 to 13.6 MB.",
+      "App: the sort, genre and decade lists close on left or right as well as up; sort had no way out but Back.",
+      "App: back from a poster in Films or TV goes to that tab; on the shelves it walks to the start of the row first.",
+      "App: back from a tab goes to Home before it offers to close."
+    ]
+  },
+  {
+    "version": "0.18.137",
+    "when": "2026-09-19",
+    "title": "Back always leaves, and next stops the picture",
+    "items": [
+      "Back closes the app on the second press from a screen with nothing on it, answered by the app rather than the list.",
+      "Next and shuffle stop the picture at the press instead of playing on while the shelf is asked.",
+      "Nothing to draw puts back what was stopped for it.",
+      "A shuffle's row on Continue watching draws from its shelf again; the test for those rows asked for a folder and never matched."
+    ]
+  },
+  {
     "version": "0.18.136",
     "when": "2026-09-19",
     "title": "An update no longer ends in an error box",
     "items": [
-      "Updating from the settings page starts the server again, not the tray program that was retired when the tray moved into the server. Windows answered every update with a box saying it could not find it, and the machine only came back because the installer starts it too.",
-      "A film taken back from the machine that keeps copies is put where this machine's own downloader expects it. The two can hold one pack under different layouts, so the name the other machine sent put the film a folder above where the pack looks: it played, and the check that was meant to hand it to the downloader found nothing. It is also asked for before the check, since a file nobody asked for is checked as though it were not there."
+      "Updating from settings starts the server, not the retired tray program.",
+      "A film taken back from the machine keeping copies is written where its pack expects it."
     ]
   },
   {
@@ -13,8 +169,8 @@
     "when": "2026-09-19",
     "title": "A shuffle fills the hat, not the season",
     "items": [
-      "An evening of shuffled episodes no longer stocks the other machine in season order. What is on a screen unchosen was left out of the run of episodes only while the player was reporting it; the episode before it was named as an ordinary one, and the walk ahead followed that - ten files in season order per viewer, per draw, for a shelf played in no order at all. A shuffled title is remembered as shuffled, and what is kept for it is what the round has drawn.",
-      "Measured over the last day: 290 copies of 146 files, 81 of them fetched more than once, 240 GB moved to hold 146 files."
+      "The copy stocks what the hat drew, not the next episodes in order.",
+      "Over the last day: 290 copies of 146 files, 81 fetched more than once."
     ]
   },
   {
@@ -22,8 +178,8 @@
     "when": "2026-09-19",
     "title": "One film, one line in Now playing",
     "items": [
-      "A film read off both machines at once is one row again. Rows were gathered under the key joined to the episode label, which only the machine a player reports to fills in, so the same viewing landed in two buckets and was drawn twice - once with the position and once without. Rows are gathered under the key alone, and two different screens on one film stay apart.",
-      "What is held lists every title, with a dropdown for whose it is. It gave counts per reason and three example titles, which said how much was kept but never what."
+      "A film read off both machines is one row; rows were keyed by a label only one machine fills in.",
+      "What is held lists every title, with a dropdown for whose it is."
     ]
   },
   {
@@ -31,7 +187,7 @@
     "when": "2026-09-19",
     "title": "What is held shows what it read",
     "items": [
-      "The page listing what the other machine is holding puts itself on the screen. It was reading the list and building every line of it and then never attaching any of it, so the tab opened empty however much was there."
+      "The page listing what the other machine is holding puts itself on the screen."
     ]
   },
   {
@@ -39,7 +195,7 @@
     "when": "2026-09-19",
     "title": "What each person has fetched, under Downloads",
     "items": [
-      "The Downloads page lists what has been fetched in the last month, under the person who asked for it. Their week's gigabytes were already beside their limit under Users, which answers how much and not what - and what is the half somebody wants when they are looking at a month of it."
+      "The Downloads page lists what has been fetched in the last month, under the person who asked for it."
     ]
   },
   {
@@ -47,7 +203,7 @@
     "when": "2026-09-19",
     "title": "Taking a film back from the other machine works",
     "items": [
-      "The list of what the other machine fetched for itself is read rather than thrown away on arrival. It was arriving and failing on the line that works out where to come and collect it - the method imports urllib further down, which makes the name local to the whole of it, so reading it near the top raised instead. The address is taken apart by hand there now."
+      "The list of what the other machine fetched for itself is read rather than thrown away on arrival."
     ]
   },
   {
@@ -55,8 +211,8 @@
     "when": "2026-09-19",
     "title": "A film fetched by the other machine comes back here",
     "items": [
-      "A machine that keeps copies names what it went and downloaded for itself, and this one takes a copy of it over the house network rather than fetching it off the internet a second time. Anything asked for while this server was off stayed on the other machine alone: it played there and was nowhere here, and the next person to ask for it started the download again.",
-      "What comes back is written where its pack expects it and qBittorrent is then asked to look again, so it reads the pieces off the disk, finds them complete and seeds the film from here too instead of fetching it. Only what that machine fetched itself is offered - never what it was sent - and only once each; a film already here at the right length is left alone."
+      "A film the copy fetched for itself is taken over the house network, not downloaded again.",
+      "What comes back is written where its pack expects it, so qBittorrent seeds it from here too."
     ]
   },
   {
@@ -64,11 +220,11 @@
     "when": "2026-09-19",
     "title": "Now playing says when the shuffle dealt it",
     "items": [
-      "A viewing says whether it was put on or chosen. Now playing read the same for a film somebody sat down to and an episode a shuffle handed them, and they are not the same evening - it is also the difference that decides what is kept ahead on the other machine, so it is worth being able to see which one is which.",
-      "What is on a screen is filed under the viewer rather than under what they are called. A viewing is listed twice - once under its key and once under its title - and a name is not one thing either, so one person ended up with several lists of their own: seven episodes were named as being on a screen for one guest, where the most that can be is the one playing and the one before it. The cap is applied where the list is read as well as where it is written.",
-      "Settings has a page for what the other machine is holding: every film and episode it already has, under the person whose watching keeps it there, and grouped by the reason it is kept. What would still play if this server went off was only ever answerable by reading a log.",
-      "The heart on a poster says what it is for. It read \"Favorite\", which anybody can see; what it does not say is that a favourite is kept on the other machine as well, so it is one of the things that still plays when this server is off. The star and the dot beside it already explain themselves.",
-      "Installing asks the running server to close before replacing it, rather than ending it outright. Setup closed what held its files by force, which on Windows means the program never runs another line - so it never took its own icon out of the tray, and a dead P sat there by the clock until somebody hovered over it. It is asked first now and given a moment; force is still behind that for anything that will not go."
+      "A viewing says whether it was put on or chosen.",
+      "What is on a screen is filed under the viewer rather than under what they are called.",
+      "Settings has a page for what the other machine is holding, by viewer.",
+      "The heart on a poster says what it is for.",
+      "Installing asks the running server to close before replacing it, rather than ending it outright."
     ]
   },
   {
@@ -76,8 +232,8 @@
     "when": "2026-09-19",
     "title": "The copy stops fetching the same episodes over and over",
     "items": [
-      "A shuffle keeps the ten it has drawn instead of drawing ten more. Where the machine answering could play none of them - a copy holds part of a shelf, not all of it - the whole queue was thrown away and drawn again, so the list the other machine was fetching changed under it every time. One episode on the end that this machine can play does the same job and leaves the hat alone.",
-      "And a file this machine fetched is kept for twelve hours after the main server stops naming it, rather than deleted the moment it leaves the list. A shuffle's next ten move as they are watched, so what is wanted now is wanted again shortly. Together these were costing 381 copies of 207 files in a day - 86 fetched more than once, some six times, 332 GB moved to hold 207 files - on a machine with three terabytes free and a third of its cap used. Room is still freed when the cap needs it."
+      "A shuffle keeps the ten it has drawn instead of drawing ten more.",
+      "And a file this machine fetched is kept for twelve hours after the main server stops naming it, rather than deleted the moment it leaves the list."
     ]
   },
   {
@@ -85,9 +241,9 @@
     "when": "2026-09-19",
     "title": "The picture is not copied beside a sound that is being made",
     "items": [
-      "A film goes out as the file itself, or it is encoded - never with the picture copied over as it stands while the sound is remade beside it. Every torn picture seen here has been on that one path. A film sent as the file has never torn and one encoded whole has never torn, and the same episode plays perfectly and then tears from the same file at the same second: not the bit depth, not the resolution, not the container, not where it was started from - each of those was tried and each was the same on a file that was fine.",
-      "Once it tears it stays torn into the next episode as well, which is the receiver being left in a state it is not reset out of - so the path is not used rather than used carefully. It is reached only where the sound has to be remade and the picture need not be, a small part of any library, and it leaves everything that goes out as the file untouched: those are the ones that can be read off two machines at once and handed over when one goes.",
-      "The rule that encoded all 10-bit video is gone. It was aimed at the wrong thing - every one of those sixteen episodes is 10-bit and only two ever broke - and it would have encoded about nine hundred and fifty files in this library for nothing."
+      "A film goes out as the file itself, or it is encoded - never with the picture copied over as it stands while the sound is remade beside it.",
+      "A torn picture stays torn into the next episode: the receiver is not reset on a new stream.",
+      "The rule that encoded all 10-bit video is gone."
     ]
   },
   {
@@ -95,8 +251,8 @@
     "when": "2026-09-19",
     "title": "A screen in the house can be told what to open",
     "items": [
-      "A film or an episode can be opened on a screen from the server: POST /screen/play with the key, optionally a second to start at, a word to show with it, and which screen it is for. There was no way to do this at all - a television could be handed a line of words and nothing else, so anything that had to be played on it had to be found on it, with the remote.",
-      "It travels on the same held connection the noticeboard uses, so it lands the moment it is sent rather than at the next poll, and it opens the title the same way pressing it would - the round, the place it keeps and what plays next all behave as if somebody had pressed it there."
+      "A film can be opened on a screen from the server: POST /screen/play with the key.",
+      "It travels on the noticeboard's held connection, so it lands at once."
     ]
   },
   {
@@ -104,8 +260,8 @@
     "when": "2026-09-19",
     "title": "The screen comes home the moment the main server is back",
     "items": [
-      "App: when an episode ends, the main server is asked once whether it is back, and the screen returns to it if so. The ordinary way home waits a minute between tries and that minute was pushed forward every time the player fell to the copy, so a screen that kept re-opening there never got home at all - it went on naming the copy with the main server up and already carrying half the film between them. An episode boundary is the free moment to switch: nothing is playing to disturb.",
-      "App: and it is noticed while the episode is still playing rather than at the end of it. The reader already asks every machine whether it has this film, twenty seconds at a time, so the main server being back is known long before the episode is over - it is now acted on there and then. The picture does not move: a live encode cannot be, and a direct play is already being read off both. Only what the screen calls home changes, so the next episode is drawn from the main server with nothing to wait for."
+      "App: when an episode ends, the main server is asked once whether it is back, and the screen returns to it if so.",
+      "App: and it is noticed while the episode is still playing rather than at the end of it."
     ]
   },
   {
@@ -113,8 +269,8 @@
     "when": "2026-09-19",
     "title": "The round comes home when the main server does",
     "items": [
-      "App: a shuffle draw asks the main server again once it is answering, instead of staying on the machine keeping copies. The films come home on their own - the reader asks every machine holding one, twenty seconds at a time, and a split picks the main server back up mid-episode - but the draw did not, so after a restart the next episode was drawn and encoded on the copy while the main server sat idle with the better card. Tried at most once a minute, and only when the copy is what is answering.",
-      "App: the line along the top of the picture names the machine when it is not the one this screen calls home. A film served by the copy looked exactly like one served by the main server, so nothing on screen said anything had fallen over - or that it had not come back."
+      "App: a shuffle draw asks the main server again once it is answering, instead of staying on the machine keeping copies.",
+      "App: the line along the top of the picture names the machine when it is not the one this screen calls home."
     ]
   },
   {
@@ -122,8 +278,8 @@
     "when": "2026-09-19",
     "title": "A copy is filed under whoever actually wanted it",
     "items": [
-      "The copy log names the first reason a file is wanted rather than the last. One episode is often wanted by two people at once - somebody's shelf and somebody else's shuffle - and each was written in turn, so whoever came last owned it: a guest's shuffle picks were filed under the owner, who had only ever matched them with a shelf rule. The list is already ordered with what is wanted soonest first, so the first reason is the one kept.",
-      "What the machine keeping copies learns about each viewer is no longer swallowed when it fails. It was a bare pass, so when it started raising, nothing anywhere showed it - the shuffle rounds simply never arrived, every part of the path read correctly under inspection, and the one evening the main server was off a viewer's round was not there to carry on from. The fault now appears on the following page."
+      "The copy log names the first reason a file is wanted rather than the last.",
+      "What the machine keeping copies learns about each viewer is no longer swallowed when it fails."
     ]
   },
   {
@@ -131,7 +287,7 @@
     "when": "2026-09-19",
     "title": "Ten-bit video is encoded for every screen, not passed through",
     "items": [
-      "Ten-bit HEVC is encoded rather than handed over as it stands. A client says it can decode HEVC and says nothing about the bit depth, and neither screen here can take 10-bit: a television hands back a torn picture, and a browser will not start the film at all - a whole programme of 10-bit files was drawn by the shuffle and then sat there doing nothing. It is not the files; one of them decodes twenty-five seconds from the middle without a single error and plays correctly once encoded. A setting puts it back for a screen that is fine with it."
+      "Ten-bit HEVC is encoded rather than handed over as it stands."
     ]
   },
   {
@@ -139,8 +295,8 @@
     "when": "2026-09-19",
     "title": "A shuffle carries on where it got to when the main server goes",
     "items": [
-      "App: where playback has got to is reported to whichever machine can be reached, not only to the one the film was opened from. The picture already moved to the machine keeping copies when the main server went off and carried on without a stumble - but the place was still being sent to the server that had stopped answering, so nothing recorded where anybody had got to. Measured with the main server off: not one report arrived at the copy, and the episode being watched had no place saved at all. The others are tried only when the first cannot be reached; a server that refuses has answered, and asking another would write the same report twice.",
-      "App: the draw at the end of an episode is asked of whichever machine can be reached, the same way. It carried the address of the server the shelf came from, so with that machine off the round stopped where it stood - the episodes were on the copy and the list of what to play next was not. Both are tried in the same order and only when a machine cannot be reached at all; one that refuses has answered, and asking another would take two titles out of the hat for one episode."
+      "App: where playback has got to is reported to whichever machine can be reached, not only to the one the film was opened from.",
+      "App: the draw at the end of an episode is asked of whichever machine can be reached, the same way."
     ]
   },
   {
@@ -148,7 +304,7 @@
     "when": "2026-09-19",
     "title": "Ten-bit video is encoded for a television rather than passed through",
     "items": [
-      "A television is no longer handed 10-bit HEVC as it stands. The client says it can decode HEVC and says nothing about the bit depth, and the receiver in a Google TV box hands back a broken picture for 10-bit - blocky and torn - while the same file decodes clean elsewhere. It was not the file: one that showed it decoded twenty-five seconds from the middle without a single error and played properly in a browser on the same network. The picture is encoded for a television now; every other screen is unchanged, and a setting puts it back for anybody whose television is fine with it."
+      "A television is no longer handed 10-bit HEVC as it stands."
     ]
   },
   {
@@ -156,7 +312,7 @@
     "when": "2026-09-19",
     "title": "A shelf played shuffled is copied the way it is played",
     "items": [
-      "A collection with a shuffle round going is no longer also stocked in order. A programme on a shelf had its next unwatched episodes copied one after another, which is right for somebody working through a series and wrong for one they only ever shuffle: a long-running series took ten slots with episodes in order while the round's own queue - the ones actually coming up next - got four. The queue is kept as it always was; only the in-order half is dropped, and only for a shelf whose round is being kept."
+      "A collection with a shuffle round going is no longer also stocked in order."
     ]
   },
   {
@@ -210,10 +366,10 @@
     "when": "2026-09-18",
     "title": "A collection folds its episodes into seasons",
     "items": [
-      "Episodes on a collection are shown by season rather than as one flat list - six hundred and eighty of them across thirty-six seasons is not a page anybody can read. The shuffle still draws from the flat list, so what comes up is unchanged.",
-      "A programme half held and half offered by a pack reads as one programme on a collection: its episodes fold into the same seasons instead of a second row beside the first.",
-      "Sorting a collection no longer asks every episode for its year, which meant a lookup through the packs per key.",
-      "A collection made after the machine that keeps copies first learnt them now reaches it: the list was taken once and never again, so a collection made since was missing there along with its shuffle. One made on that machine is left alone."
+      "Collection episodes are shown by season, not as one flat list of six hundred.",
+      "Held and pack-offered episodes fold into the same season instead of two rows.",
+      "Sorting a collection no longer asks every episode for its year.",
+      "Collections reach the machine keeping copies as they are made, not once ever."
     ]
   },
   {

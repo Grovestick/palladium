@@ -849,14 +849,24 @@ class Library:
                 title = str((said or {}).get("title") or "").strip()
                 if not title:
                     continue
-                row = con.execute("SELECT title, year FROM item WHERE id=?",
+                row = con.execute("SELECT title, year, genres FROM item WHERE id=?",
                                   (str(key),)).fetchone()
-                if not row or (str(row["title"] or "") == title
-                               and (row["year"] or 0) == ((said or {}).get("year") or 0)):
+                # and the categories, which a copy has no way of working out for
+                # itself - it reads names off files, and a file name says nothing
+                # about what a film is. Kept when the other machine has none rather
+                # than overwritten with nothing.
+                genres = str((said or {}).get("genres") or "")
+                if not row:
                     continue
-                con.execute("UPDATE item SET title=?, sort_title=?, year=? WHERE id=?",
-                            (title, (said.get("sort") or title), said.get("year"),
-                             str(key)))
+                if (str(row["title"] or "") == title
+                        and (row["year"] or 0) == ((said or {}).get("year") or 0)
+                        and (not genres or str(row["genres"] or "") == genres)):
+                    continue
+                con.execute(
+                    "UPDATE item SET title=?, sort_title=?, year=?, genres=? "
+                    "WHERE id=?",
+                    (title, (said.get("sort") or title), said.get("year"),
+                     genres or str(row["genres"] or ""), str(key)))
                 done += 1
             con.commit()
             return done

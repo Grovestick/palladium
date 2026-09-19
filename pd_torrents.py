@@ -1031,11 +1031,12 @@ class QB:
             headers={"Referer": self.base, "Origin": self.base,
                      "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
         with urllib.request.urlopen(req, timeout=15) as answer:
-            said = answer.read().decode("utf-8", "replace")
-            cookie = answer.headers.get("Set-Cookie") or ""
-        if "Ok" not in said or "SID=" not in cookie:
+            cookie = (answer.headers.get("Set-Cookie") or "").split(";", 1)[0].strip()
+        # 5.x names the cookie QBT_SID_<port> and answers with an empty body; older
+        # builds sent SID= and "Ok.". The cookie is what says the login took.
+        if "=" not in cookie:
             raise RuntimeError("qBittorrent refused the login")
-        self.cookie = cookie.split(";", 1)[0]
+        self.cookie = cookie
 
     def version(self):
         return self._call("/api/v2/app/version", timeout=6).decode("utf-8", "replace").strip()

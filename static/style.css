@@ -557,6 +557,10 @@ h2 .makecoll + .makecoll{margin-left:8px}
 .person.live .rate{text-align:right;min-width:78px}
 .person.live .rate b{color:var(--accent);font-size:17px;font-variant-numeric:tabular-nums}
 .person.live .rate span{color:var(--dim);font-size:11px;display:block}
+/* the version groups on What is new: one to a line. They are ordinary buttons, which
+   lay out side by side, so eighteen of them wrapped into a paragraph of buttons. */
+.relgroup{display:block;width:100%;text-align:left;margin:4px 0}
+
 /* one release: what it was called, what it did */
 h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
   text-transform:uppercase;color:var(--dim);font-weight:600}
@@ -1365,6 +1369,16 @@ body.has-copynote{padding-top:38px}
 /* A film on offer from a torrent pack keeps its colours: the artwork is what makes it
    recognisable, and drained of it a shelf of them read as broken rather than as
    something you can have. The mark in the corner says it is not here yet. */
+/* A band across the top corner of a poster, for something that is not here and can
+   only be asked for. Turned through forty-five degrees and wider than the corner it
+   crosses, so its ends are cut off by the box around it rather than stopping inside. */
+.card .ribbon,.detail .poster .ribbon{position:absolute;right:0;top:0;width:88px;height:88px;
+  overflow:hidden;pointer-events:none;z-index:5;border-top-right-radius:8px}
+.ribbon span{position:absolute;display:block;width:150px;left:-16px;top:20px;padding:3px 0;
+  transform:rotate(45deg);background:var(--accent);color:#0b0d10;font-size:10px;
+  font-weight:700;letter-spacing:.07em;text-align:center;text-transform:uppercase;
+  box-shadow:0 1px 4px rgba(0,0,0,.45)}
+.ribbon.asked span{background:#2f6b35;color:#fff}
 .card .offerbadge{position:absolute;right:6px;top:6px;z-index:4;background:rgba(7,10,14,.85);
   color:var(--fg);font-size:11px;font-weight:600;padding:2px 6px;border-radius:5px;
   display:flex;align-items:center;gap:4px}

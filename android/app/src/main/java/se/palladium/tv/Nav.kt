@@ -25,12 +25,16 @@ import androidx.compose.ui.input.key.type
  * the press is the search's as usual. It is answered before the search runs rather than
  * after it, which is the whole difference: afterwards, the focus had already gone.
  */
-fun Modifier.edge(up: (() -> Boolean)? = null, down: (() -> Boolean)? = null): Modifier =
+fun Modifier.edge(up: (() -> Boolean)? = null, down: (() -> Boolean)? = null,
+                  left: (() -> Boolean)? = null,
+                  right: (() -> Boolean)? = null): Modifier =
     onPreviewKeyEvent { e ->
         if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when (e.key) {
             Key.DirectionUp -> up?.invoke()
             Key.DirectionDown -> down?.invoke()
+            Key.DirectionLeft -> left?.invoke()
+            Key.DirectionRight -> right?.invoke()
             else -> null
         } ?: false
     }

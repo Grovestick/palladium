@@ -1382,6 +1382,9 @@ function card(it, onDeck, coll) {
   if (it.shuffle) el.classList.add("shuffled");
   // a film on offer from a torrent pack: not here yet, greyed until it is
   if (it.offered) el.classList.add("offered");
+  // Nothing in the house can be played from this card - it can only be asked for -
+  // and a band across the corner says so at a glance on a shelf of things that can.
+  if (it.askable) el.classList.add("askable");
   el.dataset.key = String(it.ratingKey || "");
   const srv = srvOf(it);
   const isEp = it.type === "episode";
@@ -1440,6 +1443,9 @@ function card(it, onDeck, coll) {
     (isFav(it) ? '<div class="favheart' + (isCopied(it) ? " stack" : "") +
       (pct ? " over" : "") + '" title="A favourite: kept on the other machine too, ' +
       'so it still plays when this server is off">&#9829;</div>' : "") +
+    (it.askable
+      ? '<div class="ribbon' + (it.asked ? " asked" : "") + '"><span>' +
+        (it.asked ? "Asked" : "Request") + "</span></div>" : "") +
     (it.offered ? '<div class="offerbadge">' + DOWNLOAD_MARK +
       (offerWord(it) ? "<span>" + esc(offerWord(it)) + "</span>" : "") + "</div>" : "") +
     (isWatched(it) ? '<div class="seen">&#10003;</div>'
@@ -1746,6 +1752,12 @@ const CATS = [
   // a show from 2008 airing this week is more recent than one from 2024 that ended
   { id: "releasedtv", title: "Recently released episodes", by: "originallyAvailableAt",
     path: (sec) => ["/library/sections/" + sec.show + "/recentlyReleased", {}] },
+  // What has just turned up to watch at home, none of which is in this house. Last
+  // on the page on purpose: everything above it can be played this minute.
+  // one server only: the list is a reading of a website rather than anything in a
+  // library, and asking every machine would put the same row up two or three times
+  { id: "streaming", title: "New on streaming", by: "addedAt", one: true,
+    path: (sec) => ["/library/streaming", {}] },
 ];
 
 /* The shelves this viewer keeps on the front page, in their order. Held by the
@@ -1840,7 +1852,10 @@ async function resumeFromDeck(it) {
    reply keeps a container's shape because the callers page against totalSize. */
 async function fetchCat(cat, start, size) {
   let total = 0;
-  const lists = await Promise.all(shownServers().map(async (srv) => {
+  // one server only where the shelf says so: a reading of a website is not held
+  // in any library, and asking every machine puts the same row up twice
+  const asking = cat.one ? [shownServers()[0] || null] : shownServers();
+  const lists = await Promise.all(asking.map(async (srv) => {
     try {
       const [p, q] = cat.path(await sectionsOf(srv));
       if (p.indexOf("null") >= 0) return [];       // that server has no such library
@@ -4264,18 +4279,24 @@ async function viewOffer(m) {
     '<div class="poster"><span class="ph"></span>' +
     (m.thumb ? '<img src="' + img(m.thumb, 400, 600) + '" alt="" onerror="this.remove()">' : "") +
     '<div class="offerbadge" id="offerpct" style="display:none"></div>' +
+    (m.askable ? '<div class="ribbon' + (m.asked ? " asked" : "") + '"><span>' +
+      (m.asked ? "Asked" : "Request") + "</span></div>" : "") +
     "</div>" +
     '<div class="meta"><h1>' + esc(m.title) + "</h1>" +
     '<div class="sub">' + [m.year, (m.genres || []).join(", "),
       o.size ? (o.size / 1e9).toFixed(1) + " GB" : "",
-      o.free != null ? o.free + " GB free on the download drive" : ""].filter(Boolean).map(esc)
+      (!m.askable && o.free != null) ? o.free + " GB free on the download drive" : ""]
+      .filter(Boolean).map(esc)
       .join(" &middot; ") + "</div>" +
     '<div class="actions"><button class="btn" id="offerget"></button>' +
     '<button class="btn ghost" id="offercancel" style="display:none">Cancel download</button>' +
     '<span class="note" id="offersaid"></span></div>' +
     '<p class="summary">' + esc(m.summary) + "</p>" +
-    '<div class="note">Not in the library yet. Download fetches this film alone from its ' +
-    "pack, and it appears in Films when it has arrived.</div></div>";
+    '<div class="note">' + (m.askable
+      ? "Not in the library, and not on any pack here. Asking puts it on the owner's "
+        + "list; nothing is fetched by asking."
+      : "Not in the library yet. Asking puts it on the owner's list - what comes into "
+        + "the house is theirs to decide.") + "</div></div>";
   main.appendChild(wrap);
   // a film on offer is still a film: what else is like it goes under it too
   moreLikeThis(m).then((box) => {
@@ -4324,7 +4345,7 @@ async function viewOffer(m) {
         (eta != null && eta >= 0 ? "  \u00b7  " + etaWords(eta) : "")
       : state === "queued" ? "Queued" + (o.place ? " \u00b7 " + o.place + " ahead" : "")
       : state === "done" ? "Downloaded - arriving"
-      : "\u2913 Download";
+      : (m.asked ? "Asked for" : "Request");
     said.textContent = why || (o.who && coming ? "Asked for by " + o.who : "");
   };
   draw(o.state, o.progress, o.free != null && !o.state && o.size / 1e9 > o.free
@@ -4380,22 +4401,27 @@ async function viewOffer(m) {
       said.textContent = r.why || "Could not cancel it";
     }
   };
+  // Asking, not fetching. What comes into the house is the owner's to decide, and a
+  // request that downloaded by itself would be a download button under another name.
   b.onclick = async () => {
     b.disabled = true;
     let r = {};
     try {
-      r = await (await fetch("/torrents/get", {
+      r = await (await fetch("/requests", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: m.ratingKey }) })).json();
+        body: JSON.stringify({ key: m.ratingKey, title: m.title, year: m.year,
+                               where: m.where || "" }) })).json();
     } catch (e) {
-      r = { ok: false, why: "The server did not answer" };
+      r = { error: "The server did not answer" };
     }
-    o.place = r.place || 0;
-    draw(r.ok ? (r.state || "queued") : "failed", r.progress, r.ok ? "" : r.why);
-    if (r.ok) {
-      toast((r.state === "queued" ? "Queued " : "Downloading ") + m.title);
-      drawDownloadBanner();
-      setTimeout(follow, 3000);
+    if (r.asked || r.already) {
+      m.asked = true;
+      b.textContent = "Asked for";
+      said.textContent = "Asked for. The owner decides what comes in.";
+      toast("Asked for " + m.title);
+    } else {
+      b.disabled = false;
+      said.textContent = r.error || "Could not ask for that just now";
     }
   };
 }
@@ -4453,7 +4479,7 @@ async function viewMovie(key) {
   onResize = null;
   main.innerHTML = '<div class="empty">Loading&hellip;</div>';
   const m = items(await api("/library/metadata/" + key))[0];
-  if (m && m.offered) return viewOffer(m);
+  if (m && (m.offered || m.askable)) return viewOffer(m);
   await refreshMarks();
   // filled in after the page is built, from the item the page was built from
   setTimeout(() => {

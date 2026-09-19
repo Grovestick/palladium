@@ -142,7 +142,6 @@ def wan_ip():
     if WAN["ip"] and time.time() - WAN["at"] < 3600:
         return WAN["ip"]
     try:
-        import urllib.request
         with urllib.request.urlopen("https://api.ipify.org", timeout=4) as r:
             ip = r.read().decode().strip()
         if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip):
@@ -159,6 +158,8 @@ def local():
         import pd_localapi as localapi
         # where this server keeps its papers, which is not where its code sits
         localapi.use_data_dir(ROOT)
+        import pd_streaming
+        pd_streaming.use_data_dir(ROOT)
         made = library.Library(ROOT)
         LOCAL = localapi.LocalAPI(made)
         # a conversion to title keys that failed leaves the library on its old keys,
@@ -307,7 +308,6 @@ def reachable_from_outside(port, timeout=14):
     check-host.net runs the attempt from several countries and reports each one. It
     refuses requests that do not look like a browser, hence the user agent.
     """
-    import urllib.request
 
     ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
@@ -479,7 +479,6 @@ def fetch_ffmpeg():
     it happens once, because somebody pressed a button that said it would.
     """
     import tarfile
-    import urllib.request
     import zipfile
     url = FFMPEG_FROM.get(os.name)
     if not url:
@@ -2258,6 +2257,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
             pd_update.install(onto)
             return
+        if path == "/requests":
+            # Somebody asking for a film this house has not got. It is written down
+            # rather than acted on: what comes into the house is the owner's to decide,
+            # and a request that fetched by itself would be a download button by
+            # another name.
+            body = self.read_json() or {}
+            key = str(body.get("key") or "")[:40]
+            if not key:
+                self.reply_json({"error": "which title?"}, 400)
+                return
+            book = self.read_requests()
+            mine = book.get(key) or {}
+            if mine and not mine.get("done"):
+                self.reply_json({"already": True, "request": mine})
+                return
+            title = str(body.get("title") or mine.get("title") or "")[:200]
+            who = self.guest_name if self.role == "guest" else "you"
+            mine = {"key": key, "title": title,
+                    "year": body.get("year") or mine.get("year"),
+                    "who": who, "when": int(time.time()),
+                    "where": str(body.get("where") or "")[:300],
+                    "done": False}
+            book[key] = mine
+            self.write_requests(book)
+            # and on the noticeboard, where requests are already answered
+            try:
+                self.file_report("request",
+                                 ("%s asked for %s" % (who, title or key))
+                                 + (chr(10) + str(mine.get("where") or "")).rstrip(),
+                                 self.app_name())
+            except Exception:
+                pass
+            self.reply_json({"asked": True, "request": mine})
+            return
+        if path == "/requests/done":
+            # marked as dealt with, so the poster stops saying it is being asked for
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            body = self.read_json() or {}
+            key = str(body.get("key") or "")
+            book = self.read_requests()
+            if key in book:
+                book[key]["done"] = bool(body.get("done", True))
+                book[key]["doneWhen"] = int(time.time())
+                self.write_requests(book)
+            self.reply_json({"requests": self.read_requests()})
+            return
         if path == "/collections/shuffle":
             # Putting a shelf on: a draw, a look, a step back, or carrying on with
             # what was left. The main server owns the round, so a machine keeping copies
@@ -3087,7 +3134,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                       f.height, f.channels, f.bitrate,
                                       e.aired AS aired,
                                       i.title AS title, i.year AS year,
-                                      i.sort_title AS sort_title
+                                      i.sort_title AS sort_title,
+                                      i.genres AS genres
                                FROM file f
                                LEFT JOIN episode e ON e.id = f.episode_id
                                LEFT JOIN item i ON i.id = f.item_id"""):
@@ -3101,8 +3149,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         # and this server's title for it. A follower names titles
                         # from file names, so any title with punctuation differed and
                         # lookups by name between the two returned nothing.
+                        # and what it is about. A copy names its titles off file
+                        # names and never learns a category, so every collection made
+                        # by category was empty there - which is the one place they
+                        # are read, the evening this machine is off.
                         titles[name] = {"title": row["title"], "year": row["year"],
-                                        "sort": row["sort_title"]}
+                                        "sort": row["sort_title"],
+                                        "genres": row["genres"]}
                         # and what was measured when it arrived here, so the cache
                         # does not have to open the file to know what is in it
                         facts[name] = {k: row[k] for k in
@@ -3810,7 +3863,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not token:
                 self.reply_json({"ok": False, "why": "that machine has no key here"})
                 return
-            import urllib.request
             try:
                 req = urllib.request.Request(
                     one["where"].rstrip("/") + "/library/config?t=" +
@@ -3855,7 +3907,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not token:
                 self.reply_json({"ok": False, "why": "that machine has no key here"})
                 return
-            import urllib.request
             try:
                 body = json.dumps({
                     "opensubtitles_key": key,
@@ -3966,7 +4017,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(403, "not allowed")
                 return
             body = self.read_json() or {}
-            key = re.sub(r"[^0-9]", "", str(body.get("key") or ""))
+            # twelve hex digits, letters and all. Keeping only the digits named a
+            # different title or none at all, so choosing how a season is numbered
+            # quietly did nothing - the same fault this page's rematch already carries
+            # a note about.
+            key = re.sub(r"[^0-9a-f]", "", str(body.get("key") or "").lower())
             season = re.sub(r"[^0-9]", "", str(body.get("season") or ""))
             mode = str(body.get("mode") or "auto")
             if not key or not season or mode not in ("auto", "files", "database"):
@@ -5838,6 +5893,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         hit = sum(1 for k in want if k in held)
         return "all" if hit == len(want) else ("some" if hit else "none")
 
+    @staticmethod
+    def requests_file():
+        return os.path.join(ROOT, "requests.json")
+
+    @staticmethod
+    def read_requests():
+        """Everything anybody has asked for, by the key they asked for it under."""
+        try:
+            with open(Handler.requests_file(), encoding="utf-8") as f:
+                said = json.load(f)
+            return said if isinstance(said, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    @staticmethod
+    def write_requests(book):
+        tmp = Handler.requests_file() + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(book, f, indent=2)
+            os.replace(tmp, Handler.requests_file())
+        except OSError:
+            pass
+
+    def asked_for(self, key):
+        """What is known about a request for this title, or nothing."""
+        return self.read_requests().get(str(key)) or None
+
     def collections(self):
         """This viewer's named shelves, in the order they were made."""
         stored = self.settings_file()
@@ -6573,7 +6656,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             con.close()
         if not what:
             return None
-        import urllib.request
         try:
             where = one["master"].rstrip("/")
             # by key first: both machines derive the same key from title and year,
@@ -6815,7 +6897,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                % (where, urllib.parse.quote(name), urllib.parse.quote(mark),
                   urllib.parse.quote(token)))
         try:
-            import urllib.request
             req = urllib.request.Request(
                 url, headers={"Range": "bytes=%d-%d" % (at, at + want - 1),
                               "X-Palladium-App": "house"})
@@ -7540,7 +7621,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not token:
             return []
         try:
-            import urllib.request
             with urllib.request.urlopen(
                     "%s/watching?t=%s" % (where, urllib.parse.quote(token)),
                     timeout=3) as answer:
@@ -7581,7 +7661,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             where = str(one.get("master") or "").rstrip("/")
             key = str(one.get("key") or "")
             if one.get("on") and where and key:
-                import urllib.request
                 with urllib.request.urlopen(
                         "%s/watching?t=%s" % (where, urllib.parse.quote(key)),
                         timeout=3) as answer:
@@ -11238,7 +11317,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         def work():
             cls.APP_FETCH.update(busy=True, tried=time.time())
             try:
-                import urllib.request
                 req = urllib.request.Request(cls.APP_FROM,
                                              headers={"User-Agent": "palladium"})
                 cls.APP_FETCH.update(where=cls.APP_FROM, got=0, size=0, part=0.0)
@@ -14788,7 +14866,6 @@ def already_serving():
     writing to the same files. One is asked before the second starts.
     """
     try:
-        import urllib.request
         req = urllib.request.Request("http://127.0.0.1:%d/config" % PORT,
                                      headers={"X-Palladium-App": "server"})
         with urllib.request.urlopen(req, timeout=2) as answer:
