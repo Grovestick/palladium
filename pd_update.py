@@ -119,8 +119,15 @@ def install(path):
     Not `&&` between the steps: taskkill returns a failure when there was nothing to
     kill, which would stop the chain before the installer ran.
     """
-    program = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Palladium",
-                           "palladium.exe")
+    # The server, which carries the tray icon itself. This was palladium.exe -
+    # the separate tray program, which has not been installed since the tray
+    # moved into the server - so every update ended with Windows saying it
+    # could not find it, in a box somebody had to press OK on. The old name is
+    # still started when it is there, for a machine that has not had a new
+    # installer yet.
+    here = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Palladium")
+    program = os.path.join(here, "palladium-server.exe")
+    tray = os.path.join(here, "palladium.exe")
     log = os.path.join(tempfile.gettempdir(), "palladium-update.log")
     script = os.path.join(tempfile.gettempdir(), "palladium-update.cmd")
     with open(script, "w", encoding="ascii", errors="replace") as f:
@@ -140,7 +147,8 @@ def install(path):
         f.write("ping -n 3 127.0.0.1 >nul\r\n")
         f.write('"%s" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS '
                 '/FORCECLOSEAPPLICATIONS /LOG="%s"\r\n' % (path, log))
-        f.write('start "" "%s"\r\n' % program)
+        f.write('if exist "%s" (start "" "%s") else (start "" "%s")\r\n'
+                % (tray, tray, program))
         f.write('exit\r\n')
     # A file rather than a line, and one shell starting another rather than one shell
     # doing the work: the chain is killed halfway through by design - it kills this

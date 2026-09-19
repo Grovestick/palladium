@@ -104,7 +104,7 @@ SENDING = {"busy": False, "left": 0, "sent": 0, "failed": 0, "why": ""}
 #: This is the channel a watch party will speak over: one line to every screen is the
 #: hard half, and what that needs on top of it is a sender's name, a message per
 #: viewer rather than one for the main server, and a guest allowed to send.
-NOTICE = {"id": 0, "text": "", "until": 0, "to": ""}
+NOTICE = {"id": 0, "text": "", "until": 0, "to": "", "play": "", "at": 0}
 #: Raised the moment a notice is written, so the screens waiting on one are answered
 #: at once rather than on their next visit. Cleared straight after: the flag is the
 #: knock on the door, and the id is what says whether it was already heard.
@@ -1438,6 +1438,22 @@ LOUDNESS_LOCK = threading.Lock()
 #: parts being measured now, so repeated requests do not start repeated measurements
 MEASURING = set()
 
+
+def anybody_watching():
+    """Whether a film is being read for somebody this minute, copying aside.
+
+    Asked of the live list rather than of Handler.WATCHING_NOW, which is written while
+    a file is being served and never taken down again: measuring stopped at the first
+    viewing after a restart and never started again, which is why a library of three
+    thousand files had twenty-five measured.
+    """
+    try:
+        return any(r.get("how") != "syncing" for r in WATCHING.snapshot())
+    except Exception:
+        return True                    # unanswerable: leave the disk alone
+#: the file being measured this minute, for Now playing to show
+MEASURE_NOW = {"name": "", "since": 0}
+
 #: Target loudness. Not EBU's -23: this library holds two copies of one episode 13 dB
 #: apart, and the usual level here is nearer streaming's -16 to -18.
 VOLUME_TARGET = -18.0
@@ -1469,14 +1485,24 @@ def write_loudness():
         pass
 
 
-def measure_loudness(part, path, size):
-    """Measure one file on a background thread and cache the result."""
+def measure_loudness(part, path, size, playing=False):
+    """Measure one file on a background thread and cache the result.
+
+    `playing` is the one exception to waiting for a quiet machine: the file somebody is
+    watching this minute. It is already being read off that disk, and it is the only
+    file whose measurement anybody is waiting for - left to the quiet rule it could
+    never be measured at all, because the rule is "not while anybody is watching" and
+    the file in question is the one being watched.
+    """
     def work():
+        MEASURE_NOW["name"] = os.path.basename(path or "")
+        MEASURE_NOW["since"] = int(time.time())
         try:
             import pd_gpu
             said = pd_gpu.loudness(path)
         except Exception:
             said = None
+        MEASURE_NOW["name"] = ""
         with LOUDNESS_LOCK:
             MEASURING.discard(str(part))
             if said is not None:
@@ -1487,7 +1513,7 @@ def measure_loudness(part, path, size):
     # same disks. Two concurrent measurements held a copy at 41 Mbit with the drive
     # at 57 ms latency. An unmeasured file plays uncorrected until the next quiet
     # moment.
-    if Handler.WATCHING_NOW or Handler.disk_reading_slow():
+    if (anybody_watching() and not playing) or Handler.disk_reading_slow():
         return
     with LOUDNESS_LOCK:
         read_loudness()
@@ -1500,7 +1526,99 @@ def measure_loudness(part, path, size):
     threading.Thread(target=work, name="palladium-loudness", daemon=True).start()
 
 
-def volume_gain(part, path=None, size=0, cfg=None):
+#: When each title fetched before anybody asked for it was first named, so one
+#: nobody ever got to can be dropped rather than held for ever. Kept on disk: the
+#: server is restarted often enough that a clock living in memory would never run out.
+AHEAD_SINCE = {}
+AHEAD_DAYS = 30.0
+
+
+def ahead_file():
+    return os.path.join(ROOT, "ahead.json")
+
+
+def read_ahead():
+    """When each fetched-ahead title was first named, read from disk once."""
+    if AHEAD_SINCE:
+        return AHEAD_SINCE
+    try:
+        with open(ahead_file(), encoding="utf-8") as f:
+            AHEAD_SINCE.update(json.load(f) or {})
+    except (OSError, ValueError):
+        pass
+    return AHEAD_SINCE
+
+
+def write_ahead():
+    try:
+        with open(ahead_file(), "w", encoding="utf-8") as f:
+            json.dump(AHEAD_SINCE, f)
+    except OSError:
+        pass
+
+
+#: the sweep through everything not measured yet, and when it last looked
+MEASURE_SWEEP = {"at": 0.0, "left": None}
+MEASURE_EVERY = 20.0
+
+
+def measure_the_backlog():
+    """Measure one unmeasured file, whenever nothing is playing and the disk is easy.
+
+    Called from the housekeeping round. One file at a time and only while the machine
+    is quiet, so it costs nothing anybody can feel; a library of a few thousand files
+    works through itself over a few nights, and a file that arrives tomorrow is picked
+    up the same way without anybody asking.
+    """
+    now = time.time()
+    if now - MEASURE_SWEEP["at"] < MEASURE_EVERY:
+        return
+    MEASURE_SWEEP["at"] = now
+    if anybody_watching() or Handler.disk_reading_slow():
+        return
+    with LOUDNESS_LOCK:
+        read_loudness()
+        if MEASURING:
+            return                     # one is running: it is ffmpeg, not a lookup
+        known = dict(LOUDNESS)
+    left = MEASURE_SWEEP["left"]
+    if not left:
+        # Read once and worked through, rather than a query per file: the point is to
+        # be cheap enough to run every twenty seconds for a week.
+        con = local().lib.db()
+        try:
+            rows = con.execute(
+                "SELECT id, path, size FROM file WHERE path IS NOT NULL "
+                "ORDER BY id DESC").fetchall()
+        finally:
+            con.close()
+        left = [(r["id"], r["path"], r["size"]) for r in rows
+                if str(r["id"]) not in known]
+        MEASURE_SWEEP["left"] = left
+    while left:
+        part, path, size = left.pop()
+        if str(part) in known:
+            continue
+        measure_loudness(part, path, size or 0)
+        return
+
+
+def keep_measuring():
+    """Work through the unmeasured files, one at a time, for as long as the server runs.
+
+    Its own loop rather than a turn in the folder watcher: that one walks the media
+    folders to notice new files, and asking it to tick three times as often to measure
+    faster would have tripled the walking as well.
+    """
+    while True:
+        try:
+            measure_the_backlog()
+        except Exception:
+            pass                      # measuring is never worth taking the server down
+        time.sleep(MEASURE_EVERY)
+
+
+def volume_gain(part, path=None, size=0, cfg=None, playing=False):
     """Correction in dB for this file, or 0.
 
     Every measured file is corrected, to the cap. A dead band left anything within
@@ -1514,7 +1632,7 @@ def volume_gain(part, path=None, size=0, cfg=None):
         known = read_loudness().get(str(part))
     if not known:
         if path:
-            measure_loudness(part, path, size)
+            measure_loudness(part, path, size, playing)
         return 0.0
     try:
         target = float(stored.get("volumeTarget") or VOLUME_TARGET)
@@ -1737,6 +1855,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                           "/subs/verify", "/subs/reset",
                           # their own shelves, and trying a rule before saving it
                           "/watchlist", "/favorites", "/collections", "/collections/test",
+                          "/collections/season",
                           # a title on or off a shelf, and a shelf played in shuffle: the
                           # round belongs to the person, and the owner is a guest from outside
                           "/collections/for", "/collections/mark",
@@ -1979,10 +2098,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # "all" means everybody including whoever is watching from away
             NOTICE["to"] = str(body.get("to") or "").strip()[:60]
             NOTICE["until"] = time.time() + hold if words else 0
+            # a line of words is not an instruction: whatever was to be played has
+            # been played, and must not be started again by the next screen to ask
+            NOTICE["play"] = ""
+            NOTICE["at"] = 0
             # everyone waiting hears it now
             NOTICE_RUNG.set()
             NOTICE_RUNG.clear()
             self.reply_json({"id": NOTICE["id"], "text": words, "seconds": hold})
+            return
+        if path == "/screen/play":
+            # Open a title on a screen in the house, from here. There was no way to
+            # do it at all: a television could be told a line of words and nothing
+            # else, so anything that had to be played on it had to be found on it,
+            # with the remote. Carried on the same held connection the notice uses,
+            # so it lands the moment it is sent.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            body = self.read_json() or {}
+            key = str(body.get("key") or "").strip()[:40]
+            if not key:
+                self.reply_json({"error": "which one?"}, 400)
+                return
+            NOTICE["id"] = NOTICE.get("id", 0) + 1
+            NOTICE["play"] = key
+            try:
+                NOTICE["at"] = max(0, int(body.get("at") or 0))
+            except (TypeError, ValueError):
+                NOTICE["at"] = 0
+            # a word with it, or none: "playing this on your television" is worth
+            # saying when somebody else set it going
+            NOTICE["text"] = str(body.get("text") or "").strip()[:200]
+            NOTICE["until"] = time.time() + 30 if NOTICE["text"] else 0
+            NOTICE["to"] = str(body.get("to") or "").strip()[:60]
+            NOTICE_RUNG.set()
+            NOTICE_RUNG.clear()
+            self.reply_json({"id": NOTICE["id"], "play": key, "at": NOTICE["at"],
+                             "to": NOTICE["to"]})
             return
         if path == "/machine":
             if self.role != "owner":
@@ -2094,7 +2247,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     onto = pd_update.fetch(stored.get("betaKey", ""),
                                            said.get("sha256"))
             except Exception as e:
-                note_fault(traceback.format_exc())
+                Handler.note_fault(None, traceback.format_exc())
                 self.reply_json({"ok": False, "why": "Could not fetch it: %s" % e}, 502)
                 return
             self.reply_json({"ok": True, "version": said.get("version", ""),
@@ -2166,7 +2319,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     shelf["hidden"] = [k for k in shelf["hidden"]
                                        if str(k) in byrule]
             wide = dict(shelf, hidden=[],
-                        rule=dict(shelf["rule"], without=[]))
+                        rule=dict(shelf["rule"], without=[], seasonWithout=""))
             con = local().lib.db()
             try:
                 took = self.collection_keys(con, shelf)
@@ -2176,15 +2329,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pinned = set(str(k) for k in (shelf["pinned"] or []))
                 struck = set(str(k) for k in (shelf["hidden"] or []))
                 rows, out = [], []
-                for key in self.collection_keys(con, wide):
-                    one = local().metadata_for(con, key, brief=True)
-                    if one:
-                        one["hand"] = key in pinned or key in struck
-                        (rows if key in held else out).append(one)
+                # Read the same way the saved shelf is, or the test says one thing
+                # and the shelf it makes says another: a programme as its seasons,
+                # and part of a season as that season with a count on it.
+                def cards(keys):
+                    seasoned, rest = self.read_as_seasons(con, [str(k) for k in keys])
+                    return seasoned + [one for one in
+                                       (local().metadata_for(con, k, brief=True)
+                                        for k in rest) if one]
+                for one in cards(took):
+                    one["hand"] = str(one.get("ratingKey")) in pinned
+                    rows.append(one)
+                # and what the rule would take with both excludes lifted, less
+                # whatever is already above: those are the ones that are out
+                shown = set(str(m.get("ratingKey")) for m in rows)
+                for one in cards(self.collection_keys(con, wide)):
+                    key = str(one.get("ratingKey"))
+                    if key in shown:
+                        continue
+                    one["hand"] = key in pinned or key in struck
+                    out.append(one)
             finally:
                 con.close()
+            # by programme and then by number, or "Season 10" sorts before "Season 2"
             order = lambda m: (int(m.get("year") or 0),
-                               (m.get("titleSort") or m.get("title") or ""))
+                               (m.get("titleSort")
+                                or (m.get("parentTitle") if m.get("type") == "season"
+                                    else "")
+                                or m.get("title") or ""),
+                               int(m.get("index") or 0))
             rows.sort(key=order)
             out.sort(key=order)
             self.reply_json({"Metadata": rows, "Excluded": out})
@@ -2643,6 +2816,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 write_settings(stored, merge=False)
                 self.reply_json({"autoNext": stored["autoNext"]})
                 return
+            if "remoteAdmin" in body:
+                # Only from the machine or this network, and only by the owner: turning
+                # it off from away would be the last thing that key could do, and
+                # turning it on from away is what somebody holding a stolen key wants.
+                if self.role != "owner" or not self.at_home():
+                    self.send_error(403, "not allowed from outside the house")
+                    return
+                stored = self.settings_file()
+                stored["remoteAdmin"] = bool(body["remoteAdmin"])
+                write_settings(stored, merge=False)
+                self.reply_json({"remoteAdmin": stored["remoteAdmin"]})
+                return
             # volume normalisation on/off, and the target in LUFS
             if "evenVolume" in body or "volumeTarget" in body:
                 stored = self.settings_file()
@@ -2768,6 +2953,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             rows = (self.read_json() or {}).get("progress") or []
             self.reply_json({"taken": local().take_progress(rows[:200])})
+            return
+        if path == "/follow/fetched":
+            # A machine that keeps copies saying what it fetched for itself while this
+            # one was off. The films are not asked for here - only named. What to do
+            # about them is decided on a thread of its own, because the answer is
+            # several gigabytes long and nothing should wait for it.
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if not (invite and invite.get("follows")) or self.follower_stopped():
+                self.send_error(403, "not allowed")
+                return
+            body = self.read_json() or {}
+            items = body.get("items")
+            # the address it answers on, as this machine already knows it, matched to
+            # where the request came from - not whatever the request claims to be
+            here = self.client_address[0]
+            where = ""
+            for known in list(Handler.FOLLOWERS):
+                # the host out of "http://address:port" without urllib: this method
+                # imports it further down, which makes the name local to the whole of
+                # it and unusable here
+                host = str(known).split("//")[-1].split(":")[0].split("/")[0]
+                if host == here:
+                    where = str(known).rstrip("/")
+                    break
+            if not isinstance(items, list) or not where:
+                self.reply_json({"taking": 0})
+                return
+            fresh = []
+            with Handler.FROM_COPY_LOCK:
+                known = {(str(x.get("hash")), int(x.get("index") or -1))
+                         for x in Handler.FROM_COPY}
+                for one in items[:200]:
+                    if not isinstance(one, dict):
+                        continue
+                    mark = (str(one.get("hash") or ""), int(one.get("index") or -1))
+                    if not mark[0] or mark[1] < 0 or mark in known:
+                        continue
+                    known.add(mark)
+                    fresh.append(dict(one, where=where))
+                Handler.FROM_COPY += fresh
+            if fresh:
+                Handler.take_from_the_copy()
+            self.reply_json({"taking": len(fresh)})
             return
         if path == "/follow/round":
             # shuffle rounds the cache moved while this machine was off: per shelf,
@@ -4048,8 +4276,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json({"started": True})
             return
         if path == "/library/browse":
-            # a small directory picker: list the folders inside a path
-            here = (self.read_json().get("path") or "").strip()
+            # a small directory picker: list the folders inside a path, and the files
+            # in it that end a given way - a torrent is chosen the same way a folder
+            # is, because a browser's own file box hands back a sandboxed name rather
+            # than a path this machine could open.
+            body = self.read_json() or {}
+            here = (body.get("path") or "").strip()
+            ending = str(body.get("files") or "")[:12].lower()
             try:
                 if not here:
                     if os.name == "nt":
@@ -4064,11 +4297,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                  if os.path.isdir(p)]
                     self.reply_json({"path": "", "parent": None, "dirs": roots})
                     return
-                entries = sorted([os.path.join(here, d) for d in os.listdir(here)
+                inside = os.listdir(here)
+                entries = sorted([os.path.join(here, d) for d in inside
                                   if os.path.isdir(os.path.join(here, d))
                                   and not d.startswith(("$", "."))])
+                files = sorted([os.path.join(here, d) for d in inside
+                                if ending and d.lower().endswith(ending)
+                                and os.path.isfile(os.path.join(here, d))]) if ending else []
                 parent = os.path.dirname(here.rstrip(os.sep + "/")) or ""
-                self.reply_json({"path": here, "parent": parent, "dirs": entries})
+                self.reply_json({"path": here, "parent": parent, "dirs": entries,
+                                 "files": files})
             except Exception as e:
                 self.reply_json({"error": str(e)[:120], "path": here, "dirs": []}, 400)
             return
@@ -4890,6 +5128,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # fifteen seconds before a frame - and it would cost that on every play.
             if wanted == "passthrough" and self.no_dolby_here((src or {}).get("file", "")):
                 wanted = "aac"
+            # Sound as it is, or picture and sound both made. Never one copied
+            # beside the other.
+            #
+            # Every torn picture seen here has been on that one path - the picture
+            # handed over as it stands while the sound is remade beside it, the two
+            # put back together into fragmented MP4 on the way out. A film sent as
+            # the file itself has never torn, and one encoded whole has never torn.
+            # The same episode plays perfectly and then tears, from the same file,
+            # at the same second: it is not the bit depth, not the resolution, not
+            # the container, and not where it is started from - all of those were
+            # tried and each was the same on a file that was fine.
+            #
+            # So the path is not used. It is reached only when the sound has to be
+            # remade and the picture need not be - a small part of any library, and
+            # untouched for everything that goes out as the file itself, which is
+            # what can be read off two machines at once and handed over when one goes.
+            if wanted != "passthrough":
+                copy = False
             # "Decoder: processor" on the settings page. The card is quicker and is
             # what this uses by default; the processor is there for a card that is
             # full, or busy with something else, or making a mess of a particular
@@ -5196,6 +5452,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         finally:
             con.close()
 
+    def ask_the_pack(self, keys):
+        """Start fetching anything here that only a pack has, quietly.
+
+        A shuffle can now draw a title the library does not hold. Nothing waits for
+        this: the draw answers at once, saying the title is still coming, and the
+        download runs behind it.
+        """
+        wanted = [str(k) for k in keys if str(k).startswith("o")]
+        if not wanted:
+            return
+
+        def work():
+            import pd_torrents
+            token = self.bearer() or "me"
+            cap = self.weekly_limits("downloadGbWeek").get(
+                self.name_of(token).strip().lower(), 0.0)
+            for key in wanted:
+                try:
+                    pd_torrents.request(key, token, self.watcher(), cap)
+                except Exception:
+                    pass               # a shuffle is not held up by a download
+        threading.Thread(target=work, daemon=True).start()
+
     def fetch_ahead(self, keys):
         """Fetch subtitles for what is coming, quietly and in the background.
 
@@ -5223,6 +5502,150 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return []
         finally:
             con.close()
+
+
+    def read_as_seasons(self, con, raw):
+        """A shelf's keys as the cards they are read as: seasons, not episodes.
+
+        Returns (cards, keys) - the season cards, and the keys that are not part of
+        any of them and stand for themselves.
+        """
+        # Episodes stand as the seasons they belong to. A shelf holding four
+        # episodes of a fifty-six episode programme showed four episode cards
+        # and said nothing about the programme; one season card saying "4 of
+        # 56 episodes" is what somebody reading the shelf wants to know. The
+        # episodes are still what the shelf holds - this is how it is read,
+        # not what it is.
+        keys, seasons, whole = [], {}, set()
+        for key in raw:
+            if key.startswith("e"):
+                seat = con.execute(
+                    "SELECT item_id, season, number FROM episode WHERE id=?",
+                    (key,)).fetchone() if is_episode(key) else None
+                if seat:
+                    where = "%s-s%d" % (seat["item_id"], seat["season"] or 0)
+                    seasons.setdefault(where, [])
+                    seasons[where].append((seat["number"] or 0, key))
+                    continue
+            elif re.match(r"^[0-9a-f]{12}-s\d+$", key):
+                whole.add(key)
+                continue
+            keys.append(key)
+        # A programme is its seasons too. One card for a thirty-five season
+        # series said nothing about which part of it is on the shelf, and
+        # there was nothing to open to take a single episode off.
+        mine = [k for k in keys if re.fullmatch(r"[0-9a-f]{12}", k)]
+        if mine:
+            shows = set(str(r["id"]) for r in con.execute(
+                "SELECT id FROM item WHERE type='show' AND id IN (%s)"
+                % ",".join("?" * len(mine)), mine))
+            drawn = set()
+            for show in shows:
+                mine = set()
+                for r in con.execute(
+                        "SELECT DISTINCT season FROM episode WHERE item_id=?",
+                        (show,)):
+                    whole.add("%s-s%d" % (show, r["season"] or 0))
+                    mine.add(int(r["season"] or 0))
+                    drawn.add(show)
+                # and the seasons only a pack has. A programme somebody holds a
+                # dozen episodes of drew nine tiles of one and two episodes each
+                # and said nothing about the rest of the series, which is most of
+                # it - the same merge the programme's own page already makes.
+                row = con.execute("SELECT title FROM item WHERE id=?",
+                                  (show,)).fetchone()
+                for extra in local()._offered_seasons_of(
+                        row["title"] if row else "", mine):
+                    whole.add("%s-s%d" % (show, int(extra.get("index") or 0)))
+                    drawn.add(show)
+            # a programme with no episodes here has no seasons to draw, so it
+            # keeps its own card rather than disappearing off the shelf
+            keys = [k for k in keys if k not in drawn]
+        # what each of those seasons holds - one query per programme, not one
+        # per episode: a shelf of long-running series is thousands of them
+        here = {}
+        for show in sorted(set(k.partition("-s")[0] for k in whole)):
+            for r in con.execute(
+                    "SELECT id, season, number FROM episode WHERE item_id=? "
+                    "ORDER BY season, number", (show,)):
+                where = "%s-s%d" % (show, r["season"] or 0)
+                if where in whole:
+                    seasons.setdefault(where, [])
+                    seasons[where].append((r["number"] or 0, str(r["id"])))
+                    here.setdefault(where, set()).add(int(r["number"] or 0))
+        # A season a pack can give and this machine has none of has no rows at all,
+        # so it had no tile; a season it has two episodes of is not two episodes
+        # long. How big each one really is comes from the pack, the way the
+        # programme's own page already counts them.
+        sizes = {}
+        for where in whole:
+            seasons.setdefault(where, [])
+            show, _, number = where.partition("-s")
+            row = con.execute("SELECT title FROM item WHERE id=?", (show,)).fetchone()
+            try:
+                number = int(number)
+            except ValueError:
+                continue
+            extra = local()._offered_episodes_of(
+                row["title"] if row else "", number, here.get(where) or set())
+            if extra:
+                sizes[where] = len(here.get(where) or ()) + len(extra)
+        rows = []
+        for where, inside in seasons.items():
+            one = self.season_card(con, where, inside)
+            if one:
+                # what is here, against the whole of it - the rest is downloadable
+                one["leafCount"] = max(int(one.get("leafCount") or 0),
+                                       int(sizes.get(where) or 0))
+                # nothing of it here yet: greyed like any other thing a pack can
+                # give, so a series mostly on offer reads as one at a glance
+                if not inside:
+                    one["offered"] = True
+                rows.append(one)
+        return rows, keys
+
+    def season_card(self, con, where, inside):
+        """One season key as the card that is read for it, or None.
+
+        Named as the season it is. The key for a season answers with the
+        programme, so nineteen cards all read as the same programme and
+        counted their episodes against the whole of it - "7 of 179" for
+        a season of twelve, nineteen times over.
+        """
+        one = local().metadata_for(con, where, brief=True)
+        if not one:
+            return None
+        show, _, number = str(where).partition("-s")
+        try:
+            number = int(number)
+        except ValueError:
+            number = 0
+        seat = con.execute(
+            "SELECT COUNT(*) c FROM episode WHERE item_id=? AND season=?",
+            (show, number)).fetchone()
+        one = dict(one)
+        one["type"] = "season"
+        one["ratingKey"] = str(where)
+        # the programme it hangs off, so pressing the card opens the
+        # show at this season rather than at the first one
+        one["parentRatingKey"] = show
+        one["parentTitle"] = one.get("title") or ""
+        one["grandparentTitle"] = one.get("title") or ""
+        one["title"] = "Season %d" % number if number else "Specials"
+        one["index"] = number
+        # how much of it is here, against how much of it there is: the
+        # difference between a season on a shelf and part of one
+        seen = set()
+        mine = [k for _, k in sorted(inside)
+                if not (k in seen or seen.add(k))]
+        one["leafCount"] = int((seat and seat["c"]) or len(mine))
+        one["shelfCount"] = len(mine)
+        # and what it stands for, in order. A card rolled up out of
+        # episodes is a way of reading the shelf; playing it has to play
+        # the episodes, and playing the season's own key opened the
+        # programme's page instead - Play took somebody to the show.
+        one["holds"] = mine
+        return one
 
     def season_of(self, ekey):
         """The season key one episode belongs to, or an empty string."""
@@ -5494,19 +5917,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Within a rule every word must appear, in any order and anywhere in the
         # title - so "star wars" is narrower than "star", and "alien | predator" is
         # two rules rather than one long one.
-        words = [w.strip().lower() for w in (rule.get("words") or []) if w.strip()]
-        rules = [[part for part in one.split() if part] for one in words]
+        # Punctuation is dropped from both sides before they are compared. A rule
+        # typed as "Its Always Sunny" found nothing at all, because the apostrophe in
+        # the title means "its" is not inside "it's" - and nobody types the
+        # apostrophe when they are naming a shelf.
+        def plain(said):
+            # dropped, not turned into a gap: an apostrophe spaced out leaves "it s",
+            # which the word somebody typed is no more inside than it was before
+            kept = "".join(c for c in str(said or "").lower()
+                           if c.isalnum() or c.isspace())
+            return " ".join(kept.split())
+
+        words = [plain(w) for w in (rule.get("words") or []) if str(w).strip()]
+        rules = [[part for part in one.split() if part] for one in words if one]
         # and the other half of the rule: what the words above catch and should not.
         # Read the same way - every word in a rule must appear - and a title answering
         # any of them stays out, whatever the include rules said.
-        bans = [w.strip().lower() for w in (rule.get("without") or []) if w.strip()]
-        blocked = [[part for part in one.split() if part] for one in bans]
+        bans = [plain(w) for w in (rule.get("without") or []) if str(w).strip()]
+        blocked = [[part for part in one.split() if part] for one in bans if one]
+        # A programme joins whole unless a span says which part of it. The span is
+        # read per episode, and the seasons it touches are what the shelf shows.
+        import pd_seasons
+        spans = pd_seasons.parse(rule.get("season") or "")
+        # and the part of that span to leave out, so "all of it except season 2" is
+        # one rule rather than nine
+        nope = pd_seasons.parse(rule.get("seasonWithout") or "")
         kind = (rule.get("type") or "").strip()
         genres = {g.strip().lower() for g in str(rule.get("genre") or "").split(",")
                   if g.strip()}
         early = int(rule.get("from") or 0)
         late = int(rule.get("to") or 0)
         found = []
+        here = set()
         if words or kind or genres or early or late:
             sql = "SELECT id, title, sort_title, year, genres, type FROM item WHERE 1=1"
             args = []
@@ -5520,7 +5962,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 sql += " AND year <= ?"
                 args.append(late)
             for row in con.execute(sql + " ORDER BY sort_title", args):
-                name = (row["title"] or "").lower()
+                name = plain(row["title"])
                 if rules and not any(all(part in name for part in one)
                                      for one in rules):
                     continue
@@ -5530,17 +5972,71 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not genres <= {g.strip().lower()
                                   for g in (row["genres"] or "").split(",")}:
                     continue
+                # A span only means anything to a programme; a film has no
+                # seasons and is left exactly as it was.
+                if (spans or nope) and row["type"] == "show":
+                    def inside(sn, n):
+                        if spans and not pd_seasons.holds(spans, sn, n):
+                            return False
+                        return not (nope and pd_seasons.holds(nope, sn, n))
+                    bysn = {}
+                    for r in con.execute(
+                            "SELECT id, season, number FROM episode WHERE item_id=? "
+                            "ORDER BY season, number", (row["id"],)):
+                        bysn.setdefault(int(r["season"] or 0), []).append(
+                            (int(r["number"] or 0), str(r["id"])))
+                    kept = False
+                    for sn in sorted(bysn):
+                        eps = bysn[sn]
+                        mine = [key for n, key in eps if inside(sn, n)]
+                        if not mine:
+                            continue
+                        kept = True
+                        if len(mine) == len(eps):
+                            # the shape the rest of the program already uses for a
+                            # season - spread(), covers() and the marks all read it
+                            found.append("%s-s%d" % (row["id"], sn))
+                        else:
+                            # part of a season is the episodes themselves: a span
+                            # ending at s6e2 that put the whole of season six on the
+                            # shelf is not the span that was written
+                            found += mine
+                    # and the seasons only a pack has: a span over a programme
+                    # this machine holds a dozen episodes of was read against those
+                    # twelve alone, so excluding the last few seasons left seven
+                    # tiles rather than the rest of the series.
+                    for s_o in local()._offered_seasons_of(row["title"], set(bysn)):
+                        sn = int(s_o.get("index") or 0)
+                        nums = [int(e.get("index") or 0) for e in
+                                local()._offered_episodes_of(row["title"], sn, set())]
+                        if any(inside(sn, n) for n in nums):
+                            found.append("%s-s%d" % (row["id"], sn))
+                            kept = True
+                    if not kept:
+                        continue
+                    here.add((name, int(row["year"] or 0)))
+                    continue
                 found.append(str(row["id"]))
+                # what the library already holds, so a pack offering the same
+                # programme does not put it on the shelf a second time
+                here.add((name, int(row["year"] or 0)))
             # films on offer from a torrent pack, by the same rule: they join the shelf
             # greyed until they are here
-            if kind in ("", "movie"):
+            if kind in ("", "movie", "show"):
                 try:
                     import pd_torrents
-                    offers = pd_torrents.offered()
+                    offers = []
+                    if kind in ("", "movie"):
+                        offers += pd_torrents.offered()
+                    # and the programmes a pack can give. A shelf matched the library
+                    # and the films on offer, so a series that only a pack has could
+                    # not join one - it is on the shelf everywhere else it is listed.
+                    if kind in ("", "show"):
+                        offers += pd_torrents.offered_shows()
                 except Exception:
                     offers = []
                 for one in offers:
-                    name = (one.get("title") or "").lower()
+                    name = plain(one.get("title"))
                     year = int(one.get("year") or 0)
                     if (early and (not year or year < early)) or (late and (not year or year > late)):
                         continue
@@ -5549,6 +6045,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if any(all(part in name for part in r) for r in blocked):
                         continue
                     if not genres <= {g.strip().lower() for g in one.get("genres") or []}:
+                        continue
+                    # The Simpsons stood on a shelf twice: once as the programme in
+                    # the library and once as the same programme a pack was offering.
+                    # An offer is only worth showing for something not already here.
+                    if (name, year) in here or any(n == name for n, _y in here):
                         continue
                     found.append(str(one["ratingKey"]))
         # by hand: what the rule missed, and what it should not have caught
@@ -6415,6 +6916,66 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Whether game mode is on and holding this kind of work back."""
         game = cls.game_mode()
         return bool(game["on"] and game.get(what))
+
+    #: Films the machine keeping copies fetched for itself while this one was off,
+    #: waiting to be copied back. Named by the pack and the file inside it, because
+    #: that is what decides where it has to sit for qBittorrent to know it.
+    FROM_COPY = []
+    FROM_COPY_LOCK = threading.Lock()
+    FROM_COPY_BUSY = [False]
+
+    @classmethod
+    def take_from_the_copy(cls):
+        """Fetch back what the other machine downloaded while this one was away.
+
+        Over the house network rather than off the internet a second time, into the
+        place this pack expects, and then qBittorrent is asked to look again - so the
+        film is seeded from here too instead of being fetched all over again. One at a
+        time and never more than one thread: this is several gigabytes of somebody
+        else's evening and nothing is waiting on it.
+        """
+        with cls.FROM_COPY_LOCK:
+            if cls.FROM_COPY_BUSY[0]:
+                return
+            cls.FROM_COPY_BUSY[0] = True
+
+        def work():
+            import pd_torrents
+            try:
+                while True:
+                    with cls.FROM_COPY_LOCK:
+                        if not cls.FROM_COPY:
+                            return
+                        one = cls.FROM_COPY.pop(0)
+                    where = str(one.get("where") or "").rstrip("/")
+                    mark, at = str(one.get("hash") or ""), int(one.get("index") or -1)
+                    if not where or not mark or at < 0:
+                        continue
+                    # already here and the right length: nothing to fetch
+                    mine = pd_torrents.file_of(mark, at)
+                    size = int(one.get("size") or 0)
+                    if mine and os.path.exists(mine) and size and                             os.path.getsize(mine) == size:
+                        continue
+                    url = ("%s/follow/file?hash=%s&index=%d"
+                           % (where, urllib.parse.quote(mark), at))
+                    try:
+                        req = urllib.request.Request(
+                            url, headers={"X-Palladium-App": "house"})
+                        with urllib.request.urlopen(req, timeout=1800) as answer:
+                            got = pd_torrents.place_and_recheck(
+                                mark, at, str(one.get("name") or ""), answer, size)
+                    except Exception as e:
+                        Handler.note_fault(
+                            None, "taking back %s: %s" % (one.get("title"), e))
+                        continue
+                    if got:
+                        Handler.note_fault(
+                            None, "took back from the copy: %s" % (one.get("title"),))
+            finally:
+                with cls.FROM_COPY_LOCK:
+                    cls.FROM_COPY_BUSY[0] = False
+
+        threading.Thread(target=work, daemon=True).start()
 
     #: what the graphics card last said about itself, and when
     CARD = {"when": 0.0, "said": {}}
@@ -7461,11 +8022,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "ahead are per-machine settings, under the cache machine in "
                     "Settings; these are the bounds around them.",
              "rows": [
-                 row("Part-way, each person", "%d films, %d days"
-                     % (cls.PARTWAY_EACH, cls.PARTWAY_DAYS),
-                     "How many titles one person contributes as \"part-way through\", "
-                     "and how old a stored position may be before it stops counting. "
-                     "40 each with no age limit made a queue of 110."),
+                 row("Part-way, each person", "%d days" % cls.PARTWAY_DAYS,
+                     "Everything one person is part-way through, however many that "
+                     "is - the episode they are on and the one before it, for each "
+                     "programme. Only the age of a stored position bounds it now, "
+                     "and the disk cap decides what falls off. Six programmes each "
+                     "meant a series watched last week was not among them, so its "
+                     "next episode was on no list and the copy did not have it."),
+                 row("Kept after it leaves the screen", "the last %d each"
+                     % cls.SCREEN_EACH,
+                     "A title drops off the keep list the moment its player stops "
+                     "reporting, and a copy deletes what the list no longer names - "
+                     "which took a file out from under somebody with a minute of it "
+                     "still to run. The one just finished is held while the next is "
+                     "watched, and is there to go back to; the disk cap decides when "
+                     "it goes."),
                  row("Least kept ahead", "%d episodes" % cls.LEAST_AHEAD,
                      "Floor on the episode count, whatever the hours setting works out "
                      "to."),
@@ -7671,11 +8242,61 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None, []
         con = local().lib.db()
         try:
-            # a film on offer cannot be played: the hat is what is here
-            return shelf, [str(k) for k in self.collection_keys(con, shelf)
-                           if not str(k).startswith("o")]
+            # What a pack can give belongs in the hat too. It cannot be played the
+            # second it is drawn - it has to be fetched first - so the draw still
+            # prefers anything already here, and asks for the rest in the background.
+            #
+            # And a programme is drawn an episode at a time. A shelf matches titles,
+            # so a rule that catches a series put the series on the shelf and the hat
+            # had one thing in it that could not be played at all. Every episode of it
+            # goes in instead - the ones here, and the ones a pack has.
+            return shelf, self.shelf_pool(con, shelf)
         finally:
             con.close()
+
+    def shelf_pool(self, con, shelf):
+        """Everything one collection holds, an episode at a time for a programme."""
+        pool = []
+        for key in self.collection_keys(con, shelf):
+            key = str(key)
+            if is_episode(key):
+                pool.append(key)
+                continue
+            if key.startswith("os"):
+                pool += self.offered_episode_keys(key)
+                continue
+            if re.match(r"^[0-9a-f]{12}-s\d+$", key):
+                # a season stands for its episodes; its own key plays nothing
+                pool += self.spread(key)
+                continue
+            rows = con.execute(
+                """SELECT e.id FROM episode e JOIN file f ON f.episode_id = e.id
+                   WHERE e.item_id = ? GROUP BY e.id
+                   ORDER BY e.season, e.number""", (key,)).fetchall()
+            pool += [str(r["id"]) for r in rows] if rows else [key]
+        seen, out = set(), []
+        for key in pool:
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+        return out
+
+    @staticmethod
+    def offered_episode_keys(show_key):
+        """Every episode one pack can give of one offered programme."""
+        try:
+            import pd_torrents
+            out = []
+            for season in pd_torrents.offered_seasons(show_key):
+                for one in pd_torrents.offered_episodes(show_key,
+                                                        int(season.get("index") or 0)):
+                    key = str(one.get("ratingKey") or "")
+                    if key:
+                        out.append(key)
+            return out
+        except Exception:
+            return []
+
 
     def shuffle_draw(self, cid, peek=False, resume=False, back=False):
         """Draw the next thing from one shelf, or look at it without drawing.
@@ -7696,10 +8317,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         one = self.shuffle_round(mine, cid)
         # the title the round is on, before the hat is refilled under it
         current = self.shuffle_current(one) if resume else ""
-        played = [k for k in (one.get("played") or []) if k in pool]
+        # What the round has drawn, whole, and the part of it this shelf still holds.
+        # Only the second decides what is left to draw - but the whole is what gets
+        # written back. Keeping the filtered list was throwing the rest away: a shelf
+        # is a rule over a library, so a machine holding part of one answers with a
+        # smaller pool, and one draw served there forgot every title the pool did not
+        # name. Episodes watched a fortnight ago came round again the same evening.
+        whole = [str(k) for k in (one.get("played") or [])]
+        played = [k for k in whole if k in pool]
         left = [k for k in pool if k not in played]
         if not left:                      # the hat is empty: fill it, count the round
-            played, left = [], list(pool)
+            whole, played, left = [], [], list(pool)
             one["run"] = int(one.get("run") or 1) + 1
 
         if back:
@@ -7707,9 +8335,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # just watching, not another draw
             if len(played) < 2:
                 return {"error": "nothing before this one"}
-            played = played[:-1]
+            # Back past anything this machine has not got. A copy holds part of the
+            # shelf and its history names titles it never had, so previous handed back
+            # a key it could not resolve at all - a dead end rather than the episode
+            # before. Forward already drew only from what is here.
+            step = played[:-1]
+            while step and not self.can_be_played(step[-1]):
+                step = step[:-1]
+            if not step:
+                return {"error": "nothing before this one"}
+            # off the end of both: the whole list is what is kept, and the tail
+            # being stepped past has to leave it too
+            dropped = set(played[len(step):])
+            played = step
             key = played[-1]
-            one["played"] = played
+            one["played"] = [k for k in whole if k not in dropped]
             Handler.round_moved(one)
             write_settings(stored)
             return self.shuffle_said(one, key, pool, left)
@@ -7732,33 +8372,48 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # a file on the main server and this changes nothing there; on a copy holding
         # part of the shelf it is the difference between carrying on and a shuffle
         # that stops at the first title the copy has not got yet.
+        # Nothing the hat has drawn is here: draw again from the rest of the shelf
+        # that is, and keep that as the hat. Looking only inside the ten it had drawn
+        # and falling back to the first of them handed back a title this machine
+        # cannot play - a shuffle that stops on a copy while the main server is off,
+        # which is the one time it has to work.
+        if not any(self.can_be_played(k) for k in queue):
+            here = [k for k in left if self.can_be_played(k) and k not in queue]
+            if here:
+                random.shuffle(here)
+                # One added, not ten drawn again. The hat is what the other machine is
+                # fetching: replacing it wholesale every time this machine could not
+                # play any of it had the copy chasing a list that changed under it -
+                # in one day, 381 copies of 207 files, 174 of them fetched a second
+                # time or a sixth. The ten already drawn stay drawn, and something
+                # this machine can actually play goes on the end of them.
+                queue = queue + here[:1]
         playable = [k for k in queue if self.can_be_played(k)]
-        if playable:
-            key = playable[0]
-        elif queue:
-            key = queue[0]
-        else:
-            here = [k for k in left if self.can_be_played(k)]
-            key = random.choice(here or left)
+        key = (playable[0] if playable
+               else (queue[0] if queue else random.choice(left)))
         if peek:
             one["queue"] = queue
             Handler.round_moved(one)
             write_settings(stored)
             return self.shuffle_said(one, key, pool, left)
-        one["played"] = played + [key]
+        one["played"] = whole + [key] if key not in whole else list(whole)
         one["queue"] = [k for k in queue if k != key]
         Handler.round_moved(one)
         write_settings(stored)
         self.fetch_ahead(one["queue"][:3])
+        # and the ones a pack has to give, asked for before they are wanted: the one
+        # drawn first, then the next few in the hat. A title that is still coming is
+        # handed back saying so, and the player waits on it rather than failing.
+        self.ask_the_pack([key] + [k for k in one["queue"][:3]])
         return self.shuffle_said(one, key, pool, left, drawn=True)
 
     def can_be_played(self, key):
         """Whether this machine holds a file for one title.
 
         True for everything on the main server. A copy holds part of a shelf, and
-        drawing a title it has not got yet ends the evening: the film cannot be
-        fetched from a main server that is off, which is the only time a copy is
-        answering a draw at all.
+        drawing a title it has not got yet stops playback: the film cannot be fetched
+        from a main server that is off, which is the only time a copy is answering a
+        draw at all.
         """
         try:
             return bool(local().file_for(str(key), 0))
@@ -7811,7 +8466,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             places.pop(str(key), None)
         else:
-            places[str(key)] = {"at": int(position), "when": int(time.time())}
+            # One place per shelf, and it is this one. A shuffle draws a title, some
+            # of it is watched, and the next draw leaves that place behind - eight of
+            # them had built up, every one an episode half watched that the copy was
+            # still holding and Continue watching could still offer. A shuffle is one
+            # thing at a time: where it is now is the only place worth keeping.
+            places = {str(key): {"at": int(position), "when": int(time.time())}}
         one["at"] = places
         Handler.round_moved(one)
         write_settings(stored)
@@ -7984,7 +8644,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 ahead.append(now_on)
             ahead += [str(k) for k in (one.get("queue") or [])
                       if str(k) not in played and str(k) not in ahead]
-        return ahead[:10]
+        # The hat's depth plus the one being watched. Ten counted both, so a round on
+        # a title plus a queue ten deep came to eleven and the last of the hat was
+        # dropped - the one the copy then had no file for.
+        return ahead[:self.SHUFFLE_DEEP + 1]
 
     #: however few hours are asked for, a series is copied this far ahead: an
     #: evening is at least three episodes of anything.
@@ -7997,6 +8660,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: What the shuffle has drawn for somebody. Copied as it stands, with nothing
     #: taken after it: the next thing a shuffle plays is the next thing it draws.
     DRAWN = set()
+
+    #: Keys last seen playing unchosen, and when. CASUAL_NOW holds only what a player
+    #: is reporting this second, and the screen list below outlives that by design -
+    #: so the episode a shuffle played a minute ago read as an ordinary one, and the
+    #: run of episodes after it was stocked in season order for a shelf that is never
+    #: played in season order. A key is dropped again the moment somebody chooses it.
+    CASUAL_SEEN = {}
+    CASUAL_KEEP = 200
 
     #: The most this machine has been seen to shift at once, and when that was seen.
     #: Nobody can ask a network how fast it is; what it has actually carried is the
@@ -8041,9 +8712,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     PARTWAY_EACH = 6
     PARTWAY_DAYS = 30
 
+    #: The title each viewer has on a screen and the one before it, newest first. A
+    #: copy is asked to hold them until newer ones push them off, rather than for so
+    #: many hours: an episode stopped being wanted the moment its player went quiet,
+    #: and the copy deleted it with a minute of it still to run. The one before is
+    #: kept so somebody going back an episode to remind themselves what happened does
+    #: not wait for it to be fetched again. What finally takes them off the disk is
+    #: the cap, which deletes the oldest first.
+    SCREEN_LATELY = {}
+    SCREEN_EACH = 2
+
+    #: keys put on the list because they follow something, rather than because anybody
+    #: asked for them; rebuilt every time the list is made
+    FETCHED_AHEAD = set()
+
     KINDS = {
-        "partway": ("part-way through",),
-        "watchlist": ("on their watchlist", "a favourite"),
+        "partway": ("part-way through", "the one before it"),
+        "watchlist": ("on their watchlist", "a favourite", "on a shelf"),
         "lately": ("watched lately",),
         "shuffle": ("the shuffle's next", "left part-way in the shuffle"),
         "screen": ("on a screen now",),
@@ -8056,6 +8741,93 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if why in reasons:
                 return kind
         return ""
+
+    def partway_keys(self, con, who):
+        """What one viewer is part-way through, by programme rather than by episode.
+
+        The question asked here used to be whether a progress row had been stopped in
+        the middle, which is part-way through an *episode* - so somebody working
+        through a series and finishing each one was never part-way through anything.
+        A programme watched that way had nothing kept ahead of it at all, and the
+        episode Continue watching was offering was the one episode the copy did not
+        hold: press play with the main server off and there was nothing to read.
+
+        Continue watching has always answered this properly - a finished episode hands
+        over to the first unwatched one after it - so the same two steps are taken
+        here. Stopped in the middle still counts, and is preferred: it is where
+        somebody actually is.
+        """
+        out, seen, shows = [], set(), set()          # (key, why) for each
+        # What this viewer has cleared off Continue watching. Saying "I am done with
+        # this" took it off the shelf and left the copy holding it: ninety-eight
+        # titles were being kept part-way through while the shelf showed two. Aside
+        # is the same answer to both questions.
+        # Both places it can be written: the owner's own settings sit at the top of
+        # the file and every other viewer's under their key, and the same programme
+        # can be in either. The later of the two stands.
+        aside = {}
+        stored = self.settings_file()
+        for holder in (stored, (stored.get("users") or {}).get(who) or {}):
+            for k, when in (holder.get("deckAside") or {}).items():
+                try:
+                    if float(when or 0) > float(aside.get(k, 0) or 0):
+                        aside[str(k)] = float(when or 0)
+                except (TypeError, ValueError):
+                    continue
+
+        def take(key, why="part-way through"):
+            key = str(key or "")
+            if key and key not in seen:
+                seen.add(key)
+                out.append((key, why))
+
+        since = int(time.time()) - self.PARTWAY_DAYS * 86400
+        for row in con.execute(
+                """SELECT key, position, duration, updated,
+                          COALESCE(marked, 0) marked FROM progress WHERE who = ?
+                   AND COALESCE(casual, 0) = 0 AND updated > ? AND position > 30
+                   ORDER BY updated DESC LIMIT 400""", (who, since)):
+            key = str(row["key"])
+            # One programme once, as the shelf itself shows: a series watched out of
+            # order would otherwise name a key for every gap in it.
+            family = local().deck_family(con, key)
+            if family in shows:
+                continue
+            shows.add(family)
+            # put aside by hand, and nothing watched since: the same test the shelf
+            # itself makes, so the two cannot disagree about what is still going on
+            if float(aside.get(family, 0) or 0) >= float(row["updated"] or 0):
+                continue
+            # A mark made by hand is finished however little of it was played - the
+            # shelf says so, and the two must not disagree about what is still going
+            # on. Ninety-five titles were being kept part-way through while the shelf
+            # showed two, and most of them had been ticked off by hand.
+            done = bool(row["marked"]) or local().watched_through(
+                row["position"], row["duration"])
+            if not done:
+                take(key)                  # stopped in the middle of this one
+                # and the one before it, the same as for an episode just finished:
+                # being part-way through one is the commoner way to be part-way
+                # through a programme, and it was the branch that stopped here.
+                if key.startswith("e"):
+                    take(local().prev_episode_key(con, key), "the one before it")
+                continue
+            # Finished. What follows it is what somebody reaches for next - and only
+            # an episode; a film that is over leads nowhere.
+            if not key.startswith("e"):
+                continue
+            after = key
+            for _ in range(400):           # a season is not longer than this
+                after = local().next_episode_key(con, after)
+                if not after or not local()._watched(con, after):
+                    break
+            take(after)
+            # and the one just finished. It is what somebody goes back to - the end of
+            # it missed, or the whole of it again - and holding only what comes next
+            # meant the copy had the episode ahead and not the one behind, which is
+            # the one they had actually been watching.
+            take(key, "the one before it")
+        return out
 
     def wanted_keys(self, con, hours, deck, episodes, mine, casual, whole, watched=None,
                     kinds=None):
@@ -8093,8 +8865,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         had[3] = True
                     # and a watchlist or a favourite keeps its reason: those are copied
                     # watched or not, and the first reason reached was dropped as watched
-                    if (why in ("on their watchlist", "a favourite")
-                            and had[1] not in ("on their watchlist", "a favourite")):
+                    # A reason that survives being watched wins over one that does
+                    # not. "Watched lately" is reached first and is dropped again by
+                    # the watched test below, so the episode just finished - named to
+                    # be kept precisely because it has been watched - was thrown out
+                    # by the reason it had already been given.
+                    if (why in ("on their watchlist", "a favourite",
+                                "the one before it")
+                            and had[1] not in ("on their watchlist", "a favourite",
+                                               "the one before it")):
                         had[1], had[2] = why, who
                 return
             said.add(key)
@@ -8129,8 +8908,65 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # stops it being fetched and stops the six episodes after it: what
                 # comes next in a shuffle is whatever the shuffle draws.
                 Handler.CASUAL_NOW.add(str(one.get("key") or ""))
-            want(one.get("key"), "on a screen now",
-                 self.name_of(one.get("who") or one.get("name") or ""), True)
+                Handler.CASUAL_SEEN[str(one.get("key") or "")] = time.time()
+                if len(Handler.CASUAL_SEEN) > Handler.CASUAL_KEEP:
+                    for old_key in sorted(Handler.CASUAL_SEEN,
+                                          key=lambda k: Handler.CASUAL_SEEN[k]
+                                          )[:len(Handler.CASUAL_SEEN)
+                                            - Handler.CASUAL_KEEP]:
+                        Handler.CASUAL_SEEN.pop(old_key, None)
+            elif one.get("key"):
+                # chosen: it is an ordinary viewing again, and what follows it is
+                # worth having
+                Handler.CASUAL_SEEN.pop(str(one.get("key")), None)
+            mark = str(one.get("key") or "")
+            # Filed under the viewer, not under what they are called. playing_now()
+            # lists a viewing twice - once under its key and once under its title -
+            # and a name is not one thing either, so the same person ended up with
+            # several lists of their own: seven episodes were named "on a screen now"
+            # for one guest, where the most that can be on a screen is the one playing
+            # and the one before it.
+            whose = str(one.get("who") or one.get("name") or "")
+            seen_by = self.name_of(whose)
+            if mark:
+                had = [k for k in (Handler.SCREEN_LATELY.get(whose) or [])
+                       if k != mark]
+                Handler.SCREEN_LATELY[whose] = ([mark] + had)[:Handler.SCREEN_EACH]
+                if len(Handler.SCREEN_LATELY) > 40:
+                    Handler.SCREEN_LATELY.clear()
+            want(one.get("key"), "on a screen now", seen_by, True)
+        # And the one before it, per viewer. A title leaves this list the second its
+        # player stops reporting - the end of an episode, a pause long enough to be
+        # closed, somebody stepping out - and the copy sweeps whatever the list no
+        # longer names, which took an episode away with a minute of it still to run.
+        # Holding the last two means the one just finished is still there while the
+        # next is watched, and is there to go back to. The disk cap decides when it
+        # finally goes.
+        for whose, keys in list(Handler.SCREEN_LATELY.items()):
+            seen_by = self.name_of(whose)
+            for mark in keys[:Handler.SCREEN_EACH]:
+                want(mark, "on a screen now", seen_by)
+                # and it is still a shuffled one a minute after the player went
+                # quiet, so nothing sequential is taken behind it
+                if mark in Handler.CASUAL_SEEN:
+                    Handler.CASUAL_NOW.add(mark)
+            # And the episode before whatever is on now, worked out rather than
+            # remembered. The list above is this server's memory of what it has seen
+            # playing, so it is empty every time the server starts - and the one just
+            # finished, the one somebody goes back to, was gone with it. The episode
+            # before is the same episode however often this is restarted.
+            first = keys[0] if keys else ""
+            # Not for a shuffle. The episode before a drawn one is not the one that
+            # was just watched and not one anybody is going back to - it is simply
+            # the episode with the number below it, and naming it put an ordinary
+            # key on the list, which the run of episodes below then followed: ten
+            # files in season order per viewer, per draw, for a shelf being played
+            # in no order at all. What a shuffle leaves part-way is kept by
+            # casual_places; what it will play next is the hat.
+            if str(first).startswith("e") and first not in Handler.CASUAL_SEEN:
+                before = local().prev_episode_key(con, first)
+                if before:
+                    want(before, "on a screen now", seen_by)
         # The shuffle is left out here too. A casual playing writes a log line like
         # any other - it has to, or Now playing and the watch log would lie - but
         # "the house watched this lately" is a reason to copy the rest of the series,
@@ -8150,15 +8986,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # mean to watch. Before this machine sleeps that is what somebody reaches
             # for next, and the other machine is the one that will be awake.
             decks, lists, shuffles = self.cached_for()
+            shelved = {}             # each shelf read once, however many people have it
             for who in decks:
-                for row in con.execute(
-                        """SELECT key FROM progress WHERE who = ? AND position > 30
-                           AND position < """ + pd_localapi.FINISHED_SQL + """
-                           AND COALESCE(casual, 0) = 0 AND updated > ?
-                           ORDER BY updated DESC LIMIT ?""",
-                        (who, int(time.time()) - self.PARTWAY_DAYS * 86400,
-                         self.PARTWAY_EACH)):
-                    want(row["key"], "part-way through", self.name_of(who))
+                for key, why in self.partway_keys(con, who):
+                    want(key, why, self.name_of(who))
             for who in lists:
                 marked = self.watchlist_of(who)[:40]
                 # Whole list off: a programme's night's worth, not every marked episode
@@ -8168,6 +8999,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 for key in marked:
                     listed.add(str(key))
                     want(key, "on their watchlist", self.name_of(who))
+                # A programme on a shelf somebody made is a programme meant to be
+                # watched. Only the programmes: a shelf is mostly films, and naming
+                # every one of those had the copy fetching hundreds of titles nobody
+                # had asked for. Only the next unwatched episodes of each, as many as
+                # the episodes setting allows - the bound the watchlist already uses.
+                stored = self.settings_file()
+                theirs = (self.viewer_settings(stored) if who == self.viewer()
+                          else ((stored.get("users") or {}).get(who) or {}))
+                for shelf in (theirs.get("collections") or []):
+                    if not (isinstance(shelf, dict) and shelf.get("id")):
+                        continue
+                    at = str(shelf.get("id"))
+                    shows = shelved.get(at)
+                    if shows is None:
+                        # A shelf is a rule over the library, so reading one is a pass
+                        # over every title: thirteen of them, per person, took the
+                        # round from under a second to eight and a half.
+                        keys = [str(k) for k in self.collection_keys(con, shelf)
+                                if not str(k).startswith("o")]
+                        shows = []
+                        if keys:
+                            rows = con.execute(
+                                "SELECT id FROM item WHERE type='show' AND id IN (%s)"
+                                % ",".join("?" * len(keys)), keys).fetchall()
+                            shows = [str(r["id"]) for r in rows]
+                        shelved[at] = shows
+                    if not shows:
+                        continue
+                    # A shelf somebody plays shuffled is not one they are working
+                    # through, and stocking it in order fills the copy with episodes
+                    # the hat will almost never draw next: a shelf of a long series
+                    # took ten slots with the first unwatched episodes in order while
+                    # its own queue - the episodes actually coming up - got four.
+                    # The round's queue is kept below, by casual_ahead, so this is
+                    # not the shelf going uncopied; it is the same shelf read the way
+                    # it is actually played.
+                    round_here = (theirs.get("shuffles") or {}).get(at) or {}
+                    if who in shuffles and (round_here.get("queue") or []):
+                        continue
+                    for key in self.first_unwatched(con, shows, episodes, watched,
+                                                    self.name_of(who)):
+                        listed.add(str(key))
+                        want(key, "on a shelf", self.name_of(who))
             # favourites, everybody's and all of them: marked to be on both machines
             everyone = read_settings() or {}
             for who, one in (list((everyone.get("users") or {}).items())
@@ -8183,16 +9057,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # a casual playing writes no row Continue watching reads, so nothing
                 # ever put a half-watched shuffled episode over there.
                 # Ten in all, which is the depth of the queue - not ten and then some.
+                # Everything left part-way, and the whole hat behind it. Ten counted
+                # across both lists meant three part-way places left seven slots for a
+                # queue ten deep, so the copy never held the whole of it - and a hat
+                # held in part is one a copy cannot draw from once those few are
+                # watched. The ten is the hat's own depth; it is not a budget the
+                # part-way places spend first.
                 theirs, said_here = [], set()
-                for keys, why_these in (
-                        (self.casual_places(who), "left part-way in the shuffle"),
-                        (self.casual_ahead(who), "the shuffle's next")):
-                    for key in keys:
-                        key = str(key)
-                        if key in said_here:
-                            continue
-                        said_here.add(key)
-                        theirs.append((key, why_these))
+                for key in self.casual_places(who):
+                    key = str(key)
+                    if key in said_here:
+                        continue
+                    said_here.add(key)
+                    theirs.append((key, "left part-way in the shuffle"))
+                taken_ahead = 0
+                for key in self.casual_ahead(who):
+                    key = str(key)
+                    if key in said_here:
+                        continue
+                    if taken_ahead >= self.SHUFFLE_DEEP:
+                        break
+                    said_here.add(key)
+                    theirs.append((key, "the shuffle's next"))
+                    taken_ahead += 1
                 # How many, and how much of an evening, are the same two numbers
                 # that govern everything else kept ahead: Episodes ahead, and Hours
                 # ahead at most. A shelf of half-hour comedies and one of hour-long
@@ -8201,20 +9088,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # Ten is the ceiling whatever the settings say, because ten is all
                 # the shuffle knows: the queue is drawn ten deep and the eleventh
                 # has not been decided. Asking for twenty would mean inventing ten.
-                covered, taken = 0.0, 0
-                for key, why_it in theirs[:10]:
-                    if taken >= episodes:
-                        break
-                    # Hours of casual play, which is the shuffle's own setting and
-                    # was being asked for and ignored: the hours that govern a series
-                    # somebody is part-way through are about the night ahead, and an
-                    # evening of putting something on is a different question.
-                    if covered >= casual * 3600 and taken >= self.LEAST_AHEAD:
-                        break
+                # The whole hat, however long it comes to. The hours setting cut it
+                # to about seven of the ten - and the estimate runs high for a file
+                # nobody has measured, so it cut it further - which left the copy
+                # holding part of a queue that moves every time somebody presses next.
+                # A hat the copy holds only part of is a hat it cannot draw from at
+                # all once those few have been watched, measured this morning: of 153
+                # episodes the shuffle could still draw, the copy had none.
+                for key, why_it in theirs:
                     Handler.DRAWN.add(key)
                     want(key, why_it, self.name_of(who))
-                    taken += 1
-                    covered += self.how_long(con, key)
         return out, listed
 
     @staticmethod
@@ -8288,6 +9171,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if nxt not in said:
                     said.add(nxt)
                     after.append([nxt, why, who, live])
+                    # asked for by nobody: it follows something somebody watched. Held
+                    # to the age rule below, where a title somebody chose is not.
+                    Handler.FETCHED_AHEAD.add(str(nxt))
                 # already listed from another source still fills this viewer's window
                 slot[1] += 1
                 slot[0] += self.how_long(con, nxt)
@@ -8397,6 +9283,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 finally:
                     local().who = asking
 
+            now_named = time.time()
+            wrote_ahead = set()
+            Handler.FETCHED_AHEAD = set()
             plan, listed = self.wanted_keys(con, hours, deck, episodes, mine,
                                             casual, whole, watched, kinds)
             if not mine:
@@ -8405,10 +9294,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             plan = self.in_series_order(con, plan)
             want, sided = [], set()
             for key, why, who, live in plan:
-                # a watchlist is kept whole, watched or not: it is what somebody asked for
-                if why not in ("on their watchlist", "a favourite") and watched(key, who):
+                # A watchlist is kept whole, watched or not: it is what somebody asked
+                # for. So is whatever is on a screen this minute - a film passes the
+                # watched mark with minutes still to run, and dropping it there had the
+                # copy delete the file under somebody who was still watching it. The
+                # one machine that could have carried on was the one being turned off.
+                if (why not in ("on their watchlist", "a favourite", "on a screen now",
+                                "the one before it")
+                        and watched(key, who)):
                     continue
+                # Fetched before anybody asked - the next episodes of something
+                # watched, the shuffle's next draws - and still not watched a month
+                # later. Nobody is going to: it has been on the disk for thirty days
+                # waiting. What somebody chose by name is not held to this.
+                if (str(key) in Handler.FETCHED_AHEAD
+                        or why == "the shuffle's next"):
+                    first = read_ahead().get(str(key))
+                    if first is None:
+                        AHEAD_SINCE[str(key)] = now_named
+                        wrote_ahead.add(str(key))
+                    elif now_named - float(first) > AHEAD_DAYS * 86400:
+                        continue
                 want += self.rows_for(con, key, why, who, live, langs, sided)
+            # and the book written back when it gained anything, with what has long
+            # since fallen off the list dropped from it: a season watched last winter
+            # is not worth remembering the first sight of for ever
+            if wrote_ahead:
+                for old_key in [k for k, when in list(AHEAD_SINCE.items())
+                                if now_named - float(when)
+                                > AHEAD_DAYS * 86400 * 2]:
+                    AHEAD_SINCE.pop(old_key, None)
+                write_ahead()
         finally:
             con.close()
 
@@ -8433,12 +9349,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Why each of these is wanted, where the serving side can find it: by the time
         # a file is being sent the reason is three functions away, and a log of what
         # moved says nothing about who wanted it.
+        # The first reason for a file, not the last. One episode is often wanted by
+        # two people at once - somebody's shelf and somebody else's shuffle - and
+        # writing each in turn left whoever came last owning it: a guest's shuffle
+        # picks were filed in the copy log under the owner, who had only ever
+        # matched them with a shelf rule. The list is already sorted with what is
+        # wanted soonest first, so the first entry is the reason worth keeping.
+        fresh = {}
         for w in want:
             mark = str(w.get("key") or "")
             if mark:
-                Handler.WHY_BY_KEY[mark] = (w.get("why") or "", w.get("who") or "")
-        if len(Handler.WHY_BY_KEY) > 4000:
-            Handler.WHY_BY_KEY.clear()
+                fresh.setdefault(mark, (w.get("why") or "", w.get("who") or ""))
+        # what this pass says wins, and a file still going out under the last pass
+        # keeps the reason it started with
+        merged = dict(Handler.WHY_BY_KEY)
+        merged.update(fresh)
+        Handler.WHY_BY_KEY = fresh if len(merged) > 4000 else merged
         return want
 
     def weekly_limits(self, name):
@@ -10799,14 +11725,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parts = host.split(".")
         if len(parts) == 4 and parts[0].isdigit():
             a, b = int(parts[0]), int(parts[1])
+            # 169 alone was the whole of 169.0.0.0/8, which is mostly ordinary
+            # public address space - only 169.254 is link-local. Any visitor whose
+            # address began 169 was therefore taken for someone in the house and
+            # given the owner's rights, from anywhere.
             if (a == 10 or (a == 192 and b == 168)
-                    or (a == 172 and 16 <= b <= 31) or a == 169):
+                    or (a == 172 and 16 <= b <= 31) or (a == 169 and b == 254)):
                 return "home"
         return "away"
 
     def at_home(self):
         """True for a caller on this machine or this home network."""
         return self.side_of(self.client_address[0]) == "home"
+
+    def remote_admin_ok(self):
+        """Whether the run of the place travels beyond this network.
+
+        Off, an owner's key is a guest's key from away: films yes, settings no. The
+        machine itself and this network are never affected - shutting somebody out of
+        their own server from the sofa is not a security setting, it is a fault. On
+        until somebody says otherwise, which is how it has always behaved.
+        """
+        return self.settings_file().get("remoteAdmin") is not False
 
     # ---- the owner's own password -------------------------------------------
     #
@@ -11057,7 +11997,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not here and self.untouched() and self.in_the_house():
             here = True
         if self.password_set():
-            if here or self.session_ok():
+            # A session is the password given once and remembered, so it opens the
+            # place from wherever it was given - which is the thing the setting is
+            # about. Sitting at the machine is not affected by it.
+            if here or (self.session_ok() and (self.at_home()
+                                               or self.remote_admin_ok())):
                 return "owner"
         elif here:
             return "owner"
@@ -11071,7 +12015,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # a key that carries the run of the place, for somebody who has it and is
             # not sitting at the machine
             self.guest_name = invite["name"]
-            return "owner"
+            if self.at_home() or self.remote_admin_ok():
+                return "owner"
+            # From away with the setting off: the same key, read as a guest's. It
+            # falls through to the guest handling below rather than being refused,
+            # so what it is mostly used for - watching - goes on working.
+            self.guest_name = invite["name"]
         # A machine that keeps copies is not a guest and never was: it was owner here
         # only because it sat on the same network, and requiring a key of every screen
         # took that away - so its own rounds were refused at the door, and caching
@@ -11088,8 +12037,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # separately: a film read off both machines is two streams, and each machine
         # can see only its own. Neither draws the pair honestly without asking the
         # other, and this is a list of what is going out of a house to itself.
+        # /server/build as well as /server: the first is what a follower asks for
+        # the version and hash, and it was refused at the door while the handler
+        # behind it was waiting to check the same key itself - so a machine that
+        # follows this one could never take its build, fell back to the site, and
+        # refused to go backwards to what the site was still announcing.
         if (invite and Handler.role_of(invite) == "cache"
-                and (str(path).startswith("/follow") or path == "/server"
+                and (str(path).startswith("/follow")
+                     or path == "/server" or path == "/server/build"
                      or path == "/watching" or build_file)):
             self.guest_name = invite["name"]
             return "owner"
@@ -11227,6 +12182,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     # disk is shared even where the line is not; how big that ceiling
                     # is comes from this copy's own side alone.
                     watching = sum(1 for r in seen if r.get("how") != "syncing")
+                    if not watching:
+                        # put down, not left standing: written once and never cleared,
+                        # it read as "somebody is watching" for the life of the server
+                        Handler.WATCHING_NOW = []
                     if watching:
                         # What the films are drawing and what the cacheing is, both
                         # measured this second. The ceiling follows from the two.
@@ -11817,6 +12776,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 said = {"keys": [], "when": 0}
             self.reply_json(said)
             return
+        if path == "/follow/file":
+            # One file this machine fetched, for the server it follows to take a copy
+            # of. Only that server may ask, and only for something this machine went
+            # and got itself.
+            if not (self.role == "owner" or self.follows_here()):
+                self.send_error(403, "not allowed")
+                return
+            args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                    if "?" in self.path else {})
+            import pd_torrents
+            where = pd_torrents.file_of((args.get("hash") or [""])[0],
+                                        (args.get("index") or ["-1"])[0])
+            if not where or not os.path.exists(where):
+                self.send_error(404, "not here")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(os.path.getsize(where)))
+            self.end_headers()
+            with open(where, "rb") as f:
+                while True:
+                    lump = f.read(262144)
+                    if not lump:
+                        break
+                    try:
+                        self.wfile.write(lump)
+                    except Exception:
+                        break
+            return
         if path == "/server/build":
             # The installer this machine is running, for the one that follows it. Only
             # a cache may ask: it is 34 MB off this machine's disk, and the hash
@@ -11964,8 +12952,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # whose cache this is: a name means only that viewer's own viewing is
             # worth copying, and nothing means the whole house's
             only = (args.get("for") or [""])[0][:60].strip()
-            self.reply_json({"wanted": self.worth_copying(hours, deck, episodes, mine,
-                                                          casual, whole, only, kinds),
+            # Two lists, from one pass. "holding" is everything worth keeping whatever
+            # the hour; "wanted" is the part this copy will take this minute. The copy
+            # sweeps against the first and fetches from the second - asked with the
+            # hour applied, the only list it had was the short one, so a kind set to
+            # night was fetched at nine and deleted at eight the next morning.
+            holding = self.worth_copying(hours, deck, episodes, mine,
+                                         casual, whole, only, None)
+            keep = None if kinds is None else set(kinds)
+            # A reason belonging to no kind is taken whatever the hour, which is what
+            # the filter inside wanted_keys did: the episodes after a programme and the
+            # subtitles riding with a film are named by neither of the settings.
+            wanted = ([w for w in holding
+                       if not Handler.kind_of(w.get("why") or "")
+                       or Handler.kind_of(w.get("why") or "") in keep]
+                      if keep is not None else holding)
+            self.reply_json({"wanted": wanted, "holding": holding,
                              # who this house has, so the other machine can offer
                              # the names rather than asking somebody to type one
                              "house": self.everyone_here()[:40],
@@ -12058,6 +13060,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # whether the next episode's subtitle is fetched before it starts;
                 # anything but an explicit no means yes, as it always behaved
                 "autoFetch": self.settings_file().get("autoFetch") is not False,
+                # whether an owner's key still runs the place from outside the house
+                "remoteAdmin": self.settings_file().get("remoteAdmin") is not False,
                 "autoSync": self.scans_for(),
                 "autoScan": self.auto_scan(),
                 # the front page: what this viewer sees, what they chose for
@@ -12128,9 +13132,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     matched.add((said.get("who") or "",
                                  said.get("device") or said.get("title")))
                 for k in ("state", "position", "duration", "episode",
-                          "client", "device", "app", "kind"):
+                          "client", "device", "app", "kind", "info"):
                     if said.get(k) not in (None, ""):
                         row[k] = said[k]
+                # and whether it was put on rather than chosen. Now playing read the
+                # same for a film somebody sat down to and an episode a shuffle dealt
+                # them, which are not the same evening - and it is the difference
+                # that decides what is kept ahead for them.
+                row["casual"] = bool(said.get("casual"))
             # Somebody paused has no connection open - a direct play closes it, and a
             # transcode is stopped to save the GPU - but they are still watching, and
             # their player says so. They belong in the list.
@@ -12174,8 +13183,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if not said.endswith("(%s)" % year):
                         row["title"] = "%s (%s)" % (said, year)
                     row["episode"] = ""
+            # How many seconds of film each screen says it is holding. The server has
+            # had this from every player since the reports started arriving, and used
+            # it only to decide how hard to hold a copy back - nothing ever showed it,
+            # so a viewer running thin was invisible to anybody but the throttle.
+            now = time.time()
+            for row in live:
+                mark = str(row.get("who") or "") + "/" + str(row.get("address") or "")
+                said = Handler.AHEAD.get(mark)
+                if not said or now - (said[1] or 0) > 60:
+                    continue
+                row["ahead"] = round(float(said[0]), 1)
+                row["aheadAt"] = int(said[1])
+                if len(said) > 4 and said[4]:
+                    row["stalled"] = True
             live.sort(key=lambda r: r.get("started") or 0)
-            self.reply_json({"live": live})
+            # and what the machine is listening to for its loudness, which is work
+            # somebody watching a page should be able to see happening
+            said = {"live": live}
+            if MEASURE_NOW.get("name"):
+                said["measuring"] = {
+                    "name": MEASURE_NOW["name"],
+                    "since": MEASURE_NOW.get("since") or 0,
+                    "done": len(read_loudness()),
+                    "left": len(MEASURE_SWEEP.get("left") or [])}
+            self.reply_json(said)
+            return
+        if path == "/collections/season":
+            # what the box under the Season field shows: the span read back, so a
+            # typo is visible before it is saved rather than after it has quietly
+            # taken nothing
+            import pd_seasons
+            asked = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            spec = str(asked.get("spec", [""])[0])
+            nope = str(asked.get("without", [""])[0])
+            spans = pd_seasons.parse(spec)
+            out = pd_seasons.parse(nope)
+            self.reply_json({"said": pd_seasons.describe(spans),
+                             "saidWithout": pd_seasons.describe(out),
+                             "spans": len(spans), "without": len(out)})
             return
         if path in ("/collections", "/collections/items"):
             shelves = self.collections()
@@ -12205,68 +13251,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not shelf:
                     self.reply_json({"error": "no such collection", "Metadata": []}, 404)
                     return
-                # Episodes stand as the seasons they belong to. A shelf holding four
-                # episodes of a fifty-six episode programme showed four episode cards
-                # and said nothing about the programme; one season card saying "4 of
-                # 56 episodes" is what somebody reading the shelf wants to know. The
-                # episodes are still what the shelf holds - this is how it is read,
-                # not what it is.
-                keys, seasons = [], {}
-                for key in self.collection_keys(con, shelf):
-                    if str(key).startswith("e"):
-                        seat = con.execute(
-                            "SELECT item_id, season, number FROM episode WHERE id=?",
-                            (str(key),)).fetchone() if is_episode(key) else None
-                        if seat:
-                            where = "%s-s%d" % (seat["item_id"], seat["season"] or 0)
-                            seasons.setdefault(where, [])
-                            seasons[where].append((seat["number"] or 0, str(key)))
-                            continue
-                    keys.append(key)
+                # what the shelf holds, read as seasons rather than as episodes
+                raw = [str(k) for k in self.collection_keys(con, shelf)]
+                seasoned, keys = self.read_as_seasons(con, raw)
                 rows = []
                 for key in keys:
                     one = local().metadata_for(con, key, brief=True)
                     if one:
                         rows.append(one)
-                for where, inside in seasons.items():
-                    held = len(inside)
-                    one = local().metadata_for(con, where, brief=True)
-                    if not one:
-                        continue
-                    # Named as the season it is. The key for a season answers with the
-                    # programme, so nineteen cards all read as the same programme and
-                    # counted their episodes against the whole of it - "7 of 179" for
-                    # a season of twelve, nineteen times over.
-                    show, _, number = str(where).partition("-s")
-                    try:
-                        number = int(number)
-                    except ValueError:
-                        number = 0
-                    seat = con.execute(
-                        "SELECT COUNT(*) c FROM episode WHERE item_id=? AND season=?",
-                        (show, number)).fetchone()
-                    one = dict(one)
-                    one["type"] = "season"
-                    one["ratingKey"] = str(where)
-                    one["parentTitle"] = one.get("title") or ""
-                    one["grandparentTitle"] = one.get("title") or ""
-                    one["title"] = "Season %d" % number if number else "Specials"
-                    one["index"] = number
-                    # how much of it is here, against how much of it there is: the
-                    # difference between a season on a shelf and part of one
-                    one["leafCount"] = int((seat and seat["c"]) or held)
-                    one["shelfCount"] = held
-                    # and what it stands for, in order. A card rolled up out of
-                    # episodes is a way of reading the shelf; playing it has to play
-                    # the episodes, and playing the season's own key opened the
-                    # programme's page instead - Play took somebody to the show.
-                    one["holds"] = [k for _, k in sorted(inside)]
-                    rows.append(one)
+                rows += seasoned
+
                 # In the order they were made. A collection is usually a series of
                 # films, and the year is how anybody reads one - alphabetical put
                 # Resurrection before Aliens, and anything added by hand at the end.
-                rows.sort(key=lambda m: (int(m.get("year") or 0),
-                                         (m.get("titleSort") or m.get("title") or "")))
+                # A season's own title is "Season 10", which sorts before "Season 2"
+                # and says nothing about which programme it belongs to - so a season
+                # is placed by its programme and then by its number.
+                def order(m):
+                    name = (m.get("titleSort")
+                            or (m.get("parentTitle") if m.get("type") == "season"
+                                else "")
+                            or m.get("title") or "")
+                    return (int(m.get("year") or 0), name, int(m.get("index") or 0))
+                rows.sort(key=order)
                 # What is out: struck out by hand, or caught by the include words
                 # and taken out again by the exclude ones. Both are shown while
                 # editing, so either can be put back without searching for it.
@@ -12274,22 +13281,56 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 hidden = set(str(k) for k in (shelf.get("hidden") or []))
                 for one in rows:
                     one["hand"] = str(one.get("ratingKey")) in pinned
-                held = set(str(m.get("ratingKey")) for m in rows)
+                # the keys the shelf actually holds, and the cards they were read
+                # as: a programme drawn as its seasons is still on the shelf, and
+                # comparing only the cards had it listed as struck out.
+                held = set(raw) | set(str(m.get("ratingKey")) for m in rows)
+                # Both excludes lifted: the title words that knocked something out,
+                # and the season span that did. What either took is shown struck
+                # out, so it can be put back without searching for it.
                 wide = dict(shelf, hidden=[],
-                            rule=dict(shelf.get("rule") or {}, without=[]))
-                gone = [k for k in self.collection_keys(con, wide)
-                        if k not in held]
-                for key in (shelf.get("hidden") or []):
-                    if str(key) not in gone and str(key) not in held:
-                        gone.append(str(key))
+                            rule=dict(shelf.get("rule") or {}, without=[],
+                                      seasonWithout=""))
+                def strike(k):
+                    """What is really out, for one key the rule or the hand took.
+
+                    A programme drawn as its seasons: only the seasons that are not
+                    on the shelf are out. Its own key put a whole series in the
+                    struck row over one episode taken off one season.
+                    """
+                    k = str(k)
+                    if k in held:
+                        return []
+                    if re.fullmatch(r"[0-9a-f]{12}", k):
+                        mine = set(int(r["season"] or 0) for r in con.execute(
+                            "SELECT DISTINCT season FROM episode WHERE item_id=?", (k,)))
+                        # the pack's seasons too, or a season struck out by a span
+                        # that this machine holds no file of is out of both rows
+                        row = con.execute("SELECT title FROM item WHERE id=?",
+                                          (k,)).fetchone()
+                        mine |= set(int(o.get("index") or 0) for o in
+                                    local()._offered_seasons_of(
+                                        row["title"] if row else "", mine))
+                        parts = ["%s-s%d" % (k, n) for n in sorted(mine)]
+                        if parts:
+                            return [p for p in parts if p not in held]
+                    return [k]
+                gone = []
+                for k in (list(self.collection_keys(con, wide))
+                          + list(shelf.get("hidden") or [])):
+                    gone += [x for x in strike(k) if x not in gone]
                 struck = []
                 for key in gone:
-                    one = local().metadata_for(con, str(key), brief=True)
+                    key = str(key)
+                    # a struck season is read as a season too, or eighteen cards in
+                    # this row all carry the programme's name and nothing else
+                    one = (self.season_card(con, key, [])
+                           if re.match(r"^[0-9a-f]{12}-s\d+$", key)
+                           else local().metadata_for(con, key, brief=True))
                     if one:
-                        one["hand"] = str(key) in hidden or str(key) in pinned
+                        one["hand"] = key in hidden or key in pinned
                         struck.append(one)
-                struck.sort(key=lambda m: (int(m.get("year") or 0),
-                                           (m.get("titleSort") or m.get("title") or "")))
+                struck.sort(key=order)
                 # which title is its face, resolved the same way the list is, so
                 # an editing screen can mark it without asking twice
                 face = str(shelf.get("cover") or "")
@@ -12488,8 +13529,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 NOTICE_RUNG.wait(min(5.0, max(0.5, until - time.time())))
                 if NOTICE.get("id", 0) > since:
                     break
-            said = whats_said() if self.addressed_to_me(NOTICE.get("to")) else ""
-            self.reply_json({"id": NOTICE.get("id", 0), "text": said})
+            mine = self.addressed_to_me(NOTICE.get("to"))
+            said = whats_said() if mine else ""
+            self.reply_json({"id": NOTICE.get("id", 0), "text": said,
+                             # what to open, for a screen this was addressed to
+                             "play": (NOTICE.get("play") or "") if mine else "",
+                             "at": int(NOTICE.get("at") or 0) if mine else 0})
             return
         if path == "/wiring":
             # Everything the drawing on the settings page shows, in one answer. It
@@ -13004,14 +14049,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                               if str(c.get("id")) == want), None)
                 con = local().lib.db()
                 try:
-                    keys = self.collection_keys(con, shelf) if shelf else []
-                    keys.sort(key=lambda k: (
-                        int((local().metadata_for(con, k, brief=True)
-                             or {}).get("year") or 0), k))
+                    # the same list the shuffle draws from: a programme on a
+                    # collection is its episodes, the ones here and the ones a pack
+                    # can give, rather than one row standing for all of them
+                    keys = self.shelf_pool(con, shelf) if shelf else []
+                    # films oldest first, because a collection of them is usually a
+                    # series; a programme's episodes in season and episode order after
+                    # them, each programme whole. Asking every key for its year meant
+                    # six hundred lookups through the packs to sort a list that is
+                    # about to be folded into seasons anyway.
+                    places, _ = local().episode_places(con, keys)
+                    shows = {}
+
+                    def in_order(key):
+                        where = places.get(key)
+                        if not where:
+                            return (0, int((local().metadata_for(con, key, brief=True)
+                                            or {}).get("year") or 0), 0, 0)
+                        shows.setdefault(where[0], len(shows))
+                        return (1, shows[where[0]], where[1], where[2])
+
+                    keys.sort(key=in_order)
                 finally:
                     con.close()
                 sub = "/library/watchlist"
                 q["keys"] = [",".join(keys)]
+                # By season, now that what a collection holds is episodes. Grouping
+                # was turned off when the keys were programmes, because it broke one
+                # programme into "Season 28" and "Season 36" standing on their own;
+                # over episodes it does the opposite, and folds six hundred of them
+                # back into the seasons they belong to.
                 q["byseason"] = ["1"]
             m = re.match(r"^/parts/(\d+)$", sub)
             if m:
@@ -13066,6 +14133,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     WATCHING.stop(sid)
                 return
             status, ctype, body = local().handle(sub, q)
+            # the title a progress report is about, and nothing for every other route
+            # through here: read for all of them, it was a name that did not exist yet
+            watched_key = ""
             # a subtitle that carried an episode to the end is one that fits - and
             # "the end" is where the credits start, not the last second of them
             if sub == "/:/timeline":
@@ -13108,6 +14178,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             body = json.dumps(doc).encode("utf-8")
                         except Exception:
                             pass
+            # What the sound of this file needs now, so a player can be corrected
+            # without being restarted. The gain used to be settled when the film was
+            # opened, so a file measured while it was playing stayed uncorrected to
+            # the end and a player that had never been told could not be told.
+            if watched_key and ctype.startswith("application/json"):
+                try:
+                    src = local().file_for(watched_key, 0) or {}
+                    if src.get("path"):
+                        doc = json.loads(body.decode("utf-8"))
+                        doc.setdefault("MediaContainer", {})["gainDb"] = volume_gain(
+                            src.get("id"), src.get("path"), src.get("size") or 0,
+                            playing=True)
+                        # and how loud it was found to be, for the line along the top:
+                        # a file measured while it was playing had the number on the
+                        # server and nothing on the screen
+                        known = read_loudness().get(str(src.get("id")))
+                        if known and known.get("lufs") is not None:
+                            doc["MediaContainer"]["lufs"] = float(known["lufs"])
+                        body = json.dumps(doc).encode("utf-8")
+                except Exception:
+                    pass
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
@@ -13736,6 +14827,9 @@ def main():
         threading.Thread(target=keepalive_loop, daemon=True).start()
         # new films appear on their own; the server can notice without being asked
         threading.Thread(target=watch_folders, daemon=True).start()
+        # and every file's loudness, measured while nothing is playing
+        threading.Thread(target=keep_measuring, name="palladium-measuring",
+                         daemon=True).start()
         # segments left by an iPhone that has stopped watching: gigabytes a film, so
         # they are swept rather than left for the temp folder to accumulate
         threading.Thread(target=sweep_segments, daemon=True).start()

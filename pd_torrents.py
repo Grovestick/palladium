@@ -29,6 +29,12 @@ STATE = {"root": "", "data": None, "lib": None, "scan": None, "worker": False,
 VIDEO = (".mkv", ".mp4", ".m4v", ".avi")
 #: smaller than this is a sample or an extra, not the film
 FILM_BYTES = 300 * 1000 * 1000
+#: The same floor for an episode would throw most of a series away. Three hundred
+#: megabytes is a sensible smallest film and a large half-hour episode: a 1080p x265
+#: episode runs to about two hundred, and one programme came in as 55 files of 140
+#: and another as 2 of 180. Low enough to keep a short episode, high enough that the
+#: extras and the artwork in a pack are still left alone.
+EPISODE_BYTES = 40 * 1000 * 1000
 #: libtorrent's piece picker counts at most this many 16 KiB blocks to a piece: just under
 #: 256 MiB on libtorrent 1.2, just under 512 MiB on 2.0. A pack cut into larger pieces is
 #: refused by that qBittorrent whatever is sent.
@@ -46,7 +52,53 @@ def start(root, lib_of, scan):
     STATE["lib"] = lib_of
     STATE["scan"] = scan
     load()
+    os.makedirs(drop_folder(), exist_ok=True)
     ensure_worker()
+
+
+#: where somebody puts a torrent file for it to become a pack. Beside the library
+#: rather than beside the program: the program folder is replaced by every update.
+DROP = "pack"
+
+
+def drop_folder():
+    return os.path.join(STATE["root"] or ".", DROP)
+
+
+def read_the_folder():
+    """Take in any torrent file somebody has put in the folder.
+
+    One direction only. A file appearing is somebody asking for the pack; a file
+    disappearing is not somebody asking for it to go, because that is also what a
+    half-finished copy, a synced folder catching up, or a drive that has not woken
+    looks like - and a pack leaving takes its offers off every shelf. Removing one is
+    done in Settings, which deletes the file as well so it cannot walk back in.
+    """
+    folder = drop_folder()
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".torrent"))
+    except OSError:
+        return 0
+    known = {str(p.get("dropped") or "") for p in load()["packs"]}
+    took = 0
+    for name in names:
+        if name in known:
+            continue
+        try:
+            said = add_pack(path=os.path.join(folder, name))
+        except (OSError, ValueError):
+            continue
+        if not said.get("ok"):
+            continue
+        # written down under the file it came in as, so the folder is read once per
+        # file however often it is looked at
+        with LOCK:
+            for p in load()["packs"]:
+                if p.get("hash") == said.get("hash"):
+                    p["dropped"] = name
+            save()
+        took += 1
+    return took
 
 
 def _path():
@@ -279,7 +331,9 @@ def add_pack(raw=None, path=None):
         films = []
         for one in files:
             low = one["path"].lower()
-            if not low.endswith(VIDEO) or one["size"] < FILM_BYTES or "sample" in low:
+            # a file that names a season and an episode is judged as an episode
+            floor = EPISODE_BYTES if episode_of(one["path"]) else FILM_BYTES
+            if not low.endswith(VIDEO) or one["size"] < floor or "sample" in low:
                 continue
             title, year = film_of(one["path"])
             entry = {"index": one["index"], "path": one["path"], "size": one["size"],
@@ -300,6 +354,59 @@ def add_pack(raw=None, path=None):
     ensure_worker()
     return {"ok": True, "hash": info_hash, "name": name, "films": len(films),
             "refused": refused(pack)}
+
+
+#: bumped when the rule for what counts as a file worth offering changes, so packs
+#: already added are read again once against the new one
+REFILL = 1
+
+
+def refill_packs():
+    """Read the packs already added against today's rule for what counts.
+
+    Judging every file by a film's smallest size threw most of a series away - one
+    programme came in as 55 files of 140, another as 2 of 180 - and a pack cannot be
+    added twice, so lowering the floor would have done nothing for the packs already
+    here. Their torrent files are kept beside the library, so they are simply read
+    again and whatever was missed is added.
+    """
+    data = load()
+    if int(data.get("refilled") or 0) >= REFILL:
+        return 0
+    added = 0
+    with LOCK:
+        for pack in data["packs"]:
+            kept = pack.get("file") or ""
+            if not kept or not os.path.exists(kept):
+                continue
+            try:
+                with open(kept, "rb") as f:
+                    info_hash, name, files = parse_torrent(f.read())
+            except (OSError, ValueError, IndexError):
+                continue
+            have = {int(f.get("index", -1)) for f in (pack.get("films") or [])}
+            for one in files:
+                if int(one["index"]) in have:
+                    continue
+                low = one["path"].lower()
+                floor = EPISODE_BYTES if episode_of(one["path"]) else FILM_BYTES
+                if not low.endswith(VIDEO) or one["size"] < floor or "sample" in low:
+                    continue
+                title, year = film_of(one["path"])
+                entry = {"index": one["index"], "path": one["path"],
+                         "size": one["size"], "title": title, "year": year,
+                         "key": key_for(info_hash, one["index"]), "tmdb": None}
+                told = episode_of(one["path"])
+                if told:
+                    show, made, season, number = told
+                    entry.update({"title": show, "year": made or year,
+                                  "kind": "episode", "season": season,
+                                  "episode": number})
+                pack.setdefault("films", []).append(entry)
+                added += 1
+        data["refilled"] = REFILL
+        save()
+    return added
 
 
 def read_episodes():
@@ -335,8 +442,19 @@ def read_episodes():
 def remove_pack(info_hash):
     data = load()
     with LOCK:
+        going = [p for p in data["packs"] if p.get("hash") == info_hash]
         data["packs"] = [p for p in data["packs"] if p.get("hash") != info_hash]
         save()
+    # The file it arrived as goes with it. Left in the folder it would be read again
+    # on the next look and the pack would come straight back, which reads as the
+    # remove button doing nothing.
+    for p in going:
+        name = str(p.get("dropped") or "")
+        if name:
+            try:
+                os.remove(os.path.join(drop_folder(), name))
+            except OSError:
+                pass
     return {"ok": True}
 
 
@@ -952,6 +1070,16 @@ class QB:
                 raise
             self._call("/api/v2/torrents/resume", fields={"hashes": info_hash})
 
+    def recheck(self, info_hash):
+        """Ask qBittorrent to look at the files on disk again.
+
+        A film copied in from the other machine is sitting exactly where this pack
+        expects it, but qBittorrent has no idea: it still thinks that file is one it
+        has never fetched. A recheck reads what is there, finds the pieces complete
+        and marks it done - so it is seeded rather than fetched a second time.
+        """
+        self._call("/api/v2/torrents/recheck", fields={"hashes": info_hash})
+
     def stop(self, info_hash):
         # start and stop under 5, pause and resume before it
         try:
@@ -1016,6 +1144,9 @@ def status():
                        "nextEpisode": bool(cfg.get("nextEpisode")),
                        "saveTo": cfg.get("saveTo") or (folders[0] if folders else "")},
             "folders": folders, "qbittorrent": qb, "packs": packs,
+            # where a torrent file can be dropped to become a pack by itself, so the
+            # page can open the picker there rather than at the top of a drive
+            "packFolder": drop_folder(),
             "offered": len(offered()),
             "free": free_gb(cfg.get("saveTo") or (folders[0] if folders else ""))}
 
@@ -1264,6 +1395,116 @@ def _wanted_now(qb, info_hash, index):
     return False
 
 
+#: how much is read at a time when a film is copied in from the other machine
+LUMP = 4 * 1024 * 1024
+
+
+def my_own_downloads():
+    """What this machine fetched itself, for the server it follows to take a copy of.
+
+    Only what finished, and only the pack entry it came from - the name inside the
+    torrent is what says where it has to sit on the other machine for that pack to
+    recognise it.
+    """
+    data = load()
+    out = []
+    try:
+        qb = QB(data["config"])
+    except Exception:
+        return out
+    names = {}
+    for d in data["downloads"]:
+        if d.get("state") != "done":
+            continue
+        h = str(d.get("hash") or "")
+        if not h:
+            continue
+        if h not in names:
+            try:
+                names[h] = {int(f.get("index", n)): str(f.get("name") or "")
+                            for n, f in enumerate(qb.files(h))}
+            except Exception:
+                names[h] = {}
+        name = names[h].get(int(d.get("index") or -1)) or ""
+        if not name:
+            continue
+        out.append({"hash": h, "index": int(d["index"]), "name": name,
+                    "size": int(d.get("size") or 0), "key": str(d.get("key") or ""),
+                    "title": str(d.get("title") or "")})
+    return out
+
+
+def file_of(info_hash, index):
+    """Where one file of one pack sits on this machine, or ''."""
+    data = load()
+    try:
+        qb = QB(data["config"])
+        for n, f in enumerate(qb.files(info_hash)):
+            if int(f.get("index", n)) == int(index):
+                held = qb.info(info_hash) or {}
+                root = str(held.get("save_path") or save_folder() or "")
+                return os.path.join(root, str(f.get("name") or "").replace("/", os.sep))
+    except Exception:
+        pass
+    return ""
+
+
+def place_and_recheck(info_hash, index, name, reader, size=0):
+    """Write a file copied from the other machine where its pack expects it, then look again.
+
+    Returns the path written, or "" when there was nowhere sensible to put it. The
+    file is written beside itself and moved into place, so a half-copied one is never
+    mistaken for the film.
+    """
+    # Where this machine's own qBittorrent expects that file, not where the other
+    # machine kept it. The two hold the same pack under different layouts - one with
+    # the pack's own folder, one without - so the name the other machine sends put a
+    # film a folder above where the pack looks for it: it played, because the folder
+    # is one the library reads, and the recheck that was meant to hand it to
+    # qBittorrent found nothing. The sent name is the fallback for a pack this
+    # machine does not have at all.
+    root = save_folder()
+    onto = file_of(info_hash, index)
+    if not onto:
+        if not root or not name:
+            return ""
+        onto = os.path.join(root, str(name).replace("/", os.sep))
+    try:
+        os.makedirs(os.path.dirname(onto), exist_ok=True)
+    except OSError:
+        return ""
+    if os.path.exists(onto) and size and os.path.getsize(onto) == int(size):
+        return onto                        # already here, and the right length
+    part = onto + ".part"
+    try:
+        with open(part, "wb") as f:
+            while True:
+                lump = reader.read(LUMP)
+                if not lump:
+                    break
+                f.write(lump)
+        os.replace(part, onto)
+    except Exception:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        return ""
+    # Asked for, then looked at again: a file nobody asked this machine to fetch sits
+    # at priority nought, and a recheck over one of those leaves the pack saying it
+    # has none of it however whole the file on the disk is.
+    try:
+        qb = QB(load()["config"])
+        try:
+            qb.priority(info_hash, [int(index)], 1)
+        except Exception:
+            pass                           # an older qBittorrent: recheck anyway
+        qb.recheck(info_hash)
+    except Exception:
+        pass                               # the file is there either way
+    return onto
+
+
 def arrived(key):
     """The library's own key for a film that has come in from its offer, or None while it has
     not. Looked up by its file each time: a match or a merge can file it under another key."""
@@ -1414,9 +1655,28 @@ def _notice_removed():
                 continue
             if d["state"] == "done":
                 d["off"] = True           # here already; only no longer kept on in qBittorrent
-            else:
-                d.update(state="cancelled", mbit=0.0, eta=None,
-                         why="Taken out of qBittorrent" if held is None else "Turned off in qBittorrent")
+                changed = True
+                continue
+            # A pack whose every asked-for file is in reads as finished to
+            # qBittorrent, and it drops a part-downloaded file it no longer counts.
+            # That is not somebody cancelling: the download was running and was
+            # switched off underneath it - four of them died this way at a third,
+            # a tenth and a tenth of the way in. Ask for it again, which stops the
+            # torrent so it listens, and give up only when it will not take.
+            if held is not None and int(d.get("revived") or 0) < 3:
+                d["revived"] = int(d.get("revived") or 0) + 1
+                changed = True
+                try:
+                    only_asked(qb, info_hash, extra=[int(d["index"])])
+                    if _wanted_now(qb, info_hash, int(d["index"])):
+                        qb.start(info_hash)
+                        continue
+                except Exception as e:
+                    STATE["why"] = str(e)[:160]
+                continue
+            d.update(state="cancelled", mbit=0.0, eta=None,
+                     why=("Taken out of qBittorrent" if held is None
+                          else "qBittorrent would not keep it on"))
             changed = True
     if changed:
         with LOCK:
@@ -1736,6 +1996,8 @@ def _work():
         try:
             _mirror_house()
             _notice_removed()
+            read_the_folder()
+            refill_packs()
             read_episodes()
             matching = _match_some()
             fetching = _follow_downloads()

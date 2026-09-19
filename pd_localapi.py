@@ -1099,14 +1099,22 @@ class LocalAPI:
                            NULLIF(printf('%04d-01-01', COALESCE(i.year, 0)),
                                   '0000-01-01')) AS last_aired
                        FROM item i WHERE i.type='show'
+                         AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = i.id)
                        ORDER BY last_aired IS NULL, last_aired """
                     # the SQL contains a printf of its own, so this is joined on
                     # rather than formatted in
                     + ("ASC" if sort.endswith(":asc") else "DESC")
                     + ", sort_title ASC").fetchall()
             else:
-                rows = con.execute(f"SELECT * FROM item WHERE type=? ORDER BY {order}",
-                                   (kind,)).fetchall()
+                # Only what this machine holds a file for. A copy carries the whole
+                # catalogue as names and posters so it can say what a key is, and
+                # listed them all: with the main server off it offered five thousand
+                # films and could play about one in forty. On the main server every
+                # item has a file, so this changes nothing there.
+                rows = con.execute(
+                    "SELECT * FROM item WHERE type=? "
+                    "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = item.id) "
+                    f"ORDER BY {order}", (kind,)).fetchall()
             if tall:
                 # picture first, title second, and nothing measured at the bottom
                 # either way round - an unprobed file is not a small one, it is
@@ -1357,7 +1365,16 @@ class LocalAPI:
         if path == "/next":
             # what follows this episode: the client asks rather than working out for
             # itself where a season ends and the next begins
-            after = self.next_episode_key(con, one("key", ""))
+            here_key = one("key", "")
+            after = self.next_episode_key(con, here_key)
+            # The one that actually follows, even where there is no file for it.
+            # next_episode_key joins to the files, so an episode only a pack has is
+            # not in its answer at all - and Next stepped over it in silence, handing
+            # back the episode after that. Somebody working through a series was
+            # quietly skipped past whatever had not been fetched.
+            gap = self.offered_next_episode(con, here_key, after)
+            if gap:
+                return {"size": 1, "Metadata": [gap]}
             item = self.metadata_for(con, after) if after else None
             return {"size": 1, "Metadata": [item]} if item else {"size": 0, "Metadata": []}
 
@@ -1655,7 +1672,8 @@ class LocalAPI:
                 con.commit()
                 self.note_playing(key, pos, dur, one("state", "playing"),
                                   one("device", "") or "", one("client", ""),
-                                  one("client", ""), casual=True, shelf=shelf)
+                                  one("client", ""), casual=True, shelf=shelf,
+                                  info=one("info", ""))
                 return {"size": 0}
             if key:
                 # A "stopped" on its own does not put something in Continue watching.
@@ -1667,7 +1685,16 @@ class LocalAPI:
                 known = con.execute(
                     "SELECT 1 FROM progress WHERE who=? AND key=?",
                     (self.who, key)).fetchone()
-                if not (stopping and not known):
+                # A report that does not move the picture records nothing. A player
+                # left paused sends one every few seconds and each rewrote the row,
+                # so a programme put aside was back on Continue watching before the
+                # press had finished - the shelf keeps something aside only until
+                # something newer happens to it, and read the heartbeat as that.
+                # Stopping still writes: it is the last place, and for a player that
+                # is opened and closed again it is the only one that ever arrives.
+                still = not stopping and self.same_place(
+                    key, one("device", "") or "", pos)
+                if not (stopping and not known) and not still:
                     self.note_uncasual(con, key, one("device", "") or "",
                                        one("client", ""), one("state", "playing"))
                     # casual back to nought: whatever the shuffle left there,
@@ -1700,7 +1727,7 @@ class LocalAPI:
                 # optional, so an older client simply reads as "playing"
                 self.note_playing(key, pos, dur, one("state", "playing"),
                                   one("device", "") or "", one("client", ""),
-                                  one("client", ""))
+                                  one("client", ""), info=one("info", ""))
             return {"size": 0}
 
         return None
@@ -1796,8 +1823,22 @@ class LocalAPI:
                          self.app_now or ""))
         con.commit()
 
+    def same_place(self, key, device, position):
+        """Whether this report says exactly what the last one from that player said.
+
+        A paused player sends a report every few seconds, all of them the same second
+        of the same episode. Nothing has been watched between two of them.
+        """
+        before = NOW.get((self.who or "") + chr(0) + (device or "player"))
+        if not (before and str(before.get("key") or "") == str(key)):
+            return False
+        try:
+            return abs(float(before.get("position") or -1) - float(position)) < 1.0
+        except (TypeError, ValueError):
+            return False
+
     def note_playing(self, key, position, duration, state, device, client="",
-                     kind="", casual=False, shelf=""):
+                     kind="", casual=False, shelf="", info=""):
         """Remember what one client is doing.
 
         Keyed by the viewer and the device together. Under the device alone, two
@@ -1828,11 +1869,14 @@ class LocalAPI:
             moved = before.get("moved") or moved
             if said == "playing" and time.time() - moved > 45:
                 said = "paused"
-        NOW[who] = {"state": said, "moved": moved,
+        NOW[who] = {"state": said, "moved": moved, "info": info or "",
                     "key": str(key), "title": title, "subtitle": subtitle,
                     "poster": poster,
                     "position": int(position), "duration": int(duration),
-                    "device": who,
+                    # the name it calls itself, not the key this is filed under:
+                    # that key carries the viewer's id, which is the token their
+                    # player authenticates with, and Now playing showed it
+                    "device": device or "player",
                     # a browser or the app: it changes what a fault means and what
                     # advice is worth giving
                     "client": client or "",
@@ -1868,6 +1912,8 @@ class LocalAPI:
                     "key": str(row.get("key") or ""),
                     # which build is playing it, and what sort of thing it is
                     "app": row.get("app") or "", "kind": row.get("kind") or "",
+                    # the line the player would show, as it had it at its last report
+                    "info": row.get("info") or "",
                     "who": row.get("who") or "",
                     "casual": bool(row.get("casual"))}
             # by key where the client gave one, and by title as well, since an older
@@ -1892,26 +1938,75 @@ class LocalAPI:
             out.append(said)
         return out
 
+    @staticmethod
+    def _offered_homes(keys):
+        """Which programme, season and number each offered episode key belongs to.
+
+        One pass over the packs rather than a lookup per key: a collection of a
+        programme nobody holds is six hundred keys, and each of those lookups reads
+        every pack.
+        """
+        want = {str(k) for k in keys}
+        if not want:
+            return {}
+        try:
+            import pd_torrents
+            out = {}
+            for name, holds in pd_torrents._episodes_by_show().items():
+                for film, _ in holds:
+                    k = str(film.get("key") or "")
+                    if k in want:
+                        out[k] = (name, int(film.get("season") or 0),
+                                  int(film.get("episode") or 0), film)
+            return out
+        except Exception:
+            return {}
+
+    def episode_places(self, con, keys):
+        """Where each episode key sits: its programme here, season and number.
+
+        Held and offered alike. An offered episode answers to the programme in the
+        library when there is one - the key is made from the name - so the two halves
+        of a half-held programme are one programme rather than two.
+        """
+        out = {}
+        ids = [k for k in keys if is_episode(k)]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for r in con.execute(
+                    "SELECT id, item_id, season, number FROM episode "
+                    "WHERE id IN (%s)" % marks, ids):
+                out[r["id"]] = (str(r["item_id"]), int(r["season"] or 0),
+                                int(r["number"] or 0))
+        offers = self._offered_homes([k for k in keys if str(k).startswith("o")])
+        if offers:
+            try:
+                import pd_torrents
+                mine = {}
+                for r in con.execute("SELECT id, title FROM item WHERE type='show'"):
+                    mine[pd_torrents.show_key(r["title"] or "")] = str(r["id"])
+                for key, (name, season, number, _film) in offers.items():
+                    show = pd_torrents.show_key(name)
+                    out[key] = (mine.get(show, show), season, number)
+            except Exception:
+                pass
+        return out, offers
+
     def _by_season(self, con, keys):
         """The same shelf, gathered into seasons.
 
         Marking a programme now marks each of its episodes, which is right for taking
         one off again and hopeless to look at: two hundred cards where there was one.
-        Episodes of a season are shown as that season, in the order the first of them
-        was marked, with how many of them are on the shelf. Films and lone episodes
-        stand as they are.
+        A collection made by filter is worse - six hundred and eighty episodes across
+        thirty-six seasons, flat. Episodes of a season are shown as that season, with
+        how many of them are on the shelf. Films and lone episodes stand as they are.
+
+        Episodes a pack can give are folded in beside the ones here, into the same
+        season: a programme half held and half offered read as two programmes.
         """
         out, seen = [], set()
-        # which season each marked episode belongs to, in one question rather than one
-        # per episode
-        ids = [k for k in keys if is_episode(k)]
-        home = {}
-        if ids:
-            marks = ",".join("?" * len(ids))
-            for r in con.execute(
-                    "SELECT id, item_id, season FROM episode WHERE id IN (%s)" % marks,
-                    ids):
-                home[r["id"]] = (r["item_id"], r["season"])
+        places, offers = self.episode_places(con, keys)
+        home = {k: (where[0], where[1]) for k, where in places.items()}
         # how many episodes each season holds, so a part-marked season says so
         counted = {}
         for item_id, season in set(home.values()):
@@ -1920,52 +2015,77 @@ class LocalAPI:
                 (item_id, season)).fetchone()["c"]
         held = {}
         for key in keys:
-            if is_episode(key):
-                where = home.get(key)
-                if where:
-                    held.setdefault(where, []).append(key)
+            where = home.get(key)
+            if where:
+                held.setdefault(where, []).append(key)
+
+        def in_order(key):
+            return (places.get(key) or ("", 0, 0))[2]
+
         for key in keys:
-            if is_episode(key):
-                where = home.get(key)
-                if where and where in held:
-                    if where in seen:
-                        continue
-                    seen.add(where)
-                    mine = held[where]
-                    if len(mine) == 1:
-                        one_card = self.metadata_for(con, mine[0], brief=True)
-                        if one_card:
-                            out.append(one_card)
-                        continue
-                    # the card wants the same shape the shelves give it: the
-                    # programme, the season, how many episodes it holds and when it
-                    # last gained one
-                    row = con.execute(
-                        """SELECT e.item_id, e.season, COUNT(*) episodes,
-                                  MAX(COALESCE(f.ctime, f.mtime)) added
-                           FROM episode e JOIN file f ON f.episode_id=e.id
-                           WHERE e.item_id=? AND e.season=?""",
-                        where).fetchone()
-                    card = self._season_card(con, row) if row else None
-                    if card:
-                        card["ratingKey"] = "%s-s%d" % where
-                        whole = counted.get(where, len(mine))
-                        card["leafCount"] = whole
-                        card["title"] = card.get("title") or "Season %d" % where[1]
-                        # what is actually on the shelf, when it is not the whole thing
-                        if len(mine) < whole:
-                            card["shelfCount"] = len(mine)
-                        # and which episodes it stands for, in order. A season card is
-                        # a way of reading the shelf; playing one has to play these.
-                        # Asking the library for the season answers with the
-                        # programme, so Play opened the show and started nothing.
-                        card["holds"] = sorted(
-                            mine,
-                            key=lambda k: (con.execute(
-                                "SELECT number FROM episode WHERE id=?",
-                                (k,)).fetchone() or [0])[0] or 0)
-                        out.append(card)
+            where = home.get(key)
+            if where:
+                if where in seen:
                     continue
+                seen.add(where)
+                mine = sorted(held[where], key=in_order)
+                if len(mine) == 1:
+                    one_card = self.metadata_for(con, mine[0], brief=True)
+                    if one_card:
+                        out.append(one_card)
+                    continue
+                # the card wants the same shape the shelves give it: the programme,
+                # the season, how many episodes it holds and when it last gained one
+                row = con.execute(
+                    """SELECT e.item_id, e.season, COUNT(*) episodes,
+                              MAX(COALESCE(f.ctime, f.mtime)) added
+                       FROM episode e JOIN file f ON f.episode_id=e.id
+                       WHERE e.item_id=? AND e.season=?""",
+                    where).fetchone()
+                card = self._season_card(con, row) if row and row["item_id"] else None
+                if not card:
+                    # nothing of this season is here: it is a season a pack is
+                    # offering. The programme's own poster if it is known here, the
+                    # pack's otherwise.
+                    film = (offers.get(mine[0]) or (None, 0, 0, {}))[3] or {}
+                    show = con.execute("SELECT * FROM item WHERE id=?",
+                                       (where[0],)).fetchone()
+                    card = {
+                        "ratingKey": "%s-s%d" % where, "type": "season",
+                        "title": "Season %d" % where[1], "index": where[1],
+                        "parentRatingKey": where[0],
+                        "grandparentRatingKey": where[0],
+                        "grandparentTitle": (show["title"] if show
+                                             else (offers.get(mine[0]) or [""])[0]),
+                        "parentTitle": (show["title"] if show
+                                        else (offers.get(mine[0]) or [""])[0]),
+                        "year": (show["year"] if show else film.get("year")) or None,
+                        "viewedLeafCount": 0, "viewCount": 0,
+                        "thumb": (("/art/%s/poster" % where[0])
+                                  if show and show["poster"]
+                                  else (("/art/%s/poster" % film.get("key"))
+                                        if film.get("poster") else None)),
+                        "addedAt": 0,
+                    }
+                card["ratingKey"] = "%s-s%d" % where
+                # offered until one of its episodes is here, which is what decides
+                # whether the client draws it as something to download
+                if all(str(k).startswith("o") for k in mine):
+                    card["offered"] = True
+                whole = counted.get(where, 0) + sum(
+                    1 for k in mine if str(k).startswith("o"))
+                card["leafCount"] = whole or len(mine)
+                card["title"] = card.get("title") or "Season %d" % where[1]
+                # what is actually on the shelf, when it is not the whole thing
+                if len(mine) < (whole or len(mine)):
+                    card["shelfCount"] = len(mine)
+                # and which episodes it stands for, in order. A season card is a way
+                # of reading the shelf; playing one has to play these. Asking the
+                # library for the season answers with the programme, so Play opened
+                # the show and started nothing.
+                card["holds"] = mine
+                out.append(card)
+                continue
             if is_title(key):
                 # marked before a whole programme was kept as its episodes: the shelf
                 # still holds the show itself, and it reads as seasons too
@@ -2356,6 +2476,36 @@ class LocalAPI:
                ORDER BY e.season, e.number LIMIT 1""",
             (here["item_id"], here["season"], here["season"], here["number"])).fetchone()
         return (str(nxt["id"])) if nxt else None
+
+    def offered_next_episode(self, con, key, after):
+        """The episode straight after this one when a pack has it and this machine does not.
+
+        Returns its offer, or None where the next one is here (or nothing is). Only the
+        very next number counts: this is about not stepping over one, not about
+        offering the rest of the series.
+        """
+        try:
+            here = con.execute(
+                "SELECT item_id, season, number FROM episode WHERE id=?",
+                (str(key),)).fetchone()
+        except (TypeError, ValueError):
+            return None
+        if not here:
+            return None
+        season, number = int(here["season"] or 0), int(here["number"] or 0)
+        # what the next one would be numbered, and what the file-backed answer was
+        if after:
+            nxt = con.execute("SELECT season, number FROM episode WHERE id=?",
+                              (str(after),)).fetchone()
+            if nxt and int(nxt["season"] or 0) == season                     and int(nxt["number"] or 0) == number + 1:
+                return None               # the next one is here: nothing to fill in
+        show = con.execute("SELECT title FROM item WHERE id=?",
+                           (here["item_id"],)).fetchone()
+        for one in self._offered_episodes_of(show["title"] if show else "",
+                                             season, {number}):
+            if int(one.get("index") or 0) == number + 1:
+                return one
+        return None
 
     def title_for(self, key):
         """A title a person would recognise, for the list of what is being watched."""

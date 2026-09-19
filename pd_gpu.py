@@ -30,6 +30,12 @@ import time
 # The server has no console of its own, so anything it starts is handed a fresh one by
 # Windows - a black window flashing over whatever is on screen. Not a flag elsewhere.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+#: Work that must give way to whatever is feeding a picture. Lifting a subtitle out
+#: of a film is a second pass over the same file, and a film whose sound is being
+#: encoded live is already reading it - the two together starved the encoder to a
+#: fifth of a megabit and the sound stopped while the picture, buffered and passing
+#: through untouched, carried on without it.
+BEHIND = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 SESSION_IDLE_S = 60          # no ping for this long -> kill ffmpeg
 SEG_SECONDS = 4
@@ -836,7 +842,10 @@ class Engine:
         Seeking first matters: without -ss ffmpeg reads the whole container looking for
         interleaved subtitle packets, which took over 90s on a 4 GB film. And no -copyts,
         so cue times start at zero exactly like the stream this accompanies."""
-        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin"]
+        # one thread as well as a lower priority: the point is to leave the
+        # machine to whatever is feeding a picture right now
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
+               "-threads", "1"]
         if offset:
             # to the millisecond: a copied picture starts on a keyframe, not a second
             cmd += ["-ss", ("%.3f" % float(offset)).rstrip("0").rstrip(".")]
@@ -845,9 +854,14 @@ class Engine:
         return cmd
 
     def subtitles(self, src, stream_index, offset=0):
-        """One track lifted out of the file, as WebVTT."""
+        """One track lifted out of the file, as WebVTT.
+
+        Behind whatever else is running, and on one thread. It is a second read of a
+        file that may be being encoded for somebody watching it this second, and the
+        subtitle can afford to take a moment where the sound cannot.
+        """
         return subprocess.Popen(self.subtitle_command(src, stream_index, offset),
-                                creationflags=NO_WINDOW,
+                                creationflags=NO_WINDOW | BEHIND,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
 
     def start(self, rating_key, offset=0, height=0, media_index=0, burn_index=None,

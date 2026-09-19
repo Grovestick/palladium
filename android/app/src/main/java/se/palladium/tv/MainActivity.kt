@@ -119,8 +119,15 @@ class MainActivity : AppCompatActivity() {
         // dropped here: its repeats, and the release at the end of it. The menu is
         // already up and has the focus, and that release is not a press of anything
         // on it - it is the end of the press that asked for it.
-        if (fromTheHold(event)) {
-            if (event.action == android.view.KeyEvent.ACTION_UP) holdIsOver()
+        // Only the release. The repeats of a held key have to go on through, because
+        // they are what the press below is watching to know a hold from a press - eat
+        // them and the menu never opens at all. The release is the one event with
+        // nothing left to do: the menu it asked for is already up.
+        if (fromTheHold(event) &&
+                event.action == android.view.KeyEvent.ACTION_UP) {
+            // not a cancelled one: that is sent to the window losing the focus while
+            // the key is still down, and the release itself follows it
+            if (!event.isCanceled) holdIsOver()
             return true
         }
         return safeKey(event) { super.dispatchKeyEvent(event) }
@@ -2174,6 +2181,12 @@ private class Browse {
     var landed = false
     /** the build whose offer has already been given the remote once */
     var offerTaken = 0
+    /** whether the search box has the cursor.
+     *
+     * A typed letter narrows the list, which reloads it, which changes browse.loaded -
+     * and the effect that puts the remote on the tab row fired on that change and took
+     * the cursor out of the box. One letter and the keyboard shut. */
+    var typing by mutableStateOf(false)
 }
 
 // FocusRequester.Cancel - refusing a direction - is still marked experimental
@@ -2218,7 +2231,17 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         val told = notes.getString("serverTold", "") ?: ""
         if (was != null && was != said.version && told != said.version) {
             notes.edit().putString("serverTold", said.version).apply()
-            browse.serverNow = said.version
+            // An app behind the server it is talking to wants the way to catch up,
+            // not a note that something changed. Updates.check answers only when the
+            // build on offer is newer than this one, so when it answers the install
+            // banner stands in for the note - and when it does not, the note stands.
+            val offer = Updates.check(ctx = ctx)
+            if (offer != null) {
+                browse.checkedUpdate = true
+                browse.update = offer
+            } else {
+                browse.serverNow = said.version
+            }
         }
     }
     // and a word from the server itself, asked for while the library is on screen:
@@ -2235,6 +2258,15 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 MainActivity.noticeSeen.value = word.id
                 // and no words takes it off the screen
                 browse.notice = word.text.ifEmpty { null }
+                // and a title to open, sent from the server: the one thing a screen
+                // in the house could not be asked to do. Opened the same way as
+                // pressing it here, so everything after it - the round, the place it
+                // keeps, what plays next - is the same as if somebody had.
+                if (word.play.isNotEmpty()) {
+                    runCatching { Api.item(word.play) }.getOrNull()?.let { m ->
+                        play(ctx, m, word.at)
+                    }
+                }
             } else if (word == null) {
                 kotlinx.coroutines.delay(10_000)
             }
@@ -2397,12 +2429,17 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     }
                     browse.more = false
                 }
+                // A shelf that could not be fetched is not an empty shelf. Both came
+                // out as no rows, the row was dropped, and the page was then marked
+                // loaded - so one slow answer as the app opens left the home screen
+                // without Continue watching until another tab was opened and come
+                // back from, which is the only thing that asks again.
                 tab == "home" -> browse.rows = listOf(
-                    DECK to runCatching { Api.onDeck(ctx) }.getOrDefault(emptyList()),
-                    "Recently added films" to runCatching { Api.recentFilms(ctx) }.getOrDefault(emptyList()),
-                    "Recently released films" to runCatching { Api.releasedFilms(ctx) }.getOrDefault(emptyList()),
-                    "Recently added TV" to runCatching { Api.recentEpisodes(ctx) }.getOrDefault(emptyList()),
-                    "Recently released series" to runCatching { Api.releasedShows(ctx) }.getOrDefault(emptyList()),
+                    DECK to askAgain { Api.onDeck(ctx) },
+                    "Recently added films" to askAgain { Api.recentFilms(ctx) },
+                    "Recently released films" to askAgain { Api.releasedFilms(ctx) },
+                    "Recently added TV" to askAgain { Api.recentEpisodes(ctx) },
+                    "Recently released series" to askAgain { Api.releasedShows(ctx) },
                 ).filter { it.second.isNotEmpty() }
                 tab == "watchlist" -> {
                     // marked for later, newest mark first: the order it was thought of
@@ -2502,7 +2539,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         if (remoteHere && !browse.landed) {
             browse.landed = true
             kotlinx.coroutines.delay(350)
-            runCatching { tabFocus["home"]?.requestFocus() }
+            // Not over an offer to install: a build waiting to be put on is the reason
+            // the bar is there, and the remote belongs on it. The bar asks for the
+            // remote itself when it appears, so a slower answer is covered too.
+            if (browse.update == null) {
+                runCatching { tabFocus["home"]?.requestFocus() }
+            }
         }
     }
     // Inside the library - focus on a poster, or the list scrolled away from the top
@@ -2534,7 +2576,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // is a change of browse.loaded, so this fired on the way back and took the
         // remote off the poster that had just been given it.
         if (browse.tab in setOf("films", "tv") && browse.loaded.isNotEmpty()
-                && !inContent && browse.focusKey.isEmpty() && browse.openedKey.isEmpty()) {
+                && !inContent && !browse.typing
+                && browse.focusKey.isEmpty() && browse.openedKey.isEmpty()) {
             kotlinx.coroutines.delay(80)
             runCatching { tabFocus[browse.tab]?.requestFocus() }
         }
@@ -2608,7 +2651,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                  onDecade = { browse.decade = it })
                }) else null,
                search = if (browse.tab in setOf("home", "films", "tv")) ({
-                   FilterControls(browse.query, { browse.query = it })
+                   FilterControls(browse.query, { browse.query = it },
+                                  onTyping = { browse.typing = it })
                }) else null,
                filters = null)
         if (chatting) {
@@ -2795,11 +2839,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // the title's own page; an episode has none, so its programme's
                         Pill("→ Go to title") {
                             browse.held = null
-                            val show = if (one.type == "episode") one.grandparentKey else null
-                            if (show.isNullOrEmpty()) onOpen(one)
-                            else (ctx as AppCompatActivity).lifecycleScope.launch {
-                                Api.item(show, one.srv)?.let { onOpen(it) }
-                            }
+                            goToTitle(ctx, one, onOpen)
                         }
                     }
                 },
@@ -2814,13 +2854,17 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 }) else ({
                     Pill("✓ Watched", primary = true) {
                         browse.held = null
+                        MainActivity.marksTouched.value++
+                        // the shelves as they stand, changed where this card is,
+                        // before the server has answered: the press should land on
+                        // the screen and not a moment later
+                        cardMarked(browse, one, true)
                         (ctx as AppCompatActivity).lifecycleScope.launch {
                             Api.setWatched(one, true)
                             // and off the shelf with it: marking one episode watched
                             // otherwise hands the shelf to the next episode, which
                             // reads as nothing having happened
                             Api.aside(one)
-                            browse.loaded = ""      // the shelf is read again
                         }
                     }
                 }),
@@ -2830,10 +2874,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     Pill("✕ Not watched") {
                         browse.held = null
                         MainActivity.marksTouched.value++
+                        cardMarked(browse, one, false)
                         (ctx as AppCompatActivity).lifecycleScope.launch {
                             Api.setWatched(one, false)
                             Api.aside(one)
-                            browse.loaded = ""
                         }
                     }
                 }))
@@ -2966,6 +3010,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                     val drew = Api.shelfDraw(open, true)
                                     if (drew == null) {
                                         browse.notice = "Nothing to play on that shelf"
+                                    } else if (drew.media.offered ||
+                                               drew.media.ratingKey.startsWith("o")) {
+                                        // Drawn from a pack rather than the library.
+                                        // The server has already asked for it, and
+                                        // there is nothing to open a player on until
+                                        // it arrives - so its own page instead, which
+                                        // is where how far along it is can be seen.
+                                        val full = (runCatching {
+                                            Api.metadata(drew.media)
+                                        }.getOrNull() ?: drew.media)
+                                        browse.notice = "Fetching " + drew.media.title
+                                        onOpen(full)
                                     } else {
                                         // the shelf's copy carries no streams: the
                                         // full answer decides the soundtrack and the
@@ -3065,7 +3121,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     LazyRow(state = rowState,
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             modifier = Modifier.focusGroup()) {
-                        itemsIndexed(list) { at, m ->
+                        itemsIndexed(list, key = { _, m -> m.ratingKey }) { at, m ->
                             val here = remember { FocusRequester() }
                             // the one the tabs hand down to
                             val first = topShelf &&
@@ -3080,7 +3136,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                 }
                             }
                             Poster(m, width = w,
-                                   modifier = Modifier.focusRequester(here)
+                                   // A card taken off a shelf leaves a gap, and the
+                                   // rest of the row closes it by moving rather than
+                                   // by the shelf being read again from the server -
+                                   // which redrew the whole page and lost the place
+                                   // the remote was on.
+                                   modifier = Modifier.animateItem()
+                                       .focusRequester(here)
                                        .onGloballyPositioned {
                                            browse.cardAt[m.ratingKey] =
                                                it.boundsInWindow().center.x
@@ -3114,18 +3176,52 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                                     browse.cardAt[m.ratingKey] ?: 0f))
                                             },
                                             down = { moveTo(browse.shelfAsk[shelf + 1]) }),
-                                   onHold = if (title == DECK)
-                                       ({ browse.held = m })
-                                       else ({
-                                           browse.openedRow = title; browse.openedKey = m.ratingKey
-                                           goToTitle(ctx, m, onOpen)
-                                       })) {
+                                   // held: the menu, wherever the poster is. It
+                                   // used to open the title's own page on every
+                                   // shelf but Continue watching - so a hold went
+                                   // straight past to the title while the button was
+                                   // still down, and there was no way to say seen it
+                                   // without going there first. Go to title is the
+                                   // first thing in the menu.
+                                   onHold = {
+                                       browse.openedRow = title
+                                       browse.held = m
+                                   }) {
                                 // Continue watching resumes where it was left. Opening
                                 // the page instead put every resume one press further
                                 // away, and a shuffle lost its shelf on the way: the
                                 // page carries no shelf, so Next handed over the next
                                 // episode of the programme rather than drawing.
-                                if (title == DECK && !m.isFolder) {
+                                if (title == DECK && m.shuffleId.isNotEmpty() &&
+                                    m.isFolder) {
+                                    // A shuffle's own row, standing for a shelf. What
+                                    // it shows is whatever the hat drew last, and for
+                                    // a programme that is a folder - so pressing it
+                                    // opened the list of seasons rather than putting
+                                    // something on, which is the one thing the row is
+                                    // there for. Draw from its shelf instead.
+                                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                                        val drew = Api.shelfDraw(m.shuffleId, m.srv,
+                                                                 resume = true)
+                                        if (drew == null) {
+                                            browse.notice = "Nothing to play on that shelf"
+                                        } else if (drew.media.offered ||
+                                                   drew.media.ratingKey.startsWith("o")) {
+                                            browse.notice = "Fetching " + drew.media.title
+                                            onOpen(runCatching { Api.metadata(drew.media) }
+                                                       .getOrNull() ?: drew.media)
+                                        } else {
+                                            val full = (runCatching {
+                                                Api.metadata(drew.media)
+                                            }.getOrNull() ?: drew.media)
+                                                .let { Api.atHome(ctx, it) ?: it }
+                                            full.shuffleId = m.shuffleId
+                                            play(ctx, full, drew.resumeAt,
+                                                 full.pickedSub
+                                                     ?: full.openWith(Api.myLanguage)?.index)
+                                        }
+                                    }
+                                } else if (title == DECK && !m.isFolder) {
                                     // asked for in full first. A row on this shelf is
                                     // brief - no codecs, no part, nothing about the
                                     // file - and a film that cannot say what it is
@@ -3258,15 +3354,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                         browse.collSortAsc)
                         else browse.grid
                     itemsIndexed(shown) { at, m ->
-                        // Sorted by release, a series is placed by its newest
-                        // episode, so that is what the card says. The year a
-                        // programme began, above one that began later, reads as a
-                        // mistake until it says which date put it there.
-                        val instead =
-                            if (browse.sortKey == "originallyAvailableAt" &&
-                                m.isFolder && m.released.isNotEmpty())
-                                "last aired " + m.released
-                            else null
+                        // Nothing under the card but its own line. Sorted by
+                        // release a series is placed by its newest episode, and the
+                        // card used to say "last aired" and the date to explain the
+                        // order - which does not fit the width on a television, and
+                        // wrapped over the title beneath it. The browser has room for
+                        // it and still says it there.
+                        val instead: String? = null
                         val here = remember { FocusRequester() }
                         LaunchedEffect(browse.focusKey) {
                             if (browse.focusKey == m.ratingKey) {
@@ -3299,16 +3393,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                        at < maxOf(across, 1) && x != null &&
                                            moveTo(tabOver(x))
                                    }),
-                               // held: the title's own page, and on the watchlist
-                               // the choice to make it a favorite
+                               // held: the menu. On the watchlist that is the one
+                               // about the watchlist; anywhere else it is the title's,
+                               // which opened its page instead - the hold went past
+                               // to the title while the button was still down. Go to
+                               // title is the first thing in the menu.
                                onHold = {
                                    if (m.type == "collection") openShelf(browse, m)
                                    else if (browse.tab == "watchlist") browse.favHeld = m
                                    else {
-                                       browse.openedKey = m.ratingKey
                                        browse.openedAt = gridState.firstVisibleItemIndex to
                                            gridState.firstVisibleItemScrollOffset
-                                       goToTitle(ctx, m, onOpen)
+                                       browse.held = m
                                    }
                                }) {
                             // a shelf is not a title: it opens into what it holds
@@ -3423,11 +3519,101 @@ private fun openShelf(browse: Browse, shelf: Media) {
 
 /** A poster held: its own page, and for an episode its programme's, which is where an
  *  episode is found. */
+/**
+ * One card settled, on the shelves as they already stand.
+ *
+ * Marking something read every shelf again from the server, which redrew the whole
+ * page: the card the remote was on moved, the scroll went back to the start, and the
+ * shelf the press was made on flickered. Nothing here has changed except this one
+ * title, and this changes exactly that.
+ *
+ * Continue watching is what is unfinished, so a card marked either way has just been
+ * settled and leaves it - the row closes the gap on its own. Every other shelf keeps
+ * the card and only its tick changes.
+ */
+private fun cardMarked(browse: Browse, one: Media, watched: Boolean) {
+    val key = one.ratingKey
+    fun tick(list: List<Media>) =
+        list.map { if (it.ratingKey == key) it.copy(watched = watched) else it }
+    // The card the remote was on is about to go, and focus goes with it - to the top
+    // of the page, which is a long way back from the shelf the press was made on. It
+    // is handed to the neighbour first: the card that slides into the place this one
+    // is leaving, or the one before it at the end of a row.
+    browse.rows.firstOrNull { it.first == DECK }?.second?.let { list ->
+        val at = list.indexOfFirst { it.ratingKey == key }
+        if (at >= 0) {
+            val next = list.getOrNull(at + 1) ?: list.getOrNull(at - 1)
+            browse.focusKey = next?.ratingKey.orEmpty()
+        }
+    }
+    browse.rows = browse.rows.map { (title, list) ->
+        title to (if (title == DECK) list.filterNot { it.ratingKey == key }
+                  else tick(list))
+    }
+    browse.grid = tick(browse.grid)
+    browse.favs = tick(browse.favs)
+}
+
+
+/**
+ * A shelf, asked for again if it could not be had.
+ *
+ * The first request of a session is the one most likely to fail: the server has just
+ * been reached for, or is still starting, or the wi-fi has not settled. Giving up on it
+ * looked exactly like a shelf with nothing on it.
+ *
+ * Three tries, a second or two apart, and then it really is empty. A shelf that answers
+ * with nothing is not retried - that is an answer.
+ */
+private suspend fun askAgain(get: suspend () -> List<Media>): List<Media> {
+    repeat(3) { at ->
+        try {
+            return get()
+        } catch (stopped: kotlinx.coroutines.CancellationException) {
+            throw stopped              // the page moved on: not a failure
+        } catch (e: Exception) {
+            if (at == 2) {
+                android.util.Log.i("Palladium", "shelf gave up: " + (e.message ?: ""))
+                return emptyList()
+            }
+            kotlinx.coroutines.delay(1200L * (at + 1))
+        }
+    }
+    return emptyList()
+}
+
+
 private fun goToTitle(ctx: android.content.Context, one: Media, onOpen: (Media) -> Unit) {
-    val show = if (one.type == "episode") one.grandparentKey else null
-    if (show.isNullOrEmpty()) onOpen(one)
-    else (ctx as AppCompatActivity).lifecycleScope.launch {
-        Api.item(show, one.srv)?.let { onOpen(it) }
+    if (one.type != "episode") {
+        onOpen(one)
+        return
+    }
+    // The season it is in, opened on the episode itself. Going to the programme put
+    // the page at the top of its first season, which for something twelve seasons in
+    // is a long way from what was being watched - and the row it opens on is the one
+    // thing somebody going there wants to see.
+    MainActivity.reveal.value = one.ratingKey
+    val show = one.grandparentKey?.takeIf { it.isNotEmpty() }
+    if (show == null) {
+        MainActivity.reveal.value = null
+        onOpen(one)
+        return
+    }
+    (ctx as AppCompatActivity).lifecycleScope.launch {
+        val programme = Api.item(show, one.srv)
+        // The season is taken from the programme's own children rather than asked for
+        // by its key: a season key answers with the programme it belongs to, so
+        // opening it landed back on the list of seasons - which is where this started.
+        val seasons = programme?.let {
+            runCatching { Api.children(it) }.getOrDefault(emptyList())
+        }.orEmpty()
+        val season = seasons.firstOrNull { it.ratingKey == one.parentKey }
+            ?: seasons.firstOrNull { it.type == "season" && it.index == one.parentIndex }
+        when {
+            season != null -> onOpen(season)
+            programme != null -> { MainActivity.reveal.value = null; onOpen(programme) }
+            else -> MainActivity.reveal.value = null
+        }
     }
 }
 
@@ -3637,9 +3823,14 @@ private fun RowScope.DecadeControl(
 private fun RowScope.FilterControls(
     query: String,
     onQuery: (String) -> Unit,
+    /** said while the box has the cursor, so nothing else asks for it meanwhile */
+    onTyping: (Boolean) -> Unit = {},
 ) {
     // a fixed width: the narrow bar scrolls, where "what is left" means nothing
-    TextBox(query, "Search", Modifier.width(190.dp), onValue = onQuery)
+    TextBox(query, "Search",
+            Modifier.width(190.dp)
+                .onFocusChanged { onTyping(it.isFocused || it.hasFocus) },
+            onValue = onQuery)
     if (query.isNotEmpty()) {
         Spacer(Modifier.width(6.dp))
         Pill("Clear") { onQuery("") }
@@ -4417,6 +4608,19 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     // the only state worth marking.
                     Pill("Mark all watched") { marking = true }
                     Pill("Mark all unwatched") { marking = false }
+                    // Up a level. A season is arrived at from an episode now, so the
+                    // programme it belongs to is a page that was never opened - and
+                    // Back goes where you came from, which is the film or the shelf,
+                    // not the other seasons.
+                    if (full.type == "season") {
+                        val show = full.parentKey?.takeIf { it.isNotEmpty() }
+                            ?: full.grandparentKey?.takeIf { it.isNotEmpty() }
+                        if (show != null) Pill("↑ Go to show") {
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                Api.item(show, full.srv)?.let { onOpen(it) }
+                            }
+                        }
+                    }
                 }
                 marking?.let { seen ->
                     val many = children.size

@@ -130,12 +130,77 @@
     return box;
   }
 
+  /* The same walk, for anything that wants one path back: a folder to save into, or
+     a torrent file to add. `ending` lists files that end that way alongside the
+     folders; `onPick` is handed whichever was chosen and closes the picker. */
+  /* The box the picker draws in. It was made by the library pane alone, so every
+     other pane asked for one that was not there and the button did nothing at all.
+     It is fixed to the window, so it can hang off the body wherever it is wanted. */
+  function pickerBox() {
+    let wrap = document.querySelector("#picker");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.id = "picker";
+      wrap.className = "hidden";
+      document.body.appendChild(wrap);
+    }
+    return wrap;
+  }
+
+  async function pickOne(path, ending, onPick) {
+    const data = await post("/library/browse", { path: path || "", files: ending || "" });
+    const wrap = pickerBox();
+    wrap.classList.remove("hidden");
+    wrap.innerHTML = "";
+    const head = document.createElement("div");
+    head.className = "pickhead";
+    head.innerHTML = "<span></span>" +
+      '<button class="btn ghost up">Up</button>' +
+      (ending ? "" : '<button class="btn use">Use this folder</button>') +
+      '<button class="btn ghost close">Cancel</button>';
+    head.querySelector("span").textContent = data.path || "This computer";
+    head.querySelector(".up").onclick = () => pickOne(data.parent || "", ending, onPick);
+    head.querySelector(".up").disabled = !data.path;
+    head.querySelector(".close").onclick = () => wrap.classList.add("hidden");
+    if (!ending) {
+      head.querySelector(".use").onclick = () => {
+        if (!data.path) return;
+        wrap.classList.add("hidden");
+        onPick(data.path);
+      };
+    }
+    wrap.appendChild(head);
+    const list_el = document.createElement("div");
+    list_el.className = "picklist";
+    (data.dirs || []).forEach((d) => {
+      const b = document.createElement("button");
+      b.className = "pickitem";
+      b.textContent = d.replace(/\$/, "");
+      b.onclick = () => pickOne(d, ending, onPick);
+      list_el.appendChild(b);
+    });
+    (data.files || []).forEach((f) => {
+      const b = document.createElement("button");
+      b.className = "pickitem";
+      b.textContent = "▸ " + f.split(/[\/]/).pop();
+      b.onclick = () => { wrap.classList.add("hidden"); onPick(f); };
+      list_el.appendChild(b);
+    });
+    if (!(data.dirs || []).length && !(data.files || []).length) {
+      const none = document.createElement("div");
+      none.className = "note";
+      none.textContent = data.error || "Nothing here.";
+      list_el.appendChild(none);
+    }
+    wrap.appendChild(list_el);
+  }
+
   /* the picker walks the server's drives, because a browser file input hands back a
      sandboxed name rather than a usable path */
   async function openPicker(list, path) {
     picking = list;
     const data = await post("/library/browse", { path: path || "" });
-    const wrap = $("#picker");
+    const wrap = pickerBox();
     wrap.classList.remove("hidden");
     wrap.innerHTML = "";
     const head = document.createElement("div");
@@ -500,10 +565,11 @@
     }
     const cfg = said.config || {};
     const qb = said.qbittorrent || {};
-    box.innerHTML += "<div class='note'>Films from a torrent pack are shown in Films, " +
-      "greyed, before they are here. Download on one fetches that film alone through " +
-      "qBittorrent; the rest of the pack is left alone. Every download is under Log, " +
-      "Downloads, with who asked for it.</div>" ;
+    box.innerHTML += "<div class='note'>Films and programmes a pack can give are " +
+      "shown alongside the library with a download mark, before they are here. " +
+      "Download on one fetches that film alone through qBittorrent; the rest of " +
+      "the pack is left alone. Every download is under Log, Downloads, with who " +
+      "asked for it.</div>";
     const field = (label, value, hint, key, secret) => {
       const r = document.createElement("div");
       r.className = "addrow subrow";
@@ -541,6 +607,18 @@
       toast("Saving into " + pick.value);
     };
     saveRow.appendChild(pick);
+    // and anywhere else. The list above is the library's own folders, which is not
+    // where downloads necessarily go - a second drive with room on it is not a place
+    // films are indexed from.
+    const elsewhere = document.createElement("button");
+    elsewhere.className = "btn ghost";
+    elsewhere.textContent = "Browse…";
+    elsewhere.onclick = () => pickOne(cfg.saveTo || "", "", async (where) => {
+      await post("/torrents/config", { saveTo: where });
+      toast("Saving into " + where);
+      render();
+    });
+    saveRow.appendChild(elsewhere);
     box.appendChild(saveRow);
     if (said.free !== null && said.free !== undefined) {
       const room = document.createElement("div");
@@ -586,7 +664,8 @@
     packsHead.textContent = "Packs";
     box.appendChild(packsHead);
 
-    // a pack: its .torrent file, by its path on this computer or uploaded
+    // a pack: its .torrent file, by its path on this computer or found by
+    // browsing to it, starting where packs load themselves from
     const addRow = document.createElement("div");
     addRow.className = "addrow subrow";
     addRow.innerHTML = "<span class='sublabel'>Add a pack</span>";
@@ -596,13 +675,9 @@
     const addPath = document.createElement("button");
     addPath.className = "btn ghost";
     addPath.textContent = "Add";
-    const upload = document.createElement("input");
-    upload.type = "file";
-    upload.accept = ".torrent";
-    upload.style.display = "none";
     const choose = document.createElement("button");
     choose.className = "btn ghost";
-    choose.textContent = "Upload\u2026";
+    choose.textContent = "Browse…";
     const added = (r) => {
       toast(r && r.ok
         ? (r.already ? "That pack is already here"
@@ -615,15 +690,14 @@
       if (!pathBox.value.trim()) return;
       added(await post("/torrents/add", { path: pathBox.value.trim() }));
     };
-    choose.onclick = () => upload.click();
-    upload.onchange = () => {
-      const f = upload.files && upload.files[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = async () => added(await post("/torrents/add", { data: String(reader.result) }));
-      reader.readAsDataURL(f);
-    };
-    addRow.append(pathBox, addPath, choose, upload);
+    // Opens on the folder packs load themselves from, and walks anywhere from there.
+    // It reads this machine's own folders rather than the browser's: a file box hands
+    // back a sandboxed name, and the server is the one that has to open the file.
+    choose.onclick = () => pickOne(said.packFolder || "", ".torrent", async (file) => {
+      pathBox.value = file;
+      added(await post("/torrents/add", { path: file }));
+    });
+    addRow.append(pathBox, addPath, choose);
     box.appendChild(addRow);
 
     (said.packs || []).forEach((p) => {
@@ -664,6 +738,61 @@
       n.textContent = (said.offered || 0) + " films on offer that the library does not hold.";
       box.appendChild(n);
     }
+    // Who asked for what. The weekly total per person is already beside their limit
+    // under Users, which answers "how much" and not "what" - and "what" is the half
+    // somebody actually wants when they are looking at a month of downloads.
+    const who = document.createElement("div");
+    who.className = "note";
+    who.style.marginTop = "12px";
+    who.textContent = "Reading what has been fetched…";
+    box.appendChild(who);
+    get("/torrents/log").then((log) => {
+      const since = Date.now() / 1000 - 30 * 86400;
+      const rows = (log.downloads || []).filter(
+        (d) => (d.when || 0) >= since && d.state !== "failed" && d.state !== "cancelled");
+      who.textContent = "";
+      if (!rows.length) { who.textContent = "Nothing fetched in the last month."; return; }
+      const head = document.createElement("div");
+      head.className = "sublabel";
+      head.textContent = "Fetched in the last month";
+      who.appendChild(head);
+      const by = {};
+      rows.forEach((d) => {
+        const name = String(d.who || "somebody").trim() || "somebody";
+        (by[name] = by[name] || []).push(d);
+      });
+      Object.keys(by).sort((a, b) => by[b].length - by[a].length).forEach((name) => {
+        const theirs = by[name].sort((a, b) => (b.when || 0) - (a.when || 0));
+        const gb = theirs.reduce((n, d) => n + (d.size || 0) / 1e9, 0);
+        const line = document.createElement("div");
+        line.className = "note";
+        line.style.marginTop = "6px";
+        line.textContent = name + "  ·  " + theirs.length + " films, " +
+          gb.toFixed(1) + " GB";
+        who.appendChild(line);
+        theirs.slice(0, 12).forEach((d) => {
+          const one = document.createElement("div");
+          one.className = "note";
+          one.style.marginLeft = "12px";
+          const when = d.when
+            ? new Date(d.when * 1000).toLocaleDateString(undefined,
+                { day: "numeric", month: "short" })
+            : "";
+          one.textContent = [when, d.title, d.year || "",
+                             ((d.size || 0) / 1e9).toFixed(1) + " GB",
+                             d.state === "done" ? "" : d.state]
+            .filter(Boolean).join("  ·  ");
+          who.appendChild(one);
+        });
+        if (theirs.length > 12) {
+          const more = document.createElement("div");
+          more.className = "note";
+          more.style.marginLeft = "12px";
+          more.textContent = "and " + (theirs.length - 12) + " more";
+          who.appendChild(more);
+        }
+      });
+    }).catch(() => { who.textContent = "Could not read what has been fetched."; });
     return box;
   }
 
@@ -922,6 +1051,12 @@
       // setting and looked exactly the same afterwards
       '<button class="btn ghost kind cdeck">Continue watching</button>' +
       '<button class="btn ghost kind clist">Watchlist</button>' +
+      // and their shuffle: the hat's next draws, so a round carries on when this
+      // machine is off. The server has always read this flag and there was no way
+      // to set it, so only the owner's shuffle was ever kept.
+      '<button class="btn ghost kind ccasual" title="Keep the next few episodes ' +
+      'their shuffle will draw, so a round survives this machine going off">' +
+      'Shuffle</button>' +
       // whether this person is handed the address this machine answers to on its
       // own network. They always have the way in from outside, which is the one
       // that works from where they are; the other is inside somebody's house.
@@ -950,7 +1085,7 @@
           ? "last watched " + new Date(who.lastSeen * 1000).toLocaleDateString()
           : "not used yet")) + " · " + bill;
     [["cdeck", "cacheDeck"], ["clist", "cacheList"],
-     ["clan", "shareLan"]].forEach(([css, name]) => {
+     ["ccasual", "cacheCasual"], ["clan", "shareLan"]].forEach(([css, name]) => {
       const b = el.querySelector("." + css);
       if (who[name]) b.classList.add("on");
       b.onclick = async () => {
@@ -1429,6 +1564,12 @@
     const whose = [hereName, copyName];
     try {
       const answers = await Promise.all(asked);
+      // what each machine is measuring, if anything: a file read for its loudness is
+      // work with no row of its own, and Now playing is where work is shown
+      const measuring = answers.map((one, which) =>
+        one && one.measuring ? Object.assign({}, one.measuring,
+                                             { on: whose[which] || "" }) : null)
+        .filter(Boolean);
       const byViewing = new Map();
       answers.forEach((one, which) => {
         ((one && one.live) || []).forEach((w0) => {
@@ -1439,9 +1580,19 @@
           // viewer and the row a player's report raises is named for the device, so
           // one person watching one thing arrived as "Olof" with no position and
           // "Streamer" with one, and neither row said what was happening.
-          const name = (w.key || w.title || "") + "|" + (w.episode || "");
-          const had = byViewing.get(name);
-          if (!had) { byViewing.set(name, Object.assign({}, w)); return; }
+          // The key alone, where there is one. It was the key joined to the episode
+          // label, and only the machine a player reports to fills that in - so one
+          // film read off both was two rows again, keyed "<key>|S02E04" here and
+          // "<key>|" there. The title is the fallback for a row with no key at all.
+          const name = w.key ? "k:" + w.key
+            : "t:" + (w.title || "") + "|" + (w.episode || "");
+          const spot = byViewing.get(name) || [];
+          if (!spot.length) byViewing.set(name, spot);
+          // one screen is one viewing: two addresses on one film are two people, and
+          // a report with no address of its own belongs to whichever is open
+          const had = spot.find((x) => !x.address || !w.address
+                                       || x.address === w.address);
+          if (!had) { spot.push(Object.assign({}, w)); return; }
           // both are carrying it, so both rates are real and they add up
           had.mbit = (had.mbit || 0) + (w.mbit || 0);
           had.mb = (had.mb || 0) + (w.mb || 0);
@@ -1470,21 +1621,23 @@
       // "Episode 32" until it has been told otherwise, so the same viewing read as
       // two different programmes depending on which machine was reporting it. The
       // fullest name any machine has is the name for all of them.
+      const merged = [];
+      byViewing.forEach((spot) => spot.forEach((w) => merged.push(w)));
       {
         const best = new Map();
-        byViewing.forEach((w) => {
+        merged.forEach((w) => {
           const k = w.key || w.title;
           const had = best.get(k) || "";
           const mine = (w.title || "") + (w.episode ? " " + w.episode : "");
           if (mine.length > had.length) best.set(k, mine);
         });
-        byViewing.forEach((w) => {
+        merged.forEach((w) => {
           const k = w.key || w.title;
           const full = best.get(k);
           if (!full) return;
           const mine = (w.title || "") + (w.episode ? " " + w.episode : "");
           if (full.length > mine.length) {
-            const other = Array.from(byViewing.values())
+            const other = merged
               .find((x) => (x.key || x.title) === k &&
                            ((x.title || "") + (x.episode ? " " + x.episode : ""))
                                === full);
@@ -1492,7 +1645,7 @@
           }
         });
       }
-      data = { live: Array.from(byViewing.values()) };
+      data = { live: merged, measuring: measuring };
     } catch (e) { /* server restarting */ }
     into.innerHTML = "";
     if (totals) {
@@ -1520,12 +1673,30 @@
           totals.appendChild(cell);
         });
     }
-    if (!data.live.length) {
+    if (!data.live.length && !(data.measuring || []).length) {
       const none = document.createElement("div");
       none.className = "note";
       none.textContent = "Nobody is watching anything at the moment.";
       into.appendChild(none);
     }
+    // A file being listened to for its loudness: work with no viewer behind it, which
+    // is exactly why it is worth showing - a disk busy for half a minute at a time all
+    // evening should say what it is doing.
+    (data.measuring || []).forEach((m) => {
+      const el = document.createElement("div");
+      el.className = "person live";
+      el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
+        '<div class="rate"><b></b><span>measuring</span></div>';
+      el.querySelector("b").textContent = m.name || "a file";
+      const secs = m.since ? Math.max(0, Math.round(Date.now() / 1000 - m.since)) : 0;
+      el.querySelector(".pmeta .note").textContent = [
+        "loudness, on " + (m.on || "this server"),
+        secs ? secs + "s so far" : "",
+        (m.done || 0) + " measured",
+        m.left ? m.left + " to go" : ""].filter(Boolean).join(" · ");
+      el.querySelector(".rate b").textContent = "LUFS";
+      into.appendChild(el);
+    });
     data.live.forEach((w) => {
       const el = document.createElement("div");
       el.className = "person live";
@@ -1558,17 +1729,24 @@
       // three-week-old app is a different conversation from one on today's, and the
       // answer used to mean opening the watch log to find out.
       // "Streamer · Google TV app": what it calls itself, and what sort of thing it is
-      const on = [w.device, w.kind || w.client].filter(Boolean)
+      // A row relayed from a machine on an older build still files the device under
+      // the viewer's id joined to it by a NUL, which renders as the id glued to the
+      // device name - and that id is the token their player signs in with.
+      const named = (x) => String(x || "").split(" ").pop();
+      const on = [named(w.device), w.kind || w.client].filter(Boolean)
         .filter((v, i, all) => all.indexOf(v) === i).join(" · ");
       // "android 0.14.56 tv" is the app's own name for itself; the version is the
       // part worth reading here, since the kind of device is said beside it
       const build = (w.app || "").match(/\d+\.\d+\.\d+/);
+      // put on rather than chosen: the shuffle dealt this one
+      const dealt = w.casual ? "shuffle" : "";
       el.querySelector(".pmeta .note").textContent = [
         w.who,
         // which machine is sending it: with two of them answering for one library,
         // a row that does not say is a rate with nowhere to put it
         w.from ? "from " + w.from : "",
         [on, build ? "v" + build[0] : ""].filter(Boolean).join(" "),
+        dealt,
         began ? "since " + began : "",
         // a file on its way to the machine that keeps copies is not being watched:
         // it has no player, no place in the film and no picture size worth naming
@@ -1576,6 +1754,12 @@
           w.state === "paused" ? "paused"
             : w.state === "buffering" ? "buffering" : "playing",
         w.state === "syncing" ? "" : at,
+        // what that screen says it is holding, and whether it has run out. A number
+        // under 20 is a picture about to stop, which is worth seeing from here rather
+        // than hearing about afterwards.
+        w.state === "syncing" || w.ahead === undefined ? ""
+          : w.stalled ? "STALLED"
+          : Math.round(w.ahead) + "s buffered",
         w.how,
         w.state === "syncing" ? "" : w.quality,
         Math.max(1, Math.round(w.seconds / 60)) + " min",
@@ -3479,7 +3663,7 @@
     const bar = document.createElement("div");
     bar.className = "sortbar collbar";
     [["server", "Cache"], ["cache", "Server"],
-     ["copying", "Being copied"]].forEach(([id, label]) => {
+     ["copying", "Being copied"], ["held", "What is held"]].forEach(([id, label]) => {
       const b = document.createElement("button");
       b.className = "btn ghost kind" + (remoteTab === id ? " on" : "");
       b.textContent = label;
@@ -3487,6 +3671,80 @@
       bar.appendChild(b);
     });
     main.appendChild(bar);
+
+    /* ---- what the other machine is already holding, and whose it is ---- */
+    if (remoteTab === "held") {
+      const box = block("What is held");
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = "Every film and episode the other machine already has, and " +
+        "why it is kept. This is what would still play if this server went off.";
+      box.appendChild(note);
+
+      const pickRow = document.createElement("div");
+      pickRow.className = "addrow subrow";
+      pickRow.innerHTML = "<span class='sublabel'>Whose</span>";
+      const pick = document.createElement("select");
+      pick.className = "colldecade";
+      pick.add(new Option("Everyone", ""));
+      pickRow.appendChild(pick);
+      box.appendChild(pickRow);
+
+      const count = document.createElement("div");
+      count.className = "note";
+      box.appendChild(count);
+      const list = document.createElement("div");
+      list.className = "heldlist";
+      list.textContent = "Reading…";
+      box.appendChild(list);
+
+      get("/follow/queue").then((said) => {
+        const rows = (said.queue || []).filter((r) => r.here);
+        if (!rows.length) { list.textContent = "Nothing held yet."; return; }
+        const whoOf = (r) => String(r.who || "").trim() || "nobody in particular";
+        const people = {};
+        rows.forEach((r) => { people[whoOf(r)] = (people[whoOf(r)] || 0) + 1; });
+        Object.keys(people).sort((a, b) => people[b] - people[a])
+          .forEach((name) => pick.add(new Option(name + "  (" + people[name] + ")", name)));
+        // Every title, not a sentence about them. Sorted by who keeps it and then by
+        // why, so one person's whole shelf reads together; the filter narrows it to
+        // one person when that is the question.
+        const draw = () => {
+          const only = pick.value;
+          const mine = only ? rows.filter((r) => whoOf(r) === only) : rows;
+          const gb = mine.reduce((n, r) => n + (Number(r.gb) || 0), 0);
+          count.textContent = mine.length + " titles, " + gb.toFixed(1) + " GB" +
+            (only ? " kept for " + only : " in all");
+          list.textContent = "";
+          const order = mine.slice().sort((a, b) =>
+            whoOf(a).localeCompare(whoOf(b)) ||
+            String(a.why || "").localeCompare(String(b.why || "")) ||
+            String(a.title || "").localeCompare(String(b.title || "")));
+          let lastHead = "";
+          order.forEach((r) => {
+            const head = whoOf(r) + "  ·  " + (r.why || "kept ahead");
+            if (head !== lastHead) {
+              lastHead = head;
+              const h = document.createElement("div");
+              h.className = "sublabel heldhead";
+              h.textContent = head;
+              list.appendChild(h);
+            }
+            const line = document.createElement("div");
+            line.className = "heldone";
+            line.innerHTML = "<span class='t'></span><span class='g'></span>";
+            line.querySelector(".t").textContent = r.title || r.key || "";
+            line.querySelector(".g").textContent =
+              (Number(r.gb) || 0).toFixed(2) + " GB";
+            list.appendChild(line);
+          });
+        };
+        pick.onchange = draw;
+        draw();
+      }).catch(() => { list.textContent = "Could not read it."; });
+      main.appendChild(box);      // block() builds it; it still has to go on the page
+      return;
+    }
 
     /* ---- what the cache is taking, and what is next ---- */
     if (remoteTab === "copying") {
@@ -3900,6 +4158,55 @@
        Caddy, which takes 443, gets a certificate for a name you own, and hands what
        it receives to this server - so a link from away is https and a name rather
        than an address and a port. */
+    /* Whether an owner's key still runs the place from outside the house. The key is
+       the same one that watches, so away from home it is on phones and in browsers
+       that are nowhere near the machine. */
+    const admin = block("Running this server from away");
+    all.appendChild(admin);
+    (async () => {
+      let said = {};
+      try {
+        said = await get("/settings");
+      } catch (e) {
+        return;                          // an older server, or not the owner
+      }
+      const draw = (now) => {
+        admin.innerHTML = "<h3>Running this server from away</h3>";
+        const row = document.createElement("div");
+        row.className = "addrow subrow";
+        row.innerHTML = "<span class='sublabel'>From away</span>";
+        [[true, "The run of the place"], [false, "Watching only"]]
+          .forEach(([value, text]) => {
+            const b = document.createElement("button");
+            b.className = "btn ghost kind" + (now === value ? " on" : "");
+            b.textContent = text;
+            b.onclick = async () => {
+              const back = await post("/settings", { remoteAdmin: value });
+              if (back && back.remoteAdmin !== undefined) {
+                draw(!!back.remoteAdmin);
+                toast(value ? "Settings can be changed from anywhere"
+                            : "Settings can be changed at home only");
+              } else {
+                toast("Only from this network.");
+              }
+            };
+            row.appendChild(b);
+          });
+        admin.appendChild(row);
+        const n = document.createElement("div");
+        n.className = "note";
+        n.style.margin = "2px 0 6px 82px";
+        n.textContent = now
+          ? "Your key changes settings wherever you are. Anyone who gets hold of it " +
+            "can do the same."
+          : "Away from home your key plays films and nothing else; settings, keys " +
+            "and the library are refused. On this network and at the machine itself " +
+            "nothing changes - which is where this setting can be altered.";
+        admin.appendChild(n);
+      };
+      draw(said.remoteAdmin !== false);
+    })();
+
     const out = block("Reach from outside");
     all.appendChild(out);
     const drawProxy = async () => {
@@ -5813,7 +6120,8 @@
         mins ? mins + " min" : "under a minute",
         pos ? pos + "% in" : "",
         // what it was, then what it calls itself: "Google TV app - Streamer"
-        [w.client, w.device].filter(Boolean).join(" - "),
+        [w.client, String(w.device || "").split(" ").pop()]
+          .filter(Boolean).join(" - "),
         w.app,
         w.casual ? "casual" : "",
       ].filter(Boolean).join("  \u00b7  ");

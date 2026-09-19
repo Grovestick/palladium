@@ -769,8 +769,12 @@ class Library:
                     spec.append("%s TEXT%s" % (name, " PRIMARY KEY"
                                                if name == first else ""))
                 else:
-                    spec.append("%s %s%s" % (name, r["type"] or "",
-                                             " PRIMARY KEY" if name == first else ""))
+                    # with whatever it defaults to. Dropped here once, and every row
+                    # written afterwards arrived as NULL where the table said nought.
+                    spec.append("%s %s%s%s" % (
+                        name, r["type"] or "",
+                        "" if r["dflt_value"] is None else " DEFAULT " + str(r["dflt_value"]),
+                        " PRIMARY KEY" if name == first else ""))
                     rest.append(name)
             extra = (", UNIQUE(item_id, season, number)" if table == "episode" else "")
             con.execute("CREATE TABLE %s_new (%s%s)" % (table, ", ".join(spec), extra))
@@ -1192,8 +1196,11 @@ class Library:
         if held and (str(held["title"] or "") != str(title or "")
                      or int(held["year"] or 0) != int(year or 0)):
             self.note_clash(mine, held["title"], held["year"], title, year)
-        con.execute("INSERT OR IGNORE INTO item (id, type, title, sort_title, year, added) "
-                    "VALUES (?,?,?,?,?,0)", (mine, kind, title, sort, year))
+        # identified said outright: the column's default did not survive the rebuild
+        # onto text keys, and a row that leaned on it arrived as NULL
+        con.execute("INSERT OR IGNORE INTO item "
+                    "(id, type, title, sort_title, year, added, identified) "
+                    "VALUES (?,?,?,?,?,0,0)", (mine, kind, title, sort, year))
         return mine
 
     # ---- media facts --------------------------------------------------------
@@ -1297,7 +1304,12 @@ class Library:
         if not cfg.get("tmdb_key"):
             return {"identified": 0, "reason": "no tmdb key configured"}
         con = self.db()
-        rows = con.execute("SELECT * FROM item WHERE identified=0 LIMIT ?", (limit,)).fetchall()
+        # Nothing rather than nought counts as not looked at yet. The column lost its
+        # default when the table was rebuilt onto text keys, so everything added since
+        # arrived as NULL - which identified=0 does not match - and a film downloaded
+        # yesterday was never looked up, never got a poster, and never would.
+        rows = con.execute("SELECT * FROM item WHERE COALESCE(identified, 0) = 0 "
+                           "LIMIT ?", (limit,)).fetchall()
         self.scan_state.update(phase="identifying", total=len(rows), done=0)
         done = 0
         for row in rows:

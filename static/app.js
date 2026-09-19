@@ -1438,7 +1438,8 @@ function card(it, onDeck, coll) {
        '"></div>' : "") +
     // a favorite: a red heart in the corner, over the dot when there is one
     (isFav(it) ? '<div class="favheart' + (isCopied(it) ? " stack" : "") +
-      (pct ? " over" : "") + '" title="Favorite">&#9829;</div>' : "") +
+      (pct ? " over" : "") + '" title="A favourite: kept on the other machine too, ' +
+      'so it still plays when this server is off">&#9829;</div>' : "") +
     (it.offered ? '<div class="offerbadge">' + DOWNLOAD_MARK +
       (offerWord(it) ? "<span>" + esc(offerWord(it)) + "</span>" : "") + "</div>" : "") +
     (isWatched(it) ? '<div class="seen">&#10003;</div>'
@@ -2138,6 +2139,16 @@ async function viewSection(type) {
    whatever has been added or struck out by hand, because no rule fits a series
    exactly: "alien" catches four of the seven and two that do not belong. */
 let collectionOn = "";
+/* Which collection has its form open, and the episode keys it holds.
+
+   Editing a shelf and then pressing a season tile takes somebody to the programme's
+   own page, which is where the episodes are listed with their names and summaries -
+   a far better place to say which ones belong on the shelf than any row of numbers.
+   So the marks follow them there: while a form is open, every episode row carries a
+   button for that one shelf. */
+let collEditing = "";
+let collEditName = "";
+let collEditHolds = null;
 /* Which list the Watchlist page shows: the watchlist, or the favorites. */
 let listTab = "list";
 /* A collection just opened, whose saved sort and filters have not been applied yet. */
@@ -2269,11 +2280,6 @@ async function viewWatchlist() {
   }
   h.appendChild(count);
   main.append(h);
-  if (editing && here && editing.dataset.shelf === String(here.id)) {
-    main.appendChild(editing);
-    // and what the rule takes and leaves, tried again under the redrawn heading
-    if (editing._retest) setTimeout(editing._retest, 0);
-  }
   // A collection opened from its poster carries its own two actions: the way back to
   // the shelf of shelves, and the way into what it holds. The watchlist itself has
   // neither - collections stopped living there when they got a tab.
@@ -2325,6 +2331,14 @@ async function viewWatchlist() {
     bar.appendChild(how);
     act("Edit", () => collectionForm(here));
     main.appendChild(bar);
+    // The form goes under the buttons, not over them. Added before the bar it pushed
+    // Play and Shuffle to the bottom of a long form, so editing a shelf put the two
+    // things anybody opens it for out of reach.
+    if (editing && editing.dataset.shelf === String(here.id)) {
+      main.appendChild(editing);
+      // and what the rule takes and leaves, tried again under the redrawn heading
+      if (editing._retest) setTimeout(editing._retest, 0);
+    }
   }
   // no heading over a collection shown whole: the name is already at the top, and
   // "Included" only means something against the "Excluded" that a search puts below it
@@ -2733,6 +2747,28 @@ function dropStaleForm() {
   form.remove();
   [].forEach.call(document.querySelectorAll(".collsplit"), (e) => e.remove());
   collTestOn = null;
+  collEditing = "";
+  collEditHolds = null;
+}
+
+/* The episode keys one collection holds, for the marks on a programme's own page.
+
+   Asked once and kept, because a season of twenty episodes would otherwise ask
+   twenty times over. A mark moves it in this set as well, so the page says what it
+   will say when it is next drawn. */
+async function collectionHolds(id) {
+  if (collEditHolds && collEditHolds.id === id) return collEditHolds.keys;
+  const keys = new Set();
+  try {
+    const got = await (await fetch(
+      "/collections/items?id=" + encodeURIComponent(id))).json();
+    for (const m of got.Metadata || []) {
+      if (m.holds && m.holds.length) (m.holds || []).forEach((k) => keys.add(String(k)));
+      else keys.add(String(m.ratingKey));
+    }
+  } catch (e) { /* no server: no marks rather than wrong ones */ }
+  collEditHolds = { id: id, keys: keys };
+  return keys;
 }
 
 /* One collection, opened from its poster: what it holds, and the way back. */
@@ -3003,6 +3039,128 @@ function collectionForm(shelf) {
     "Exclude", (rule.without || []).join(" | "), "resurrection | vs",
     "Read the same way. A title answering any of these stays out, whatever the " +
     "include rules said.");
+  // A programme joins a shelf whole, which is the wrong grain when what somebody
+  // wants is the middle of it. This box takes the shorthand people already write
+  // to each other about what to watch.
+  const SPAN_HELP =
+    "s3 is one season. s3-s6 is three, ends included. s3e34-s6e2 runs from that " +
+    "episode to that one across the seasons between. Leave an end off - s3e34- " +
+    "or -s6e2 - and it runs to the end or from the start. A bar starts another " +
+    "span, as in the rules above. S03E04 and 3x04 read the same.";
+  const season = row(
+    "Include", rule.season || "", "s3e34-s6e2",
+    "For programmes only, and optional: leave it empty and the whole series " +
+    "joins. " + SPAN_HELP);
+  const seasonOut = row(
+    "Exclude", rule.seasonWithout || "", "s2 | s5e3-s5e9",
+    "Taken back out of what the line above took, so a whole season can be left " +
+    "out of a series that is otherwise on the shelf. " + SPAN_HELP);
+  // said back in words, so a mistyped span is obvious before it is saved
+  const seasonEcho = document.createElement("div");
+  seasonEcho.className = "note ruleeg";
+  const echoSeason = () => {
+    const said = (season.value || "").trim();
+    const nope = (seasonOut.value || "").trim();
+    if (!said && !nope) { seasonEcho.textContent = ""; return; }
+    fetch("/collections/season?spec=" + encodeURIComponent(said) +
+          "&without=" + encodeURIComponent(nope))
+      .then((r) => r.json())
+      .then((j) => {
+        const bits = [];
+        if (said) {
+          bits.push(j.said ? j.said : "cannot be read - the whole series joins");
+        }
+        if (nope) {
+          bits.push("without " + (j.saidWithout ? j.saidWithout
+                                                : "cannot be read - nothing left out"));
+        }
+        seasonEcho.textContent = "→ " + bits.join(", ");
+      }).catch(() => { seasonEcho.textContent = ""; });
+  };
+  season.addEventListener("input", echoSeason);
+  seasonOut.addEventListener("input", echoSeason);
+  echoSeason();
+  // Two dropdowns over each box, because nobody should have to learn that the side
+  // the dash is missing is the open side. "-s30" reads as up to and including s30
+  // and wiped most of a series somebody meant to keep; picking From s30 and leaving
+  // To as Any writes "s30-" and cannot be read the other way round.
+  const seasonPickers = [];
+  const spanPicker = (into, what) => {
+    const bar = document.createElement("div");
+    bar.className = "addrow subrow spanpick";
+    bar.innerHTML = "<span class='sublabel'></span>";
+    const made = [];
+    [["From", "lo"], ["To", "hi"]].forEach(([label, which]) => {
+      const tag = document.createElement("span");
+      tag.className = "spanlabel";
+      tag.textContent = label;
+      const sel = document.createElement("select");
+      sel.className = "colldecade spanof";
+      sel.dataset.which = which;
+      sel.add(new Option("Any", ""));
+      sel.onchange = () => {
+        const lo = made[0].value, hi = made[1].value;
+        // both ends the same season is that one season, not a range of one
+        into.value = !lo && !hi ? ""
+          : lo && hi && lo === hi ? "s" + lo
+          : "s" + (lo || "") + "-s" + (hi || "");
+        if (!lo && hi) into.value = "-s" + hi;
+        if (lo && !hi) into.value = "s" + lo + "-";
+        live();
+      };
+      bar.appendChild(tag);
+      bar.appendChild(sel);
+      made.push(sel);
+    });
+    seasonPickers.push({ into: into, picks: made, what: what });
+    return bar;
+  };
+  /* Fill the dropdowns with the seasons the rule actually reaches, and show what the
+     boxes already say. Called with each test answer, so they follow the words above. */
+  window.fillSeasonPicks = (list) => {
+    const seen = new Set();
+    (list || []).forEach((m) => {
+      if (m && m.type === "season" && m.index) seen.add(Number(m.index));
+    });
+    const all = [...seen].sort((a, b) => a - b);
+    if (!all.length) return;
+    seasonPickers.forEach((one) => {
+      one.picks.forEach((sel) => {
+        const had = sel.value;
+        sel.innerHTML = "";
+        sel.add(new Option("Any", ""));
+        all.forEach((n) => sel.add(new Option("Season " + n, String(n))));
+        sel.value = all.indexOf(Number(had)) >= 0 ? had : "";
+      });
+      // what the box says now, back into the two dropdowns
+      const said = String(one.into.value || "").trim();
+      const m = said.match(/^s(\d+)-s(\d+)$/i) || said.match(/^s(\d+)-$/i)
+        || said.match(/^-s(\d+)$/i) || said.match(/^s(\d+)$/i);
+      if (!m) return;
+      if (/^s\d+-s\d+$/i.test(said)) { one.picks[0].value = m[1]; one.picks[1].value = m[2]; }
+      else if (/^s\d+-$/i.test(said)) { one.picks[0].value = m[1]; one.picks[1].value = ""; }
+      else if (/^-s\d+$/i.test(said)) { one.picks[0].value = ""; one.picks[1].value = m[1]; }
+      else { one.picks[0].value = m[1]; one.picks[1].value = m[1]; }
+    });
+  };
+  // A box of its own, because these two lines are a different question from the
+  // title rules above them: which part of a programme, not which programme.
+  const seasonBox = document.createElement("div");
+  seasonBox.className = "seasonbox";
+  const seasonHead = document.createElement("div");
+  seasonHead.className = "seasonhead";
+  seasonHead.innerHTML = "Seasons <span class='seasonwhy' title=\"" +
+    "Only programmes. Empty means the whole series. Include takes a span of it; " +
+    "Exclude takes part of that back out - s2 on its own leaves that season out. " +
+    SPAN_HELP.replace(/"/g, "&quot;") + "\">?</span>";
+  seasonBox.appendChild(seasonHead);
+  seasonBox.appendChild(season.parentNode);
+  seasonBox.appendChild(spanPicker(season, "include"));
+  seasonBox.appendChild(seasonOut.parentNode);
+  seasonBox.appendChild(spanPicker(seasonOut, "exclude"));
+  seasonBox.appendChild(seasonEcho);
+  box.appendChild(seasonBox);
+
   // the same thing shown rather than described, which is how anybody actually
   // learns a small syntax
   const shown = document.createElement("div");
@@ -3011,7 +3169,9 @@ function collectionForm(shelf) {
     "<i>star wars</i> &mdash; both words, so only those films<br>" +
     "<i>alien | predator</i> &mdash; either rule will do<br>" +
     "<i>star trek | star wars</i> &mdash; two rules, each of two words<br>" +
-    "excluding <i>resurrection</i> &mdash; that one is left out";
+    "excluding <i>resurrection</i> &mdash; that one is left out<br>" +
+    "season <i>s3e34-s6e2</i> &mdash; only that stretch of a programme<br>" +
+    "season excluding <i>s2</i> &mdash; the rest of it, without that season";
   box.appendChild(shown);
   // which rows the form shows depends on the kind: a manual shelf has no rule to
   // write, and leaving the boxes there suggests it has
@@ -3019,6 +3179,7 @@ function collectionForm(shelf) {
     const on = mode !== "manual";
     words.parentNode.classList.toggle("hidden", !on);
     without.parentNode.classList.toggle("hidden", !on);
+    seasonBox.classList.toggle("hidden", !on);
     shown.classList.toggle("hidden", !on);
     kindRow.classList.toggle("hidden", !on);
     genreRow.classList.toggle("hidden", !on);
@@ -3065,6 +3226,8 @@ function collectionForm(shelf) {
         // one rule per bar; the words inside a rule all have to appear
         words: words.value.split("|").map((w) => w.trim()).filter(Boolean),
         without: without.value.split("|").map((w) => w.trim()).filter(Boolean),
+        season: season.value.trim(),
+        seasonWithout: seasonOut.value.trim(),
         type: kind,
         // while editing, these follow the genre and decade picked above the list
         genre: genre.value,
@@ -3092,9 +3255,6 @@ function collectionForm(shelf) {
   foot.appendChild(save);
   // Trying the rule before keeping it: what it takes comes back green, what the
   // exclude words or the struck-out list knock out comes back red.
-  const tryIt = document.createElement("button");
-  tryIt.className = "btn ghost";
-  tryIt.textContent = "Test filter";
   // Trying a rule moves the titles into the rows it would put them in, washed green
   // for taken and red for left out, so the shelf can be read before it is saved.
   // What the marks have moved while the rule is being tried. Null until a test is
@@ -3136,6 +3296,8 @@ function collectionForm(shelf) {
           rule: {
             words: words.value.split("|").map((w) => w.trim()).filter(Boolean),
             without: without.value.split("|").map((w) => w.trim()).filter(Boolean),
+            season: season.value.trim(),
+            seasonWithout: seasonOut.value.trim(),
             type: kind,
             genre: genre.value,
             from: +early.value || 0,
@@ -3152,6 +3314,8 @@ function collectionForm(shelf) {
     }
     if (mine !== testRun) return;              // a newer question has been asked
     const took = said.Metadata || [], out = said.Excluded || [];
+    // the seasons the rule reaches, for the From/To dropdowns above
+    if (window.fillSeasonPicks) fillSeasonPicks(took.concat(out));
     // the lists the marks move from here on, whether or not any has been pressed yet
     if (!stagePins) {
       stagePins = ((shelf && shelf.pinned) || []).map(String);
@@ -3173,7 +3337,6 @@ function collectionForm(shelf) {
       (byHand ? ", " + byHand + " of them a manual edit" : "") +
       ". Marks move a poster here and are kept, with the rule, when Save is pressed.";
     box.appendChild(say);
-    tryIt.textContent = "Cancel test";
   };
   // While a test is on the rows answer the boxes as they are typed in, a moment
   // after the last keystroke rather than on every one.
@@ -3185,16 +3348,12 @@ function collectionForm(shelf) {
   };
   words.oninput = live;
   without.oninput = live;
-  tryIt.onclick = () => {
-    // the same button turns the test off again and puts back the saved arrangement
-    if (collTestOn) {
-      clearWash();
-      tryIt.textContent = "Test filter";
-      return;
-    }
-    runTest();
-  };
-  foot.appendChild(tryIt);
+  season.oninput = live;
+  seasonOut.oninput = live;
+  // No button: editing a shelf is trying a rule, and a form that showed the saved
+  // arrangement until somebody pressed Test was showing the answer to a question
+  // nobody had asked. It runs as soon as the form opens and again on every change.
+  setTimeout(runTest, 0);
   const stop = document.createElement("button");
   stop.className = "btn ghost";
   stop.textContent = "Cancel";
@@ -3217,13 +3376,22 @@ function collectionForm(shelf) {
                    "? The films stay in the library.")) return;
       await saveCollection({ id: shelf.id, remove: true });
       collectionOn = "";
+      collEditing = "";
       box.remove();
       viewWatchlist();
     };
     foot.appendChild(gone);
   }
+  collEditing = shelf ? String(shelf.id) : "";
+  collEditName = shelf ? String(shelf.name || "") : "";
+  collEditHolds = null;
   box.appendChild(foot);
-  main.insertBefore(box, main.children[1] || null);
+  // Under the buttons, not over them. Play and Shuffle are what anybody opens a
+  // shelf for, and a form above them put both off the bottom of a long page - the
+  // redraw already placed it this way, so opening the form and leaving it open
+  // disagreed about where the bar was.
+  const above = main.querySelector(".collbar");
+  main.insertBefore(box, above ? above.nextSibling : (main.children[1] || null));
   if (shelf) collectionRows(shelf);
   // editing: the sort and filters above the list are in the form now, not shown twice,
   // and the list is not narrowed by a choice no longer on screen
@@ -3235,6 +3403,87 @@ function collectionForm(shelf) {
       viewWatchlist();
     }
   }
+}
+
+/* One season of a shelf, episode by episode.
+
+   A season card says "6 of 10 episodes" but not which six, and a rule written as a
+   span cannot say "all but that one". The strip under the card is where that is
+   said: every episode of the season, the ones on the shelf lit and the rest dim,
+   and a press moves one across. The mark goes through /collections/mark rather than
+   add and drop, because that is the one that knows a season is its episodes - it
+   splits the season's own mark into the episodes that are left. */
+async function seasonStrip(shelf, m, card) {
+  const row = card.parentElement;
+  const where = row.parentElement;
+  const open = where.querySelector('.epstrip[data-for="' + m.ratingKey + '"]');
+  [].forEach.call(where.querySelectorAll(".epstrip"), (e) => e.remove());
+  [].forEach.call(where.querySelectorAll(".card.stripon"),
+                  (e) => e.classList.remove("stripon"));
+  if (open) return;                       // the same button again closes it
+  const strip = document.createElement("div");
+  strip.className = "epstrip";
+  strip.dataset.for = String(m.ratingKey);
+  strip.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  row.parentNode.insertBefore(strip, row.nextSibling);
+  card.classList.add("stripon");
+  let eps = [];
+  try {
+    eps = items(await api("/library/metadata/" + m.ratingKey + "/children"));
+  } catch (e) { eps = []; }
+  if (!eps.length) {
+    strip.innerHTML = '<div class="empty">No episodes here.</div>';
+    return;
+  }
+  // what the card stands for: the episodes of this season the shelf actually holds
+  const on = new Set((m.holds || []).map(String));
+  strip.innerHTML = '<div class="epstriphead">' +
+    esc((m.grandparentTitle || m.parentTitle || "") + " · " + (m.title || "")) +
+    " - press an episode to take it off this collection or put it back</div>";
+  const list = document.createElement("div");
+  list.className = "epstriplist";
+  strip.appendChild(list);
+  eps.forEach((ep) => {
+    const key = String(ep.ratingKey);
+    const b = document.createElement("button");
+    const paint = () => {
+      b.className = "eppill" + (on.has(key) ? " on" : "") +
+        (ep.offered ? " offeredpill" : "");
+      b.innerHTML = '<span class="n">' + esc(String(ep.index)) + "</span>" +
+        '<span class="t">' + esc(ep.title || "") + "</span>" +
+        // not downloaded: it can still go on the shelf, but it is not here yet
+        (ep.offered ? '<span class="g">' + DOWNLOAD_MARK + "</span>" : "") +
+        '<span class="m">' + (on.has(key) ? "✓" : "✕") + "</span>";
+      b.title = (on.has(key) ? "On the collection - press to take it off"
+                             : "Not on the collection - press to put it back") +
+        (ep.offered ? " (not downloaded yet)" : "");
+    };
+    paint();
+    b.onclick = async (e) => {
+      e.preventDefault();
+      const want = !on.has(key);
+      b.disabled = true;
+      try {
+        await fetch("/collections/mark", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: shelf.id, key: key, on: want }),
+        });
+      } catch (err) { b.disabled = false; return noServer(); }
+      b.disabled = false;
+      if (want) on.add(key); else on.delete(key);
+      paint();
+      // the card above says how many of the season are on the shelf, and it has
+      // just changed - but redrawing the form would shut the strip, so only the
+      // count is written back
+      const said = card.querySelector(".s");
+      if (said && m.leafCount) {
+        said.textContent = (m.title || "") + " · " +
+          (on.size < m.leafCount ? on.size + " of " + m.leafCount + " episodes"
+             : m.leafCount + (m.leafCount === 1 ? " episode" : " episodes"));
+      }
+    };
+    list.appendChild(b);
+  });
 }
 
 /* Editing one shows both sides of it: what it holds, and what its rule caught and
@@ -3298,15 +3547,37 @@ async function collectionRows(shelf, preview) {
     });
     return g;
   };
+  // A season on the shelf opens into its episodes, so one can be taken off without
+  // leaving the form. A rule being tried has not been saved, so there is nothing
+  // under a card to edit yet and the button stays off.
+  const perEpisode = (g, list) => {
+    if (preview) return g;
+    [].forEach.call(g.querySelectorAll(".card"), (el, at) => {
+      const m = list[at];
+      if (!m || m.type !== "season") return;
+      const b = document.createElement("button");
+      b.className = "epopen";
+      b.innerHTML = "episodes";
+      b.title = "Open this season and choose episodes";
+      b.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        seasonStrip(shelf, m, el);
+      };
+      const poster = el.querySelector(".poster");
+      if (poster) poster.appendChild(b);
+    });
+    return g;
+  };
   const hook = (preview && preview.stage) || null;
   block.appendChild(sectionTitle("Included"));
   block.appendChild(held.length
-    ? dress(grid(held, 0, false,
+    ? perEpisode(dress(grid(held, 0, false,
                  // no choosing a face while a rule is being tried: the shelf on
                  // screen is not the shelf yet, and that button writes at once
                  { id: shelf.id, inside: true, after: again, stage: hook,
                    cover: hook ? undefined : face }),
-            held, preview ? "hazein" : "")
+            held, preview ? "hazein" : ""), held)
     : empty("Nothing in it yet."));
   block.appendChild(sectionTitle("Excluded"));
   block.appendChild(struck.length
@@ -3768,10 +4039,11 @@ async function attachGpuSubtitles(url, track) {
   // A track inside the film is lifted out with ffmpeg before it can be drawn, and on
   // a large file that is minutes the first time. An empty screen with no explanation
   // reads as broken subtitles.
-  let slow = setTimeout(function again() {
+  // Said once, for as long as anything else is said: repeated until the lift
+  // finished, it held the screen for minutes and read as a fault, not an answer.
+  const slow = setTimeout(() => {
     if (mine !== subGen) return;
     toast('Lifting the subtitles out of the film…', 1);
-    slow = setTimeout(again, 3000);          // the notice lasts three seconds
   }, 2500);
   try {
     const answer = await fetch(url);
@@ -4463,6 +4735,41 @@ async function loadEpisodes(seasonKey, findKey) {
         shine();
         row.appendChild(b);
       });
+    // While a collection's form is open, one press puts this episode on that shelf
+    // or takes it off. This is the list with the names and the summaries on it, so
+    // it is where somebody actually decides - not a row of episode numbers.
+    if (collEditing) {
+      const b = document.createElement("button");
+      const key = String(ep.ratingKey);
+      const shine = (on) => {
+        b.className = "eptick coll" + (on ? " on" : "");
+        b.innerHTML = on ? "✓" : "+";
+        b.title = (on ? "On " : "Not on ") + (collEditName || "this collection") +
+          (on ? " - press to take it off" : " - press to add it");
+      };
+      shine(false);
+      b.disabled = true;
+      collectionHolds(collEditing).then((keys) => {
+        b.disabled = false;
+        shine(keys.has(key));
+      });
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const keys = await collectionHolds(collEditing);
+        const want = !keys.has(key);
+        b.disabled = true;
+        try {
+          await fetch("/collections/mark", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: collEditing, key: key, on: want }),
+          });
+        } catch (err) { b.disabled = false; return noServer(); }
+        b.disabled = false;
+        if (want) keys.add(key); else keys.delete(key);
+        shine(want);
+      };
+      row.appendChild(b);
+    }
     // right-click for collections
     row.oncontextmenu = (e) => {
       e.preventDefault();
@@ -7196,11 +7503,17 @@ async function watchTheMaking(say, redraw) {
     return;
   }
   const last = (state.done || [])[(state.done || []).length - 1];
-  if (last && last.ok) {
+  // Only the job this list asked for, and only for this file. The server keeps every
+  // job it has finished since it started, so any completed subtitle at all redrew the
+  // panel the moment Download was opened - the list was replaced by the track list
+  // before it could be read, which looks exactly like a menu that will not open.
+  const ours = !!(last && makingAsked && makingFor &&
+                  (last.file || "").indexOf(makingFor) === 0);
+  if (last && last.ok && ours) {
     say.textContent = "completed";
     // it exists now: read the title again so the new track is in the picker, and
     // turn it on, the same as a subtitle that has just been downloaded
-    if (last.file && window.S && S.meta && makingAsked) {
+    if (last.file && window.S && S.meta) {
       makingAsked = false;
       const fresh = items(await api("/library/metadata/" + S.meta.ratingKey))[0];
       if (fresh) {
@@ -7218,8 +7531,7 @@ async function watchTheMaking(say, redraw) {
       }
     }
     if (redraw) redraw();
-  } else if (last && makingAsked && makingFor &&
-             (last.file || "").indexOf(makingFor) === 0) {
+  } else if (last && !last.ok && ours) {
     // a failure is worth reporting only when it is about the file this list is for
     say.textContent = last.what || "it did not work";
   } else if (state.can === false) {

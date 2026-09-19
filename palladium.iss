@@ -17,7 +17,7 @@ AppName=Palladium
 AppVersion={#MyVersion}
 AppPublisher=Grovestick Studios
 AppPublisherURL=https://palladium.video
-DefaultDirName={localappdata}\Palladium
+DefaultDirName={code:WhereTo}
 DefaultGroupName=Palladium
 DisableProgramGroupPage=yes
 ; No folder page. It asks where the program goes, and on a first install it reads as
@@ -25,6 +25,11 @@ DisableProgramGroupPage=yes
 ; program is small and goes where every per-user program goes.
 DisableDirPage=yes
 PrivilegesRequired=lowest
+; And the choice, on the page Setup draws itself: for me, or for everybody on this
+; machine. Silent installs take the first, which is what every update does - an
+; update that raised an administrator prompt on a television could never install
+; itself. Choosing the second puts it in Program Files and asks once.
+PrivilegesRequiredOverridesAllowed=dialog
 ; The server is running while this replaces it, so its files are always in use.
 ; Without these two, Setup stops and asks somebody to close it - which is a dialog
 ; waiting for a person in what was meant to be a silent install.
@@ -66,6 +71,36 @@ Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Palladiu
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+// Where the program goes. For everybody means Program Files; for me means the folder
+// every per-user program uses - and the same one Palladium has always used, so an
+// install that has been here for months is updated where it stands rather than a
+// second copy appearing beside it.
+// Ask the running server to close before its files are replaced.
+//
+// Setup closes what holds its files by force, which on Windows is a termination: the
+// program never runs a line of its own again, and the icon it put in the tray stays
+// drawn until somebody happens to hover over it. taskkill without /F posts a close to
+// its windows instead, which it does handle - it takes its own icon down and stops.
+// Force is still there behind this for anything that will not go.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}	askkill.exe'), '/IM palladium-server.exe',
+       '', SW_HIDE, ewWaitUntilTerminated, Code);
+  if Code = 0 then
+    Sleep(2500);          // let it take its icon down and let go of its files
+  Result := '';
+end;
+
+function WhereTo(Param: String): String;
+begin
+  if IsAdminInstallMode then
+    Result := ExpandConstant('{autopf}\Palladium')
+  else
+    Result := ExpandConstant('{localappdata}\Palladium');
+end;
+
 // Offer to take the settings and the library as well, but only when asked: somebody
 // reinstalling wants their invitations and their watched marks to survive.
 procedure CurUninstallStepChanged(CurStep: TUninstallStep);

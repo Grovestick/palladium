@@ -44,6 +44,12 @@ GUEST_PREFIXES = (
     "/torrents/get",    # one film from a torrent pack, within their week's limit
     "/torrents/active", # how far their own download has got: the handler already
                         # answers a guest with their own rows and nobody else's
+    # Stopping one they asked for. cancel() already decides who may: the owner, or
+    # whoever asked for it. It was on the list of what a guest may write and not on
+    # this one, so every press was refused at the door - the same way round as the
+    # player reports above, and it means somebody can start a download and not stop it.
+    "/torrents/cancel",
+    "/copy/pick",       # which of two machines to read a film from, the screen's own choice
     "/gpu/hls",         # the same, in segments, for Safari
     "/gpu/subs",
     "/app",             # the install page and the version check

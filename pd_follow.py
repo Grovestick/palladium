@@ -380,7 +380,52 @@ HOUSE = {"at": 0.0, "lan": "", "outside": "", "name": ""}
 HOUSE_EVERY = 900
 
 
+#: where the doors are kept between runs, so a copy that has just started still
+#: knows them. Read once; written whenever the round learns something new.
+DOORS_FILE = {"at": 0.0}
+
+
+def doors_path():
+    # beside the settings file, which is the one path this module is handed
+    where = os.path.dirname(ME.get("settings") or "") or "."
+    return os.path.join(where, "house.json")
+
+
+def remember_doors():
+    """Write down both ways in to the machine this one follows.
+
+    The round asks for them every quarter of an hour. Between a restart and the first
+    round, a copy answered every screen that it had no way back to the main server at
+    all - and a phone away from the house, handed nothing, had nowhere to go when the
+    shelf it was on could not be reached.
+    """
+    try:
+        with open(doors_path(), "w", encoding="utf-8") as f:
+            json.dump({"lan": HOUSE["lan"], "outside": HOUSE["outside"],
+                       "name": HOUSE["name"]}, f)
+    except OSError:
+        pass
+
+
+def recall_doors():
+    try:
+        with open(doors_path(), encoding="utf-8") as f:
+            said = json.load(f) or {}
+    except (OSError, ValueError):
+        return
+    with LOCK:
+        for k in ("lan", "outside", "name"):
+            if not HOUSE.get(k):
+                HOUSE[k] = str(said.get(k) or "")
+
+
 def house_doors():
+    with LOCK:
+        got = {"lan": HOUSE["lan"], "outside": HOUSE["outside"],
+               "name": HOUSE["name"]}
+    if got["lan"] or got["outside"]:
+        return got
+    recall_doors()
     with LOCK:
         return {"lan": HOUSE["lan"], "outside": HOUSE["outside"],
                 "name": HOUSE["name"]}
@@ -421,6 +466,42 @@ def round_stamp(rnd):
     return int(rnd.get("casualStamp") or 0) if isinstance(rnd, dict) else 0
 
 
+#: what was last named to the server this machine follows, so the same list is not
+#: sent every round
+TOLD_FETCHED = set()
+
+
+def tell_what_we_fetched(one):
+    """Name the films this machine went and got itself, for the other one to take back.
+
+    Only what this machine fetched - never what it was sent - and only once each. The
+    other machine may already have it, may not want it, and is the one that decides:
+    all that happens here is that it is told.
+    """
+    if not (one.get("on") and one.get("master") and one.get("key")):
+        return 0
+    try:
+        import pd_torrents
+        mine = pd_torrents.my_own_downloads()
+    except Exception:
+        return 0
+    fresh = [d for d in mine
+             if (str(d.get("hash")), int(d.get("index", -1))) not in TOLD_FETCHED]
+    if not fresh:
+        return 0
+    # where to come and take them from is not said here: the server this machine
+    # follows already knows the address it answers on, and works it out from the
+    # request rather than believing what it is told.
+    said = tell(one, "/follow/fetched", {"items": fresh[:100]}, 30)
+    if said is None:
+        return 0                      # not answering: tell it again next round
+    for d in fresh[:100]:
+        TOLD_FETCHED.add((str(d.get("hash")), int(d.get("index", -1))))
+    if len(TOLD_FETCHED) > 4000:
+        TOLD_FETCHED.clear()
+    return int((said or {}).get("taking") or 0)
+
+
 def learn_the_viewers(one, settings_path, api=None):
     """Take a copy of what each viewer keeps, so this machine knows them too.
 
@@ -452,10 +533,32 @@ def learn_the_viewers(one, settings_path, api=None):
         theirs = theirs or {}
         here = users.setdefault(str(who), {})
         for name, value in theirs.items():
-            if name in ("watchlistIs", "shuffles"):
+            if name in ("watchlistIs", "shuffles", "collections"):
                 continue                  # settled below
             if not here.get(name):
                 here[name] = value
+                filled += 1
+        # Collections, by the one a viewer made rather than by the list as a whole.
+        # Taken once and never again, the list froze at whatever the machine copied
+        # first: a collection made afterwards was not here at all, so the evening the
+        # main server was off it was missing along with the shuffle that goes with it.
+        # One made sitting here is kept - only the main server's own are replaced.
+        house_colls = [c for c in (theirs.get("collections") or [])
+                       if isinstance(c, dict) and c.get("id")]
+        if house_colls:
+            ours = [c for c in (here.get("collections") or [])
+                    if isinstance(c, dict) and c.get("id")]
+            theirs_by_id = {str(c["id"]): c for c in house_colls}
+            merged, seen = [], set()
+            for c in ours:
+                cid = str(c["id"])
+                seen.add(cid)
+                merged.append(theirs_by_id.get(cid, c))
+            for c in house_colls:
+                if str(c["id"]) not in seen:
+                    merged.append(c)
+            if merged != ours:
+                here["collections"] = merged
                 filled += 1
         # shuffle rounds, per shelf: the newer round is taken whole, and one moved
         # here while the main server was off goes back up
@@ -581,6 +684,7 @@ def where_is_the_house(one):
         HOUSE["lan"] = str(told.get("lan") or "")
         HOUSE["outside"] = str(told.get("outside") or "")
         HOUSE["name"] = str(told.get("name") or "")
+    remember_doors()
 
 
 def follow_the_build(one, said):
@@ -1086,6 +1190,11 @@ def make_room(folder, cap_bytes, keeping, how="oldest"):
 #: so the lock this used to rely on is not there for most of a film.
 BUSY = None
 
+#: How long a file this machine fetched is kept after the main server stops naming it.
+#: A shuffle's queue moves as it is watched, so what is wanted now is wanted again
+#: shortly; the cap still frees room when room is short.
+KEEP_UNWANTED_HOURS = 12
+
 
 def clear_unwanted(folder, qualified, keeping):
     """Delete what this machine fetched and the main server has stopped wanting.
@@ -1103,6 +1212,15 @@ def clear_unwanted(folder, qualified, keeping):
         return {"files": 0, "gb": 0.0}
     mine = ours(folder)
     gone, freed = 0, 0
+    # Nothing fetched in the last few hours is deleted for being unwanted.
+    #
+    # A shuffle's next ten change as it is watched, so a file leaves the list and
+    # joins it again a little later - and deleting the moment it left had the same
+    # episodes fetched over and over: in one day, 381 copies of 207 files, 86 of them
+    # fetched twice and some six times, 332 GB moved to hold 207 files. Room is not
+    # the reason to hurry: make_room() frees what the cap needs, when the cap needs
+    # it. This is only about what is no longer named, and that can wait.
+    young = time.time() - KEEP_UNWANTED_HOURS * 3600
     for here, dirs, names in os.walk(folder):
         for name in names:
             path = os.path.join(here, name)
@@ -1116,6 +1234,11 @@ def clear_unwanted(folder, qualified, keeping):
                     pass
             if name.endswith(".part"):
                 continue                   # arriving now, not left over
+            try:
+                if os.path.getmtime(path) > young:
+                    continue               # fetched lately: it may be wanted again
+            except OSError:
+                pass
             try:
                 known = os.path.relpath(path, folder).replace("\\", "/")
             except ValueError:
@@ -1328,9 +1451,17 @@ def take_the_house_keys(one, lib, api=None, carry=None):
     """
     if not lib:
         return 0
+    # Keys being watched this minute are left alone: moving one strands the place.
+    # Only those - anything playing at all used to stop the whole round, so a paused
+    # tab left open meant a file fetched today never took the main server's key for it,
+    # and the key that machine drew for itself answered nothing the main server asked for.
+    busy = set()
     try:
-        if api is not None and api.playing_now():
-            return 0              # a key moving under a playing would strand its place
+        if api is not None:
+            for key, said in (api.playing_now() or {}).items():
+                busy.add(str(key))
+                if said.get("key"):
+                    busy.add(str(said["key"]))
     except Exception:
         return 0
     con = lib.db()
@@ -1341,6 +1472,8 @@ def take_the_house_keys(one, lib, api=None, carry=None):
     by_name = {}
     for row in rows:
         name = os.path.basename(row["path"] or "")
+        if str(row["item_id"] or "") in busy or str(row["episode_id"] or "") in busy:
+            continue              # asked again next round, when it has finished
         if name and name.lower() not in HOUSE_KEYS["ok"]:
             by_name[name] = row
     if not by_name:
@@ -1743,8 +1876,14 @@ def _round(one, lib, api, folder):
     # below decides what may move tonight. A file is swept when it is on neither
     # this list nor the shorter one, and testing against the shorter one alone would
     # delete the whole cache every morning.
+    # Everything the main server would keep, whatever the hour - not the shorter list
+    # of what may be fetched this minute. A main server too old to send it falls back
+    # to the short list, which is what this did before.
+    holding = said.get("holding")
+    if not isinstance(holding, list) or not holding:
+        holding = wanted
     qualified = set()
-    for item in wanted:
+    for item in holding:
         safe = a_safe_name(item.get("name"))
         if safe:
             qualified.add(os.path.join(folder, safe))
@@ -1936,12 +2075,26 @@ def _round(one, lib, api, folder):
         check_the_build(one)
     except Exception:
         pass
+    # and anything this machine fetched for itself while the other was off, so it
+    # does not stay here alone. Named, not sent: the server it follows decides what
+    # it wants and comes and takes it over the house network.
+    try:
+        tell_what_we_fetched(one)
+    except Exception as e:
+        STATE["why"] = "fetched: %s: %s" % (type(e).__name__, str(e)[:120])
     # and what the people watching keep - their watchlists, their shelves - so this
     # machine knows them when it is the one answering
     try:
         learn_the_viewers(one, ME.get("settings") or "", api)
-    except Exception:
-        pass
+    except Exception as e:
+        # Said out loud rather than swallowed. This was a bare pass, and when it
+        # started raising nothing anywhere showed it: the shuffle rounds simply
+        # never arrived on this machine, every part of the path read correctly, and
+        # the one evening the main server was off a viewer's round was not here.
+        import traceback
+        STATE["why"] = "viewers: %s: %s | %s" % (
+            type(e).__name__, str(e)[:100],
+            traceback.format_exc().strip().splitlines()[-2].strip()[:120])
     # and the app itself, so a phone that reaches this machine is offered the same
     # version the main server is running rather than whatever this installer carried
     try:

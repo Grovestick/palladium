@@ -180,28 +180,72 @@ fun DownloadMark(size: Dp, colour: Color = Skin.Fg) {
 }
 
 /**
- * The press that opened a menu by being held, by the moment it went down.
+ * The select press that opened a menu by being held, while it is still going on.
  *
- * The menu appears with the button still down, and everything that press does from
- * then on - its repeats, and the release at the end of it - arrives at whatever has
- * just taken the focus, which pressed the first thing in the menu. Every event of one
- * press carries the same downTime, so the press that opened the menu can be told from
- * the next one exactly. A window of so many milliseconds cannot: the hold is felt
- * half a second in and the button is let go whenever the hand lets go of it.
+ * Holding select opens the menu with the button still down. The release at the end of
+ * that same press then arrives at whatever has taken the focus meanwhile - the first
+ * item in the menu - and presses it. That release is the end of the press that asked
+ * for the menu, not a press of anything in it.
+ *
+ * Two earlier tries at this both failed, and for the same reason: they guessed when
+ * the release would come. Matching on downTime is exact but needs the event to reach a
+ * handler that is looking, and the menu is a window of its own that has not always
+ * taken the focus by the time it arrives. A window of milliseconds cannot work at all:
+ * the hold is felt half a second in and the hand lets go whenever it lets go, a second
+ * later or three, so the window was either too short to catch the release or long
+ * enough to swallow a real press.
+ *
+ * So nothing is timed and nothing is routed. The gate opens when a held key opens
+ * something, and the next thing that would act on that press closes it by refusing
+ * it - there is only ever one release. A key release seen anywhere closes it too. The
+ * long stop is only so a hold interrupted by leaving the app cannot leave it open.
  */
-private var heldFrom = 0L
+private var holdOpen = false
+private var holdOpenedAt = 0L
+private var holdDownTime = 0L
 
-fun justHeld(downTime: Long) { heldFrom = downTime }
+//: past this a gate was never closed by anything, which means the release never
+//: arrived - the app was left, or the menu was dismissed another way
+private const val HOLD_STUCK_MS = 10_000L
+
+/** A held key has just opened something. */
+fun justHeld(downTime: Long) {
+    holdOpen = true
+    holdOpenedAt = android.os.SystemClock.uptimeMillis()
+    holdDownTime = downTime
+}
+
+/** That press is over: the next one is somebody's own. */
+fun holdIsOver() {
+    holdOpen = false
+    holdDownTime = 0L
+}
+
+private fun holdStuck(): Boolean =
+    android.os.SystemClock.uptimeMillis() - holdOpenedAt > HOLD_STUCK_MS
+
+/**
+ * Whether a press this instant is the tail of the hold that put this on screen.
+ *
+ * Asking closes the gate. The press being asked about is the release, and a press is
+ * released once - so the control that asks is the one that swallows it, and every
+ * press after it is somebody's own.
+ */
+fun stillTheHold(): Boolean {
+    if (!holdOpen) return false
+    val stuck = holdStuck()
+    holdIsOver()
+    return !stuck
+}
 
 /** True while an event still belongs to the press that opened something by being held. */
 fun fromTheHold(e: android.view.KeyEvent): Boolean =
-    heldFrom != 0L && e.downTime == heldFrom &&
+    holdOpen && !holdStuck() &&
         (e.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER ||
          e.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
-         e.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER)
+         e.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER) &&
+        (holdDownTime == 0L || e.downTime == holdDownTime)
 
-/** That press is over: the next one is somebody's own. */
-fun holdIsOver() { heldFrom = 0L }
 
 /** Artwork, or the Palladium P when a title has none. Never a broken image. */
 @Composable
@@ -243,10 +287,9 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
     var focused by remember { mutableStateOf(false) }
     // drawn only where a ring means something; see focusShows()
     val ring = focused && focusShows()
-    // held on the remote: the select button kept down repeats its press
+    // whether the press going on now has become a hold, which is what tells the
+    // release apart from an ordinary one
     var heldByKey by remember { mutableStateOf(false) }
-    // and pressed here: a release whose press landed on another screen is not a click
-    var downByKey by remember { mutableStateOf(false) }
     val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val scale by animateFloatAsState(if (ring) 1.06f else 1f, label = "posterScale")
     // the pixels this will actually occupy, so the server can send that and no more
@@ -271,38 +314,52 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // column - poster, title and line under it - so it came up as a grey
             // square bigger than the poster. The white ring already says where the
             // remote is, which is the only thing that needs saying.
+            // Select on the remote, watched rather than taken: every event is passed
+            // on, because removing this stopped a hold being a hold at all - the
+            // clickable below needs to see the whole press. What it is here for is to
+            // know when the hold has begun, which is the moment the key starts
+            // repeating, and to shut the gate again when the press is released.
             .then(if (onHold == null) Modifier else Modifier.onPreviewKeyEvent { e ->
                 val key = e.nativeKeyEvent
                 val select = key.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER ||
                     key.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
                     key.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
-                // Acted on at the release. Opened on the repeat, a menu took focus with
-                // the button still down and the release pressed its first item, Go to
-                // title. Every select event is taken here, so the click handler below
-                // cannot fire a long press of its own as well.
+                if (!select) return@onPreviewKeyEvent false
                 when {
-                    !select -> false
+                    // The press begins. Nothing is a hold yet.
+                    key.action == android.view.KeyEvent.ACTION_DOWN &&
+                        key.repeatCount == 0 -> {
+                        heldByKey = false
+                        false                  // a plain press is the clickable's
+                    }
+                    // It repeats, so it is a hold. The menu is opened here because
+                    // nothing else will: the clickable below reports a long click from
+                    // a finger and never from this remote, which is why a four-second
+                    // hold on it came out as an ordinary press.
                     key.action == android.view.KeyEvent.ACTION_DOWN -> {
-                        // Acted on the moment the key repeats, which is when a hold
-                        // becomes a hold: waiting for the release meant holding the
-                        // button down and nothing happening until you gave up.
-                        if (key.repeatCount == 0) downByKey = true
-                        else if (!heldByKey) {
+                        if (!heldByKey) {
                             heldByKey = true
-                            downByKey = false     // the release is not a press any more
                             justHeld(key.downTime)
                             onHold()
                         }
+                        true                   // and its repeats are nobody else's
+                    }
+                    // The release of a hold. Taken here and gone: the menu it asked
+                    // for is already up, and passed on it would press the first thing
+                    // in it - which is how holding a poster went to the title.
+                    key.action == android.view.KeyEvent.ACTION_UP && heldByKey -> {
+                        // A key still down when a window opens is released twice: the
+                        // window losing the focus is sent a cancelled one, and the
+                        // real release goes to the window that took it. Closing on the
+                        // first left the gate shut when the second arrived, and that
+                        // second is the one that pressed the menu.
+                        if (!key.isCanceled) {
+                            heldByKey = false
+                            holdIsOver()
+                        }
                         true
                     }
-                    key.action == android.view.KeyEvent.ACTION_UP -> {
-                        val pressed = downByKey
-                        heldByKey = false
-                        downByKey = false
-                        if (pressed) onClick()
-                        true
-                    }
-                    else -> true
+                    else -> false              // an ordinary press, left to the clickable
                 }
             })
             .then(if (onHold == null)
@@ -310,7 +367,17 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                                          onClick = onClick)
                   else Modifier.combinedClickable(
                       interactionSource = press, indication = null,
-                      onClick = onClick, onLongClick = onHold))
+                      onClick = onClick,
+                      // The gate is opened here because this is where a hold actually
+                      // comes from. A hand-written key handler sat below .focusable()
+                      // in this chain for three versions, which is past the node that
+                      // holds the focus - it never received an event, so nothing ever
+                      // armed the guard and the release went on pressing the first
+                      // item in the menu it had just opened.
+                      // a finger, which does report a long press. The gate is not
+                      // armed for it: a finger lifts over the poster and lands on
+                      // nothing, so there is no release to swallow.
+                      onLongClick = onHold))
     ) {
         Box(
             Modifier.fillMaxWidth()
@@ -495,6 +562,12 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
             only inapplicable - so it stays, faded, and the reason is said beside it */
          dim: Boolean = false,
          modifier: Modifier = Modifier, onClick: () -> Unit) {
+    // The release of the hold that opened a menu is not a press of what is in it.
+    // Dropped here as well as at the window, because a menu that has just appeared
+    // has not always taken the focus by the time that release arrives - and the item
+    // it landed on was the first one, Go to title.
+    val press = onClick
+    val guarded: () -> Unit = { if (!stillTheHold()) press() }
     var focused by remember { mutableStateOf(false) }
     // drawn only where a ring means something; see focusShows()
     val ring = focused && focusShows()
@@ -526,7 +599,7 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .focusable()
             .then(if (dim) Modifier.alpha(0.45f) else Modifier)
-            .clickable(enabled = !dim, onClick = onClick)
+            .clickable(enabled = !dim, onClick = guarded)
             // and on a short screen the tall ones come down to the small size:
             // a row of pills nine points deep either side is a shelf's worth of
             // height above the shelves, on the one screen that has none to spare
@@ -809,11 +882,12 @@ fun etaShort(s: Long): String = when {
 fun Modifier.stillHeld(): Modifier = this.then(
     Modifier.onPreviewKeyEvent { e ->
         val key = e.nativeKeyEvent
-        if (!fromTheHold(key)) false
-        else {
-            if (key.action == android.view.KeyEvent.ACTION_UP) holdIsOver()
+        // the release of the hold that opened this, and only that: see the note on
+        // the same rule in the activity
+        if (fromTheHold(key) && key.action == android.view.KeyEvent.ACTION_UP) {
+            if (!key.isCanceled) holdIsOver()   // a cancelled one is not the release
             true
-        }
+        } else false
     })
 
 

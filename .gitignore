@@ -84,3 +84,8 @@ copies.json
 loudness.json
 # the marker a build in progress leaves behind
 .building
+ahead.json
+library.db-shm
+library.db-wal
+# what the link has been seen to carry, written while the server runs
+traffic.json

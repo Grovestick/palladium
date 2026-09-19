@@ -354,11 +354,20 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     /** when this screen last said how much film it had in hand */
     private var saidBuffer = 0L
 
+    /** whether this playing has already said how its sound is being handled */
+    private var saidHowSound = false
+
+    /** error codes already reported for this playing, so a retry loop says it once */
+    private val saidFaults = mutableSetOf<String>()
+
     /** How much the sound of this file is lifted or held back, in decibels. */
     private val gain = Gain()
 
     /** Set from what the server measured, each time a film is opened. */
     private fun evenTheVolume() {
+        // last film's numbers are not this one's
+        Api.gainSaid = null
+        Api.lufsSaid = null
         gain.decibels = intent.getFloatExtra("gainDb", 0f)
         if (gain.decibels != 0f) {
             log("evening the sound by " + gain.decibels + " dB")
@@ -1687,9 +1696,23 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val dropped = if (droppedFrames > 0) "dropped " + droppedFrames else null
         // How loud the file is and what is being done about it. A file nobody has
         // measured yet says nothing at all rather than a nought that means "unknown".
-        val loud = intent.getFloatExtra("lufs", Float.NaN).takeIf { !it.isNaN() }?.let {
-            val put = intent.getFloatExtra("gainUsed", 0f)
+        // What the server has said most recently wins over what it said when the film
+        // was opened: a file measured while it was playing had its number on the
+        // server and nothing on the screen.
+        val measured = Api.lufsSaid
+            ?: intent.getFloatExtra("lufs", Float.NaN).takeIf { !it.isNaN() }
+        val loud = measured?.let {
+            // on a direct play the level in force is the one the processor holds,
+            // part way through an ease included; an encode carries what was baked in
+            val put = if (direct) gain.nowDb() else intent.getFloatExtra("gainUsed", 0f)
+            // Wanted and applied are two different things. Sound passed through to an
+            // amplifier never reaches the processor, so a correction can be held and
+            // do nothing: saying "+6.7 dB" there is a lie the screen tells itself.
+            val wanted = Api.gainSaid ?: 0f
             String.format(java.util.Locale.US, "%.1f LUFS", it) + when {
+                direct && !gain.working && wanted != 0f ->
+                    String.format(java.util.Locale.US,
+                                  "  %+.1f dB not applied - passed through", wanted)
                 put == 0f -> ""
                 direct -> String.format(java.util.Locale.US, "  %+.1f dB", put)
                 else -> String.format(java.util.Locale.US, "  %+.1f dB encoded", put)
@@ -2270,6 +2293,24 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
              * receiver goes away, the film carries on here, from the same second.
              */
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // Said to the server before anything is done about it. The player
+                // handled its own errors and told nobody, so a film that would not
+                // start left the server with a stream cut after two megabytes and no
+                // reason for it - which is all anybody had to work from afterwards.
+                // Once per code per playing: the retries below would otherwise send
+                // the same line six times in twenty seconds.
+                if (saidFaults.add(error.errorCodeName)) {
+                    val note = listOf(
+                        "playback failed",
+                        "code=" + error.errorCodeName + " (" + error.errorCode + ")",
+                        error.message ?: "",
+                        "at=" + position() + "s",
+                        "on=" + srvBase,
+                        "file=" + (title.value?.fileName ?: "?"),
+                    ).filter { it.isNotEmpty() }.joinToString("  ")
+                    log(note)
+                    lifecycleScope.launch { Api.report(this@PlayerActivity, "error", note) }
+                }
                 // A stream that stops arriving mid-block looks to the extractor like a
                 // broken file: the server was restarted, or the network blinked. The
                 // film is fine, so ask for it again from the same second rather than
@@ -2540,6 +2581,22 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
 
     private fun startNext(next: Media) {
         nextUp.value = null
+        // The next one is not here yet: a pack has it and this machine does not.
+        // Its page is opened instead of the player, where how far along it is can be
+        // seen and it can be asked for - the same as a shuffle that draws one. It is
+        // deliberately not fetched by pressing Next: a download is somebody's week's
+        // allowance, and Next is pressed on the way out of the room.
+        if (next.offered) {
+            Opening.media = next          // already in hand: no second trip for it
+            startActivity(android.content.Intent(this@PlayerActivity,
+                                                 MainActivity::class.java).apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                         android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra("openKey", next.ratingKey)
+            })
+            finish()
+            return
+        }
         // subtitles carry over: the next episode's file was fetched while this one was
         // still playing, so it is there waiting - but the copy of the episode we hold
         // was read before that, and has to be read again to see it
@@ -2604,10 +2661,16 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // a share only for a film coming off two machines now: the counts are kept
         // across films, and a stream with no second source showed the last one's 50/50
         val share = if (on >= 2) TwoWays.split() else null
+        // and which machine is answering, when it is not the one this screen calls
+        // home. A film served by the copy looked exactly like one served by the main
+        // server, so there was no way to tell from the screen that anything had
+        // fallen over - or that it had not come back.
+        val standing = if (Api.standingBy())
+            "  ·  on " + Api.standbyName.ifBlank { "the other machine" } else ""
         return when {
-            share != null -> head + "  " + share
-            whyNotSplit != null -> head + "  " + whyNotSplit
-            else -> head
+            share != null -> head + "  " + share + standing
+            whyNotSplit != null -> head + "  " + whyNotSplit + standing
+            else -> head + standing
         }
     }
 
@@ -2761,6 +2824,16 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             log(if (readies.isEmpty()) "no other machine has this one"
                 else "also on " + readies.joinToString(", ") {
                     (it.srv?.name ?: "?") + " as " + it.ratingKey })
+            // The main server is back, and this asked every machine twenty seconds
+            // ago - so it is already known, and coming home need not wait for the
+            // episode to end and need not cost a pause when it does. The picture
+            // stays where it is: a live encode cannot be moved, and a direct play is
+            // already being read off both. Only what this screen calls home changes,
+            // so the next draw is home from the first moment.
+            if (Api.standingBy() && readies.any { r ->
+                    (r.srv?.base ?: "").trimEnd('/') == Api.homeBaseNow() }) {
+                if (Api.comeHomeIfUp()) log("home again: " + Api.base)
+            }
             offerTwo()
         }
     }
@@ -3407,9 +3480,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             // A track inside the film has to be lifted out before it can be drawn, and
             // on a large file that is minutes the first time. Say so: an empty screen
             // with no explanation reads as broken subtitles.
+            // For a moment, like anything else said over a film: it used to stay
+            // up until the lift finished, which on a large file is minutes.
             val slow = launch {
                 kotlinx.coroutines.delay(2500)
-                syncSaid.value = "Lifting the subtitles out of the film…"
+                sayForAMoment("Lifting the subtitles out of the film…")
             }
             ownCues = try {
                 runCatching { Api.cues(url) }.getOrDefault(emptyList())
@@ -4236,7 +4311,28 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             val verified = Api.progressAt(
                 srvBase, srvToken, ratingKey, pos, dur, say, who, subs,
                 // putting something on is not watching it
-                casual = mine, shelf = shelf)
+                casual = mine, shelf = shelf,
+                info = runCatching { buildInfo() }.getOrDefault(""))
+            // The level this file needs, as the server has it now. A file measured
+            // after it was opened is corrected where it stands, eased in over half a
+            // minute rather than arriving between two buffers.
+            Api.gainSaid?.let { said ->
+                if (said != gain.decibels) {
+                    log("easing the sound to " + said + " dB")
+                    gain.easeTo(said, 30f)
+                }
+            }
+            // Said once per film, and only once the sink has had a chance to settle:
+            // whether the sound reaches the processor at all. Without it, "it does not
+            // sound any louder" could not be told from "it is being passed through",
+            // and the only way to find out was to read the television's own screen.
+            if (!saidHowSound && pos > 10) {
+                saidHowSound = true
+                val want = Api.gainSaid ?: gain.decibels
+                log("sound is " + (if (gain.working) "decoded here" else "passed through") +
+                    ", correction wanted " + want + " dB, " +
+                    (if (gain.working) "applied" else "not applied"))
+            }
             // the subtitle just earned its mark: read the title again so an open panel
             // turns its tick, and say so on screen for a moment either way
             if (verified && !saidVerified) {

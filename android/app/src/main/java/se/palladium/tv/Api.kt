@@ -56,6 +56,12 @@ object Api {
      * asking the cache is the difference between the evening carrying on and a
      * screen that says nothing is there.
      */
+    /** The gain the server last said this file needs, in dB; null when it did not say. */
+    @Volatile var gainSaid: Float? = null
+
+    /** And how loud it measured, for the line along the top. */
+    @Volatile var lufsSaid: Float? = null
+
     @Volatile var standby: String = ""
 
     /**
@@ -75,6 +81,10 @@ object Api {
     //: the machine this server copies from, if it copies from one. The other half of
     //: "which machine is the other machine": a copy has no copy of its own.
     @Volatile var houseWhere: String = ""
+    //: and its way in from outside. Only the first was kept, so a phone away from the
+    //: house was handed 192.168.x for the machine it wanted and waited out a connection
+    //: that could never open.
+    @Volatile var houseOut: String = ""
     @Volatile var houseName: String = ""
     @Volatile private var onStandby: Boolean = false
 
@@ -88,6 +98,26 @@ object Api {
      */
     @Volatile private var homeBase: String = ""
     @Volatile private var triedHome: Long = 0L
+
+    /**
+     * Every other machine this one knows a way to, the likeliest route first.
+     *
+     * A server names the machine that copies from it in standby and the machine it
+     * copies from in houseWhere, and a fallback that read only the first was dead on
+     * a copy - which is the machine a viewer is on precisely when the other one is
+     * off. Both, and both their doors: the address on this network is tried first
+     * from this network and last from anywhere else, because the wrong one does not
+     * fail, it waits.
+     */
+    fun otherWays(here: String): List<String> {
+        val home = Regex("""^https?://(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.)""")
+        val near = listOf(standby, houseWhere)
+        val far = listOf(standbyOut, houseOut)
+        return (if (home.containsMatchIn(here)) near + far else far + near)
+            .map { it.trimEnd('/') }
+            .filter { it.isNotEmpty() && it != here.trimEnd('/') }
+            .distinct()
+    }
 
     fun use(s: Server) {
         base = s.base.trimEnd('/')
@@ -346,6 +376,36 @@ object Api {
         triedHome = System.currentTimeMillis()
     }
 
+    /**
+     * Go back to the main server now, if it is answering.
+     *
+     * The ordinary way home waits a minute between tries, and `onTheCopyNow` pushes
+     * that minute forward every time the player falls to the copy - so a screen that
+     * keeps re-opening there never gets home at all, and went on saying the copy's
+     * name with the main server up and already carrying half the film. This asks once,
+     * cheaply, and is meant for the moment a new episode starts: there is nothing
+     * playing to disturb, so the switch costs nothing if it works and nothing if it
+     * does not.
+     */
+    /** The address this screen fell away from, or empty when it is already home. */
+    fun homeBaseNow(): String = homeBase.trimEnd('/')
+
+    fun comeHomeIfUp(): Boolean {
+        val home = homeBase.trimEnd('/')
+        if (home.isEmpty()) return false
+        return try {
+            fetch(home, "/server", token, 3000, 3000)
+            if (base != home) otherWay = base
+            base = home
+            homeBase = ""
+            onStandby = false
+            triedHome = System.currentTimeMillis()
+            true
+        } catch (away: java.io.IOException) {
+            false                       // still off: stay where we are
+        }
+    }
+
     /** Ask the server where its cache is, and remember it for when it is off. */
     fun learnStandby(ctx: Context) {
         val here = base
@@ -372,6 +432,7 @@ object Api {
             houseWhere = (up?.optString("lan").orEmpty().trimEnd('/'))
                 .ifEmpty { up?.optString("outside").orEmpty().trimEnd('/') }
             houseName = up?.optString("name").orEmpty()
+            houseOut = up?.optString("outside").orEmpty().trimEnd('/')
             val edit = prefs(ctx).edit()
             if (houseWhere.isNotEmpty()) {
                 edit.putString("house:" + here, houseWhere)
@@ -380,6 +441,11 @@ object Api {
                 houseWhere = prefs(ctx).getString("house:" + here, "") ?: ""
                 houseName = prefs(ctx).getString("houseName:" + here, "") ?: ""
             }
+            // Remembered rather than asked for again: a copy that has just been
+            // restarted has not yet asked the machine it follows where it lives, and
+            // for those few minutes it tells every screen there is no way back.
+            if (houseOut.isNotEmpty()) edit.putString("houseOut:" + here, houseOut)
+            else houseOut = prefs(ctx).getString("houseOut:" + here, "") ?: ""
             if (where.isNotEmpty() && where != here) {
                 standby = where
                 edit.putString("standby:" + here, where)
@@ -1133,7 +1199,9 @@ object Api {
     }
 
     /** A line the owner has sent to the screens in the house, if there is one. */
-    data class Notice(val id: Int, val text: String)
+    /** A word for the room, and - when the owner sent one - a title to open. */
+    data class Notice(val id: Int, val text: String,
+                      val play: String = "", val at: Long = 0L)
 
     /**
      * Waits for one, rather than asking for one.
@@ -1152,7 +1220,9 @@ object Api {
             // No words is a notice too: it is the one that takes the last one down.
             // Read as nothing at all, a notice could only be got rid of by pressing
             // Right on every screen showing it - the server had already let it go.
-            if (o.optInt("id") == 0) null else Notice(o.optInt("id"), said)
+            if (o.optInt("id") == 0) null
+            else Notice(o.optInt("id"), said,
+                        o.optString("play"), o.optLong("at", 0L))
         } catch (e: Exception) { null }
     }
 
@@ -1326,7 +1396,33 @@ object Api {
      * where it came from.
      */
     suspend fun shelfDraw(id: String, srv: Server? = null,
-                          resume: Boolean = true, back: Boolean = false): Draw? =
+                          resume: Boolean = true, back: Boolean = false): Draw? {
+        // A new episode is the moment to go home: nothing is playing, so a switch
+        // costs nothing. Without this the round stayed on the copy for the rest of
+        // the evening once it had fallen there, however long the main server had
+        // been back.
+        withContext(Dispatchers.IO) { comeHomeIfUp() }
+        // Not the machine we have already fallen away from. Asked first, every press
+        // of next waited out a connection to a server known to be off before trying
+        // the one answering - which is a button that takes seconds to do anything.
+        val asking = if (srv != null && homeBase.isNotEmpty() &&
+                         srv.base.trimEnd('/') == homeBase.trimEnd('/')) null else srv
+        drawFromOne(id, asking, resume, back)?.let { return it }
+        // The machine the shelf came from is not answering. The copy holds the round
+        // as well and answers for itself while the main server is off, so it is worth
+        // one more question before saying there is nothing to play - which is what a
+        // shelf did when the server it was listed from went away.
+        val here = (asking?.base ?: base).trimEnd('/')
+        for (where in otherWays(here)) {
+            drawFromOne(id, Server(Servers.hostOf(where), where,
+                                   asking?.token ?: token), resume, back)
+                ?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun drawFromOne(id: String, srv: Server? = null,
+                                    resume: Boolean = true, back: Boolean = false): Draw? =
             withContext(Dispatchers.IO) {
         try {
             // asked of the server the shelf belongs to. Shelves are gathered from
@@ -1634,8 +1730,8 @@ object Api {
      * and took the whole app down with it. A title that is not there is an empty
      * screen; it is never a crash.
      */
-    suspend fun metadata(m: Media): Media? =
-        try {
+    suspend fun metadata(m: Media): Media? {
+        val mine = try {
             items(json("/local/library/metadata/${m.ratingKey}", m.srv)
                 .getJSONObject("MediaContainer"), m.srv).firstOrNull()
         } catch (e: java.io.FileNotFoundException) {
@@ -1643,6 +1739,36 @@ object Api {
                 "no " + m.ratingKey + " on " + (m.srv?.base ?: base))
             null
         }
+        if (mine != null && !mine.fileName.isNullOrEmpty()) return mine
+        // Listed here, but no file behind it. The machine that keeps copies mirrors
+        // the whole catalogue, so it offers every episode of a programme and holds
+        // the file for three of them; pressing play on one of the others opened a
+        // title with nothing to read and the picture never started. The other machine
+        // is asked for its own key for this episode - keys are per library - and its
+        // answer is used instead when it has the file.
+        // Either direction. A server names the machine that copies from it in
+        // standby and the machine it copies from in houseWhere, and this is the
+        // second of the two: the phone is on the copy, which is where an episode
+        // with no file behind it is found. Reading only standby left the fallback
+        // dead in exactly the case it was written for.
+        val here = (m.srv?.base ?: base).trimEnd('/')
+        for (where in otherWays(here)) {
+            val there = Server(Servers.hostOf(where), where, m.srv?.token ?: token)
+            val got = try {
+                val key = keyThere(there, m) ?: continue
+                items(json("/local/library/metadata/$key", there)
+                    .getJSONObject("MediaContainer"), there).firstOrNull()
+            } catch (e: Exception) {
+                null
+            }
+            if (got != null && !got.fileName.isNullOrEmpty()) {
+                android.util.Log.i("Palladium", "opening " + m.ratingKey +
+                    " from " + where + " as " + got.ratingKey + ": not held here")
+                return got
+            }
+        }
+        return mine
+    }
 
     /** One title by its key - for following an episode back to its series. */
     /**
@@ -1949,7 +2075,23 @@ object Api {
                            subtitles: String = "",
                            casual: Boolean = false,
                            /** the shelf it was drawn off, so that shelf keeps the place */
-                           shelf: String = ""): Boolean = withContext(Dispatchers.IO) {
+                           shelf: String = "",
+                           /** the line along the top, as the player has it this second */
+                           info: String = ""): Boolean = withContext(Dispatchers.IO) {
+        // Where to send it, in order. The film carries the address it came from, and
+        // that is right until the machine behind it goes off: the picture fails over
+        // to the one keeping copies and carries on, and the place was still being
+        // reported to a server that had stopped answering - so nothing recorded where
+        // anybody had got to, and the evening was lost on the way back. The others are
+        // tried only when the first cannot be reached at all; a server that refuses
+        // has answered, and asking another would only write the same report twice.
+        val doors = ArrayList<String>()
+        doors.add(host)
+        for (other in listOf(base, standby, standbyOut)) {
+            val one = other.trimEnd('/')
+            if (one.isNotEmpty() && doors.none { it.trimEnd('/') == one }) doors.add(one)
+        }
+        for (door in doors) {
         try {
             val who = URLEncoder.encode(device.ifEmpty { "Android" }, "UTF-8")
             // whether subtitles are on matters at the end: an episode watched through
@@ -1961,23 +2103,52 @@ object Api {
                     (if (casual) "&casual=1" else "") +
                     (if (shelf.isEmpty()) "" else
                          "&shelf=" + URLEncoder.encode(shelf, "UTF-8")) +
-                    (if (subtitles.isEmpty()) "" else "&sub=" + subtitles), tok)
-            val conn = URL(host + path).openConnection() as HttpURLConnection
+                    (if (subtitles.isEmpty()) "" else "&sub=" + subtitles) +
+                    // What the player knows about this playing, in the words it would
+                    // put on the screen: where it is reading from, what it is decoding
+                    // with, the rate, the buffer, how the sound is being handled. It
+                    // was on the television and nowhere else, so a fault could only be
+                    // looked into by asking somebody to read it out.
+                    (if (info.isEmpty()) "" else
+                         "&info=" + URLEncoder.encode(info.take(400), "UTF-8")), tok)
+            val conn = URL(door + path).openConnection() as HttpURLConnection
             conn.connectTimeout = 6000
             conn.readTimeout = 10000
             // the watch log records which build was watching, and this is the request
             // it records - without the header every line read "app: nothing"
             conn.setRequestProperty("X-Palladium-App", appName())
             val said = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            // What the sound of this file needs now. A file measured while it was
+            // playing used to stay uncorrected until it was opened again; the answer
+            // to every progress report carries the number, so the player can ease
+            // into it where it stands.
+            try {
+                val said2 = JSONObject(said).optJSONObject("MediaContainer")
+                gainSaid = said2?.let {
+                    if (it.has("gainDb")) it.optDouble("gainDb", 0.0).toFloat() else null
+                }
+                lufsSaid = said2?.let {
+                    if (it.has("lufs")) it.optDouble("lufs", 0.0).toFloat() else null
+                }
+            } catch (e: Exception) { gainSaid = null }
             // The server marks a subtitle verified as this very report arrives - the
             // episode has just passed the credits - and says so in the answer. True
             // means the panel on screen has a tick to turn.
-            said.contains("subsVerified")
+            return@withContext said.contains("subsVerified")
         } catch (stopped: kotlinx.coroutines.CancellationException) {
             throw stopped          // the screen closed: not a failure
         } catch (e: Exception) {
-            false                  // progress is not worth failing playback over
+            val gone = e is java.net.ConnectException ||
+                       e is java.net.SocketTimeoutException ||
+                       e is java.net.UnknownHostException ||
+                       e is java.net.NoRouteToHostException ||
+                       e is java.net.PortUnreachableException
+            // anything else is an answer, and the next machine would say the same
+            if (!gone) return@withContext false
         }
+        }
+        // every door shut: progress is not worth failing playback over
+        return@withContext false
     }
 
     /**
@@ -2870,10 +3041,8 @@ object Api {
     }
 
     /** POST to a particular server rather than whichever one is open. */
-    private fun postTo(srv: Server?, path: String, body: JSONObject): String {
-        val b = srv?.base ?: base
-        val t = srv?.token ?: token
-        val conn = URL(b + auth(path, t)).openConnection() as HttpURLConnection
+    private fun postOnce(door: String, path: String, body: JSONObject, t: String): String {
+        val conn = URL(door + auth(path, t)).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.doOutput = true
         conn.connectTimeout = 8000
@@ -2882,6 +3051,61 @@ object Api {
         conn.setRequestProperty("X-Palladium-App", appName())
         conn.outputStream.use { it.write(body.toString().toByteArray()) }
         conn.inputStream.use { return it.readBytes().toString(Charsets.UTF_8) }
+    }
+
+    /**
+     * The same, but not stuck to one machine.
+     *
+     * A shuffle draw carries the address of the server the shelf came from, and that
+     * is right until that machine goes off: the picture had already moved to the one
+     * keeping copies and carried on, and the draw at the end of the episode was still
+     * being asked of a server that had stopped answering - so the round stopped where
+     * it stood. The others are tried only when the first cannot be reached at all; a
+     * server that refuses has answered, and drawing again elsewhere would take two
+     * titles out of the hat for one episode.
+     */
+    private fun postTo(srv: Server?, path: String, body: JSONObject): String {
+        val t = srv?.token ?: token
+        // Home first, when we have fallen away from it and it may be back. The films
+        // come home on their own - the reader asks every machine holding one twenty
+        // seconds at a time - but a draw does not, so the round stayed on the machine
+        // keeping copies after the main server returned, and the next episode was
+        // drawn and encoded there while the main server sat idle with the better card.
+        if (srv == null && homeBase.isNotEmpty() &&
+            System.currentTimeMillis() - triedHome > 60_000L) {
+            triedHome = System.currentTimeMillis()
+            try {
+                val said = postOnce(homeBase, path, body, t)
+                if (base != homeBase) otherWay = base
+                base = homeBase
+                homeBase = ""
+                onStandby = false
+                return said
+            } catch (away: java.io.IOException) {
+                // still off: carry on with the machine that is answering
+            }
+        }
+        val doors = ArrayList<String>()
+        doors.add(srv?.base ?: base)
+        for (other in listOf(base, standby, standbyOut)) {
+            val one = other.trimEnd('/')
+            if (one.isNotEmpty() && doors.none { it.trimEnd('/') == one }) doors.add(one)
+        }
+        var last: java.io.IOException? = null
+        for (door in doors) {
+            try {
+                return postOnce(door, path, body, t)
+            } catch (e: java.io.IOException) {
+                val gone = e is java.net.ConnectException ||
+                           e is java.net.SocketTimeoutException ||
+                           e is java.net.UnknownHostException ||
+                           e is java.net.NoRouteToHostException ||
+                           e is java.net.PortUnreachableException
+                if (!gone) throw e
+                last = e
+            }
+        }
+        throw (last ?: java.io.IOException("no server answered " + path))
     }
 
     /* ---------------- invitations ----------------

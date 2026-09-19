@@ -1423,3 +1423,58 @@ body.has-copynote{padding-top:38px}
 .advvalue{font-size:13px;color:var(--accent);font-weight:600;text-align:right;
   white-space:nowrap}
 .advwhat{grid-column:1 / -1;font-size:12px;color:var(--dim);max-width:70ch}
+
+/* A season on a collection, opened episode by episode. The button sits where the
+   manual-edit tag does not, so a hand-edited season shows both. */
+.card .poster > .epopen{position:absolute;bottom:6px;right:6px;z-index:4;
+  padding:2px 6px;border:0;border-radius:5px;font:inherit;font-size:10.5px;
+  letter-spacing:.03em;cursor:pointer;
+  background:rgba(11,13,16,.86);color:var(--fg)}
+.card .poster > .epopen:hover{background:var(--accent);color:#0b0d10}
+.card.stripon .poster{outline:2px solid var(--accent);outline-offset:-2px}
+.epstrip{margin:10px 0 4px;padding:10px 12px;border-radius:10px;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}
+.epstriphead{font-size:12px;color:var(--dim);margin-bottom:8px}
+.epstriplist{display:flex;flex-wrap:wrap;gap:6px}
+.eppill{display:flex;align-items:center;gap:6px;max-width:100%;
+  padding:4px 8px;border-radius:7px;font:inherit;font-size:12px;cursor:pointer;
+  border:1px solid rgba(255,255,255,.16);background:rgba(10,12,15,.5);
+  color:var(--dim);transition:.12s}
+.eppill:hover{border-color:rgba(255,255,255,.4)}
+.eppill.on{color:var(--fg);border-color:var(--accent);
+  background:rgba(255,255,255,.08)}
+.eppill .n{opacity:.7;min-width:1.4em;text-align:right}
+.eppill .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:16em}
+.eppill .m{opacity:.8}
+.eppill[disabled]{opacity:.5;cursor:default}
+
+/* The season span, kept apart from the title rules: a different question - which
+   part of a programme, not which programme. */
+.seasonbox{margin:8px 0 6px;padding:8px 10px 6px;border-radius:10px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03)}
+.seasonbox .addrow{margin-bottom:4px}
+.seasonhead{font-size:12px;color:var(--dim);margin:0 0 6px 4px;
+  letter-spacing:.04em;text-transform:uppercase}
+.seasonwhy{display:inline-flex;align-items:center;justify-content:center;
+  width:15px;height:15px;margin-left:5px;border-radius:50%;cursor:help;
+  border:1px solid var(--line);color:var(--dim);font-size:10px;
+  text-transform:none;letter-spacing:0}
+.seasonwhy:hover{border-color:var(--accent);color:var(--fg)}
+.eppill .g{opacity:.75;display:inline-flex;align-items:center}
+.eppill .g svg{width:11px;height:11px}
+.eppill.offeredpill{border-style:dashed}
+/* the collection mark on an episode row, while that collection's form is open */
+.eptick.coll{font-weight:600}
+.eptick.coll.on{color:var(--accent);border-color:var(--accent)}
+.eptick.coll[disabled]{opacity:.4;cursor:default}
+/* From / To season pickers under each span box */
+.spanpick{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.spanpick .spanlabel{font-size:11px;color:var(--dim);min-width:2.6em;text-align:right}
+.spanpick .spanof{min-width:8.5em}
+/* the list of what the other machine holds: one line per title, size on the right */
+.heldlist{margin-top:6px}
+.heldlist .heldhead{margin:10px 0 3px;opacity:.85}
+.heldlist .heldone{display:flex;justify-content:space-between;gap:12px;
+  font-size:12px;color:var(--dim);padding:1px 0 1px 12px}
+.heldlist .heldone .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.heldlist .heldone .g{flex:none;opacity:.75}
