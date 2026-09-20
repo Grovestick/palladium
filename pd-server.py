@@ -1281,6 +1281,82 @@ def one_language(text, want="en"):
     return ("WEBVTT" + gap + re.sub(r"^WEBVTT\s*", "", body)).strip() + chr(10)
 
 
+def drop_echoes(text):
+    """Fold a live-captioned track's repeated cues into the cue they repeat.
+
+    The repeat is written a fifth of a second after the line, and blinks on a player
+    that draws the newest cue only. One episode carried 672 in 1996 cues.
+
+    A tenth of the cues must be repeats before the track is touched. Below that the
+    overlaps are two speakers at once, and shortening the first cue cuts a line to
+    0.2s; flatten_rollup wants two cues in five, which an echoed track can sit under.
+    """
+    def bare(lines):
+        return [re.sub(r"[^a-z0-9]+", "", l.lower()) for l in lines]
+
+    stamps = re.compile(r"(%s)\s*-->\s*(%s)(.*)" % (STAMP, STAMP))
+    blocks = []
+    for block in re.split(r"\n\s*\n", text or ""):
+        rows = block.split(chr(10))
+        at = next((i for i, l in enumerate(rows) if stamps.search(l)), None)
+        if at is None:
+            continue
+        m = stamps.search(rows[at])
+        # the line above the stamp is the cue's name and what follows it is where on
+        # the screen it is drawn: both are carried, not dropped in the rewrite
+        ident = rows[at - 1].strip() if at else ""
+        lines = [l for l in rows[at + 1:] if l.strip()]
+        if lines:
+            blocks.append([stamp_secs(m.group(1)), stamp_secs(m.group(2)), lines,
+                           ident, m.group(3).rstrip()])
+    if len(blocks) < 8:
+        return text
+
+    #: how long after a line closes a repeat of it is an echo of it rather than the
+    #: line being said again
+    SOON = 0.4
+
+    def echoed(one, before):
+        return bool(before) and (bare(before[2]) == bare(one[2])
+                                 and one[0] - before[1] <= SOON)
+
+    #: how much of a track has to be echoes before it is a track that echoes. The
+    #: episode above was a third of its cues; a written subtitle that repeats a line
+    #: twice is not, and its simultaneous cues are two people talking.
+    echoes = sum(1 for i, one in enumerate(blocks)
+                 if echoed(one, blocks[i - 1] if i else None))
+    if echoes < len(blocks) * 0.1:
+        return text
+
+    out, changed = [], 0
+    for one in blocks:
+        last = out[-1] if out else None
+        # However long the repeat stands. The line is often written three times over
+        # - once as it is said, then again while the line under it is added - and only
+        # the first two of those are short.
+        if echoed(one, last):
+            last[1] = max(last[1], one[1])     # the same line held, not said twice
+            changed += 1
+            continue
+        if last and one[0] < last[1]:
+            last[1] = one[0]                   # and nothing sits on the one before it
+            changed += 1
+        out.append(list(one))
+    if not changed:
+        return text
+
+    said = ["WEBVTT", ""]
+    for began, ended, lines, ident, where in out:
+        if ended - began < 0.2:
+            ended = began + 0.2
+        if ident:
+            said.append(ident)
+        said.append(stamp_of(began) + " --> " + stamp_of(ended) + where)
+        said.extend(lines)
+        said.append("")
+    return chr(10).join(said)
+
+
 def flatten_rollup(text):
     """Captions written to roll up the screen, made into what is new in each one.
 
@@ -1684,7 +1760,7 @@ def learn_invites(said, owner=None, master="", look=None):
     for row in keep:
         theirs_row = theirs.get(row.get("token") or "")
         if theirs_row:
-            for name in ("cacheDeck", "cacheList", "cacheCasual"):
+            for name in ("cacheDeck", "cacheList", "cacheCasual", "cacheLately"):
                 row[name] = bool(theirs_row.get(name))
             # role, refreshed each round, so a key promoted or demoted on the main
             # server changes here too. Cache keys are filtered out before sending.
@@ -2269,14 +2345,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             book = self.read_requests()
             mine = book.get(key) or {}
+            who = self.guest_name if self.role == "guest" else "you"
+            # Who is asking, by the key they hold rather than the name they show.
+            # Counting names made everyone who is not a guest the same person, and
+            # two guests called the same thing one person as well.
+            mark = hashlib.sha1(
+                str(self.viewer()).encode("utf-8")).hexdigest()[:12]
             if mine and not mine.get("done"):
-                self.reply_json({"already": True, "request": mine})
+                # Asked for again. One entry for the title, and the people who want it
+                # counted on it: deciding what comes into the house is better served
+                # by "four of us asked" than by whoever happened to ask first. The
+                # same person asking twice is still one person.
+                names = [str(n) for n in (mine.get("whoAll")
+                                          or ([mine.get("who")] if mine.get("who") else []))
+                         if n]
+                # rows written before this counted one asker and did not say who
+                marks = [str(k) for k in (mine.get("whoKeys") or []) if k]
+                if not marks and names:
+                    marks = ["?%d" % i for i in range(len(names))]
+                if mark not in marks:
+                    marks.append(mark)
+                    if who not in names:
+                        names.append(who)
+                mine["whoAll"] = names
+                mine["whoKeys"] = marks
+                mine["asks"] = len(marks)
+                book[key] = mine
+                self.write_requests(book)
+                self.reply_json({"already": True, "request": mine,
+                                 "mine": True,
+                                 "watchlisted": self.onto_watchlist(key)})
                 return
             title = str(body.get("title") or mine.get("title") or "")[:200]
-            who = self.guest_name if self.role == "guest" else "you"
             mine = {"key": key, "title": title,
                     "year": body.get("year") or mine.get("year"),
-                    "who": who, "when": int(time.time()),
+                    "who": who, "whoAll": [who], "whoKeys": [mark], "asks": 1,
+                    "when": int(time.time()),
                     "where": str(body.get("where") or "")[:300],
                     "done": False}
             book[key] = mine
@@ -2289,7 +2393,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                  self.app_name())
             except Exception:
                 pass
-            self.reply_json({"asked": True, "request": mine})
+            self.reply_json({"asked": True, "request": mine, "mine": True,
+                             "watchlisted": self.onto_watchlist(key)})
             return
         if path == "/requests/done":
             # marked as dealt with, so the poster stops saying it is being asked for
@@ -2707,6 +2812,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.reply_json({"backdrop": self.backdrop_all(),
                                  "backdropHere": self.backdrop_now()})
                 return
+            if "language2" in body:
+                self.reply_json(
+                    {"language2": self.set_viewer_language_2(body["language2"])})
+                return
             if "language" in body:
                 self.reply_json({"language": self.set_viewer_language(body["language"])})
                 return
@@ -2856,6 +2965,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.viewer_settings(stored)["watchParty"] = bool(body["watchParty"])
                 write_settings(stored, merge=False)
                 self.reply_json({"watchParty": bool(body["watchParty"])})
+                return
+            if "filmsShow" in body:
+                # theirs, like the rest of what a person sees: one viewer turning
+                # asking on is not the house turning it on
+                said = body["filmsShow"] if isinstance(body["filmsShow"], dict) else {}
+                stored = self.settings_file()
+                mine = dict(self.films_show())
+                for name in ("disk", "download", "request"):
+                    if name in said:
+                        mine[name] = bool(said[name])
+                self.viewer_settings(stored)["filmsShow"] = mine
+                write_settings(stored, merge=False)
+                self.reply_json({"filmsShow": mine})
                 return
             if "autoNext" in body:
                 stored = self.settings_file()
@@ -3464,6 +3586,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.name_of(token).strip().lower(), 0.0)
             self.reply_json(pd_torrents.request(str(body.get("key") or ""), token,
                                                 self.watcher(), cap))
+            return
+        if path == "/torrents/recheck":
+            # Read the files on disk again for a pack qBittorrent has stopped on, or
+            # for every one of them. The server does this once by itself; this is the
+            # press that says try it again anyway.
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_torrents
+            body = self.read_json() or {}
+            self.reply_json(pd_torrents.mend_halted(str(body.get("hash") or ""),
+                                                    force=True))
             return
         if path == "/torrents/cancel":
             # a download stopped: by the owner, or by whoever asked for it
@@ -4119,7 +4253,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if token == "me":
                 stored = read_settings() or {}
                 for name in ("cacheDeck", "cacheList", "cacheCasual",
-                             "shareLan"):
+                             "cacheLately", "shareLan"):
                     if name in body:
                         stored[name] = bool(body[name])
                 # gigabytes a week copied for them, and downloaded by them; nought is
@@ -4138,7 +4272,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         # and whether this person is handed the address
                         # this machine answers to on its own network
                         for name in ("cacheDeck", "cacheList", "cacheCasual",
-                                     "shareLan"):
+                                     "cacheLately", "shareLan"):
                             if name in body:
                                 row[name] = bool(body[name])
                         for name in ("syncGbWeek", "downloadGbWeek"):
@@ -4380,7 +4514,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # the Android app posts its crashes here: no store, no cable, no other way
             # to learn why it died on the sofa
             n = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(n).decode("utf-8", "replace")
+            # a stack trace is a few kilobytes; anything longer is not one, and the
+            # door lets this through without a key
+            body = self.rfile.read(min(n, 65536)).decode("utf-8", "replace")
             with open(os.path.join(ROOT, "app-crash.log"), "a", encoding="utf-8") as f:
                 stamp = time.strftime("%Y-%m-%d %H:%M:%S")
                 f.write("---- " + stamp + " from " + self.client_address[0]
@@ -5294,11 +5430,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
             self.send_error(502, "the encoder produced nothing: " + said[:120])
             return
-        self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Palladium-Engine", st.info["engine"])
-        self.end_headers()
+        # Chunked, and therefore HTTP/1.1 - written by hand because the rest of the
+        # server speaks 1.0 and the status line comes from a class attribute.
+        #
+        # An encode has no length to declare: it is made as it is sent. Sent as a
+        # plain 1.0 body it ends when the socket closes, which makes a server going
+        # away byte-for-byte identical to the film finishing - the player saw no
+        # error, ran no recovery, and offered the next episode to somebody twenty
+        # minutes into this one. Chunked says how long each piece is and ends with a
+        # piece of length nought, so a stream that stops without that last piece is a
+        # fault the player can see, and the recovery it already has for a dropped
+        # direct play runs for an encode too.
+        # In the dialect the client asked in. Chunked belongs to HTTP/1.1: a client
+        # that asked in 1.0 has never been promised it and would read the lengths as
+        # picture. Everything with a player in it - the app, the browsers, the
+        # television - asks in 1.1; this is for whatever does not.
+        chunked = str(getattr(self, "request_version", "")).upper() >= "HTTP/1.1"
+        crlf = chr(13) + chr(10)
+        head = crlf.join([
+            "HTTP/1.1 200 OK" if chunked else "HTTP/1.0 200 OK",
+            "Content-Type: video/mp4",
+            "Cache-Control: no-store",
+            "X-Palladium-Engine: " + str(st.info["engine"]),
+        ] + (["Transfer-Encoding: chunked"] if chunked else []) + [
+            "Connection: close",
+            "", ""])
+        self.wfile.write(head.encode("latin-1", "replace"))
+        # said in the headers, and meant here: this socket carries one answer
+        self.close_connection = True
+        end_mark = crlf.encode()
         sid = WATCHING.start(
             self.watcher(),
             local().title_for(key) if q.get("src", [""])[0] == "local" else key,
@@ -5306,20 +5466,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ("direct video, sound encoded" if st.info.get("copyVideo")
              else "transcode (%s)" % st.info.get("engine", "?")),
             self.client_address[0], key, self.app_name(), self.device_kind())
+
+        def piece(block):
+            """One chunk: its length in hexadecimal, the bytes, and a blank line.
+
+            Or just the bytes, for a client that asked in 1.0 - which is exactly what
+            this endpoint did for everybody until now.
+            """
+            if not chunked:
+                self.wfile.write(block)
+                return
+            self.wfile.write(("%x" % len(block)).encode("ascii") + end_mark)
+            self.wfile.write(block)
+            self.wfile.write(end_mark)
+
+        whole = False
         try:
-            self.wfile.write(first)
+            piece(first)
             WATCHING.sent(sid, len(first))
             while True:
                 chunk = st.proc.stdout.read(65536)
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                piece(chunk)
                 WATCHING.sent(sid, len(chunk))
+            # the film itself ended: said in the one way that means it
+            if chunked:
+                self.wfile.write(b"0" + end_mark + end_mark)
+            whole = True
         except Exception:
             pass                      # the browser closed the connection: normal on seek
         finally:
             WATCHING.stop(sid)
             st.stop()
+            if not whole:
+                # no terminator was written, which is what tells the player this was
+                # an interruption and not an ending
+                self.close_connection = True
+
 
     @staticmethod
     def burn_for(q, src):
@@ -6142,6 +6326,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 found.append(str(key))
         return [k for k in found if k not in hidden]
 
+    def onto_watchlist(self, key):
+        """A title somebody asked for, kept in their own corner.
+
+        Asking is the end of what a guest can do about a film - the answer is the
+        owner's - so the one place it can be looked for afterwards is the watchlist
+        it was going to be on anyway. True when it was put there, False when it was
+        already on it.
+        """
+        if not key:
+            return False
+        try:
+            stored = self.settings_file()
+            mine = self.viewer_settings(stored)
+            had = [str(k) for k in (mine.get("watchlist") or [])]
+            if key in had:
+                return False
+            mine["watchlist"] = ([key] + had)[:400]
+            write_settings(stored)
+            return True
+        except Exception:
+            return False
+
     def watchlist(self):
         """The keys this viewer has marked, newest first."""
         mine = self.viewer_settings(self.settings_file())
@@ -6156,6 +6362,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         code = re.sub(r"[^a-z-]", "", (code or "en").lower())[:5] or "en"
         stored = self.settings_file()
         self.viewer_settings(stored)["subLang"] = code
+        write_settings(stored, merge=False)
+        return code
+
+    def viewer_language_2(self):
+        """What to read instead when the first language is not in the film.
+
+        Empty is no second choice, which is how it behaved before there was one: the
+        plainest track in the film, whatever language it is in.
+        """
+        mine = self.viewer_settings(self.settings_file())
+        return (mine.get("subLang2") or "").lower()[:5]
+
+    def set_viewer_language_2(self, code):
+        code = re.sub(r"[^a-z-]", "", (code or "").lower())[:5]
+        stored = self.settings_file()
+        self.viewer_settings(stored)["subLang2"] = code
         write_settings(stored, merge=False)
         return code
 
@@ -6567,11 +6789,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return {"cacheDeck": bool(row.get("cacheDeck")),
                     "cacheList": bool(row.get("cacheList")),
                     "cacheCasual": bool(row.get("cacheCasual")),
+                    # absent means yes: this is how it behaved before there was a
+                    # switch, and an upgrade should not quietly stop keeping it
+                    "cacheLately": bool(row.get("cacheLately", True)),
                     "syncGbWeek": float(row.get("syncGbWeek") or 0),
                     "downloadGbWeek": float(row.get("downloadGbWeek") or 0),
                     "token": mine}
         return {"cacheDeck": bool(stored.get("cacheDeck", True)),
                 "cacheList": bool(stored.get("cacheList", False)),
+                # the last dozen things the house watched, and the episodes after
+                # them: on unless somebody says otherwise, as it always was
+                "cacheLately": bool(stored.get("cacheLately", True)),
                 # what the shuffle would put on next: an evening of casual watching
                 # is exactly the evening nobody chooses a film for
                 "cacheCasual": bool(stored.get("cacheCasual", False)),
@@ -7124,6 +7352,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     VIEWER_KEYS = ("watchlist", "favorites", "casual", "casualMoved", "shuffles",
                    "subtitles", "perTitle", "myAccent", "autoNext", "autoFetch",
                    "autoSync", "watchParty", "subLanguage", "mine", "deckAside",
+                   # what this viewer reads subtitles in, and what they read when the
+                   # film has nothing in the first. Written under these names since
+                   # there were settings at all; "subLanguage" above never was one,
+                   # so the language stayed behind when somebody took a key.
+                   "subLang", "subLang2",
                    "collections", "homeRows", "skin",
                    # whether a film may be read off two machines at once, and whether
                    # it may move to another machine when the one serving it stops.
@@ -7136,7 +7369,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                    "myName",
                    # whether a poster stands behind the shelves. Theirs, on every
                    # screen they watch on: the browser, the phone and the television.
-                   "myBackdrop")
+                   "myBackdrop",
+                   # which of the three kinds the film shelf stands: held, fetchable,
+                   # askable
+                   "filmsShow")
+
+    #: What the film shelf stands, unless a viewer says otherwise: everything there
+    #: is to watch, whether it is held, fetchable or only askable.
+    FILMS_SHOW = {"disk": True, "download": True, "request": True}
+
+    def films_show(self):
+        """Which of the three kinds this viewer wants the film shelf to stand."""
+        said = self.viewer_settings(self.settings_file()).get("filmsShow")
+        if not isinstance(said, dict):
+            return dict(self.FILMS_SHOW)
+        return {k: bool(said.get(k, v)) for k, v in self.FILMS_SHOW.items()}
 
     def hand_over_history(self, frm, to):
         """Move one viewer's viewing onto another. Returns what moved.
@@ -7261,6 +7508,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         decks = [me] if mine["cacheDeck"] else []
         lists = [me] if mine["cacheList"] else []
         shuffles = [me] if mine["cacheCasual"] else []
+        lately = [me] if mine["cacheLately"] else []
         if me != "me":
             keyed.add(me)                 # counted once, not twice
         for row in INVITES.load():
@@ -7272,7 +7520,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 lists.append(row["token"])
             if row.get("cacheCasual"):
                 shuffles.append(row["token"])
-        return decks, lists, shuffles
+            # absent means yes, so nobody loses it to an upgrade
+            if row.get("cacheLately", True):
+                lately.append(row["token"])
+        return decks, lists, shuffles, lately
 
     def watchlist_of(self, who):
         """One viewer's watchlist, by the name their settings are filed under.
@@ -7795,10 +8046,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 said = (stored.get("users") or {}).get(who) or {}
             return (said.get("subLang") or "").lower()[:5]
 
+        def second(who):
+            said = stored if who == "me" else (stored.get("users") or {}).get(who) or {}
+            return (said.get("subLang2") or "").lower()[:5]
+
         if mine:
-            return {theirs(mine) or "en"}
-        decks, lists, shuffles = self.cached_for()
-        langs = {theirs(who) for who in set(decks + lists + shuffles)}
+            return {theirs(mine) or "en"} | ({second(mine)} - {""})
+        decks, lists, shuffles, lately = self.cached_for()
+        who_all = set(decks + lists + shuffles + lately)
+        # the second language too: a film with no English subtitle is exactly the one
+        # whose Swedish file the other machine needs to have taken
+        langs = {theirs(who) for who in who_all} | {second(who) for who in who_all}
         langs.discard("")
         return langs or {"en"}
 
@@ -9054,17 +9312,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Named, because somebody watched it. "The main server" is not a viewer: it has no
         # invitation, it is on nobody's cache, and a queue that says it cannot be
         # filtered down to one person's shelf.
-        for row in con.execute(
-                "SELECT key, who FROM watchlog WHERE COALESCE(casual, 0) = 0 "
-                "ORDER BY updated DESC LIMIT 12"):
-            want(row["key"], "watched lately", self.name_of(row["who"]))
+        # And only for the people who want it kept. It was the whole house before, so
+        # one person's evening put the episodes after it on the other machine for
+        # everybody - there was a switch for a deck, a list and a shuffle, and none
+        # for this.
+        decks, lists, shuffles, lately = self.cached_for()
+        if lately:
+            for row in con.execute(
+                    "SELECT key, who FROM watchlog WHERE COALESCE(casual, 0) = 0 "
+                    "AND who IN (%s) ORDER BY updated DESC LIMIT 12"
+                    % ",".join("?" * len(lately)), lately):
+                want(row["key"], "watched lately", self.name_of(row["who"]))
 
         listed = set()
         if deck:
             # What the people this is kept for are part-way through, and what they
             # mean to watch. Before this machine sleeps that is what somebody reaches
             # for next, and the other machine is the one that will be awake.
-            decks, lists, shuffles = self.cached_for()
             shelved = {}             # each shelf read once, however many people have it
             for who in decks:
                 for key, why in self.partway_keys(con, who):
@@ -9086,6 +9350,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 stored = self.settings_file()
                 theirs = (self.viewer_settings(stored) if who == self.viewer()
                           else ((stored.get("users") or {}).get(who) or {}))
+                # the programmes their whole-library shuffle is drawing from, read
+                # once for the person rather than once for each shelf
+                hat_shows = (self.casual_shows(con, theirs)
+                             if who in shuffles else set())
                 for shelf in (theirs.get("collections") or []):
                     if not (isinstance(shelf, dict) and shelf.get("id")):
                         continue
@@ -9117,7 +9385,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     round_here = (theirs.get("shuffles") or {}).get(at) or {}
                     if who in shuffles and (round_here.get("queue") or []):
                         continue
-                    for key in self.first_unwatched(con, shows, episodes, watched,
+                    # the programmes the hat has already drawn from, when what they
+                    # shuffle is the whole library rather than that shelf: the hat's
+                    # own ten are kept below by casual_ahead, and that is all of
+                    # those worth holding. The rest of the shelf still wants stocking
+                    # - one draw used to skip every other programme on it.
+                    stock = [s for s in shows if str(s) not in hat_shows]
+                    if not stock:
+                        continue
+                    for key in self.first_unwatched(con, stock, episodes, watched,
                                                     self.name_of(who)):
                         listed.add(str(key))
                         want(key, "on a shelf", self.name_of(who))
@@ -9178,6 +9454,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     Handler.DRAWN.add(key)
                     want(key, why_it, self.name_of(who))
         return out, listed
+
+    @staticmethod
+    def casual_shows(con, mine):
+        """The programmes a shuffle of the whole library is drawing from.
+
+        A round over a shelf is filed under that shelf's number; a round over the
+        whole library has no shelf and is filed under "casual". So a lookup by shelf
+        found nothing for it, and the programme the hat was drawing from was stocked
+        in season order behind its back - ten episodes in a row for a shelf that is
+        never played in a row.
+
+        What it has played counts with what it has drawn: a hat halfway through a
+        programme is still the reason not to stock that programme in order.
+        """
+        one = ((mine or {}).get("shuffles") or {}).get("casual") or {}
+        keys = [str(k) for k in ((one.get("queue") or []) + (one.get("played") or []))
+                if is_episode(str(k))][:400]
+        if not keys:
+            return set()
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT item_id FROM episode WHERE id IN (%s)"
+                % ",".join("?" * len(keys)), keys).fetchall()
+        except Exception:
+            return set()
+        return set(str(r["item_id"]) for r in rows)
 
     @staticmethod
     def first_unwatched(con, keys, episodes, watched, who):
@@ -12142,6 +12444,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # cannot see anything until it is given one
         if Invites.public(path):
             return "guest"
+        # A screen saying why it died. No key: a crash report is posted by a process
+        # on its way out, from a handler that runs before anything is loaded and after
+        # everything is lost. Only from this network, and only a write - a stranger on
+        # the internet cannot fill the log from outside.
+        if path == "/applog" and self.command == "POST" and self.in_the_house():
+            return "guest"
         return None
 
     def send_file_ranged(self, path, sid=None):
@@ -12792,10 +13100,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 since = int((args.get("since") or ["0"])[0])
             except ValueError:
                 since = 0
-            decks, lists, shuffles = self.cached_for()
-            whom = list(dict.fromkeys(decks + lists + shuffles))
-            self.reply_json({"progress": local().progress_of(whom, since),
-                             "now": int(time.time())})
+            decks, lists, shuffles, lately = self.cached_for()
+            whom = list(dict.fromkeys(decks + lists + shuffles + lately))
+            # "now" is where the follower resumes from, which is not the clock when
+            # there was more in the window than fitted in one answer
+            places, mark = local().progress_of(whom, since, with_mark=True)
+            more = mark < int(time.time())
+            self.reply_json({"progress": places, "now": mark, "more": more})
             return
         if path == "/follow/here":
             # The following server saying where it can be reached. Written down so
@@ -13110,6 +13421,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # every screen at once, for a settings page that shows all three
                 "devices": {d: self.subtitle_settings(None, d) for d in self.DEVICES},
                 "language": self.viewer_language(),
+                # and what to read instead when the film has nothing in the first
+                "language2": self.viewer_language_2(),
                 # the accent, and the colours on offer, so a settings page anywhere
                 # can draw the row without knowing the list itself
                 "accent": self.accent_now(),
@@ -13127,6 +13440,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # and "not false" is what everybody who never chose should get -
                 # otherwise the next episode quietly stops following this one
                 "autoNext": self.settings_file().get("autoNext") is not False,
+                # what the film shelf stands for this viewer: what is held, what a
+                # pack can fetch, and what can only be asked for
+                "filmsShow": self.films_show(),
                 # whether one release is brought to the level of the next, and where
                 # that level is
                 "evenVolume": bool(self.settings_file().get("evenVolume")),
@@ -13218,6 +13534,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # them, which are not the same evening - and it is the difference
                 # that decides what is kept ahead for them.
                 row["casual"] = bool(said.get("casual"))
+                # How much picture that screen is holding, and whether it has run out.
+                # The players have reported this for a long time and the page has
+                # always been ready to draw it - it was simply never put on the row,
+                # so "12s buffered" was left out of every line. Kept per screen, so
+                # one person watching in two rooms does not read as one.
+                who_is = str(row.get("who") or "")
+                held = Handler.AHEAD.get(who_is + "/" + str(row.get("address") or ""))
+                if not held and who_is:
+                    # the report and the stream can arrive by different roads - one
+                    # over the network here, the other from outside - so the address
+                    # need not match. The newest report from that person will do.
+                    theirs = [v for k, v in Handler.AHEAD.items()
+                              if k.startswith(who_is + "/")]
+                    held = max(theirs, key=lambda v: v[1]) if theirs else None
+                if held and time.time() - held[1] < 60:
+                    row["ahead"] = round(float(held[0]), 1)
+                    row["stalled"] = bool(held[4]) if len(held) > 4 else False
             # Somebody paused has no connection open - a direct play closes it, and a
             # transcode is stopped to save the GPU - but they are still watching, and
             # their player says so. They belong in the list.
@@ -14510,7 +14843,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # a track written to roll up the screen says the next line before
                 # it is spoken; flattened before anything else is done to it
                 if said:
+                    # the roll-up first, then the repeats left in what it wrote: a
+                    # rolled track says each line two or three times over, and only
+                    # once it is flattened are those plainly the same line twice
                     said = flatten_rollup(said)
+                    said = drop_echoes(said)
                 mended = self.sub_fit(self.fit_name(video, index))
                 if mended and said:
                     said = mend_vtt(said, mended)
@@ -14922,6 +15259,26 @@ def main():
                              daemon=True).start()
             return True
         pd_torrents.start(ROOT, lambda: local().lib, scan_after_download)
+
+        # Who is in what, read through quietly in the background.
+        #
+        # A cast fetched only when a page is opened makes "everything with her in it"
+        # answer with the one film that was open. This walks the library instead, a
+        # batch at a time, and stops when there is nothing left to ask about - so it
+        # costs one evening once and nothing afterwards.
+        def learn_the_casts():
+            time.sleep(90)             # let a scan and the first evening settle first
+            while True:
+                try:
+                    done = local().lib.credits_backlog()
+                except Exception:
+                    done = 0
+                if not done:
+                    time.sleep(3600)   # nothing waiting: look again in an hour
+                else:
+                    time.sleep(20)
+        threading.Thread(target=learn_the_casts, name="palladium-casts",
+                         daemon=True).start()
         # the way in from outside: nothing runs unless somebody set up the other way
         import pd_proxy
         pd_proxy.start(ROOT, PORT)

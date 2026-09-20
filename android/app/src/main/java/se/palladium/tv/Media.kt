@@ -198,6 +198,8 @@ data class Media(
     val watchedEpisodes: Int = 0,      // for a series or a season
     // a film's release date, or for a series the date of its newest episode
     val released: String = "",
+    /** The name the library sorts by: articles stripped, so "The Abyss" files as A. */
+    val titleSort: String = "",
     // this series is being watched with subtitles, so an episode of it starts with
     // whatever subtitle file is beside it turned on
     val subsWanted: Boolean = false,
@@ -239,11 +241,22 @@ data class Media(
     var shelfView: String = ""
 
     /** A film offered from a torrent pack: not here yet, fetched when asked for. */
+    /** who is in it, in billing order. Empty until the title's own page is opened. */
+    var cast: List<Player> = emptyList()
+    /** what it scored out of ten, as the catalogue has it; nought where nobody said */
+    var rating: Float = 0f
     var offered: Boolean = false
+    /** One person in a film, as the server names them. */
+    data class Player(val id: Int, val name: String, val role: String,
+                      /** where this server keeps their picture, or empty */
+                      val face: String = "")
+
     /** New on streaming and nowhere in this house: it can only be asked for. */
     var askable: Boolean = false
     /** Somebody has asked for it already. */
     var asked: Boolean = false
+    /** How many people are waiting on it. One is whoever is reading the screen. */
+    var asks: Int = 0
     /** where it was read about, kept with the request so it can be found again */
     var askWhere: String = ""
     /** its download as the server last said: "", queued, downloading, done or failed */
@@ -354,7 +367,7 @@ data class Media(
      * language with the sounds described, then their language forced, then any full
      * track at all.
      */
-    fun openWith(prefer: String): SubTrack? {
+    fun openWith(prefer: String, second: String = Api.myLanguage2): SubTrack? {
         val text = textSubs()
         if (text.isEmpty()) return null
         // The first file beside the video, not the last: the server has already put
@@ -363,12 +376,18 @@ data class Media(
         // Taking the last undid all of that, and on an episode with two files beside
         // it picked the one cut for another release.
         text.firstOrNull { it.index < 0 }?.let { return it }
-        val want = prefer.lowercase().take(3)
-        val mine = text.filter {
-            val tag = it.language.lowercase()
-            tag.startsWith(want.take(2)) || want.startsWith(tag.take(2)) ||
-                (tag == "ger" && want == "deu") || (tag == "deu" && want == "ger")
+        fun speaking(code: String): List<SubTrack> {
+            val want = code.lowercase().take(3)
+            if (want.isEmpty()) return emptyList()
+            return text.filter {
+                val tag = it.language.lowercase()
+                tag.startsWith(want.take(2)) || want.startsWith(tag.take(2)) ||
+                    (tag == "ger" && want == "deu") || (tag == "deu" && want == "ger")
+            }
         }
+        // The first language, then the second if the film carries nothing in the
+        // first, and only then whatever the film does carry.
+        val mine = speaking(prefer).ifEmpty { speaking(second) }
         return mine.firstOrNull { !it.forced && !it.sdh }
             ?: mine.firstOrNull { !it.forced }
             ?: mine.firstOrNull()
@@ -585,6 +604,8 @@ data class Media(
                 // is how a series with no aired episode came to be listed as
                 // "last aired null" - and sorted as though that were a date
                 released = o.optString("originallyAvailableAt", "")
+                    .let { if (it == "null") "" else it },
+                titleSort = o.optString("titleSort", "")
                     .let { if (it == "null") "" else it },
                 subsWanted = o.optBoolean("subsWanted", false),
                 subsConfirmed = o.optString("subsConfirmed", ""),

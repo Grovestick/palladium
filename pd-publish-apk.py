@@ -71,10 +71,47 @@ def version_from_apk(path):
     return int(code.group(1)) if code else 0, name.group(1) if name else "?"
 
 
+#: Who is watching, straight from the running server. Loopback is always the owner,
+#: so this needs no token.
+def _watching():
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8765/watching", timeout=5) as r:
+            return json.load(r).get("live", []) or []
+    except Exception:
+        return []                      # server down: nobody is watching through it
+
+
+#: Publishing is not a background action.
+#:
+#: The APK lands in the installed server's static folder, the in-app updater reads it
+#: within the minute, and every app that sees a higher code relaunches itself. On
+#: 2026-09-20 that threw a guest 28 minutes into a transcode back to the start of the
+#: episode - the publish did it, not the install that followed. So the house is read
+#: first, and --anyway is the way to say it does not matter this time.
+def _house_is_clear(force):
+    live = _watching()
+    if not live or force:
+        for r in live:
+            print("  publishing over %s - %s, %s" %
+                  (r.get("who"), r.get("title", ""), r.get("how", "")))
+        return True
+    print("not published: somebody is watching")
+    for r in live:
+        print("  %-8s %-34s %-18s %d/%ds" %
+              (r.get("who"), (r.get("title") or "")[:34], r.get("how"),
+               r.get("position", 0), r.get("duration", 0)))
+    print("their app updates itself from this file and relaunches. "
+          "Wait, or run with --anyway.")
+    return False
+
+
 def main():
     if not os.path.exists(APK):
         print("no APK built yet:", APK)
         return 1
+    if not _house_is_clear("--anyway" in sys.argv):
+        return 2
     code, name = version_from_apk(APK)
     # One number for both halves: the app and the server that ships with it are the
     # same release, and two version lines to read was two things to get wrong.

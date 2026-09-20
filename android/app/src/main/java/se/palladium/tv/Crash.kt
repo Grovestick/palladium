@@ -60,6 +60,11 @@ object Crash {
         // a crash report must not hang the dying process, hence the short timeouts
         val conn = URL("$base/applog").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
+        // the key if there is one: away from home the door asks for it, and a crash
+        // on somebody else's sofa is the one hardest to learn about otherwise
+        runCatching {
+            if (Api.token.isNotEmpty()) conn.setRequestProperty("X-Plex-Token", Api.token)
+        }
         conn.connectTimeout = 2500
         conn.readTimeout = 2500
         conn.doOutput = true

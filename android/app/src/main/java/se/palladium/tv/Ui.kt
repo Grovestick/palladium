@@ -1,6 +1,7 @@
 package se.palladium.tv
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -19,6 +20,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
@@ -270,6 +272,30 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
     }
 }
 
+/** The band across a poster's top corner: one shape in one place, and only the word
+ *  in it changes - what can be asked for, what can be fetched, what is on shuffle.
+ *  The poster is clipped, so the band ends at its edges rather than inside them. */
+@Composable
+fun androidx.compose.foundation.layout.BoxScope.CornerBand(
+    word: String, width: Int, colour: Color = Skin.Accent) {
+    // `width` is the poster's real width, measured, not the number the caller passed:
+    // in a grid the column decides it, and a band placed by a nominal width sits too
+    // near the corner, where the readable run is short and a word loses its last
+    // letters.
+    Box(Modifier.align(Alignment.TopEnd)
+            .offset(x = (width * 0.30f).dp, y = (width * 0.11f).dp)
+            .rotate(45f)
+            .width((width * 0.95f).dp)
+            .background(colour),
+        contentAlignment = Alignment.Center) {
+        Text(word, color = Color.White,
+             fontSize = (width / 13).coerceIn(8, 13).sp,
+             fontWeight = FontWeight.Bold,
+             maxLines = 1, softWrap = false,
+             modifier = Modifier.padding(vertical = 2.dp))
+    }
+}
+
 /**
  * A poster. Focus lifts and rings it, because on a TV the remote gives no other clue
  * about where you are.
@@ -284,14 +310,28 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
            /** held rather than pressed, where a screen has something to offer for it */
            onHold: (() -> Unit)? = null,
            onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
+    // Tied to the film, because a lazy grid reuses these.
+    //
+    // Left unkeyed, the flag belongs to the slot rather than to what is in it:
+    // scroll the focused poster off the top and the slot comes back round with
+    // somebody else in it and the ring still on. Two posters then looked focused
+    // at once, and the one that had kept the ring was usually first in its row -
+    // which reads as the remote having jumped there.
+    var focused by remember(m.ratingKey) { mutableStateOf(false) }
     // drawn only where a ring means something; see focusShows()
     val ring = focused && focusShows()
     // whether the press going on now has become a hold, which is what tells the
     // release apart from an ordinary one
     var heldByKey by remember { mutableStateOf(false) }
+    // what the poster actually came out as, in pixels: with fill set the column
+    // decides its width and the caller's number is only a default
+    var realPx by remember { mutableStateOf(0) }
     val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    val scale by animateFloatAsState(if (ring) 1.06f else 1f, label = "posterScale")
+    // Four per cent, not six. The lift grows the picture inside its own cell now,
+    // and what it grows into is the padding around it - eight points, which six
+    // per cent of a poster overruns, so the white ring was cut off top and bottom.
+    // Four fits, and reads the same across a room.
+    val scale by animateFloatAsState(if (ring) 1.04f else 1f, label = "posterScale")
     // the pixels this will actually occupy, so the server can send that and no more
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     val pixels = remember(width, density) { ((width * density).toInt() / 20) * 20 }
@@ -304,7 +344,6 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             vertical = if (androidx.compose.ui.platform.LocalConfiguration
                                .current.screenHeightDp < 560) 4.dp else 8.dp)
             .then(if (fill) Modifier.fillMaxWidth() else Modifier.width(width.dp))
-            .scale(scale)
             // hasFocus as well as isFocused: focus asked for by name can land on the
             // group around a control rather than the control itself, and the
             // ring then never appeared although the remote was there
@@ -379,10 +418,19 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                       // nothing, so there is no release to swallow.
                       onLongClick = onHold))
     ) {
+        // anything placed against the poster's own edges is worked out from the width
+        // it was drawn at, not the one that was asked for
+        val bandW = if (realPx > 0) (realPx / density).toInt() else width
         Box(
             Modifier.fillMaxWidth()
                 .then(if (fill) Modifier.aspectRatio(2f / 3f)
                       else Modifier.height((width * 1.5).dp))
+                // The lift, on the picture and nowhere else: it is a drawing
+                // instruction, so the picture grows and the slot does not. Anywhere
+                // in the column's own chain it changes the bounds a lazy grid
+                // measures, and the page drifts as the remote moves sideways.
+                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .onSizeChanged { realPx = it.width }
                 // no shadow: it is a blur pass under a moving poster, and the white
                 // ring already says which one has the focus
                 .clip(RoundedCornerShape(10.dp))
@@ -402,57 +450,57 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // Only something that can be asked for and nothing else. A film on a
             // pack wears the download mark it always wore: the band is for titles
             // with no file anywhere, and put on both it covered the whole library.
-            if (m.askable) {
-                Box(Modifier.align(Alignment.TopEnd)
-                        .offset(x = (width * 0.30f).dp, y = (width * 0.11f).dp)
-                        .rotate(45f)
-                        .width((width * 0.95f).dp)
-                        .background(if (m.asked) Color(0xFF2F6B35) else Skin.Accent),
-                    contentAlignment = Alignment.Center) {
-                    Text(if (m.asked) "ASKED" else "REQUEST",
-                         color = Color.White,
-                         fontSize = (width / 13).coerceIn(8, 13).sp,
-                         fontWeight = FontWeight.Bold,
-                         maxLines = 1,
-                         modifier = Modifier.padding(vertical = 2.dp))
-                }
-            }
+            //
             // a film on offer from a torrent pack: how far its download has got, from the live
             // download list (refreshed every 10 s); the shelf row is a snapshot from when the
             // grid loaded and kept showing Queued or 0% while the film came in
-            if (m.offered) {
-                val live = Api.downloading.value.firstOrNull { it.ratingKey == m.ratingKey }
-                // gone from the live list after getting near the end: it is in, whatever
-                // the shelf's snapshot still says
-                val state = live?.offerState
-                    ?: if (Api.cameIn(m.ratingKey)) "done" else m.offerState
-                val progress = live?.offerProgress ?: m.offerProgress
-                val eta = live?.offerEta ?: m.offerEta
-                val mbit = live?.offerMbit ?: m.offerMbit
-                // the mark always, and words only when there are some: a film nobody
-                // has asked for yet said nothing but a character, and on a television
-                // that was a smudge in the corner of the picture
-                val said = when (state) {
-                    "downloading" -> "${(progress * 100).toInt()}%" +
-                        (if (eta >= 0) " · " + (
-                            if (eta < 60) "$eta s"
-                            else if (eta < 3600) "${eta / 60} min"
-                            else "${eta / 3600} h ${eta % 3600 / 60} min") else "") +
-                        (if (mbit > 0) String.format(java.util.Locale.US, " · %.0f Mbit/s", mbit) else "")
-                    "queued" -> "Queued"
-                    "done" -> "Arriving"
-                    else -> ""
-                }
+            val live = if (m.offered)
+                Api.downloading.value.firstOrNull { it.ratingKey == m.ratingKey } else null
+            // gone from the live list after getting near the end: it is in, whatever
+            // the shelf's snapshot still says
+            val state = live?.offerState
+                ?: if (m.offered && Api.cameIn(m.ratingKey)) "done" else m.offerState
+            val progress = live?.offerProgress ?: m.offerProgress
+            val eta = live?.offerEta ?: m.offerEta
+            val mbit = live?.offerMbit ?: m.offerMbit
+            // the mark always, and words only when there are some: a film nobody
+            // has asked for yet said nothing but a character, and on a television
+            // that was a smudge in the corner of the picture
+            val said = if (!m.offered) "" else when (state) {
+                "downloading" -> "${(progress * 100).toInt()}%" +
+                    (if (eta >= 0) " · " + (
+                        if (eta < 60) "$eta s"
+                        else if (eta < 3600) "${eta / 60} min"
+                        else "${eta / 3600} h ${eta % 3600 / 60} min") else "") +
+                    (if (mbit > 0) String.format(java.util.Locale.US, " · %.0f Mbit/s", mbit) else "")
+                "queued" -> "Queued"
+                "done" -> "Arriving"
+                else -> ""
+            }
+            // The same band across the corner for the three things a poster says
+            // about itself; only the word in it changes. One band, chosen: three
+            // conditions each drawing their own put two words over each other in
+            // the one corner, which is the corner all three want.
+            // A shelf being shuffled, standing on Continue watching as one row. Said
+            // across the poster because the row reads as the episode it happens to be
+            // showing otherwise, and pressing it plays whatever the hat has next
+            // rather than that programme.
+            // nothing happening yet: the band, which reads across a room. Once it is
+            // coming in the badge stays - the band holds one word, and the percentage
+            // and the rate are the point while it arrives.
+            if (m.askable) CornerBand(if (m.asked) "ASKED" else "REQUEST", bandW,
+                                      if (m.asked) Color(0xFF2F6B35) else Skin.Accent)
+            else if (m.shuffle.isNotEmpty()) CornerBand("SHUFFLE", bandW)
+            else if (m.offered && said.isEmpty()) CornerBand("DOWNLOAD", bandW)
+            if (m.offered && said.isNotEmpty()) {
                 Row(Modifier.align(Alignment.TopStart).padding(5.dp)
                         .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
                         .padding(horizontal = 4.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     DownloadMark(13.dp)
-                    if (said.isNotEmpty()) {
-                        Spacer(Modifier.width(3.dp))
-                        Text(said, color = Skin.Fg, fontSize = 10.sp,
-                             fontWeight = FontWeight.SemiBold)
-                    }
+                    Spacer(Modifier.width(3.dp))
+                    Text(said, color = Skin.Fg, fontSize = 10.sp,
+                         fontWeight = FontWeight.SemiBold)
                 }
             }
             // held in 2160 lines somewhere. Bottom right: the watched tick has the
@@ -467,33 +515,10 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                          fontWeight = FontWeight.SemiBold)
                 }
             }
-            // A shelf being shuffled, standing on Continue watching as one row. Said
-            // across the poster because the row reads as the episode it happens to be
-            // showing otherwise, and pressing it plays whatever the hat has next
-            // rather than that programme.
-            if (m.shuffle.isNotEmpty()) {
-                // Big, because the whole job of it is to be told apart at a glance
-                // from a film started the ordinary way - including one out of the
-                // same shelf. Small print across a poster is something to notice
-                // afterwards.
-                // The word alone. It sat on a filled box, which over a bright
-                // poster reads as a grey square somebody has left there: the artwork
-                // is what is being covered, and the badge only has to be legible over
-                // it. The shadow is what holds it on a pale poster.
-                Box(Modifier.align(Alignment.Center).rotate(-45f)) {
-                    Text("SHUFFLE", color = Color.White,
-                         fontSize = if (width < 130) 13.sp else 17.sp,
-                         letterSpacing = 3.5.sp, maxLines = 1,
-                         fontWeight = FontWeight.ExtraBold,
-                         style = androidx.compose.ui.text.TextStyle(
-                             shadow = androidx.compose.ui.graphics.Shadow(
-                                 color = Color(0xE6000000),
-                                 offset = androidx.compose.ui.geometry.Offset(0f, 2f),
-                                 blurRadius = 14f)))
-                }
-            }
-            // finished, or part way through a series
-            if (m.watched || m.watchedEpisodes > 0) {
+            // finished, or part way through a series. Not under a band: both want the
+            // same corner, and a shuffled row is the shelf rather than the episode it
+            // happens to be showing.
+            if ((m.watched || m.watchedEpisodes > 0) && m.shuffle.isEmpty()) {
                 Box(Modifier.align(Alignment.TopEnd).padding(5.dp)
                         .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
                         .padding(horizontal = 5.dp, vertical = 2.dp)) {

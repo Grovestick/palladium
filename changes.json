@@ -1,5 +1,363 @@
 [
   {
+    "version": "0.18.191",
+    "when": "2026-09-20",
+    "title": "Back where you were",
+    "items": [
+      "Leaving a list of one person’s films goes back to the film it was opened from, instead of an empty page.",
+      "A person’s films include what a pack could fetch and what can be asked for, not only what is already on disk.",
+      "A film you ask for goes onto your own watchlist, and the screen says so.",
+      "A film already asked for says Requested and how many have asked; each viewer counts once."
+    ]
+  },
+  {
+    "version": "0.18.190",
+    "when": "2026-09-20",
+    "title": "Who is in it",
+    "items": [
+      "A film page says who is in it, as names to press; pressing one shows everything this house holds with that person in it.",
+      "The writing about a film opens in full when it is pressed, instead of being cut off with no way to read the rest.",
+      "The app film page has the same Show more, with the whole plot, what it scored, and the cast to press.",
+      "Each name in the cast carries that person’s face, or a letter where nobody photographed them.",
+      "The library is read through in the background for who is in what, so pressing a name finds every film here with them in it rather than only the one that was open.",
+      "The page holds still while the remote moves along a row, and the highlight is no longer cut off at the top or bottom of the screen.",
+      "Pressing down moves to the poster directly below, including when the page has to move to get there."
+    ]
+  },
+  {
+    "version": "0.18.189",
+    "when": "2026-09-20",
+    "title": "Resuming where the screen was",
+    "items": [
+      "A player replaced mid-film - by an app update or a crash - comes back where the screen actually was, not where the last report reached the server.",
+      "A pack qBittorrent has stopped on is read again once, by itself; a film waiting on it no longer sits at nought per cent saying nothing.",
+      "The Torrents page says which packs are stopped and why, with a button to read their files again.",
+      "An encode is sent in chunks with a proper ending, so a server that goes away mid-film is a fault the player can see rather than something indistinguishable from the film finishing.",
+      "Pressing the tab you are already on goes back to the top of it; arriving at one opens already standing where you left it, rather than at the top and then jumping.",
+      "Now playing says how much picture each screen is holding, and STALLED when it has run out - the players have always reported it and the line was dropped."
+    ]
+  },
+  {
+    "version": "0.18.188",
+    "when": "2026-09-20",
+    "title": "A queue that waits",
+    "items": [
+      "A film asked for while qBittorrent is off waits in the queue and starts when it comes back, one at a time, instead of failing on the spot.",
+      "Downloads that already failed for that reason alone are picked up again."
+    ]
+  },
+  {
+    "version": "0.18.187",
+    "when": "2026-09-20",
+    "title": "Added means arrived",
+    "items": [
+      "The bar names the machine actually answering: once the app moves onto the machine that keeps copies it said the main server, whose shelves it was not showing.",
+      "Opening a tab clears what the last one left on the screen; films opened off a shelf showed programmes under the heading until the films arrived.",
+      "Recently added holds what is on disk - films and programmes alike - while the rest of the shelves show what a pack can fetch and what can be asked for, as Settings says.",
+      "The server you are on always stands on its own shelves; hidden, it went on naming itself and updating from itself while every shelf came from the other machine."
+    ]
+  },
+  {
+    "version": "0.18.186",
+    "when": "2026-09-20",
+    "title": "A second language",
+    "items": [
+      "Subtitles can have a second language, read when the film carries nothing in the first.",
+      "The machine that keeps copies takes subtitle files in the second language too.",
+      "See all on the film shelves opens Films; it opened TV shows, which is why the list was short and carried no download or request bands."
+    ]
+  },
+  {
+    "version": "0.18.185",
+    "when": "2026-09-20",
+    "title": "Back where you left it",
+    "items": [
+      "Pressing Films or TV comes back to where that tab was left, instead of to the top."
+    ]
+  },
+  {
+    "version": "0.18.184",
+    "when": "2026-09-20",
+    "title": "An empty shelf and a silent one",
+    "items": [
+      "A shelf no machine answered for is no longer drawn as an empty library: what is on the screen stays and the screen says it could not be reached.",
+      "A shelf waits fifteen seconds instead of six, which is what a machine busy copying and downloading needs to answer.",
+      "A shelf drawn while one machine stayed quiet says so and names it, instead of showing that machine's share as the whole library.",
+      "Recently added films holds what is on disk; a film still coming in from a pack stood at the top of it.",
+      "A title from the streaming list that has since arrived opens as the film it now is, wherever it was kept; a watchlist went on offering to ask for what was already here."
+    ]
+  },
+  {
+    "version": "0.18.183",
+    "when": "2026-09-20",
+    "title": "One shelf for what is new",
+    "items": [
+      "New on streaming and Recently released are one shelf now, newest first, whether a film is held, on a pack or only to ask for.",
+      "A film nobody holds is placed by the date it came out; it was placed by its year alone and sat under every dated film of that year.",
+      "See all on the added and released shelves opens that tab in that order, where the sort, genre and decade marks are, instead of a page of its own without them."
+    ]
+  },
+  {
+    "version": "0.18.182",
+    "when": "2026-09-20",
+    "title": "Crash reports get in",
+    "items": [
+      "A crash report from a screen on this network is accepted again; it was refused for carrying no key, so nothing was written down.",
+      "The app sends its key with a crash report, so a screen away from home is heard too."
+    ]
+  },
+  {
+    "version": "0.18.181",
+    "when": "2026-09-20",
+    "title": "Films shows all three",
+    "items": [
+      "Films stands what can only be asked for unless you turn it off, rather than only when you turn it on.",
+      "The films grid orders by the name the library files a title under, the same name the server pages by, so pages no longer overlap or skip titles.",
+      "A page of films never puts a title on the grid a second time, which the app crashed on."
+    ]
+  },
+  {
+    "version": "0.18.180",
+    "when": "2026-09-20",
+    "title": "Three kinds on one shelf",
+    "items": [
+      "The Films tab can stand films that can only be asked for, beside what is held and what a pack can fetch.",
+      "Settings keeps a switch for each of the three kinds, yours on every screen; asking is off until you turn it on.",
+      "New on streaming stands one card per film; a film the catalogue named twice put the same key on the shelf twice, which crashed the app's grid."
+    ]
+  },
+  {
+    "version": "0.18.179",
+    "when": "2026-09-20",
+    "title": "Download where it says download",
+    "items": [
+      "A film one of the packs carries now downloads from its page on the web; the page said Download and offered a Request button.",
+      "Search in the app comes back newest first, films, programmes and episodes together, instead of grouped by kind."
+    ]
+  },
+  {
+    "version": "0.18.178",
+    "when": "2026-09-20",
+    "title": "Reading wider, once",
+    "items": [
+      "Asking new arrivals to look further back reads the list again once, not on every ask. How deep the reading went was never written down, so the list kept claiming two years however far it had reached - and each ask read the whole thing again while somebody waited on it.",
+      "A reading that comes back with nothing leaves the shelf as it is, rather than emptying it under the remote."
+    ]
+  },
+  {
+    "version": "0.18.177",
+    "when": "2026-09-20",
+    "title": "The years filter, where it can be seen",
+    "items": [
+      "How far back to look now appears on the new arrivals shelf opened whole, in place of the decade. The version before put it on a row of controls that shelf never draws, so it could not be reached at all."
+    ]
+  },
+  {
+    "version": "0.18.176",
+    "when": "2026-09-20",
+    "title": "How far back is new",
+    "items": [
+      "New on streaming can be asked how far back to look: one year, two, five, ten, or as far as anything goes. Two years is what it opens on, as before.",
+      "A narrower window sifts the list already in hand; a wider one is read again, because a film left out of the reading cannot be filtered back into it.",
+      "On that shelf's own page the decade filter is replaced by how far back to look. A decade meant nothing there - everything on it is from the last year or two - and the window is the one thing the shelf cannot answer for itself.",
+      "A search shows one card per film: what is here, then what a pack can fetch, then what can only be asked for. A film on a pack is no longer offered a second time as something to ask somebody for."
+    ]
+  },
+  {
+    "version": "0.18.175",
+    "when": "2026-09-20",
+    "title": "Reset, where the shelf is",
+    "items": [
+      "A shelf played shuffled has a Reset button again, beside Play and Shuffle on the shelf itself: everything back in the hat and the round begins again.",
+      "It could only be done from the cross on the Continue watching row before, which is not where anybody looks for it.",
+      "A collection's rule can name several genres, using the same control the shelves carry. The server has split that field on commas all along; the form offered one choice, so a shelf of two genres could not be written down.",
+      "A shelf and the page behind its Show more put films in the same order. The server knew the day each one came out and kept it to itself, so the browser had only the year to sort on and each worked out its own answer."
+    ]
+  },
+  {
+    "version": "0.18.174",
+    "when": "2026-09-20",
+    "title": "Recently released, in the right order this time",
+    "items": [
+      "Recently released films really are ordered by the day they came out. The version before put the dates into the query, but a list that carries what the packs offer is ordered after the query rather than inside it, so the shelf still ran alphabetically."
+    ]
+  },
+  {
+    "version": "0.18.173",
+    "when": "2026-09-20",
+    "title": "Setup falls back both ways; places that hold",
+    "items": [
+      "Setup falls back either way round: a link to the main server tries the copy machine when that one is silent, and a link to the copy tries the main server.",
+      "A place under 30 seconds no longer overwrites a longer one already written down.",
+      "Recently released films sort by release date rather than year; the library keeps only a year, so every film of one year tied and fell back to the alphabet.",
+      "Subtitles with two cues over each other are left alone: only a track that actually echoes is rewritten, and cue positions and names survive the rewrite.",
+      "New on streaming no longer stops refreshing on a film released before 1970.",
+      "Links on New on streaming point at a page that exists for rows that came from the catalogue rather than the website.",
+      "Places past the newest 500 in a window now travel between the machines instead of being stepped over.",
+      "Marked watched by hand is not cleared by a machine running a build that does not send it.",
+      "One draw from a whole-library shuffle no longer skips every other programme on that shelf when stocking the copy.",
+      "Search no longer returns a film the house holds a second time as something to ask for.",
+      "A poster draws one corner band rather than two or three over each other.",
+      "Leaving a shelf opened whole puts back the category and the order the tabs had.",
+      "The sort arrow shows the order it is in after a press on a shelf opened whole.",
+      "Matching a streaming title against the library by name is a lookup rather than a pass over the whole library."
+    ]
+  },
+  {
+    "version": "0.18.172",
+    "when": "2026-09-20",
+    "title": "Setup works with the main server off",
+    "items": [
+      "Setup works with the main server off: the copy machine holds every guest key and answers on its own port.",
+      "A stream that stops is asked for again from where the viewer was. The place was written only when the player changed state, so 90 seconds of quiet playback resumed from the start."
+    ]
+  },
+  {
+    "version": "0.18.171",
+    "when": "2026-09-20",
+    "title": "A stopped encode is not the end of the film",
+    "items": [
+      "A stream that stops arriving no longer reads as the film ending: an encode is sent with no length on it, so a closed socket was taken for the end.",
+      "It asks again from where it had got to. Cuts at 153s, 82s and 118s came back at 0s, 2s and 8s before the fix."
+    ]
+  },
+  {
+    "version": "0.18.170",
+    "when": "2026-09-20",
+    "title": "Watched lately, per person",
+    "items": [
+      "Watched lately is set per person in Guests, beside Continue watching, watchlist and shuffle; it was the whole house.",
+      "On for everyone who has not been switched off.",
+      "Each of the five buttons against a guest says what it keeps when the pointer rests on it."
+    ]
+  },
+  {
+    "version": "0.18.169",
+    "when": "2026-09-20",
+    "title": "Every place travels between the machines",
+    "items": [
+      "Every place travels between the two machines; finished, marked by hand, and anything under 30 seconds were held back before.",
+      "A film finished on one machine says so to the other, so it stops offering to resume it.",
+      "Marked watched by hand travels: it is written as position 0, which the test for a real place threw away."
+    ]
+  },
+  {
+    "version": "0.18.168",
+    "when": "2026-09-19",
+    "title": "Blinking subtitles",
+    "items": [
+      "A rolled-up caption track says each line two or three times over; the repeats are folded into the line they repeat.",
+      "A cue opening before the one before it closed shortens that one rather than sitting on top of it. One episode went from 1996 cues to 1023.",
+      "The copy machine no longer holds its stocking while somebody is watching."
+    ]
+  },
+  {
+    "version": "0.18.167",
+    "when": "2026-09-19",
+    "title": "Whole-library shuffle stocked as a shuffle",
+    "items": [
+      "A programme shuffled over the whole library is no longer stocked in season order: its round is filed under the shuffle rather than a shelf, so the test that already did this for a shelf never matched it.",
+      "Only the ten the hat has drawn are copied for it."
+    ]
+  },
+  {
+    "version": "0.18.166",
+    "when": "2026-09-19",
+    "title": "Copying holds while anybody watches",
+    "items": [
+      "The copy machine holds its stocking while anybody is watching, keeps what has arrived, and carries on a minute after the house goes quiet.",
+      "A paused viewer does not hold it, and neither does its own copying."
+    ]
+  },
+  {
+    "version": "0.18.165",
+    "when": "2026-09-19",
+    "title": "Genre picker back on New on streaming",
+    "items": [
+      "New on streaming has its sort and genre picker again in the browser: the shelf is asked for whole rather than a page at a time."
+    ]
+  },
+  {
+    "version": "0.18.164",
+    "when": "2026-09-19",
+    "title": "Corner band sized from the drawn poster",
+    "items": [
+      "The corner band is placed and sized from the width the poster was drawn at rather than the width asked for, so Download is not cut off where the column decides the size."
+    ]
+  },
+  {
+    "version": "0.18.162",
+    "when": "2026-09-19",
+    "title": "Corner band says Download and Shuffle",
+    "items": [
+      "The corner band says Download on a film held on a pack and Shuffle on a shelf being shuffled, not only Request.",
+      "The word across the middle of a shuffled poster is gone; it is the corner band instead, in the app and the browser.",
+      "A download already running keeps its badge with the percentage, rate and time left."
+    ]
+  },
+  {
+    "version": "0.18.161",
+    "when": "2026-09-19",
+    "title": "Two years of new releases, not two months",
+    "items": [
+      "New on streaming carries 170 films across two years rather than 50 from the last few weeks: the website's popular list is one page and its newest list reaches back a few weeks, so the catalogue fills the rest, best known first.",
+      "The row and its page sort by release date in the browser as well as the app."
+    ]
+  },
+  {
+    "version": "0.18.160",
+    "when": "2026-09-19",
+    "title": "New on streaming is films only",
+    "items": [
+      "Programmes are out of the row; it carries films."
+    ]
+  },
+  {
+    "version": "0.18.159",
+    "when": "2026-09-19",
+    "title": "Held films keep their release date in the row",
+    "items": [
+      "New on streaming: a title already in the library carries the date it came out, so it sorts with the rest. The library's own entry knows when a film arrived here, not when it was released."
+    ]
+  },
+  {
+    "version": "0.18.158",
+    "when": "2026-09-19",
+    "title": "Two years back, newest out first",
+    "items": [
+      "Two years back rather than eighteen months, and a shelf opened whole comes up newest out first."
+    ]
+  },
+  {
+    "version": "0.18.157",
+    "when": "2026-09-19",
+    "title": "New on streaming is newest first",
+    "items": [
+      "The row sorts by release date, newest first, on the shelf and on its own page.",
+      "Nothing released more than eighteen months ago: the popular list carries whatever people are watching at home, whenever it came out.",
+      "App: pressing Home puts the front page back to the top with every shelf at its own beginning."
+    ]
+  },
+  {
+    "version": "0.18.156",
+    "when": "2026-09-19",
+    "title": "New on streaming marks what the house holds",
+    "items": [
+      "A film in the row that is already here is an ordinary poster: no band across the corner, a Play button, and pressing it opens the film.",
+      "Matched by catalogue number rather than by name: the two lists spell the same film differently."
+    ]
+  },
+  {
+    "version": "0.18.155",
+    "when": "2026-09-19",
+    "title": "New on streaming can be searched and sorted",
+    "items": [
+      "Search finds what is new on streaming, among the films.",
+      "A shelf opened whole has an order, its own categories and its own decades, in the app and in the browser.",
+      "New on streaming carries films with at least 60 ratings behind them: what is popular at home as well as what is newest."
+    ]
+  },
+  {
     "version": "0.18.154",
     "when": "2026-09-19",
     "title": "Show more opens on its first poster",

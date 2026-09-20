@@ -214,9 +214,17 @@ object Servers {
     fun inUse(ctx: Context): Server? {
         val at = Api.base.trimEnd('/')
         if (at.isEmpty()) return current(ctx)
-        return all(ctx).firstOrNull { one ->
+        all(ctx).firstOrNull { one ->
             listOf(one.base, one.outside).map { it.trimEnd('/') }.contains(at)
-        } ?: current(ctx)
+        }?.let { return it }
+        // Reading from somewhere that is not one of the stored rows - which is what
+        // the machine keeping copies is, when the main server stops answering and the
+        // app moves onto it. Answering with the row that was *chosen* named the main
+        // server on screen while every shelf on it came from the other machine, and
+        // the update button in Settings named the wrong machine to replace.
+        val called = if (Api.standingBy()) Api.standbyName else ""
+        return Server(name = called.ifEmpty { hostOf(at) }, base = at,
+                      token = current(ctx)?.token ?: Api.token)
     }
 
     fun use(ctx: Context, s: Server) {
@@ -488,9 +496,30 @@ object Servers {
     fun groups(ctx: Context): List<String> =
         all(ctx).map { it.group }.filter { it.isNotEmpty() }.distinct().sorted()
 
+    //: the last line written about the rows, so the same one is not written again
+    private var lastSaid = ""
+
     fun merged(ctx: Context): List<Server> {
         val cur = current(ctx) ?: return emptyList()
         val how = shelves(ctx)
+        // every row this screen knows, and which of them will be asked: a shelf built
+        // from one machine when two were expected is answered here, not by reading
+        // the code and guessing which flag did it. Once, and again when it changes -
+        // this runs for every shelf on the page.
+        val said = "servers how=" + how + " current=" + cur.name + "@" + cur.base +
+            " rows=" + all(ctx).joinToString(";") { it.name + (if (it.on) "+" else "-") }
+        if (said != lastSaid) {
+            lastSaid = said
+            android.util.Log.i("Palladium", "servers how=" + how + " current=" +
+            cur.name + "@" + cur.base + " rows: " +
+            all(ctx).joinToString("; ") {
+                it.name + "@" + it.base +
+                (if (it.on) " on" else " OFF") +
+                (if (it.outside.isNotEmpty()) " out=" + it.outside else "") +
+                " id=" + (if (it.id.isEmpty()) "-" else it.id) +
+                " group=" + it.group
+            })
+        }
         val others = when (how) {
             // the one that is open, and nothing else
             "one" -> emptyList()
@@ -502,10 +531,13 @@ object Servers {
         }
         val out = ArrayList<Server>()
         val machines = HashSet<String>()
-        // Hidden means hidden, even for the server that is open: it is still the one
-        // being asked about settings and updates, but its films stay off the shelves.
-        // With one server at a time there is nothing else to show, so it stays.
-        val head = if (cur.on || how == "one") listOf(cur) else emptyList()
+        // The server that is open always stands on its own shelves. Hiding it is a
+        // state with no way out from inside the app: it goes on being named on the
+        // bar and asked about settings and updates, while every shelf is built from
+        // whatever other machine is left - so the app said Maverick, updated from
+        // Maverick, and showed the cache's short library with none of its packs.
+        // Hiding is for the *other* machines, which is what it was ever for.
+        val head = listOf(cur)
         // The same film on two machines is one card, and the card that survives is
         // the first one seen - so the order is how quickly each answered when it was
         // last asked. A copy in the cupboard beats the same film from a server two
@@ -569,6 +601,44 @@ object Servers {
                 JSONObject(body).optString("token").ifEmpty { null }
             } catch (e: Exception) {
                 null
+            }
+        }
+
+    /**
+     * The same house, on the port the machine keeping copies answers on.
+     *
+     * A guest setting up a new screen has one address: the one in their invitation,
+     * which is the main server. With that machine off there is nothing to pair
+     * against - and yet the copy is up, reachable from outside, and holds every
+     * guest key, so it could have answered the whole time. Null when the address is
+     * not the usual one, because then there is nothing to guess.
+     */
+    fun standbyOf(base: String): String? = when {
+        // the main server is off: the machine keeping copies is the other door
+        base.endsWith(":8765") -> base.dropLast(4) + "8764"
+        // and the other way round, which is the same problem seen from the other
+        // side: somebody holding a copy's link is just as stuck when that machine is
+        // the one that is off, with the main server answering all the while
+        base.endsWith(":8764") -> base.dropLast(4) + "8765"
+        else -> null
+    }
+
+    /**
+     * Whether anything answers there at all.
+     *
+     * A refusal counts: "not allowed" means the door is shut and somebody is home,
+     * which is all this asks. Only a connection that cannot be made at all is a no.
+     */
+    suspend fun answers(base: String): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                val conn = URL("$base/").openConnection() as HttpURLConnection
+                conn.connectTimeout = 4000
+                conn.readTimeout = 5000
+                conn.requestMethod = "GET"
+                conn.responseCode > 0
+            } catch (e: Exception) {
+                false
             }
         }
 

@@ -90,6 +90,31 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 .detail h1{margin:0 0 6px;font-size:28px}
 .detail .sub{color:var(--dim);margin-bottom:16px}
 .detail .summary{color:#c6d0da;margin:16px 0 22px;max-width:70ch}
+/* The writing about a film: four lines here, the rest behind Show more. Cutting it
+   with no way to read on was the whole complaint - the button is the way on. */
+.detail .summary{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;
+  overflow:hidden;margin-bottom:6px}
+.detail .showmore{margin:0 0 20px;font-size:12px}
+.detail .tellme{cursor:pointer;border-radius:8px;transition:background .12s}
+.detail .tellme:hover,.detail .tellme:focus-visible{background:#ffffff0f;outline:none}
+/* who is in it */
+.detail .cast{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 20px}
+.detail .cast .lbl{color:var(--dim);font-size:12px;margin-right:2px}
+.bubble{border-radius:999px!important;font-size:12px;padding:4px 12px 4px 4px;
+  display:inline-flex;align-items:center;gap:7px;line-height:1}
+.bubble img,.bubble .face{width:26px;height:26px;border-radius:999px;object-fit:cover;
+  flex:0 0 auto;display:grid;place-items:center;background:#ffffff1a;
+  font-size:11px;font-weight:700;color:var(--dim)}
+/* what a piece of writing says in full */
+.sheetback{position:fixed;inset:0;background:#05070ad9;display:flex;align-items:center;
+  justify-content:center;z-index:60;padding:24px}
+.sheet{background:var(--panel);border-radius:14px;padding:20px 22px;max-width:62ch;
+  max-height:80vh;overflow:auto;box-shadow:0 18px 50px #0009}
+.sheet h3{margin:0 0 10px;font-size:17px}
+.sheet p{margin:0 0 16px;color:#c6d0da;white-space:pre-line;line-height:1.5}
+.sheet .rated{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+.sheet .cast{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 18px}
+.sheet .cast .lbl{color:var(--dim);font-size:12px;margin-right:2px}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .warn{margin-top:14px;color:#f0b429;font-size:13px}
 .btn{background:var(--accent);color:#111;font-weight:600;padding:9px 20px;
@@ -1305,35 +1330,9 @@ body.has-copynote{padding-top:38px}
 .asleep [disabled]{pointer-events:none}
 .setblock .addrow .btn:disabled{opacity:.45;cursor:default}
 
-/* A shelf played in shuffle, on Continue watching. One row for the shelf, said
-   across the poster so it is not mistaken for the episode it happens to show. */
-/* Inside the poster, not on the card. On the card it is a box behind a picture:
-   the poster is positioned and painted with its own ground, and the badge went
-   under it. In here it sits over the picture, where it can be read, and centres
-   on the poster rather than on the poster and its title together. */
-.card.shuffled .poster::after{
-  content:"SHUFFLE";
-  position:absolute; left:50%; top:50%;
-  transform:translate(-50%,-50%) rotate(-45deg);
-  transform-origin:center;
-  /* Big, because the whole job of it is to be told apart at a glance from a film
-     started the ordinary way - including one that is in the same shelf. Small print
-     across a poster is something to notice after the fact. */
-  font:800 26px/1 system-ui,sans-serif; letter-spacing:.30em;
-  /* The word alone. On a filled box it read as a grey square left on the
-     poster: the artwork is what is being covered, and the badge only has to be
-     legible over it. The shadow is what holds it on a pale poster. */
-  color:#fff;
-  text-shadow:0 2px 6px rgba(0,0,0,.95), 0 0 16px rgba(0,0,0,.85),
-              0 0 2px rgba(0,0,0,.9);
-  pointer-events:none; white-space:nowrap; z-index:4;
-}
-
-@media (max-width: 700px){
-  .card.shuffled .poster::after{
-    font-size:17px; letter-spacing:.22em;
-  }
-}
+/* A shelf played in shuffle, on Continue watching: the corner band, the same one a
+   title that can be asked for or fetched wears, with Shuffle in it. It used to be the
+   word across the middle of the poster; one mark in one place reads faster. */
 .collpick{position:absolute;z-index:80;min-width:220px;max-width:280px;max-height:60vh;
   overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:10px;
   padding:6px;box-shadow:0 10px 30px rgba(0,0,0,.45);color:var(--dim);font-size:13px}

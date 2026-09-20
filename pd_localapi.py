@@ -854,6 +854,66 @@ class LocalAPI:
                           (key, self.who)).fetchone()
         return row
 
+    #: when films actually came out, by library key, read from the new arrivals list
+    #: and kept for a few minutes: it is a few dozen entries and a file read each way
+    _dates = {}
+    _dates_at = 0.0
+
+    #: how many people have asked for each title, re-read once a minute
+    _asks = {}
+    _asks_at = 0.0
+
+    def _did_i_ask(self, key):
+        """Whether this viewer is one of the people who asked for it.
+
+        By the same mark the request was written with - a hash of who they are, not
+        of the name they show, so two guests called the same thing are two people.
+        """
+        import hashlib
+        said = self._asked_by_how_many().get(str(key or ""))
+        if not said:
+            return False
+        mark = hashlib.sha1(str(self.who).encode("utf-8")).hexdigest()[:12]
+        return mark in (said[1] or ())
+
+    def _asked_by_how_many(self):
+        """The count of people waiting on each title nobody here holds."""
+        now = time.time()
+        if now - LocalAPI._asks_at > 60:
+            try:
+                import json as _json
+                import pd_streaming
+                where = os.path.join(pd_streaming.STATE.get("root") or ".",
+                                     "requests.json")
+                with open(where, encoding="utf-8") as f:
+                    book = _json.load(f)
+                LocalAPI._asks = {
+                    str(k): (int(v.get("asks") or 1),
+                             tuple(str(x) for x in (v.get("whoKeys") or [])))
+                    for k, v in (book or {}).items()
+                    if isinstance(v, dict) and not v.get("done")}
+            except Exception:
+                LocalAPI._asks = {}
+            LocalAPI._asks_at = now
+        return LocalAPI._asks
+
+    def _release_dates(self):
+        """The day each film came out, where the catalogue said so.
+
+        The library keeps a year and nothing finer. Sorting "recently released" on a
+        year alone leaves every film of this year tied, so the shelf and the page each
+        broke the tie their own way and disagreed about what was newest.
+        """
+        now = time.time()
+        if now - LocalAPI._dates_at > 300:
+            try:
+                import pd_streaming
+                LocalAPI._dates = pd_streaming.held_dates()
+            except Exception:
+                LocalAPI._dates = {}
+            LocalAPI._dates_at = now
+        return LocalAPI._dates
+
     def _movie(self, con, row, brief=False):
         files = self._files(con, item_id=row["id"])
         dur = int((files[0]["duration"] or 0) * 1000) if files else 0
@@ -861,6 +921,11 @@ class LocalAPI:
         out = {
             "ratingKey": str(row["id"]), "type": "movie", "title": row["title"],
             "titleSort": row["sort_title"], "year": row["year"],
+            # Sent, not only sorted on. The server knew the day this came out and kept
+            # it to itself, so a client ordering the same list had nothing but the
+            # year to go on - which is how one shelf and its own page put the same
+            # film in two different places.
+            "originallyAvailableAt": self._release_dates().get(str(row["id"]), ""),
             "genres": [g.strip() for g in (row["genres"] or "").split(",") if g.strip()],
             "summary": row["overview"] or "", "rating": row["rating"],
             "duration": dur or ((row["runtime"] or 0) * 60000),
@@ -882,6 +947,19 @@ class LocalAPI:
             out["Media"] = media_block(
                 files, picked=self.picked_subtitle(str(row["id"])),
                 proved=str(row["id"]), copy=self.picked_copy(str(row["id"])))
+            # Who is in it. Fetched the first time this page is opened and kept, so
+            # the shelves stay as quick as they were - they ask brief and get none of
+            # this - and pressing a name can be answered from the library.
+            try:
+                out["Role"] = [{"tag": c["name"], "role": c["role"],
+                                "id": c["person"],
+                                # their face, through this server like every other
+                                # picture: a guest away from home reaches us, not TMDB
+                                "thumb": ("/art/person/%d" % c["person"])
+                                         if c.get("profile") else None}
+                               for c in self.lib.credits_for(str(row["id"]))]
+            except Exception:
+                out["Role"] = []
         return out
 
     def _show(self, con, row):
@@ -1115,6 +1193,34 @@ class LocalAPI:
                     "SELECT * FROM item WHERE type=? "
                     "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = item.id) "
                     f"ORDER BY {order}", (kind,)).fetchall()
+            # Films carry a year and nothing finer, so "recently released" could only
+            # sort by year and then by title - which put a film released last week
+            # under R, thousands of rows down a list of this year's titles. The dates
+            # read for the new arrivals row are used where there is one.
+            if kind == "movie" and sort.startswith("originallyAvailableAt:"):
+                try:
+                    import pd_streaming
+                    dated = pd_streaming.held_dates()
+                except Exception:
+                    dated = {}
+                if dated:
+                    def when(r):
+                        got = dated.get(str(r["id"]))
+                        if got:
+                            return got
+                        y = int(r["year"] or 0)
+                        # a year on its own sits below any dated film of that year,
+                        # and above every film of the year before
+                        return "%04d-00-00" % y if y else ""
+                    back = sort.endswith(":desc")
+                    has = [r for r in rows if when(r)]
+                    none = [r for r in rows if not when(r)]
+                    # sorted twice, and stably: the alphabet decides between two films
+                    # released on the same day
+                    has.sort(key=lambda r: (r["sort_title"] or "").lower())
+                    has.sort(key=when, reverse=back)
+                    none.sort(key=lambda r: (r["sort_title"] or "").lower())
+                    rows = has + none
             if tall:
                 # picture first, title second, and nothing measured at the bottom
                 # either way round - an unprobed file is not a small one, it is
@@ -1146,10 +1252,35 @@ class LocalAPI:
                 rows = [r for r in rows
                         if (r["year"] or 0) and any(f <= r["year"] <= f + 9
                                                     for f in firsts)]
+            # what this viewer wants the shelf to stand, held apart from the offers
+            # below so that turning the library itself off still leaves them
+            show = self.films_show() if kind == "movie" else {"disk": True,
+                                                              "download": True,
+                                                              "request": False}
+            # The recently added shelf is about what has arrived here, and a film on
+            # a pack or one to ask for has not. Either the caller says so - it opened
+            # this shelf off that row - or the shelf is standing in that order, which
+            # is the same question asked by hand. Everywhere else the two kinds show
+            # as the switches in Settings say.
+            if (one("disk", "") in ("1", "true", "yes")
+                    or sort.startswith("addedAt")):
+                show = dict(show, download=False, request=False)
+            if not show.get("disk"):
+                rows = []
+            # How far back the part nobody holds reaches. The same window the new
+            # arrivals reading uses: a film nobody here has is on this shelf because
+            # it is new, and the reading itself may have gone deeper than that.
+            cut = ""
+            if kind == "movie" and show.get("request"):
+                import pd_streaming
+                cut = time.strftime(
+                    "%Y-%m-%d",
+                    time.localtime(time.time()
+                                   - pd_streaming.NEW_MONTHS * 30.5 * 86400))
             items = [self._movie(con, r, brief=True) if kind == "movie" else self._show(con, r)
                      for r in rows]
             if not sort.startswith("quality:"):
-                items = self._with_offered(items, sort, want, era, kind)
+                items = self._with_offered(items, sort, want, era, kind, show, cut)
             return self._page(items, q)
 
         m = re.match(r"^/library/sections/(\d+)/recentlyReleased$", path)
@@ -1161,24 +1292,42 @@ class LocalAPI:
                                   GROUP BY e.id ORDER BY e.aired DESC LIMIT 60""").fetchall()
             return self._page([self._episode(con, r, brief=True) for r in rows], q)
 
+        if path == "/library/withPerson":
+            # Everything held with one person in it. By TMDB's number where the client
+            # has one, by name otherwise - two actors share a name often enough that
+            # the number is worth preferring.
+            try:
+                person = int(one("person", "0") or 0)
+            except ValueError:
+                person = 0
+            found = self.lib.with_person(person, one("name", ""))
+            con2 = self.lib.db()
+            try:
+                items = []
+                for r in found:
+                    got = self.metadata_for(con2, str(r["id"]), brief=True)
+                    if got:
+                        got["role"] = r.get("role") or ""
+                        items.append(got)
+            finally:
+                con2.close()
+            # and what is not on disk: a pack that could fetch them, or a title to
+            # ask for. Shown as the viewer has asked for those to be shown anywhere.
+            items = items + self._people_offers(person, one("name", ""), items,
+                                                self.films_show())
+            return self._page(items, q)
+
         m = re.match(r"^/library/sections/(\d+)/recentlyAdded$", path)
         if m:
             kind = "movie" if m.group(1) == "1" else "show"
             if kind == "movie":
                 rows = con.execute("SELECT * FROM item WHERE type='movie' ORDER BY added DESC "
                                    "LIMIT 100").fetchall()
+                # What is here, and nothing else. A film being fetched from a pack
+                # stood at the top of this shelf from the moment it was asked for,
+                # which is not what "recently added" answers: it is on the download
+                # banner while it comes in, and on this shelf once it has arrived.
                 items = [self._movie(con, r, brief=True) for r in rows]
-                # a film from a torrent pack is added the moment somebody asks for it, and
-                # stays at the top once it has been scanned in
-                try:
-                    import pd_torrents
-                    coming = [o for o in pd_torrents.offered()
-                              if (o.get("offer") or {}).get("state") in ("queued", "downloading", "done")]
-                except Exception:
-                    coming = []
-                if coming:
-                    items = sorted(items + coming, key=lambda x: int(x.get("addedAt") or 0),
-                                   reverse=True)[:100]
             else:
                 # A season at a time. Adding a series used to put one card on the shelf
                 # per episode - twenty-two of the same programme, pushing everything
@@ -1229,14 +1378,61 @@ class LocalAPI:
             # website between them and their own front page, so a list already in hand
             # is answered with and the reading is done behind it.
             import pd_streaming
+            # how far back to look: two years unless asked otherwise, and "all" is
+            # as far as anything goes. A narrower window sifts the list in hand; a
+            # wider one has to be read again, because a film left out of the reading
+            # cannot be filtered back into it.
+            try:
+                years = float(one("years", "2") or 2)
+            except ValueError:
+                years = 2.0
+            months = 1200 if years <= 0 else max(1, int(round(years * 12)))
+            if months > pd_streaming.window():
+                pd_streaming.refresh(self.lib, force=True, months=months)
             if one("fresh", "") in ("1", "true", "yes"):
-                pd_streaming.refresh(self.lib, force=True)   # read it again now
+                pd_streaming.refresh(self.lib, force=True, months=months)   # read it again now
             elif not pd_streaming.read():
                 pd_streaming.refresh(self.lib)
             elif time.time() - pd_streaming.STATE["at"] > pd_streaming.EVERY:
                 threading.Thread(target=lambda: pd_streaming.refresh(self.lib),
                                  daemon=True).start()
-            return self._page(pd_streaming.rows(), q)
+            # A title this house already holds is answered with the library's own
+            # entry for it: an ordinary poster with a Play button, no band across the
+            # corner, and pressing it opens the film rather than a page for asking.
+            out = []
+            # One card per film. Two catalogue entries can name the same film - a
+            # release listed twice, a fortnight apart - and where this house holds it
+            # both were answered with the library's own item, so the same key stood on
+            # the shelf twice. A repeated key crashes a keyed list outright. The rows
+            # are newest first, so the first of a pair is the one kept.
+            seen = set()
+            cut = ("" if months >= 1200 else
+                   time.strftime("%Y-%m-%d",
+                                 time.localtime(time.time() - months * 30.5 * 86400)))
+            for row in pd_streaming.read():
+                here = row.get("here")
+                got = self.metadata_for(con, str(here), brief=True) if here else None
+                if got and row.get("released"):
+                    # the date this row is ordered by. The library's own entry often
+                    # has none - it knows when a film arrived here, not when it came
+                    # out - and without it the film sank to the end of the list.
+                    got["originallyAvailableAt"] = row["released"]
+                # outside the window asked for: it was read for a wider one
+                if cut and str(row.get("released") or "") and str(row["released"]) < cut:
+                    continue
+                shown = got or pd_streaming.item(row)
+                if str(shown.get("ratingKey") or "") in seen:
+                    continue
+                seen.add(str(shown.get("ratingKey") or ""))
+                # how many people have asked for it, so the button can say so
+                said = self._asked_by_how_many().get(str(row.get("key") or ""))
+                if said:
+                    shown["asks"] = said[0]
+                    # and whether this viewer is one of them, so the button can say
+                    # Requested rather than offering it again
+                    shown["asked"] = self._did_i_ask(row.get("key"))
+                out.append(shown)
+            return self._page(out, q)
 
         if path == "/library/watchlist":
             # the keys come from the caller's own settings; this only turns them into
@@ -1585,6 +1781,40 @@ class LocalAPI:
                     else:
                         hubs.insert(len(hubs) if place else 0,
                                     {"type": "movie", "title": "Films", "Metadata": found})
+            # and what is new on streaming, which this house has none of. A search
+            # that cannot find one of those answers "nothing" about a title that is
+            # one press from being asked for.
+            if spelt and len(spelt.strip()) >= 2:
+                try:
+                    import pd_streaming
+                    low = spelt.strip().lower()
+                    # not the ones this house holds: those came back above as their
+                    # own entry, with a Play button, and a second card for the same
+                    # film with a Request band across it is the same film twice
+                    fresh = [pd_streaming.item(r) for r in pd_streaming.read()
+                             if not r.get("here")
+                             and low in (r.get("title") or "").lower()][:20]
+                except Exception:
+                    fresh = []
+                films = next((h for h in hubs if h["type"] == "movie"), None)
+                if fresh and films:
+                    # One card per film, and the nearest thing to hand wins: a film
+                    # already here is played, one on a pack is fetched, and asking is
+                    # the last resort. Held titles were left out above; this is the
+                    # other half of it - a film a pack can fetch should not also be
+                    # offered as something to ask somebody for.
+                    said = lambda x: str(x.get("title") or "").strip().lower()
+                    already = {said(x) for x in films["Metadata"]}
+                    fresh = [x for x in fresh if said(x) not in already]
+                if fresh:
+                    if films:
+                        films["Metadata"].extend(fresh)
+                    else:
+                        # where the films hub would have gone: the sort above has
+                        # already run, so appending puts it under the episodes
+                        hubs.insert(len(hubs) if place else 0,
+                                    {"type": "movie", "title": "Films",
+                                     "Metadata": fresh})
             # and under those, what the word means rather than what it spells
             listed = lambda rows: [self._movie(con, r, brief=True) if r["type"] == "movie"
                                    else self._show(con, r) for r in rows]
@@ -1595,6 +1825,21 @@ class LocalAPI:
                 hubs.append({"type": "year", "title": "From " + year_name,
                              "Metadata": listed(dated)})
             return {"size": len(hubs), "Hub": hubs}
+
+        m = re.match(r"^/art/person/(\d+)$", path)
+        if m:
+            # a face beside a name. Kept like every other picture: fetched once from
+            # TMDB and served from here afterwards.
+            local = self.lib.artwork(self.lib.face_of(int(m.group(1))), "w185")
+            if not local:
+                return None
+            want = int(one("w", "0") or 0)
+            if want:
+                sized = self._resized(local, want)
+                if sized:
+                    local = sized
+            with open(local, "rb") as f:
+                return ("image/jpeg", f.read())
 
         m = re.match(r"^/art/(rt[0-9a-f]{10})/(poster|backdrop)$", path)
         if m:
@@ -2281,6 +2526,18 @@ class LocalAPI:
         except Exception:
             return []
 
+    #: What the film shelf stands, unless this viewer says otherwise: everything
+    #: there is to watch, held, fetchable or only askable. The same defaults the
+    #: server answers with.
+    FILMS_SHOW = {"disk": True, "download": True, "request": True}
+
+    def films_show(self):
+        """Which of the three kinds this viewer wants the film shelf to stand."""
+        said = viewer_settings(self.who).get("filmsShow")
+        if not isinstance(said, dict):
+            return dict(self.FILMS_SHOW)
+        return {k: bool(said.get(k, v)) for k, v in self.FILMS_SHOW.items()}
+
     @staticmethod
     def _offered_quietly():
         """The films on offer from the packs, or none if they cannot be read."""
@@ -2290,21 +2547,110 @@ class LocalAPI:
         except Exception:
             return []
 
-    def _with_offered(self, items, sort, genre, era, kind="movie"):
+    @staticmethod
+    def _bare(title):
+        """A title with nothing in it but its letters and numbers, for comparing."""
+        return "".join(c for c in str(title or "").lower() if c.isalnum())
+
+    def _people_offers(self, person, name, already, show):
+        """What a pack could fetch or somebody could be asked for, with them in it.
+
+        The credit table only covers what is on disk, so a name pressed on a film
+        found the shelf and nothing else. TMDB is asked what else that person is in,
+        and the answer is matched against the packs and the catalogue: by TMDB's own
+        number where there is one, and by title and year for a pack, which carries
+        no number.
+        """
+        if not (show.get("download") or show.get("request")):
+            return []
+        said = None
+        try:
+            if person:
+                said = self.lib.tmdb("/person/%d/movie_credits" % int(person))
+            if not said and str(name or "").strip():
+                hit = ((self.lib.tmdb("/search/person", query=name) or {})
+                       .get("results") or [])
+                if hit and hit[0].get("id"):
+                    said = self.lib.tmdb("/person/%d/movie_credits"
+                                         % int(hit[0]["id"]))
+        except Exception:
+            return []
+        theirs = (said or {}).get("cast") or []
+        if not theirs:
+            return []
+        numbers = {int(c["id"]) for c in theirs if c.get("id")}
+        named = {}
+        for c in theirs:
+            year = str(c.get("release_date") or "")[:4]
+            named[self._bare(c.get("title"))] = int(year) if year.isdigit() else 0
+        seen = {self._bare(x.get("title")) for x in already}
+        out = []
+        def take(one):
+            bare = self._bare(one.get("title"))
+            if not bare or bare in seen:
+                return
+            seen.add(bare)
+            out.append(one)
+        if show.get("download"):
+            for o in self._offered_quietly():
+                want = named.get(self._bare(o.get("title")))
+                if want is None:
+                    continue
+                here = int(o.get("year") or 0)
+                # the same title in another year is another film
+                if want and here and abs(want - here) > 1:
+                    continue
+                take(o)
+        if show.get("request"):
+            try:
+                import pd_streaming
+                for r in pd_streaming.read():
+                    if r.get("here"):
+                        continue
+                    if int(r.get("tmdb") or 0) in numbers:
+                        take(pd_streaming.item(r))
+            except Exception:
+                pass
+        return out
+
+    def _with_offered(self, items, sort, genre, era, kind="movie", show=None, cut=""):
         """What a pack can give, among the library's own and in its order.
 
         Films for the film shelf and programmes for the other: a film on offer has
         always stood on the shelf whether it was here or not, and a programme from a
         pack of episodes is the same offer in another shape.
+
+        `show` is what this viewer wants the shelf to stand - what a pack can fetch,
+        and what can only be asked for. Play, then download, then ask: a title held
+        here or carried by a pack is never also offered as one to ask somebody for.
         """
-        offers = (self._offered_shows_quietly() if kind == "show"
-                  else self._offered_quietly())
+        show = show or {"disk": True, "download": True}
+        named_low = lambda x: str(x.get("title") or "").strip().lower()
+        offers = [] if not show.get("download") else (
+            self._offered_shows_quietly() if kind == "show"
+            else self._offered_quietly())
         if kind == "show" and offers:
             # a programme this machine already has stands once: its own row, with the
             # pack's episodes inside it rather than a second row beside it
             here = {str(x.get("title") or "").strip().lower() for x in items}
             offers = [o for o in offers
                       if str(o.get("title") or "").strip().lower() not in here]
+        if kind == "movie" and show.get("request"):
+            # new on streaming and nowhere in this house: joined here so that the
+            # genre and decade below sift them with everything else
+            try:
+                import pd_streaming
+                taken = {named_low(x) for x in items + offers}
+                offers = offers + [pd_streaming.item(r) for r in pd_streaming.read()
+                                   if not r.get("here")
+                                   # outside the window asked for: it was read for a
+                                   # wider one and is not this shelf's business
+                                   and not (cut and str(r.get("released") or "")
+                                            and str(r["released"])[:10] < cut)
+                                   and str(r.get("title") or "").strip().lower()
+                                   not in taken]
+            except Exception:
+                pass
         if not offers:
             return items
         wants = {g.strip().lower() for g in str(genre or "").split(",") if g.strip()}
@@ -2319,7 +2665,43 @@ class LocalAPI:
         back = way == "desc"
         named = lambda x: (x.get("titleSort") or x.get("title") or "").lower()
         both = items + offers
-        if field in ("year", "originallyAvailableAt"):
+        if field == "originallyAvailableAt":
+            # A list holding what the packs offer is ordered here rather than in the
+            # query, so this is the sort that decides "recently released" - the one
+            # place it had to be put right. The library keeps a year and nothing
+            # finer, so every film of this year tied and the name broke the tie: a
+            # film released last week sat under R, thousands of rows down. The dates
+            # already read for the new arrivals row settle it where there is one.
+            try:
+                import pd_streaming
+                dated = pd_streaming.held_dates()
+            except Exception:
+                dated = {}
+
+            def when(x):
+                got = dated.get(str(x.get("ratingKey") or ""))
+                if got:
+                    return got
+                # its own date, which a film on offer and one to ask for both carry.
+                # Held titles are looked up above because the library keeps a year
+                # and nothing finer for them.
+                said = str(x.get("originallyAvailableAt") or "")[:10]
+                if len(said) == 10 and said[4] == "-" and said[7] == "-":
+                    return said
+                y = int(x.get("year") or 0)
+                # a year on its own sits below every dated film of that year and
+                # above everything from the year before
+                return "%04d-00-00" % y if y else ""
+
+            has = [x for x in both if when(x)]
+            none = [x for x in both if not when(x)]
+            # sorted twice and stably: the alphabet decides between two films that
+            # came out on the same day, and holds the unknown-year tail in order
+            has.sort(key=named)
+            has.sort(key=when, reverse=back)
+            none.sort(key=named)
+            return has + none
+        if field == "year":
             return sorted(both, key=lambda x: (not x.get("year"),
                                                -(x.get("year") or 0) if back
                                                else (x.get("year") or 0), named(x)))
@@ -2337,13 +2719,53 @@ class LocalAPI:
         return {"size": len(items[start:start + size]), "totalSize": len(items),
                 "Metadata": items[start:start + size]}
 
+    def _arrived_since(self, con, one):
+        """The library's key for a streaming title that has come in since the reading."""
+        from pd_library import flatten_title
+        want = flatten_title(one.get("title") or "")
+        if not want:
+            return ""
+        year = int(one.get("year") or 0)
+        try:
+            # names and years only, of what this house holds a file for. The whole
+            # column rather than a narrowing clause: a title is spelt differently in a
+            # catalogue and in a file name, which is what flattening them is for.
+            rows = con.execute(
+                "SELECT id, title, year FROM item WHERE type='movie' "
+                "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = item.id)").fetchall()
+        except Exception:
+            return ""
+        for r in rows:
+            if flatten_title(r["title"]) != want:
+                continue
+            # the year has to agree where both know it: two films share a name
+            if year and r["year"] and abs(int(r["year"]) - year) > 1:
+                continue
+            return str(r["id"])
+        return ""
+
     def metadata_for(self, con, key, brief=False):
         if str(key).startswith("rt"):
-            # new on streaming and nowhere near this house: it has a page so it can be
-            # asked for, and nothing else
+            # New on streaming. Something to ask for - unless it has since arrived,
+            # in which case it is a film with a poster and a Play button, and that is
+            # what this key now means.
+            #
+            # The reading marks what this house holds, but it is read twice a day: a
+            # film that came in this morning is still marked as missing until then,
+            # and a watchlist made of these keys went on offering to ask for a film
+            # already on the shelf. So the library is asked here as well.
             import pd_streaming
             one = pd_streaming.one_of(str(key))
-            return pd_streaming.item(one) if one else None
+            if not one:
+                return None
+            here = one.get("here")
+            if not here:
+                here = self._arrived_since(con, one)
+            if here:
+                got = self.metadata_for(con, str(here), brief=brief)
+                if got:
+                    return got
+            return pd_streaming.item(one)
         if str(key).startswith("o"):
             # a film on offer from a torrent pack, wherever a title is asked for - and once
             # it has come in, the film itself: a page left open on the offer turns into it
@@ -2651,39 +3073,81 @@ class LocalAPI:
                 who = str(row.get("who") or "me")
                 when = int(row.get("updated") or 0)
                 had = con.execute(
-                    "SELECT updated FROM progress WHERE who=? AND key=?",
-                    (who, key)).fetchone()
+                    "SELECT updated, position, COALESCE(marked, 0) marked "
+                    "FROM progress WHERE who=? AND key=?", (who, key)).fetchone()
                 if had and int(had["updated"] or 0) >= when:
                     continue
+                # The later note usually wins, but "barely started" must not wipe out
+                # a place somebody actually reached. A film opened for four seconds
+                # and shut again is newer than the forty minutes watched yesterday,
+                # and would replace it. This could not arise while places under half a
+                # minute were never sent; now that everything travels, it can.
+                #
+                # Finished and marked are never held back by this - they are the whole
+                # reason the sending end stopped filtering.
+                coming = int(row.get("position") or 0)
+                if (had and not row.get("marked") and coming <= 30
+                        and int(had["position"] or 0) > coming + 60):
+                    continue
+                # and whether it was said by hand, which is the one kind of finished a
+                # position cannot show. Never unsaid by a machine that does not know
+                # it: a build before this one sends no "marked" at all, and taking
+                # that as "not marked" put a film marked here back on Continue
+                # watching. Marked travels one way - by hand, on the page.
+                marked = 1 if (row.get("marked") or (had and had["marked"])) else 0
                 con.execute(
                     """INSERT INTO progress (key, position, duration, updated, who,
-                                             casual)
-                       VALUES (?,?,?,?,?,?)
+                                             casual, marked)
+                       VALUES (?,?,?,?,?,?,?)
                        ON CONFLICT(who, key) DO UPDATE SET
                        position=excluded.position, duration=excluded.duration,
-                       updated=excluded.updated, casual=excluded.casual""",
+                       updated=excluded.updated, casual=excluded.casual,
+                       marked=excluded.marked""",
                     (key, int(row.get("position") or 0),
                      int(row.get("duration") or 0), when, who,
-                     1 if row.get("casual") else 0))
+                     1 if row.get("casual") else 0, marked))
                 taken += 1
             con.commit()
         finally:
             con.close()
         return taken
 
-    def progress_of(self, who_list, since=0, limit=60):
-        """Where these viewers had got to, described so another library can place it."""
+    def progress_of(self, who_list, since=0, limit=500, with_mark=False):
+        """Where these viewers had got to, described so another library can place it.
+
+        Oldest first, and with the point the caller may resume from: a window holding
+        more places than the limit used to hand back the newest of them while the
+        caller moved its mark to now, so the rest were never sent at all. Truncated
+        here means the mark stops at the last place actually sent.
+        """
         con = self.lib.db()
         out = []
+        mark = int(time.time())
         try:
             for who in who_list or []:
-                for row in con.execute(
-                        """SELECT key, position, duration, updated,
-                                  COALESCE(casual, 0) casual FROM progress
-                           WHERE who = ? AND updated > ? AND position > 30
-                             AND position < """ + FINISHED_SQL + """
-                           ORDER BY updated DESC LIMIT ?""",
-                        (who, int(since), int(limit))):
+                # A place past the end is sent too. Holding those back meant the one
+                # fact that settles a disagreement was the one fact never sent: the
+                # moment a film was finished here it dropped out of this list, so the
+                # other machine kept the last part-way figure it had seen and showed
+                # it as half watched for ever. Finished is not the absence of a place,
+                # it is a place - and the machine receiving it works out "watched"
+                # from the position itself, the same way this one does.
+                # Marked by hand comes with it: that is written as position nought,
+                # which the "past the first half minute" test threw away.
+                # Nothing is held back at all now. Every test here was a place one
+                # machine knew and the other was not told about, and each one showed
+                # up as the two disagreeing about Continue watching: finished, marked,
+                # and the first half minute - which reads as "not worth resuming" on
+                # the machine that has it and as "never started" on the one that does
+                # not. What the house has watched is one set of facts, not two.
+                rows = con.execute(
+                    """SELECT key, position, duration, updated,
+                              COALESCE(casual, 0) casual,
+                              COALESCE(marked, 0) marked FROM progress
+                       WHERE who = ? AND updated > ?
+                       ORDER BY updated ASC LIMIT ?""",
+                    (who, int(since), int(limit))).fetchall()
+                for row in rows:
                     said = self.what_it_is(con, row["key"])
                     if not said:
                         continue
@@ -2691,10 +3155,15 @@ class LocalAPI:
                                 "position": int(row["position"] or 0),
                                 "duration": int(row["duration"] or 0),
                                 "casual": int(row["casual"] or 0),
+                                "marked": int(row["marked"] or 0),
                                 "updated": int(row["updated"] or 0)})
+                # a full page is a window with more in it than was sent: the caller
+                # resumes at the last one sent rather than at now
+                if len(rows) >= int(limit) and rows:
+                    mark = min(mark, int(rows[-1]["updated"] or 0))
         finally:
             con.close()
-        return out
+        return (out, mark) if with_mark else out
 
     def key_for_file(self, file_id):
         """The rating key of whatever a file belongs to - an episode, or a film."""

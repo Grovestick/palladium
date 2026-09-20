@@ -31,6 +31,9 @@ object Api {
     @Volatile var base: String = ""          // e.g. http://192.168.1.20:8765
     @Volatile var token: String = ""         // empty on our own network
 
+    /** Machines that did not answer the last shelf asked for, by name; empty is all well. */
+    @Volatile var silent: String = ""
+
     /**
      * Which language this viewer reads subtitles in, as the server has it.
      *
@@ -41,9 +44,18 @@ object Api {
      */
     @Volatile var myLanguage: String = java.util.Locale.getDefault().language
 
+    /**
+     * What to read when the film carries nothing in the first language.
+     *
+     * Empty is no second choice, which is how it behaved before there was one: the
+     * plainest track in the film, whatever language it happens to be in.
+     */
+    @Volatile var myLanguage2: String = ""
+
     suspend fun learnLanguage() {
         val said = runCatching { subtitleLanguage() }.getOrNull()
         if (!said.isNullOrEmpty()) myLanguage = said
+        myLanguage2 = runCatching { subtitleLanguage2() }.getOrDefault("")
     }
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("palladium", Context.MODE_PRIVATE)
@@ -704,9 +716,22 @@ object Api {
                 it.srv = srv
                 it.genres = genresOf(o)
                 it.shelfView = o.optJSONObject("view")?.toString() ?: ""
+                it.rating = o.optDouble("rating", 0.0).toFloat()
+                // who is in it: sent with a title's own page, never with a shelf
+                o.optJSONArray("Role")?.let { arr ->
+                    it.cast = (0 until arr.length()).mapNotNull { n ->
+                        val p = arr.optJSONObject(n) ?: return@mapNotNull null
+                        val name = p.optString("tag", "")
+                        if (name.isEmpty()) null
+                        else Media.Player(p.optInt("id", 0), name,
+                                          p.optString("role", ""),
+                                          p.optString("thumb", ""))
+                    }
+                }
                 it.offered = o.optBoolean("offered", false)
                 it.askable = o.optBoolean("askable", false)
                 it.asked = o.optBoolean("asked", false)
+                it.asks = o.optInt("asks", 0)
                 it.askWhere = o.optString("where", "")
                 o.optJSONObject("offer")?.let { offer ->
                     it.offerState = offer.optString("state", "")
@@ -757,18 +782,37 @@ object Api {
      * them hold the same film it is the near one whose card survives.
      */
     private suspend fun fromAll(ctx: Context, call: suspend (Server) -> List<Media>): List<Media> =
+        heardFrom(ctx, call = call).first
+
+    /**
+     * The same, saying how many servers actually answered.
+     *
+     * A shelf that came back empty and a shelf nobody answered for look identical once
+     * the lists are joined, and the second was drawn as an empty library: the server
+     * was busy copying, the ask ran out of patience, and the television said there
+     * were no films. The count is what tells them apart.
+     */
+    private suspend fun heardFrom(ctx: Context, patience: Long = 6000L,
+                                  call: suspend (Server) -> List<Media>):
+            Pair<List<Media>, Int> =
         withContext(Dispatchers.IO) {
             coroutineScope {
                 val asked = Servers.merged(ctx).map { srv ->
                     async {
-                        withTimeoutOrNull(6000L) {
-                            runCatching { call(srv) }.getOrDefault(emptyList())
-                        } ?: emptyList()
+                        withTimeoutOrNull(patience) {
+                            runCatching { call(srv) }.getOrNull()
+                        }
                     }
                 }
+                val got = asked.map { it.await() }
+                // which of them said nothing, by name: a shelf drawn from one machine
+                // while another holds most of the library is a short library, not a
+                // small one, and it looked the same on the screen
+                silent = Servers.merged(ctx).filterIndexed { at, _ -> got[at] == null }
+                    .joinToString(", ") { it.name }
                 val out = ArrayList<Media>()
-                asked.forEach { out.addAll(it.await()) }
-                distinct(out)
+                got.filterNotNull().forEach { out.addAll(it) }
+                distinct(out) to got.count { it != null }
             }
         }
 
@@ -831,43 +875,57 @@ object Api {
      */
     private suspend fun page(ctx: Context, section: Int, sort: String,
                              start: Int, size: Int, genre: String = "",
-                             decade: String = ""): List<Media> {
+                             decade: String = "",
+                             // only what this house holds a file for: the shelf opened
+                             // off recently added, which is about what has arrived
+                             diskOnly: Boolean = false): List<Media> {
         // the genres and decades marked, asked of each server: the shelf is the
         // question, the order is how it is answered
         val shelf = (if (genre.isEmpty()) ""
                      else "&genre=" + URLEncoder.encode(genre, "UTF-8")) +
-                    (if (decade.isEmpty()) "" else "&decade=" + decade)
-        val merged = sortMerged(fromAll(ctx) { srv ->
+                    (if (decade.isEmpty()) "" else "&decade=" + decade) +
+                    (if (diskOnly) "&disk=1" else "")
+        // Longer than the six seconds a shelf is usually given: this machine is also
+        // copying films to the other one and fetching what was asked for, and under
+        // both it answers in seconds rather than tenths.
+        val (answer, heard) = heardFrom(ctx, 15000L) { srv ->
             val got = listFrom("/local/library/sections/$section/all?sort=$sort" + shelf +
                     "&start=0&count=${start + size}", srv)
-            // A shelf that comes back empty is worth a line: which machine was asked,
-            // and what it said. Guessing at an empty Films tab from the outside is
-            // guessing at which of four things went wrong.
-            if (got.isEmpty()) {
-                android.util.Log.i("Palladium",
-                    "section " + section + " empty from " + srv.base +
-                    (if (srv.token.isEmpty()) " (no token)" else " (token)"))
-            }
-            got
-        }, sort)
-        if (merged.isEmpty()) {
+            // Which machine was asked, and what it actually said. Guessing at a shelf
+            // from the outside is guessing at which of four things went wrong, and
+            // reading the code instead of the answer cost an afternoon.
             android.util.Log.i("Palladium",
-                "section " + section + " empty after asking " +
-                Servers.merged(ctx).joinToString(", ") { it.base })
+                "shelf section=" + section + " sort=" + sort +
+                (if (diskOnly) " disk=1" else "") +
+                " from=" + srv.base + " got=" + got.size +
+                " banded=" + got.count { it.offered || it.askable } +
+                (if (srv.token.isEmpty()) " (no token)" else " (token)"))
+            got
         }
+        // Nobody answered at all. Said out loud rather than handed back as an empty
+        // shelf: what is already on the screen stays, and the screen says why.
+        if (heard == 0 && Servers.merged(ctx).isNotEmpty()) {
+            throw java.io.IOException("no server answered for section " + section)
+        }
+        val merged = sortMerged(answer, sort)
+        android.util.Log.i("Palladium",
+            "shelf section=" + section + " merged=" + merged.size +
+            " banded=" + merged.count { it.offered || it.askable } +
+            " heard=" + heard + " of " +
+            Servers.merged(ctx).joinToString("+") { it.name + "@" + it.base })
         return if (start >= merged.size) emptyList()
                else merged.subList(start, minOf(start + size, merged.size)).toList()
     }
 
     suspend fun movies(ctx: Context, sort: String = "titleSort:asc",
                        start: Int = 0, size: Int = 120, genre: String = "",
-                       decade: String = "") =
-        page(ctx, 1, sort, start, size, genre, decade)
+                       decade: String = "", diskOnly: Boolean = false) =
+        page(ctx, 1, sort, start, size, genre, decade, diskOnly)
 
     suspend fun shows(ctx: Context, sort: String = "titleSort:asc",
                       start: Int = 0, size: Int = 120, genre: String = "",
-                      decade: String = "") =
-        page(ctx, 2, sort, start, size, genre, decade)
+                      decade: String = "", diskOnly: Boolean = false) =
+        page(ctx, 2, sort, start, size, genre, decade, diskOnly)
 
     /** Each server sorted its own share; the join needs one more pass. */
     private fun sortMerged(list: List<Media>, sort: String): List<Media> {
@@ -883,7 +941,11 @@ object Api {
                     if ((m.year ?: 0) > 0) String.format("%04d-01-01", m.year) else ""
                 }
             })
-            else -> ({ m: Media -> m.title.lowercase() })
+            // The name the library files it under, not the one it shows. The server
+            // pages by that name; ordering the join by the shown name instead made
+            // each page a different hundred and twenty, so titles repeated across
+            // pages and others were never reached at all.
+            else -> ({ m: Media -> m.titleSort.ifEmpty { m.title }.lowercase() })
         }
         // A title with no year and no air date is not the oldest thing in the library
         // and not the newest: it is unidentified, and it belongs at the bottom whichever
@@ -920,11 +982,17 @@ object Api {
      * in a library, and asking every machine would put the same row on the screen
      * three times over.
      */
-    suspend fun streaming(ctx: Context): List<Media> = withContext(Dispatchers.IO) {
-        runCatching {
-            items(json("/local/library/streaming").getJSONObject("MediaContainer"), null)
-        }.getOrDefault(emptyList())
-    }
+    suspend fun streaming(ctx: Context, years: Int = 2): List<Media> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                // the only shelf read from one server rather than merged from all of
+                // them, so it is the only one that never passed through distinct -
+                // and a film the catalogue lists twice put the same key on a keyed
+                // grid twice, which throws rather than draws
+                distinct(items(json("/local/library/streaming?years=" + years)
+                                   .getJSONObject("MediaContainer"), null))
+            }.getOrDefault(emptyList())
+        }
 
     /**
      * Ask for a film this house has not got.
@@ -933,15 +1001,33 @@ object Api {
      * what comes into the house is theirs to decide, and a request that downloaded
      * by itself would be a download button under another name.
      */
-    suspend fun askFor(m: Media): Boolean = withContext(Dispatchers.IO) {
+    suspend fun askFor(m: Media): Pair<Boolean, Boolean> = withContext(Dispatchers.IO) {
         val body = JSONObject()
             .put("key", m.ratingKey)
             .put("title", m.title)
             .put("year", m.year ?: JSONObject.NULL)
             .put("where", m.askWhere)
         val said = runCatching { JSONObject(postTo(m.srv, "/requests", body)) }.getOrNull()
-        said != null && (said.optBoolean("asked") || said.optBoolean("already"))
+        // asked for, and whether that also put it on this viewer's watchlist - which
+        // is the only place they can look for it afterwards, the answer being
+        // somebody else's to give
+        val ok = said != null && (said.optBoolean("asked") || said.optBoolean("already"))
+        ok to (said?.optBoolean("watchlisted") ?: false)
     }
+
+    /**
+     * Everything this house holds with one person in it.
+     *
+     * Asked of the library rather than of the internet: the answer is what can be
+     * watched tonight, not what they have ever been in.
+     */
+    suspend fun withPerson(ctx: Context, person: Int, name: String): List<Media> =
+        fromAll(ctx) { srv ->
+            val q = if (person > 0) "person=" + person
+                    else "name=" + URLEncoder.encode(name, "UTF-8")
+            items(json("/local/library/withPerson?" + q, srv)
+                      .getJSONObject("MediaContainer"), srv)
+        }
 
     /** Newest first by release date: for a series that is its most recent episode. */
     suspend fun releasedFilms(ctx: Context) =
@@ -2048,13 +2134,15 @@ object Api {
 
     suspend fun search(ctx: Context, term: String): List<Media> {
         val q = URLEncoder.encode(term, "UTF-8")
-        return fromAll(ctx) { srv ->
+        // Newest first, over the whole answer: the hubs come back grouped by kind, and
+        // which kind a hit is says nothing about which hit was wanted.
+        return sortMerged(fromAll(ctx) { srv ->
             val hubs = JSONObject(get("/local/hubs/search?query=$q", srv))
                 .getJSONObject("MediaContainer").optJSONArray("Hub") ?: return@fromAll emptyList()
             val out = ArrayList<Media>()
             for (i in 0 until hubs.length()) out.addAll(items(hubs.getJSONObject(i), srv))
             out
-        }
+        }, "originallyAvailableAt:desc")
     }
 
     /**
@@ -2065,6 +2153,13 @@ object Api {
      * a quarter of the time - which on a Chromecast is the difference between a grid
      * that scrolls and one that stutters.
      */
+    /** A face, from whichever server named it - the same road as any other picture. */
+    fun faceUrl(who: Media.Player, srv: Server?, width: Int = 96): String? {
+        if (who.face.isEmpty()) return null
+        return (srv?.base ?: base) + "/local" +
+            auth(who.face + "?w=" + width, srv?.token ?: token)
+    }
+
     fun artUrl(m: Media, width: Int = 0): String? {
         val path = m.thumb
         if (path.isNullOrEmpty()) return null
@@ -2627,6 +2722,21 @@ object Api {
         catch (e: Exception) { "en" }
     }
 
+    suspend fun subtitleLanguage2(): String = withContext(Dispatchers.IO) {
+        try { JSONObject(get("/settings")).optString("language2", "") }
+        catch (e: Exception) { "" }
+    }
+
+    suspend fun setSubtitleLanguage2(code: String) = withContext(Dispatchers.IO) {
+        try {
+            postTo(null, "/settings", JSONObject().put("language2", code))
+            myLanguage2 = code
+        } catch (stopped: kotlinx.coroutines.CancellationException) {
+            throw stopped
+        } catch (e: Exception) { "" }
+        Unit
+    }
+
     suspend fun setSubtitleLanguage(code: String) = withContext(Dispatchers.IO) {
         try {
             postTo(null, "/settings", JSONObject().put("language", code))
@@ -2818,6 +2928,34 @@ object Api {
             mayMove = said.optBoolean("failover", true)
         }
         Unit
+    }
+
+    /**
+     * What this viewer wants the film shelf to stand.
+     *
+     * Held, what a pack can fetch, and what can only be asked for. All three unless
+     * this viewer says otherwise. Kept by the server, so the answer is the same in
+     * the browser and on the television.
+     */
+    data class FilmsShow(val disk: Boolean = true, val download: Boolean = true,
+                         val request: Boolean = true)
+
+    private fun filmsShowOf(said: JSONObject?) = FilmsShow(
+        said?.optBoolean("disk", true) ?: true,
+        said?.optBoolean("download", true) ?: true,
+        said?.optBoolean("request", true) ?: true)
+
+    suspend fun filmsShow(): FilmsShow = withContext(Dispatchers.IO) {
+        runCatching { filmsShowOf(JSONObject(get("/settings")).optJSONObject("filmsShow")) }
+            .getOrDefault(FilmsShow())
+    }
+
+    suspend fun setFilmsShow(want: FilmsShow): FilmsShow = withContext(Dispatchers.IO) {
+        runCatching {
+            filmsShowOf(JSONObject(post("/settings", JSONObject().put("filmsShow",
+                JSONObject().put("disk", want.disk).put("download", want.download)
+                    .put("request", want.request)))).optJSONObject("filmsShow"))
+        }.getOrDefault(want)
     }
 
     /** How long the next episode waits before starting itself: nought to five. */

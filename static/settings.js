@@ -721,6 +721,33 @@
           ". Its films cannot be downloaded from it.";
         what.appendChild(bad);
       }
+      // qBittorrent has stopped on this pack - usually because the drive its files
+      // sit on went away for a moment. The server reads them again once by itself;
+      // this is the press that says try it again anyway.
+      if (p.halted) {
+        const stop = document.createElement("div");
+        stop.className = "note bad";
+        stop.textContent = p.haltedWhy || "qBittorrent has stopped on this pack.";
+        what.appendChild(stop);
+      }
+      if (p.halted) {
+        const again = document.createElement("button");
+        again.className = "btn ghost";
+        again.textContent = "Read files again";
+        again.onclick = async () => {
+          again.disabled = true;
+          again.textContent = "Reading…";
+          try {
+            const said = await post("/torrents/recheck", { hash: p.hash });
+            toast(said && said.rechecked ? "qBittorrent is reading its files again"
+                                         : "qBittorrent would not take that");
+          } catch (e) {
+            toast("Could not ask qBittorrent");
+          }
+          render();
+        };
+        r.appendChild(again);
+      }
       const rm = document.createElement("button");
       rm.className = "btn ghost bad";
       rm.textContent = "Remove";
@@ -1049,19 +1076,38 @@
     el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
       // "kind" is what carries the on colour: without it the two buttons saved the
       // setting and looked exactly the same afterwards
-      '<button class="btn ghost kind cdeck">Continue watching</button>' +
-      '<button class="btn ghost kind clist">Watchlist</button>' +
+      // Each button says what it actually keeps, because none of these are obvious
+      // from two words: what is on the tin is a name, and the rule behind it decides
+      // how much of somebody else's disk this fills.
+      '<button class="btn ghost kind cdeck" title="What they are part-way through, ' +
+      'by programme rather than by episode: an episode finished hands over to the ' +
+      'next one, and the one before it is kept as well. As many episodes ahead as ' +
+      'the Episodes and Hours settings allow. Anything they have put aside on ' +
+      'Continue watching is dropped.">Continue watching</button>' +
+      '<button class="btn ghost kind clist" title="Everything on their watchlist, ' +
+      'and for a programme the next unwatched episodes rather than all of them - as ' +
+      'many as Episodes ahead allows, unless Whole list is on. Programmes on ' +
+      'shelves they made count too; the films on those shelves do not.">' +
+      'Watchlist</button>' +
       // and their shuffle: the hat's next draws, so a round carries on when this
       // machine is off. The server has always read this flag and there was no way
       // to set it, so only the owner's shuffle was ever kept.
-      '<button class="btn ghost kind ccasual" title="Keep the next few episodes ' +
-      'their shuffle will draw, so a round survives this machine going off">' +
-      'Shuffle</button>' +
+      // the last dozen the house watched, and the episodes after them
+      '<button class="btn ghost kind clately" title="The last dozen things watched ' +
+      'by the people this is on for, and the episodes following them. A shuffle ' +
+      'draw does not count as watching: nobody chose it, and it is no reason to ' +
+      'copy the rest of a series.">Watched lately</button>' +
+      '<button class="btn ghost kind ccasual" title="The ten their hat has already ' +
+      'drawn, and anything left part-way in a shuffle, so a round carries on when ' +
+      'this machine is off. Only what is drawn - a shuffled shelf is not stocked in ' +
+      'season order.">Shuffle</button>' +
       // whether this person is handed the address this machine answers to on its
       // own network. They always have the way in from outside, which is the one
       // that works from where they are; the other is inside somebody's house.
-      '<button class="btn ghost kind clan" title="Tell them the address this ' +
-      'server answers to on the home network">Home address</button>' +
+      '<button class="btn ghost kind clan" title="Hand them the address this server ' +
+      'answers to on the home network, which is the quicker way in while they are ' +
+      'in the house. They always have the address from outside, which works ' +
+      'anywhere.">Home address</button>' +
       // gigabytes a week: copied to the other machine for them, and downloaded by them
       '<label class="note capgb">Sync <input class="csync" type="text" ' +
       'inputmode="decimal" placeholder="no limit"> GB a week</label>' +
@@ -1085,7 +1131,8 @@
           ? "last watched " + new Date(who.lastSeen * 1000).toLocaleDateString()
           : "not used yet")) + " · " + bill;
     [["cdeck", "cacheDeck"], ["clist", "cacheList"],
-     ["ccasual", "cacheCasual"], ["clan", "shareLan"]].forEach(([css, name]) => {
+     ["ccasual", "cacheCasual"], ["clately", "cacheLately"],
+     ["clan", "shareLan"]].forEach(([css, name]) => {
       const b = el.querySelector("." + css);
       if (who[name]) b.classList.add("on");
       b.onclick = async () => {
@@ -5027,6 +5074,27 @@
       const name = (LANGS.filter((l) => l[0] === sel.value)[0] || ["", "Off"])[1];
       toast(sel.value ? "Default subtitles: " + name : "Subtitles off by default");
     };
+    // and what to read when the film has nothing in the first
+    const lang2 = document.createElement("div");
+    lang2.className = "addrow subrow";
+    lang2.innerHTML = "<span class='sublabel'>Second choice</span>";
+    const sel2 = document.createElement("select");
+    sel2.id = "setlang2";
+    LANGS.forEach((l) => sel2.add(new Option(l[0] === "" ? "None" : l[1], l[0])));
+    sel2.value = "subLang2" in prefs() ? prefs().subLang2 : (data.language2 || "");
+    sel2.onchange = async () => {
+      setPref("subLang2", sel2.value);
+      try { await post("/settings", { language2: sel2.value }); } catch (e) {}
+      const name = (LANGS.filter((l) => l[0] === sel2.value)[0] || ["", "None"])[1];
+      toast(sel2.value ? "Second choice: " + name : "No second choice");
+    };
+    lang2.appendChild(sel2);
+    lang.appendChild(lang2);
+    const why = document.createElement("div");
+    why.className = "note";
+    why.textContent = "Read when the film carries nothing in the first language. " +
+      "Without one, whatever the film has is used.";
+    lang.appendChild(why);
     main.appendChild(lang);
 
     /* The OpenSubtitles key, where subtitles are set rather than buried in Library.
@@ -5616,6 +5684,46 @@
     main.appendChild(how);
   }
 
+  /* What the Films tab stands: three kinds, each turned on or off by whoever is
+     looking. Theirs, so it holds on the phone and the television as well. */
+  function filmsShelf(main, data) {
+    const box = block("What Films shows");
+    const said = (data.filmsShow && typeof data.filmsShow === "object")
+      ? data.filmsShow : {};
+    // the same defaults the server answers with, so a page read before anything was
+    // ever chosen lights the same buttons the shelf is actually standing
+    const fallback = { disk: true, download: true, request: true };
+    [["disk", "On disk",
+      "Films this house holds a file for. These play."],
+     ["download", "Download",
+      "Films one of the packs carries. Not here yet, but fetching one is a button."],
+     ["request", "Request",
+      "Films nowhere in the house and on no pack: new on streaming, and all anybody " +
+      "can do is ask."]]
+      .forEach(([name, label, note]) => {
+        const on = said[name] === undefined ? fallback[name] : !!said[name];
+        const row = document.createElement("div");
+        row.className = "addrow subrow";
+        row.innerHTML = "<span class='sublabel'>" + label + "</span>";
+        [[true, "Show"], [false, "Hide"]].forEach(([val, text]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" + (on === val ? " on" : "");
+          b.textContent = text;
+          b.onclick = async () => {
+            await post("/settings", { filmsShow: { [name]: val } });
+            render();
+          };
+          row.appendChild(b);
+        });
+        box.appendChild(row);
+        const n = document.createElement("div");
+        n.className = "note";
+        n.textContent = note;
+        box.appendChild(n);
+      });
+    main.appendChild(box);
+  }
+
   /* A poster behind the shelves: the title last opened, or the one somebody
      stopped. Theirs rather than the machine's, so it follows them to the phone and
      the television. */
@@ -5658,6 +5766,7 @@
     yourName(main, s);
     yourQuality(main, s);
     howFetched(main, s);
+    filmsShelf(main, s);
     if (CFG && CFG.guest) return;      // the ceilings below are the owner's business
     // what this machine is set to do about itself, and the build it is running: the
     // machine tab keeps the card about the computer, the rest of it reads as settings

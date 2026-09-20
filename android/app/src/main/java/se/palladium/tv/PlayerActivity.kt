@@ -326,6 +326,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private var showKey = ""
     private var prefetched = false          // the next episode's subtitles, once
     private var retried = 0                 // recoveries from a stream that dropped
+    //: times a stream has claimed to end while nowhere near the end of the film. An
+    //: encode carries no length, so a server going away is indistinguishable from the
+    //: film finishing - but only twice, so a title that really does end near its start
+    //: cannot be asked for round and round.
+    private var endedShort = 0
     // moved to the machine keeping copies: once per film, or a server that is off
     // would send the viewer round in circles
     private var handedOver = false
@@ -395,6 +400,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
      * which is exactly what a restarted server did to somebody all one evening.
      */
     private var lastGood = 0L
+    //: when this screen last wrote down where it was, so it is not written every second
+    private var wroteAt = 0L
     /** where the last fault happened, so a long clean run earns its retries back */
     private var faultAt = 0L
     private var subsAttached = false        // a subtitle file riding with the video
@@ -473,6 +480,46 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         }
         baseOffsetSec = intent.getLongExtra("positionSec", 0)
         ratingKey = intent.getStringExtra("key") ?: ""
+        // Where this screen itself last saw the film, which outlives the player.
+        //
+        // A resume is handed the place the server has written down, and that is a
+        // report sent over a network: the app being replaced mid-film, a crash, or a
+        // server that was restarting when the last report went out all leave it
+        // behind what was actually watched. This screen knows better about its own
+        // playing, and it is kept here rather than in the activity, which dies with
+        // the player.
+        //
+        // Only ever forward, and only on a resume: "From start" arrives as nought and
+        // must stay nought, or a film could never be watched again from the beginning.
+        if (ratingKey.isNotEmpty() && baseOffsetSec > 0) {
+            val kept = getSharedPreferences("palladium", MODE_PRIVATE)
+            val mine = kept.getLong("at:" + ratingKey, 0L) / 1000
+            // and only if it was written just now. This is for a player that was
+            // replaced under somebody - an app updating, a crash - not for last
+            // week: somebody who deliberately went back twenty minutes and stopped
+            // must be resumed where they stopped, not where they had once reached.
+            val fresh = System.currentTimeMillis() -
+                kept.getLong("atWhen:" + ratingKey, 0L) < 10 * 60_000
+            if (fresh && mine > baseOffsetSec + 5) {
+                log("resuming at " + mine + "s, which is where this screen last was, " +
+                    "rather than the " + baseOffsetSec + "s written down")
+                baseOffsetSec = mine
+                intent.putExtra("positionSec", mine)
+                // and the picture with it. Only the clock was corrected here, so the
+                // film was still asked for at the offset the dead player had been
+                // given: a guest updating his app mid-episode came back with
+                // base=1677 over offset=64 - the clock 28 minutes in, the picture in
+                // the first minute. An encode starts where it is asked to start.
+                if (streamUrl.contains("/gpu/stream")) {
+                    streamUrl = streamUrl.replace(Regex("offset=[0-9.]+"),
+                                                  "offset=" + mine)
+                    intent.getStringExtra("url")?.let { had ->
+                        intent.putExtra("url", had.replace(Regex("offset=[0-9.]+"),
+                                                           "offset=" + mine))
+                    }
+                }
+            }
+        }
         mi = intent.getIntExtra("mi", 0)
         durationMs = intent.getLongExtra("durationMs", 0)
         sourceFacts = intent.getStringExtra("source") ?: ""
@@ -1585,6 +1632,13 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private fun watchTheBuffer() {
         val p = current() ?: return
         if (onCastNow() || switching) return
+        // Where the film has actually got to, written down while it plays rather than
+        // only when the player changes state. It was kept in report(), which runs on
+        // buffering, ready, pause and resume - so a stream playing quietly for a
+        // minute and a half still carried the place it held when it started, and a
+        // stream that stopped arriving was asked for again from ninety seconds behind
+        // where the viewer was sitting.
+        if (p.isPlaying) lastGood = maxOf(lastGood, position())
         // A move is once-only for a minute, not for the rest of the film. This gave
         // up watching for good after one, so a picture that stopped on the machine it
         // had moved to sat frozen with the other machine answering all the while.
@@ -2282,6 +2336,25 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     }
                 }
                 if (state == Player.STATE_ENDED) {
+                    // An encode is sent with no length on it, so a server that goes
+                    // away simply closes the socket - and that reads here as the film
+                    // having finished. No error is raised, so the recovery in
+                    // onPlayerError never runs, and a viewer two minutes into an
+                    // episode is handed the next one instead. A direct play does not
+                    // do this: it has a length, so a cut is a fault and is retried.
+                    //
+                    // A place nowhere near the end says it did not end. Ask again from
+                    // there, which is what the dropped-stream path already does.
+                    val whole = title.value?.durationMs ?: 0L
+                    val got = maxOf(position(), lastGood)
+                    if (!direct && !onCastNow() && endedShort < 2 &&
+                        whole > 0L && got > 0L && got < whole - 60_000L) {
+                        endedShort++
+                        log("ended at " + (got / 1000) + "s of " + (whole / 1000) +
+                            "s - too early to be the end, asking again from there")
+                        restartAt(got)
+                        return
+                    }
                     // something put on casually leads to the next draw; a series rolls
                     // on; a film on its own has nowhere to go
                     if (casually()) step(forward = true)
@@ -4290,6 +4363,19 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         if (ratingKey.isEmpty()) return
         if (pos > 0) {
             lastGood = maxOf(lastGood, pos)
+            // and on this screen, where it survives the app being replaced. Every ten
+            // seconds: often enough that nothing worth missing is lost, rarely enough
+            // that it is not a write per second for two hours.
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - wroteAt > 10_000) {
+                wroteAt = now
+                runCatching {
+                    getSharedPreferences("palladium", MODE_PRIVATE).edit()
+                        .putLong("at:" + ratingKey, lastGood)
+                        .putLong("atWhen:" + ratingKey, System.currentTimeMillis())
+                        .apply()
+                }
+            }
             // half a minute of playing since the last trouble is a working stream,
             // and it should not be spending a budget the last hour used up
             if (pos > faultAt + 30_000) { retried = 0; faultAt = 0 }

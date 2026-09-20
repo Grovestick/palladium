@@ -287,7 +287,11 @@ class Invites:
     #: Whole paths a guest may reach, matched exactly. "/update" says what build a
     #: machine is running, which is worth showing on any screen; "/update/install"
     #: replaces the program and is the owner's, so this cannot be a prefix.
-    GUEST_EXACT = ("/update",)
+    #: /applog is how a screen says why it died. A crash report carries no token -
+    #: the app is on its way out and the key may not even be loaded - so it was
+    #: refused at the door and the crash log stood a month stale while the app was
+    #: crashing every few minutes.
+    GUEST_EXACT = ("/update", "/applog")
 
     @staticmethod
     def allowed(path):

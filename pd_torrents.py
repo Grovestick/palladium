@@ -1045,6 +1045,12 @@ class QB:
         rows = json.loads(self._call("/api/v2/torrents/info?hashes=" + info_hash) or b"[]")
         return rows[0] if rows else None
 
+    def states(self):
+        """Every torrent's state, by hash, in one ask rather than one ask each."""
+        rows = json.loads(self._call("/api/v2/torrents/info", timeout=20) or b"[]")
+        return {str(t.get("hash") or "").lower(): str(t.get("state") or "")
+                for t in rows}
+
     def files(self, info_hash):
         return json.loads(self._call("/api/v2/torrents/files?hash=" + info_hash) or b"[]")
 
@@ -1105,6 +1111,11 @@ def status():
         if lib else []
     packs = []
     on_offer = {o["ratingKey"] for o in offered()}
+    # what qBittorrent has stopped on, asked once for all of them
+    try:
+        states = QB(cfg).states()
+    except Exception:
+        states = {}
     for pack in data["packs"]:
         films = pack.get("films") or []
         keys = {f["key"] for f in films}
@@ -1137,6 +1148,13 @@ def status():
                       "episodes": len(eps),
                       "held": len(films) - (len(keys & on_offer) + max(
                           0, len(eps) - eps_held - eps_done)) - len(done),
+                      # qBittorrent has stopped on this one - and whether reading
+                      # its files again has already been tried
+                      "halted": states.get(str(pack["hash"]).lower(), "")
+                                if states.get(str(pack["hash"]).lower(), "") in HALTED
+                                else "",
+                      "haltedWhy": halted_why(states.get(str(pack["hash"]).lower(), ""),
+                                              pack["hash"]),
                       "refused": refused(pack),
                       "pieceMiB": round((pack.get("pieceBytes") or 0) / 1048576)})
     return {"config": {"url": cfg.get("url") or "http://127.0.0.1:8080",
@@ -1278,13 +1296,36 @@ def request(key, token, who, cap_gb=0.0):
     return {"ok": row["state"] != "failed", "state": row["state"], "why": row["why"]}
 
 
+#: What a failure to reach qBittorrent looks like, in the words the socket uses.
+#: Being unable to reach it is not the same as being unable to do the thing.
+ASLEEP = ("winerror 10061", "connection refused", "actively refused",
+          "connection aborted", "timed out", "urlopen error", "no connection could be made")
+
+
+def _waiting_for_qbt(why):
+    """True when this went wrong only because qBittorrent was not running."""
+    said = str(why or "").lower()
+    return any(word in said for word in ASLEEP)
+
+
 def _begin(row, pack, film):
-    """A download whose turn it is: the pack in qBittorrent, that file on."""
+    """A download whose turn it is: the pack in qBittorrent, that file on.
+
+    qBittorrent being off is not a failed download, it is one that has not started.
+    The row stays queued and the worker tries it again - one at a time, oldest first -
+    until the client is back. Anything else is a real failure and is said as one.
+    """
     try:
         fetch(pack, film)
     except Exception as e:
-        row["state"] = "failed"
-        row["why"] = str(e)[:200]
+        why = str(e)[:200]
+        if _waiting_for_qbt(why):
+            row["state"] = "queued"
+            row["why"] = "Waiting for qBittorrent"
+            row.pop("started", None)
+        else:
+            row["state"] = "failed"
+            row["why"] = why
     with LOCK:
         save()
 
@@ -1298,6 +1339,12 @@ def _start_next():
             return
         row = next((d for d in data["downloads"] if d.get("state") == "queued"), None)
         if row is None:
+            # and one that failed only because qBittorrent was not running, which it
+            # may be again. Oldest first, like everything else in this queue.
+            row = next((d for d in data["downloads"]
+                        if d.get("state") == "failed"
+                        and _waiting_for_qbt(d.get("why"))), None)
+        if row is None:
             return
         pack, film = by_key(row.get("key"))
         why = "No longer on offer" if not film else ""
@@ -1307,6 +1354,7 @@ def _start_next():
             row.update(state="failed", why=why)
         else:
             row.update(state="downloading", started=int(time.time()))
+            row["why"] = ""
         save()
     if not why:
         _begin(row, pack, film)
@@ -1877,6 +1925,76 @@ def _wrong_year(film):
 SPEEDS = {}
 
 
+#: What qBittorrent says when it has stopped on something rather than waiting on a
+#: swarm, and what that means in words somebody can act on. A recheck is the answer to
+#: all of them: it reads the files on disk again and starts what is whole.
+HALTED = {
+    "missingFiles": "qBittorrent cannot find this pack's files",
+    "error": "qBittorrent stopped on an error",
+    "unknown": "qBittorrent is not sure about this pack",
+}
+
+
+def halted_why(state, info_hash=""):
+    """What to say about a stopped pack: before it was read again, and after."""
+    said = HALTED.get(str(state or ""), "")
+    if not said:
+        return ""
+    if info_hash and info_hash in LOOKED:
+        return said + " - the files were read again and it is still stopped, so it "                       "needs looking at"
+    return said + " - reading its files again"
+
+
+#: packs already asked, by itself, to read their files again - and what came of it.
+#: Once each: a recheck that did not mend it will not mend it on the tenth try, and
+#: something a person has to deal with should be said once and then left to them.
+LOOKED = {}
+
+
+def mend_halted(info_hash="", force=False):
+    """Read the files on disk again for packs qBittorrent has stopped on.
+
+    A drive that goes away for a minute leaves every torrent touching it in
+    "missingFiles" - qBittorrent stops them and waits, and nothing arrives even
+    though the disk is back. Reading them again finds the pieces and starts what is
+    whole. Done by itself when the state is seen, and by hand from the Torrents page.
+
+    `info_hash` names one pack; without it, every halted one. `force` ignores how
+    recently it was tried, which is what a press of the button means.
+    """
+    data = load()
+    qb = QB(data["config"])
+    want = []
+    if info_hash:
+        want = [info_hash]
+    else:
+        for pack in data["packs"]:
+            try:
+                said = qb.info(pack["hash"]) or {}
+            except Exception:
+                continue
+            if str(said.get("state") or "") in HALTED:
+                want.append(pack["hash"])
+    mended, held_off = [], 0
+    for one in want:
+        # tried once already and still halted: it needs somebody, not another go
+        if not force and one in LOOKED:
+            held_off += 1
+            continue
+        LOOKED[one] = time.time()
+        try:
+            qb.recheck(one)
+            qb.start(one)
+            mended.append(one)
+        except Exception as e:
+            STATE["why"] = str(e)[:160]
+    if mended:
+        STATE["why"] = ("read the files again for %d pack%s qBittorrent had "
+                        "stopped" % (len(mended), "" if len(mended) == 1 else "s"))
+    return {"ok": True, "rechecked": len(mended), "waiting": held_off,
+            "hashes": mended}
+
+
 def _follow_downloads():
     """Read how far each download has got, how fast its torrent is coming in, and so how
     long is left. True while anything is still on its way."""
@@ -1889,7 +2007,24 @@ def _follow_downloads():
     for info_hash in {d["hash"] for d in active}:
         try:
             files = qb.files(info_hash)
-            speed = float((qb.info(info_hash) or {}).get("dlspeed") or 0)
+            said = qb.info(info_hash) or {}
+            # A torrent qBittorrent has halted is not a slow download. "missingFiles"
+            # is what it says when the data it had is no longer on the disk - which is
+            # what a drive dropping off leaves behind, on every torrent that was
+            # touching it. It stays that way until the files are read again, and
+            # nothing arrives meanwhile: the film sat at 0% saying "downloading".
+            state = str(said.get("state") or "")
+            if state in HALTED:
+                for d in [x for x in active if x["hash"] == info_hash]:
+                    d["stuck"] = state
+                    d["why"] = halted_why(state, info_hash)
+                changed = True
+                continue
+            for d in [x for x in active if x["hash"] == info_hash]:
+                if d.pop("stuck", None):
+                    d["why"] = ""
+                    changed = True
+            speed = float(said.get("dlspeed") or 0)
             was = SPEEDS.get(info_hash)
             settled = speed if was is None else was * 0.8 + speed * 0.2
             SPEEDS[info_hash] = settled
@@ -2002,6 +2137,9 @@ def _work():
             read_episodes()
             matching = _match_some()
             fetching = _follow_downloads()
+            # a pack qBittorrent has stopped on is read again, once - a drive that
+            # went away and came back leaves every torrent that touched it halted
+            mend_halted()
             _start_next()
             _guard_packs()
             _name_arrivals()

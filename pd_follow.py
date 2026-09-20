@@ -35,7 +35,7 @@ KEYS = {"learn": None, "last": 0.0, "stamp": 0}
 
 #: Where the main server had got to, and when we last asked. Copying the films without the
 #: places in them means a shelf of things that all start at the beginning.
-PLACES = {"since": 0, "at": 0.0, "gave": 0.0}
+PLACES = {"since": 0, "at": 0.0, "gave": 0.0, "gavesince": 0}
 
 #: what the main server calls its owner. Their places arrive under that name and are filed
 #: here against whoever owns this machine - which is a different person, or none.
@@ -1764,7 +1764,11 @@ def light_round(one, lib=None, api=None):
         try:
             said = ask(one, "/follow/progress?since=%d" % PLACES["since"], 30)
             api.take_progress(as_ours(said.get("progress") or []))
-            PLACES["since"] = int(said.get("now") or 0) - 300
+            # the five minutes of overlap are so a place written while this was asked
+            # is not missed. Not when there was more than fitted in one answer: then
+            # "now" is the last place sent, and going back before it never gets past.
+            mark = int(said.get("now") or 0)
+            PLACES["since"] = mark if said.get("more") else mark - 300
         except Exception:
             pass
     try:
@@ -2046,7 +2050,11 @@ def _round(one, lib, api, folder):
         try:
             said = ask(one, "/follow/progress?since=%d" % PLACES["since"], 30)
             api.take_progress(as_ours(said.get("progress") or []))
-            PLACES["since"] = int(said.get("now") or 0) - 300
+            # the five minutes of overlap are so a place written while this was asked
+            # is not missed. Not when there was more than fitted in one answer: then
+            # "now" is the last place sent, and going back before it never gets past.
+            mark = int(said.get("now") or 0)
+            PLACES["since"] = mark if said.get("more") else mark - 300
         except Exception:
             pass
     # and back the other way: an evening watched here belongs in the same book
@@ -2055,7 +2063,9 @@ def _round(one, lib, api, folder):
         try:
             # this machine's own viewers, from the last week: an evening here is
             # the main server's evening, and the main server keeps the book
-            mine = api.progress_of(["me"], int(time.time()) - 86400 * 7)
+            mine, mark = api.progress_of(["me"], PLACES["gavesince"] or
+                                         int(time.time()) - 86400 * 7,
+                                         with_mark=True)
             if mine:
                 # sent back under the name the main server files them under, or they
                 # would arrive there belonging to a machine nobody watches on
@@ -2063,6 +2073,9 @@ def _round(one, lib, api, folder):
                     if HOUSE["owner"]:
                         row["who"] = HOUSE["owner"]
                 tell(one, "/follow/watched", {"progress": mine})
+                # only as far as was actually sent, or the ones past the end of a
+                # full page are stepped over and never travel
+                PLACES["gavesince"] = mark
         except Exception:
             pass
     # where the main server is, so a page opened on this machine has a way back to it

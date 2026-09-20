@@ -1443,12 +1443,21 @@ function card(it, onDeck, coll) {
     (isFav(it) ? '<div class="favheart' + (isCopied(it) ? " stack" : "") +
       (pct ? " over" : "") + '" title="A favourite: kept on the other machine too, ' +
       'so it still plays when this server is off">&#9829;</div>' : "") +
+    // The same band across the corner for the three things a poster says about
+    // itself; only the word in it changes. A download already running keeps its
+    // badge: the band holds one word, the numbers are the point while it comes in.
     (it.askable
       ? '<div class="ribbon' + (it.asked ? " asked" : "") + '"><span>' +
-        (it.asked ? "Asked" : "Request") + "</span></div>" : "") +
-    (it.offered ? '<div class="offerbadge">' + DOWNLOAD_MARK +
-      (offerWord(it) ? "<span>" + esc(offerWord(it)) + "</span>" : "") + "</div>" : "") +
-    (isWatched(it) ? '<div class="seen">&#10003;</div>'
+        (it.asked ? "Asked" : "Request") + "</span></div>"
+      : it.shuffle ? '<div class="ribbon"><span>Shuffle</span></div>'
+      : it.offered && !offerWord(it)
+        ? '<div class="ribbon"><span>Download</span></div>' : "") +
+    (it.offered && offerWord(it) ? '<div class="offerbadge">' + DOWNLOAD_MARK +
+      "<span>" + esc(offerWord(it)) + "</span></div>" : "") +
+    // not under a band: both want the same corner, and a shuffled row is the shelf
+    // rather than the episode it happens to be showing
+    (it.shuffle ? ""
+      : isWatched(it) ? '<div class="seen">&#10003;</div>'
       : it.viewedLeafCount ? '<div class="seen part">' + it.viewedLeafCount + "/" +
         (it.leafCount || "?") + "</div>" : "") +
     (pct ? '<div class="plabel">' + clock(it.viewOffset / 1000) + " / " +
@@ -1722,7 +1731,19 @@ function rowSection(cat, list, total) {
   const head = document.createElement("h2");
   head.innerHTML = '<span class="ct">' + esc(cat.title) + "</span>" +
     '<span class="seeall">See all ' + (total || list.length) + " &rsaquo;</span>";
-  head.onclick = () => openCategory(cat);
+  // Added and released are a shelf off the front of a tab, not lists of their own:
+  // opening one goes to that tab in that order, where the ordinary sort, genre and
+  // decade marks are. A page of its own had none of them.
+  head.onclick = () => {
+    const toTab = { newfilms: ["movie", "added"], released: ["movie", "released"],
+                    newtv: ["show", "added"], releasedtv: ["show", "released"] }[cat.id];
+    if (!toTab) return openCategory(cat);
+    sortState.key = toTab[1];
+    sortState.dir = "desc";
+    genreWanted[toTab[0]] = "";
+    decadeWanted[toTab[0]] = "";
+    go(toTab[0] === "movie" ? "movies" : "shows");
+  };
   box.appendChild(head);
   const render = () => {
     const n = fits();
@@ -1743,6 +1764,9 @@ const CATS = [
     path: (sec) => ["/library/onDeck", {}] },
   { id: "newfilms", title: "Recently added in films", by: "addedAt",
     path: (sec) => ["/library/sections/" + sec.movie + "/recentlyAdded", {}] },
+  // Everything that has just come out, in one shelf: what this house holds, what a
+  // pack can fetch and what can only be asked for, newest first. They were two rows
+  // saying the same thing in two halves.
   { id: "released", title: "Recently released movies", by: "originallyAvailableAt",
     path: (sec) => ["/library/sections/" + sec.movie + "/all",
                     { type: 1, sort: "originallyAvailableAt:desc" }] },
@@ -1752,12 +1776,6 @@ const CATS = [
   // a show from 2008 airing this week is more recent than one from 2024 that ended
   { id: "releasedtv", title: "Recently released episodes", by: "originallyAvailableAt",
     path: (sec) => ["/library/sections/" + sec.show + "/recentlyReleased", {}] },
-  // What has just turned up to watch at home, none of which is in this house. Last
-  // on the page on purpose: everything above it can be played this minute.
-  // one server only: the list is a reading of a website rather than anything in a
-  // library, and asking every machine would put the same row up two or three times
-  { id: "streaming", title: "New on streaming", by: "addedAt", one: true,
-    path: (sec) => ["/library/streaming", {}] },
 ];
 
 /* The shelves this viewer keeps on the front page, in their order. Held by the
@@ -1927,17 +1945,65 @@ async function openCategory(cat, push = true) {
   onResize = null;
   main.innerHTML = '<div class="empty">Loading&hellip;</div>';
   const PAGE = 120;
-  const first = await fetchCat(cat, 0, PAGE);
+  let first = await fetchCat(cat, 0, PAGE);
   const total = first.totalSize || first.size || 0;
+  // A shelf the server keeps whole is asked for whole, so the page can work its
+  // categories and its order out of everything in it rather than the first screenful.
+  // It is what puts the genre picker on New on streaming, which outgrew one page.
+  if (cat.one && total > PAGE && total <= 600) {
+    const whole = await fetchCat(cat, 0, total);
+    if (items(whole).length > items(first).length) first = whole;
+  }
   main.innerHTML = "";
   const h = document.createElement("h2");
   h.innerHTML = '<span class="ct">' + esc(cat.title) + "</span>" +
     '<span class="count">' + total + " items</span>";
   main.appendChild(h);
-  const g = grid(items(first), 0);
+  // Everything in hand: the page gets the controls a list has - an order and its own
+  // categories, worked out from what it holds and applied here. A category that pages
+  // in as you scroll is left alone: half a list cannot say which categories are in it.
+  const all = items(first);
+  let g;
+  if (all.length >= total) {
+    const catSort = { key: cat.by === "addedAt" ? "added" : "released", dir: "desc" };
+    const pickGenre = document.createElement("select");
+    pickGenre.className = "sortpick";
+    const rerender = () => {
+      const want = pickGenre.value;
+      const shown = sortLike(
+        all.filter((it) => !want ||
+          (it.genres || []).some((x) => x.toLowerCase() === want.toLowerCase())),
+        catSort);
+      const fresh = grid(shown, 0);
+      main.replaceChild(fresh, g);
+      g = fresh;
+      h.querySelector(".count").textContent = shown.length + " items";
+    };
+    const bar = sortBar(rerender, catSort);
+    const counts = {};
+    all.forEach((it) => (it.genres || []).forEach((x) => {
+      counts[x] = (counts[x] || 0) + 1;
+    }));
+    if (Object.keys(counts).length) {
+      pickGenre.add(new Option("All genres", ""));
+      Object.keys(counts).sort().forEach((name) => {
+        pickGenre.add(new Option(name + "  (" + counts[name] + ")", name));
+      });
+      pickGenre.onchange = rerender;
+      const lbl = document.createElement("span");
+      lbl.className = "lbl";
+      lbl.textContent = "Genre:";
+      bar.appendChild(lbl);
+      bar.appendChild(pickGenre);
+    }
+    main.appendChild(bar);
+    g = grid(sortLike(all, catSort), 0);
+  } else {
+    g = grid(all, 0);
+  }
   main.appendChild(g);
   restoreListPlace();
-  let loaded = items(first).length, busy = false;
+  let loaded = all.length, busy = false;
   if (loaded < total) {
     const sentinel = document.createElement("div");
     sentinel.className = "sentinel";
@@ -2026,18 +2092,27 @@ function sortBar(rerender, state, dirs) {
   sel.onchange = () => {
     on.key = sel.value;
     on.dir = firstDir[sel.value] || "asc";
+    paint();
     rerender();
   };
   bar.appendChild(sel);
   const flip = document.createElement("button");
   flip.className = "sortbtn flip";
-  flip.textContent = on.dir === "asc" ? "\u2191" : "\u2193";
-  flip.title = on.dir === "asc" ? "Oldest first - press to reverse"
-                                : "Newest first - press to reverse";
+  // the bar draws its own arrow after a press. Most callers redraw the whole view
+  // and build a new bar, but one replaces the grid alone, and there the arrow stood
+  // at the order before the press while the list underneath was in the new one.
+  const paint = () => {
+    sel.value = on.key;
+    flip.textContent = on.dir === "asc" ? "\u2191" : "\u2193";
+    flip.title = on.dir === "asc" ? "Oldest first - press to reverse"
+                                  : "Newest first - press to reverse";
+  };
   flip.onclick = () => {
     on.dir = on.dir === "asc" ? "desc" : "asc";
+    paint();
     rerender();
   };
+  paint();
   bar.appendChild(flip);
   return bar;
 }
@@ -2344,6 +2419,30 @@ async function viewWatchlist() {
       viewWatchlist();
     };
     bar.appendChild(how);
+    // Everything back in the hat, on the shelf it belongs to. A round plays each
+    // episode once and only draws again when the hat is empty, so the only way to
+    // start it over deliberately is to say so - and the only place that could be
+    // said was the cross on the Continue watching row, which is not where somebody
+    // looks for it.
+    if (mixed) {
+      const again = document.createElement("button");
+      again.className = "btn ghost kind";
+      again.textContent = "\u21ba Reset";
+      again.title = "Put every episode back in the hat and begin the round again";
+      again.onclick = async () => {
+        again.disabled = true;
+        try {
+          await fetch("/collections/shuffle/reset", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: String(here.id).replace(/^coll:/, "") }),
+          });
+        } catch (err) { again.disabled = false; return noServer(); }
+        toast("Back in the hat");
+        viewWatchlist();
+      };
+      bar.appendChild(again);
+    }
     act("Edit", () => collectionForm(here));
     main.appendChild(bar);
     // The form goes under the buttons, not over them. Added before the bar it pushed
@@ -2972,25 +3071,25 @@ function collectionForm(shelf) {
   const genreRow = document.createElement("div");
   genreRow.className = "addrow subrow";
   genreRow.innerHTML = "<span class='sublabel'>Genre</span>";
-  const genre = document.createElement("select");
-  genre.className = "collgenre";
-  genre.add(new Option("Any", ""));
-  genre.onchange = tryAgain;
-  genreRow.appendChild(genre);
+  // The control the shelves themselves carry, rather than a single choice: a rule
+  // can name several genres and takes what carries all of them. The server has split
+  // this on commas since collections were rules at all - only the form insisted on
+  // one, so "science fiction and horror" could not be written down here.
+  let genreWanted = String(rule.genre || "");
+  genreRow.appendChild(genreMenu(
+    genreWanted,
+    Promise.all([genresFor("movie", CTX), genresFor("show", CTX)])
+      .then(([films, shows]) => {
+        const seen = new Set();
+        return films.concat(shows)
+          .map((g) => g.title || "")
+          .filter((t) => t && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()))
+          .sort((a, b) => a.localeCompare(b))
+          .map((t) => [t, t]);
+      }),
+    (picked) => { genreWanted = picked; tryAgain(); },
+    0));
   box.appendChild(genreRow);
-  Promise.all([genresFor("movie", CTX), genresFor("show", CTX)]).then(([films, shows]) => {
-    const seen = new Set();
-    films.concat(shows)
-      .map((g) => g.title || "")
-      .filter((t) => t && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()))
-      .sort((a, b) => a.localeCompare(b))
-      .forEach((t) => genre.add(new Option(t, t)));
-    // the rule's genre as the list spells it, whatever case it was saved in
-    const named = [].find.call(genre.options, (o) =>
-      rule.genre && o.value.toLowerCase() === String(rule.genre).toLowerCase());
-    if (rule.genre && !named) genre.add(new Option(rule.genre, rule.genre));
-    genre.value = named ? named.value : (rule.genre || "");
-  });
   const yearsRow = document.createElement("div");
   yearsRow.className = "addrow subrow";
   yearsRow.innerHTML = "<span class='sublabel'>Years</span>";
@@ -3245,7 +3344,7 @@ function collectionForm(shelf) {
         seasonWithout: seasonOut.value.trim(),
         type: kind,
         // while editing, these follow the genre and decade picked above the list
-        genre: genre.value,
+        genre: genreWanted,
         from: +early.value || 0,
         to: +late.value || 0,
       },
@@ -3314,7 +3413,7 @@ function collectionForm(shelf) {
             season: season.value.trim(),
             seasonWithout: seasonOut.value.trim(),
             type: kind,
-            genre: genre.value,
+            genre: genreWanted,
             from: +early.value || 0,
             to: +late.value || 0,
           },
@@ -3833,6 +3932,9 @@ let SERVERLANG = "";
 let BURNOK = true;
 
 /* first track matching the default language, e.g. pref "en" matches en/eng/en-US */
+//: what the server says this viewer reads when the film has nothing in the first
+let SERVERLANG2 = "";
+
 function preferredSub(m, mi) {
   const list = subOptions(m, mi);
   // what was chosen for this title last time beats any rule about languages
@@ -3843,11 +3945,18 @@ function preferredSub(m, mi) {
   const mine = prefs();
   const want = "subLang" in mine ? mine.subLang : (SERVERLANG || "");
   if (!want) return null;
-  const hit = (t) => t.code === want || t.code.indexOf(want + "-") === 0 ||
-                     t.code.slice(0, 3) === { en: "eng", sv: "swe", da: "dan", no: "nor",
-                       fi: "fin", de: "ger", fr: "fre", es: "spa", it: "ita",
-                       nl: "dut", pt: "por" }[want];
-  return list.filter((t) => hit(t) && !t.forced)[0] || list.filter(hit)[0] || null;
+  const THREE = { en: "eng", sv: "swe", da: "dan", no: "nor", fi: "fin", de: "ger",
+                  fr: "fre", es: "spa", it: "ita", nl: "dut", pt: "por" };
+  const hits = (code) => (t) => t.code === code || t.code.indexOf(code + "-") === 0 ||
+                                t.code.slice(0, 3) === THREE[code];
+  // the first language, then the second if the film carries nothing in the first
+  const pick = (code) => {
+    if (!code) return null;
+    const hit = hits(code);
+    return list.filter((t) => hit(t) && !t.forced)[0] || list.filter(hit)[0] || null;
+  };
+  const second = "subLang2" in mine ? mine.subLang2 : (SERVERLANG2 || "");
+  return pick(want) || pick(second) || null;
 }
 
 function subLabel(t, casting) {
@@ -4272,6 +4381,10 @@ function offerWord(it) {
 async function viewOffer(m) {
   main.innerHTML = "";
   const o = m.offer || {};
+  // Play, then download, then ask. A film a pack here carries is fetched, and only
+  // what no pack has is asked for; a guest asks either way, because what comes into
+  // the house is the owner's to decide.
+  const fetches = !!m.offered && !(CFG && CFG.guest);
   const wrap = document.createElement("div");
   wrap.className = "detail offer";
   setBackdrop(m.thumb ? img(m.thumb, 800, 1200) : null);
@@ -4279,20 +4392,24 @@ async function viewOffer(m) {
     '<div class="poster"><span class="ph"></span>' +
     (m.thumb ? '<img src="' + img(m.thumb, 400, 600) + '" alt="" onerror="this.remove()">' : "") +
     '<div class="offerbadge" id="offerpct" style="display:none"></div>' +
-    (m.askable ? '<div class="ribbon' + (m.asked ? " asked" : "") + '"><span>' +
-      (m.asked ? "Asked" : "Request") + "</span></div>" : "") +
+    (fetches ? '<div class="ribbon"><span>Download</span></div>'
+      : '<div class="ribbon' + (m.asked ? " asked" : "") + '"><span>' +
+        (m.asked ? "Requested" : "Request") + "</span></div>") +
     "</div>" +
     '<div class="meta"><h1>' + esc(m.title) + "</h1>" +
     '<div class="sub">' + [m.year, (m.genres || []).join(", "),
       o.size ? (o.size / 1e9).toFixed(1) + " GB" : "",
-      (!m.askable && o.free != null) ? o.free + " GB free on the download drive" : ""]
+      fetches && o.free != null ? o.free + " GB free on the download drive" : ""]
       .filter(Boolean).map(esc)
       .join(" &middot; ") + "</div>" +
     '<div class="actions"><button class="btn" id="offerget"></button>' +
     '<button class="btn ghost" id="offercancel" style="display:none">Cancel download</button>' +
     '<span class="note" id="offersaid"></span></div>' +
     '<p class="summary">' + esc(m.summary) + "</p>" +
-    '<div class="note">' + (m.askable
+    '<div class="note">' + (fetches
+      ? "Not in the library, but a pack here carries it. Downloading fetches this one "
+        + "film in and leaves the rest of the pack alone."
+      : m.askable
       ? "Not in the library, and not on any pack here. Asking puts it on the owner's "
         + "list; nothing is fetched by asking."
       : "Not in the library yet. Asking puts it on the owner's list - what comes into "
@@ -4306,7 +4423,7 @@ async function viewOffer(m) {
   });
   // one poster for a film its pack carries more than once: the release is chosen here,
   // and Download fetches the one chosen
-  if ((o.versions || []).length > 1) {
+  if (fetches && (o.versions || []).length > 1) {
     const row = document.createElement("div");
     row.className = "versions";
     row.innerHTML = '<span class="note">Version</span>';
@@ -4345,7 +4462,14 @@ async function viewOffer(m) {
         (eta != null && eta >= 0 ? "  \u00b7  " + etaWords(eta) : "")
       : state === "queued" ? "Queued" + (o.place ? " \u00b7 " + o.place + " ahead" : "")
       : state === "done" ? "Downloaded - arriving"
-      : (m.asked ? "Asked for" : "Request");
+      : fetches ? "Download"
+      : (m.asked ? "Requested" : "Request")
+        // and how many are waiting on it. One asking is the person reading this and
+        // needs no saying; several is the thing worth knowing before deciding what
+        // comes into the house.
+        + (Math.max(Number(m.asks || 0), m.asked ? 1 : 0) > 0
+             ? "  \u00b7  " + Math.max(Number(m.asks || 0), m.asked ? 1 : 0)
+             : "");
     said.textContent = why || (o.who && coming ? "Asked for by " + o.who : "");
   };
   draw(o.state, o.progress, o.free != null && !o.state && o.size / 1e9 > o.free
@@ -4401,11 +4525,30 @@ async function viewOffer(m) {
       said.textContent = r.why || "Could not cancel it";
     }
   };
-  // Asking, not fetching. What comes into the house is the owner's to decide, and a
-  // request that downloaded by itself would be a download button under another name.
   b.onclick = async () => {
     b.disabled = true;
     let r = {};
+    // one film off the pack, and the page follows it in from here
+    if (fetches) {
+      try {
+        r = await (await fetch("/torrents/get", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: m.ratingKey }) })).json();
+      } catch (e) {
+        r = { ok: false, why: "The server did not answer" };
+      }
+      if (r.ok) {
+        o.state = r.state || "queued";
+        draw(o.state, r.progress || 0, "");
+        toast("Downloading " + m.title);
+        drawDownloadBanner();
+        setTimeout(follow, 2000);
+      } else {
+        b.disabled = false;
+        said.textContent = r.why || "Could not start that download";
+      }
+      return;
+    }
     try {
       r = await (await fetch("/requests", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -4416,9 +4559,15 @@ async function viewOffer(m) {
     }
     if (r.asked || r.already) {
       m.asked = true;
-      b.textContent = "Asked for";
-      said.textContent = "Asked for. The owner decides what comes in.";
-      toast("Asked for " + m.title);
+      m.asks = Number((r.request && r.request.asks) || m.asks || 1);
+      b.textContent = "Requested  \u00b7  " + m.asks;
+      said.textContent = r.watchlisted
+        ? "Asked for, and on your watchlist."
+        : "Asked for. The owner decides what comes in.";
+      // where it can be looked for afterwards: asking is the end of what a viewer
+      // can do about a film, so it goes on their own list rather than nowhere
+      toast(r.watchlisted ? "Added to your watchlist"
+                          : "Already on your watchlist");
     } else {
       b.disabled = false;
       said.textContent = r.error || "Could not ask for that just now";
@@ -4475,6 +4624,138 @@ const bannerAgain = () => {
 };
 bannerAgain();
 
+/**
+ * The whole of a piece of writing, when the page only had room for some of it.
+ *
+ * A plot cut off at three lines is the one thing on the page somebody wants more of,
+ * and there was no way to ask for it. Pressing it opens what it says in full.
+ */
+function tellMe(title, text, m) {
+  const back = document.createElement("div");
+  back.className = "sheetback";
+  back.innerHTML = '<div class="sheet"><h3></h3><div class="rated"></div><p></p>' +
+    '<div class="cast"></div><button class="btn ghost">Close</button></div>';
+  back.querySelector("h3").textContent = title || "";
+  back.querySelector("p").textContent = text || "";
+  // what it is rated, out here where there is room to say it in words
+  if (m) {
+    const rated = [
+      m.rating ? "★ " + Number(m.rating).toFixed(1) + " of 10" : "",
+      m.contentRating || "",
+      m.year || "",
+      mins(m.duration) || "",
+      (m.genres || []).join(", "),
+    ].filter(Boolean).join("   ·   ");
+    back.querySelector(".rated").textContent = rated;
+  }
+  // and who is in it, each name a way into everything else they are in
+  castRow(back.querySelector(".cast"), m || {});
+  const shut = () => back.remove();
+  back.onclick = (e) => { if (e.target === back) shut(); };
+  back.querySelector("button").onclick = shut;
+  document.addEventListener("keydown", function esc(e) {
+    if (e.key !== "Escape") return;
+    document.removeEventListener("keydown", esc);
+    shut();
+  });
+  document.body.appendChild(back);
+  back.querySelector("button").focus();
+}
+
+/**
+ * Every line about a film opens in full when it is pressed, and says so underneath.
+ *
+ * A plot cut off at four lines is the one thing on the page somebody wants more of.
+ * "Show more" is the word for it, under the text where a reader has already run out.
+ */
+function pressableText(box, m) {
+  box.querySelectorAll(".tellme").forEach((el) => {
+    const whole = el.textContent.trim();
+    if (!whole) return;
+    el.tabIndex = 0;
+    el.title = "Read it all";
+    const open = () => tellMe(m.title, whole, m);
+    el.onclick = open;
+    el.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    };
+    const more = document.createElement("button");
+    more.className = "btn ghost tiny showmore";
+    more.textContent = "Show more";
+    more.onclick = open;
+    el.after(more);
+  });
+}
+
+/**
+ * Who is in it, as a row of names to press.
+ *
+ * Pressing one asks the library what else it holds with that person in it - the
+ * library, not the internet: the answer is what can be watched tonight.
+ */
+function castRow(box, m) {
+  const list = (m.Role || []).filter((r) => (r.tag || "").trim());
+  if (!list.length || !box) return;
+  box.innerHTML = '<span class="lbl">With</span>';
+  list.forEach((r) => {
+    const b = document.createElement("button");
+    b.className = "btn ghost kind bubble";
+    // their face beside their name, where there is one. A bubble with a blank disc
+    // reads as a missing picture; a letter reads as a person nobody photographed.
+    if (r.thumb) {
+      const face = document.createElement("img");
+      face.src = img(r.thumb, 96, 96);
+      face.alt = "";
+      face.loading = "lazy";
+      face.onerror = () => face.replaceWith(initial(r.tag));
+      b.appendChild(face);
+    } else {
+      b.appendChild(initial(r.tag));
+    }
+    const said = document.createElement("span");
+    said.textContent = r.tag;
+    b.appendChild(said);
+    b.title = r.role ? r.tag + " as " + r.role : r.tag;
+    b.onclick = () => viewPerson(r);
+    box.appendChild(b);
+  });
+}
+
+/** A letter in a disc, for somebody with no picture. */
+function initial(name) {
+  const dot = document.createElement("span");
+  dot.className = "face";
+  dot.textContent = (name || "?").trim().charAt(0).toUpperCase();
+  return dot;
+}
+
+/** Everything this house holds with one person in it. */
+async function viewPerson(who) {
+  pushView(() => viewPerson(who));
+  $("#back").classList.add("on");
+  main.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  let list = [];
+  try {
+    list = await fromAll((srv) => api("/library/withPerson",
+      who.id ? { person: who.id } : { name: who.tag }, srv));
+  } catch (e) {
+    list = [];
+  }
+  main.innerHTML = "";
+  const h = document.createElement("h2");
+  h.innerHTML = '<span class="ct">' + esc(who.tag) + "</span>" +
+    '<span class="count">' + list.length + (list.length === 1 ? " film" : " films") + "</span>";
+  main.appendChild(h);
+  if (!list.length) {
+    const none = document.createElement("div");
+    none.className = "empty";
+    none.textContent = "Nothing here with " + who.tag + " in it.";
+    main.appendChild(none);
+    return;
+  }
+  main.appendChild(grid(list, 0));
+}
+
 async function viewMovie(key) {
   onResize = null;
   main.innerHTML = '<div class="empty">Loading&hellip;</div>';
@@ -4518,10 +4799,13 @@ async function viewMovie(key) {
     playerBar(m, resume) +
     (md && md.videoCodec === "hevc"
       ? '<div class="warn">HEVC source - the transcoder re-encodes this one in software.</div>' : "") +
-    '<p class="summary">' + esc(m.summary) + "</p></div>";
+    '<p class="summary tellme">' + esc(m.summary) + "</p></div>";
   wrap.querySelectorAll("[data-off]").forEach((b) => {
     b.onclick = () => play(m, +b.dataset.off, opts());
   });
+  // the writing about the film, in full when it is pressed - with the ratings and
+  // who is in it, which is where there is room for them
+  pressableText(wrap, m);
   // The subtitle list belongs to the cache, not to the film: two files hold different
   // tracks under different numbers, so choosing the 4K copy and leaving the list
   // alone played it with a stream id from the other one - the wrong track, or none.
@@ -7027,6 +7311,7 @@ async function loadSubtitleLook(key) {
     const got = await (await fetch(url)).json();
     if (got && got.subtitles) SUBLOOK = got.subtitles;
     if (got && got.language) SERVERLANG = got.language;
+    if (got && got.language2 !== undefined) SERVERLANG2 = got.language2 || "";
     if (got && got.accent) paintAccent(got.accent);
     SUBOVERRIDE = !!(got && got.override);
   } catch (e) { /* the defaults are perfectly good */ }

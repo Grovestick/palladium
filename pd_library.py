@@ -587,6 +587,16 @@ class Library:
             position REAL, duration REAL, casual INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS watchlog_when ON watchlog(updated DESC);
+        -- Who is in a film. Fetched the first time somebody opens its page and kept,
+        -- so the second opening costs nothing and so that "everything with this
+        -- person in it" can be asked of the library rather than of the internet.
+        CREATE TABLE IF NOT EXISTS credit (
+            item_id TEXT, ord INTEGER, person INTEGER, name TEXT, role TEXT,
+            profile TEXT
+        );
+        CREATE INDEX IF NOT EXISTS credit_item ON credit(item_id, ord);
+        CREATE INDEX IF NOT EXISTS credit_person ON credit(person);
+        CREATE INDEX IF NOT EXISTS credit_name ON credit(name);
         """)
         # which build was watching: added later, so the column is checked for rather
         # than assumed
@@ -598,6 +608,10 @@ class Library:
         CREATE INDEX IF NOT EXISTS file_item ON file(item_id);
         CREATE INDEX IF NOT EXISTS ep_item ON episode(item_id, season, number);
         """)
+        # a face to put beside the name: added after the table was first made
+        if "profile" not in [r[1] for r in con.execute(
+                "PRAGMA table_info(credit)").fetchall()]:
+            con.execute("ALTER TABLE credit ADD COLUMN profile TEXT")
         # older databases predate the ctime column
         cols = [r[1] for r in con.execute("PRAGMA table_info(file)").fetchall()]
         if "ctime" not in cols:
@@ -1308,6 +1322,115 @@ class Library:
         url = f"{TMDB}{path}?" + urllib.parse.urlencode(params)
         with urllib.request.urlopen(url, timeout=20) as r:
             return json.loads(r.read())
+
+    #: how many of a cast list are worth keeping. A film has thirty names on it and
+    #: nobody reads past the sixth; the ones after that are "Man in bar".
+    CAST_KEPT = 12
+
+    def credits_for(self, item_id, fetch=True):
+        """Who is in it: from the library, or from TMDB the first time.
+
+        Kept once asked for, so a page opened twice costs one request, and so that
+        the question "what else is this person in" can be answered from here.
+        """
+        con = self.db()
+        try:
+            rows = con.execute(
+                "SELECT person, name, role, profile FROM credit WHERE item_id=? "
+                "ORDER BY ord", (item_id,)).fetchall()
+            if rows or not fetch:
+                return [dict(r) for r in rows]
+            item = con.execute("SELECT tmdb_id, type FROM item WHERE id=?",
+                               (item_id,)).fetchone()
+            if not item or not item["tmdb_id"]:
+                return []
+            if not (self.config().get("tmdb_key") or "").strip():
+                return []
+            kind = "tv" if item["type"] == "show" else "movie"
+            try:
+                said = self.tmdb("/%s/%d/credits" % (kind, int(item["tmdb_id"])))
+            except Exception:
+                return []
+            cast = (said.get("cast") or [])[:self.CAST_KEPT]
+            # a film with nobody listed is written down as such - a single empty row -
+            # so it is not asked for again every time the page is opened
+            con.execute("DELETE FROM credit WHERE item_id=?", (item_id,))
+            con.executemany(
+                "INSERT INTO credit (item_id, ord, person, name, role, profile) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(item_id, n, int(p.get("id") or 0), str(p.get("name") or ""),
+                  str(p.get("character") or ""), str(p.get("profile_path") or ""))
+                 for n, p in enumerate(cast) if (p.get("name") or "").strip()]
+                or [(item_id, 0, 0, "", "", "")])
+            con.commit()
+            return [dict(r) for r in con.execute(
+                "SELECT person, name, role, profile FROM credit WHERE item_id=? "
+                "AND name <> '' ORDER BY ord", (item_id,)).fetchall()]
+        finally:
+            con.close()
+
+    def credits_backlog(self, most=150, pause=0.25):
+        """Fetch the cast of films that have none yet, a batch at a time.
+
+        Asking "what else is she in" is only worth anything once the library has been
+        read through: with credits fetched a page at a time, a name pressed on one
+        film found that film and nothing else. Returns how many were done, so the
+        caller can stop when there is nothing left.
+        """
+        if not (self.config().get("tmdb_key") or "").strip():
+            return 0
+        con = self.db()
+        try:
+            waiting = [r["id"] for r in con.execute(
+                "SELECT i.id FROM item i WHERE i.tmdb_id > 0 "
+                "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = i.id) "
+                "AND NOT EXISTS (SELECT 1 FROM credit c WHERE c.item_id = i.id) "
+                "LIMIT ?", (most,)).fetchall()]
+        finally:
+            con.close()
+        done = 0
+        for one in waiting:
+            try:
+                self.credits_for(one)
+                done += 1
+            except Exception:
+                pass
+            # TMDB is generous but this is thousands of films and nobody is waiting
+            # on it: a quarter of a second apart is four a second and no strain.
+            time.sleep(pause)
+        return done
+
+    def face_of(self, person):
+        """Where TMDB keeps that person's picture, as any row of ours has it."""
+        con = self.db()
+        try:
+            r = con.execute("SELECT profile FROM credit WHERE person=? "
+                            "AND profile <> '' LIMIT 1", (int(person),)).fetchone()
+            return r["profile"] if r else ""
+        finally:
+            con.close()
+
+    def with_person(self, person=0, name=""):
+        """Everything this house holds with that person in it, newest first.
+
+        By TMDB's number where there is one - two actors share a name often enough -
+        and by the name otherwise, which is what an older row has.
+        """
+        con = self.db()
+        try:
+            if person:
+                where, args = "c.person = ?", (int(person),)
+            elif name.strip():
+                where, args = "LOWER(c.name) = ?", (name.strip().lower(),)
+            else:
+                return []
+            return [dict(r) for r in con.execute(
+                "SELECT DISTINCT i.id, i.title, i.year, c.role FROM credit c "
+                "JOIN item i ON i.id = c.item_id WHERE " + where + " "
+                "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = i.id) "
+                "ORDER BY i.year DESC", args).fetchall()]
+        finally:
+            con.close()
 
     def identify_pending(self, limit=10000):
         cfg = self.config()
