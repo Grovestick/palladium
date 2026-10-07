@@ -49,6 +49,16 @@ GUEST_PREFIXES = (
     # this one, so every press was refused at the door - the same way round as the
     # player reports above, and it means somebody can start a download and not stop it.
     "/torrents/cancel",
+    # What the tracker is carrying for one film, and fetching one of them. The same
+    # trap as the two above, for the third time: these were on the list of what a
+    # guest may write and not on this one - so the door answered "not a guest at all"
+    # and the check behind it was never reached. The handlers decide who may
+    # themselves, by the key held and by what the house has been opened up to.
+    "/tracker/",
+    # and the same for the programmes put in the library off the popular list - the
+    # fourth time: the owner away from home holds an invitation, and without this the
+    # door answered "not a guest at all" before the handler could see whose key it was
+    "/shows/",
     "/copy/pick",       # which of two machines to read a film from, the screen's own choice
     "/gpu/hls",         # the same, in segments, for Safari
     "/gpu/subs",
@@ -280,6 +290,10 @@ class Invites:
         if len(want) != 5:
             return None
         for row in self.load():
+            # guests only: a guessed code must never be the owner's key, the
+            # cache's or the panel's
+            if str(row.get("role") or "user") not in ("user", "guest"):
+                continue
             if hmac.compare_digest(self.code_for(row.get("token", "")), want):
                 return row
         return None

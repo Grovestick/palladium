@@ -826,3 +826,29 @@ def stretched(vtt, rate, shift):
     stamp = r"(?:\d+:)?\d+:\d\d[.,]\d+"
     return re.sub(r"(%s)(\s*-->\s*)(%s)" % (stamp, stamp),
                   lambda m: moved(m.group(1)) + " --> " + moved(m.group(3)), vtt or "")
+
+
+#: a window that places the subtitle within this of the others agrees with them
+AGREE_S = 0.6
+#: a window surer than this heard enough speech to vote; below it no file matches either
+HEARD_WELL = 0.2
+
+
+def judge(got, vtt, hz=HZ, max_shift=MAX_SHIFT):
+    """Whether a subtitle fits this film as it is: the same offset in every window.
+
+    Returns {"good", "offset", "agree", "heard", "sure"}. A file for this cut reads the
+    same few tenths in every window that heard speech; one for another cut scatters
+    (-33, +55, -36, -116 on one film) and one for another edit steps (-10.6, -8.9).
+    """
+    seen = [w for w in profile(got, vtt, hz=hz, max_shift=max_shift)
+            if w[3] >= HEARD_WELL]
+    if len(seen) < 2:
+        return {"good": False, "offset": 0.0, "agree": 0, "heard": len(seen), "sure": 0.0}
+    offsets = sorted(w[2] for w in seen)
+    middle = offsets[len(offsets) // 2]
+    agree = [w for w in seen if abs(w[2] - middle) <= AGREE_S]
+    sure = round(sum(w[3] for w in agree) / float(len(agree)), 3)
+    good = len(agree) >= max(2, int(math.ceil(len(seen) * 0.75)))
+    return {"good": good, "offset": round(middle, 2), "agree": len(agree),
+            "heard": len(seen), "sure": sure}

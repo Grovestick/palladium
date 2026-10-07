@@ -101,9 +101,9 @@ def parse_movie(path):
             return clean_title(name[:pos]), year
         return clean_title(name), None
 
-    # "1080-beetlejuice.mkv": a resolution glued to the front by whoever named it.
+    # "1080-sometitle.mkv": a resolution glued to the front by whoever named it.
     # Only digits are stripped this way - a title may legitimately begin with a word
-    # and a hyphen, as Spider-Man does.
+    # and a hyphen.
     stem = re.sub(r"^\d{3,4}-(?=[A-Za-z])", "", os.path.basename(path))
     title, year = read(stem)
     folder = os.path.basename(os.path.dirname(path))
@@ -259,6 +259,10 @@ def parse_episode(path):
         folder_show = show_from_folder(path)
         if folder_show and _same_start(folder_show, show):
             show = folder_show
+        # a release group in front of the name: "grp-showname.s03e01" in Showname
+        grouped = re.match(r"(?i)^[a-z0-9]{2,6}-(.+)$", show)
+        if folder_show and grouped and _same_start(folder_show, grouped.group(1)):
+            show = folder_show
         return show, season, ep
     return None
 
@@ -275,12 +279,107 @@ def in_a_season_folder(path):
 
     "Season 01" or "S01" above a file is the folder saying television as plainly as
     SxxExx in the name would: a film does not live in a season. It is what lets a
-    mixed folder read "Season 01/01 - A Rose for Lotta.avi" as an episode while
-    "Alien 3" beside it stays a film.
+    mixed folder read "Season 01/01 - An Episode Title.avi" as an episode while
+    "Sequel 3" beside it stays a film.
     """
     parts = os.path.normpath(path).split(os.sep)[:-1]
     return any(re.match(r"(?i)^(season|s)[ ._-]?\d{1,2}$", folder.strip())
                for folder in parts)
+
+
+#: the cut or edition a release names, in the words it is known by
+EDITIONS = [
+    (r"director'?s?[ ._-]?cut|dir[ ._-]?cut|(?<![a-z])dc", "Director's Cut"),
+    (r"ext(?:ended)?[ ._-]?cut|extcut|(?<![a-z])extended|(?<![a-z])ee", "Extended"),
+    (r"alternat(?:iv)?e[ ._-](?:edition|cut|version)|fan[ ._-]?edit", "Alternative Edition"),
+    (r"theatrical(?![ ._-]*trailer)(?:[ ._-]?cut)?", "Theatrical"),
+    (r"(?<![a-z])unrated", "Unrated"),
+    (r"(?<![a-z])uncut", "Uncut"),
+    (r"(?:(\d+)(?:st|nd|rd|th)[ ._-])?anniversary[ ._-]edition", "Anniversary Edition"),
+    (r"special[ ._-]edition", "Special Edition"),
+    (r"(?<![a-z])ultimate(?:[ ._-]([a-z]+))?[ ._-]edition", "Ultimate Edition"),
+    (r"(?<![a-z])imax", "IMAX"),
+    (r"(?<![a-z])redux", "Redux"),
+    (r"(?<![a-z])criterion", "Criterion"),
+    (r"open[ ._-]matte", "Open Matte"),
+    (r"(?<![a-z])remastered", "Remastered"),
+]
+#: any other named cut: "The Legacy Cut", "Ulysses Cut", "Final Cut"
+NAMED_CUT = re.compile(r"(?i)(?<![a-z])([a-z]{3,})[ ._-]cut(?![a-z])")
+NOT_A_CUT = {"director", "directors", "dir", "ext", "extended", "theatrical", "the"}
+
+
+def edition_of(path):
+    """Which cut a file is, from its name: "Director's Cut", "Ulysses Cut", "Extended ·
+    Remastered". Empty for a release that does not say."""
+    name = os.path.splitext(os.path.basename(path or ""))[0]
+    # the release group at the end is who packed it, never which cut it is:
+    # "...x264-TIMECUT", "...- JBENT)[TAoE]"
+    name = re.sub(r"(?i)[ ._]*-[ ._]*[a-z0-9]+\)?(\[[^\]]*\])?(\s*\(\d\))?$", "", name)
+    said = []
+    for pattern, label in EDITIONS:
+        m = re.search(r"(?i)(?<![a-z])(?:" + pattern + r")(?![a-z])", name)
+        if not m:
+            continue
+        if label == "Anniversary Edition" and m.group(1):
+            label = m.group(1) + {"1": "st", "2": "nd", "3": "rd"}.get(
+                m.group(1)[-1] if not m.group(1).endswith(("11", "12", "13")) else "",
+                "th") + " " + label
+        if label == "Ultimate Edition" and m.group(1):
+            label = "Ultimate " + m.group(1).title() + " Edition"
+        if label not in said:
+            said.append(label)
+    for m in NAMED_CUT.finditer(name):
+        word = m.group(1).lower()
+        if word in NOT_A_CUT:
+            continue
+        label = word.title() + " Cut"
+        if label not in said:
+            said.insert(0, label)
+    return " \u00b7 ".join(said)
+
+
+#: what a name says about a copy that is not a different cut of the film: the same
+#: picture remastered, a label's release, the frame opened up
+NOT_CUTS = ("Remastered", "Criterion", "Open Matte", "IMAX", "Anniversary Edition")
+
+
+def cut_label(path):
+    """The cut a file is, with the words that only describe a copy left out."""
+    said = [w for w in edition_of(path).split(" \u00b7 ")
+            if w and not any(w.endswith(n) for n in NOT_CUTS)]
+    return " \u00b7 ".join(said)
+
+
+def cut_groups(files):
+    """Which cut each of a film's files is: [(group, label)] in the order given.
+
+    Two files are one cut when their lengths are within three minutes (or 3%) and
+    their names do not name different cuts - a 4K copy and a 720p one of the same
+    film are one cut, Extended and an alternative edition two minutes apart are two.
+    The label is the cut's name, else its length."""
+    groups = []
+    order = sorted(range(len(files)), key=lambda i: float(files[i][1] or 0))
+    place = {}
+    for i in order:
+        path, secs = files[i][0], float(files[i][1] or 0)
+        name = cut_label(path)
+        home = None
+        for n, g in enumerate(groups):
+            close = (abs(secs - g["secs"]) <= max(180.0, 0.03 * secs)
+                     if secs and g["secs"] else True)
+            if close and (not name or not g["name"] or name == g["name"]):
+                home = n
+                break
+        if home is None:
+            groups.append({"secs": secs, "name": name})
+            home = len(groups) - 1
+        elif name and not groups[home]["name"]:
+            groups[home]["name"] = name
+        place[i] = home
+    def label(g):
+        return g["name"] or ("%d min" % round(g["secs"] / 60.0) if g["secs"] else "")
+    return [(place[i], label(groups[place[i]])) for i in range(len(files))]
 
 
 def flatten_title(title):
@@ -407,11 +506,19 @@ def parse_episode_loose(path):
 
     stripped = base
     if show_from:
-        # do not read the show's own name as an episode number ("24", "Alien 3")
+        # do not read the show's own name as an episode number ("24", "Sequel 3")
         lead = re.escape(show_from.replace(" ", "")).replace(r"\ ", "[ ._-]*")
         stripped = re.sub("(?i)^" + lead.replace(" ", "[ ._-]*"), "", base.replace(" ", ""))
-    m = LOOSE_NUMBER.search(stripped) or LOOSE_NUMBER.search(base)
-    if not m:
+    # sound channels are not episode numbers: "x265 5.1 BONE" is not episode 5
+    stripped = re.sub(r"(?i)(?<![0-9])[2-7][ ._][01](?![0-9])", " ", stripped)
+    unsounded = re.sub(r"(?i)(?<![0-9])[2-7][ ._][01](?![0-9])", " ", base)
+    m = LOOSE_NUMBER.search(stripped) or LOOSE_NUMBER.search(unsounded)
+    if m:
+        number = int(m.group(1))
+    elif re.search(r"(?i)(?:^|[ ._-])s\d{1,2}(?:[ ._-]|$)", base):
+        # "Showname S09 Special Title": a season told in one file is its first episode
+        number = 1
+    else:
         # DVD-rip scene naming: "prince-trek103" is season 1, episode 3. Three digits
         # glued to the end of a name, only ever read this way inside a series folder.
         m3 = re.search(r"(\d)(\d{2})$", base)
@@ -419,12 +526,16 @@ def parse_episode_loose(path):
             return ((show_from or clean_title(base)).strip(),
                     int(m3.group(1)), int(m3.group(2)))
         return None
-    number = int(m.group(1))
     if not (0 < number < 400):
         return None
     show = show_from or clean_title(base)
     # folder names full of brackets and dashes leave gaps behind once stripped
     show = re.sub(r"[\s-]{2,}", " ", YEAR.sub(" ", show)).strip(" -")
+    # a pack folder carries its seasons and release in the name: "Showname S01-S12
+    # GRP" is Showname when the folder names it plainly
+    folder_show = show_from_folder(path)
+    if folder_show and _same_start(folder_show, show):
+        show = folder_show
     if len(show) < 2:
         return None
     return show, season, number
@@ -486,14 +597,24 @@ class Library:
         self.cfgpath = os.path.join(root, "library.json")
         self.lock = threading.Lock()
         self.scan_state = {"running": False, "done": 0, "total": 0, "phase": "idle"}
+        #: seasons the catalogue could not name, so one it cannot help with does not
+        #: stand in front of the ones it can. Forgotten when this program restarts.
+        self._named_nothing = set()
         self._init_db()
 
     # ---- config -------------------------------------------------------------
     def config(self):
         if not os.path.exists(self.cfgpath):
             return {"movies": [], "tv": [], "tmdb_key": "", "language": "en-US"}
-        with open(self.cfgpath, encoding="utf-8") as f:
-            return json.load(f)
+        # a read that lands while the file is being replaced is asked again
+        for attempt in range(5):
+            try:
+                with open(self.cfgpath, encoding="utf-8") as f:
+                    return json.load(f)
+            except (ValueError, PermissionError):
+                if attempt == 4:
+                    raise
+                time.sleep(0.1)
 
     @staticmethod
     def exclusive(cfg, changed=None):
@@ -518,8 +639,25 @@ class Library:
         return cfg
 
     def save_config(self, cfg):
+        # written beside and swapped in: truncating in place left the file empty for
+        # a moment, and a read at that moment threw JSONDecodeError
+        part = self.cfgpath + ".%d.%d.tmp" % (os.getpid(), threading.get_ident())
+        with open(part, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        for attempt in range(40):
+            try:
+                os.replace(part, self.cfgpath)
+                return cfg
+            except PermissionError:          # a reader has it open on Windows
+                time.sleep(0.025)
+        # still held after a second: written in place, as it always was, rather than
+        # losing the change - the reader's retry covers the moment it is empty
         with open(self.cfgpath, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        try:
+            os.remove(part)
+        except OSError:
+            pass
         return cfg
 
     # ---- storage ------------------------------------------------------------
@@ -580,6 +718,9 @@ class Library:
         CREATE TABLE IF NOT EXISTS progress (
             key TEXT PRIMARY KEY, position REAL, duration REAL, updated INTEGER
         );
+        CREATE TABLE IF NOT EXISTS forgot (
+            who TEXT, key TEXT, at INTEGER, PRIMARY KEY (who, key)
+        );
         CREATE TABLE IF NOT EXISTS watchlog (
             id INTEGER PRIMARY KEY,
             who TEXT, key TEXT, title TEXT, device TEXT, client TEXT,
@@ -597,15 +738,33 @@ class Library:
         CREATE INDEX IF NOT EXISTS credit_item ON credit(item_id, ord);
         CREATE INDEX IF NOT EXISTS credit_person ON credit(person);
         CREATE INDEX IF NOT EXISTS credit_name ON credit(name);
+        -- A file that belongs to a title rather than being one: a featurette, a
+        -- making-of, a pilot nobody aired. parent is the series or film it belongs
+        -- to, "?" for an extra nobody has placed yet, "" for a file said not to be one.
+        -- how: auto, found by find_extras; hand, set by somebody and never redone.
+        CREATE TABLE IF NOT EXISTS extra (
+            item_id TEXT PRIMARY KEY, parent TEXT, how TEXT
+        );
         """)
         # which build was watching: added later, so the column is checked for rather
         # than assumed
-        if "app" not in [r[1] for r in con.execute(
-                "PRAGMA table_info(watchlog)").fetchall()]:
+        cols = [r[1] for r in con.execute("PRAGMA table_info(watchlog)").fetchall()]
+        if "app" not in cols:
             con.execute("ALTER TABLE watchlog ADD COLUMN app TEXT")
+        # the machine a row was played on, and "<machine>:<id>" for a row that came
+        # from the other one - empty on a row played here. Both machines keep both.
+        if "machine" not in cols:
+            con.execute("ALTER TABLE watchlog ADD COLUMN machine TEXT")
+        if "origin" not in cols:
+            con.execute("ALTER TABLE watchlog ADD COLUMN origin TEXT")
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS watchlog_origin "
+                    "ON watchlog(origin) WHERE origin IS NOT NULL")
         con.executescript("""
         CREATE INDEX IF NOT EXISTS item_type ON item(type, sort_title);
         CREATE INDEX IF NOT EXISTS file_item ON file(item_id);
+        -- an episode's files: without it every episode in a join read the whole file
+        -- table, and Continue watching took 0.6 s on one long series
+        CREATE INDEX IF NOT EXISTS file_episode ON file(episode_id);
         CREATE INDEX IF NOT EXISTS ep_item ON episode(item_id, season, number);
         """)
         # a face to put beside the name: added after the table was first made
@@ -692,6 +851,18 @@ class Library:
                              AND NOT EXISTS (SELECT 1 FROM watchlog w
                                              WHERE w.who = progress.who
                                                AND w.key = progress.key)""")
+        # The furthest anybody got, beside where the player last was. The two are the
+        # same until somebody rewinds: an episode watched to the credits and then
+        # taken back to the beginning reads as untouched by its position alone, and
+        # left Continue watching as though it had never been played. What was reached
+        # is what says whether it was watched; where the player stopped is what says
+        # where to resume.
+        if not any(r[1] == "furthest" for r in
+                   con.execute("PRAGMA table_info(progress)").fetchall()):
+            con.execute("ALTER TABLE progress ADD COLUMN furthest REAL DEFAULT 0")
+            # what is already known: a place is at least as far as itself
+            con.execute("UPDATE progress SET furthest = position "
+                        "WHERE COALESCE(furthest, 0) < COALESCE(position, 0)")
         # A shuffled playing is not a sit-down. Keeping its place is worth doing -
         # that is what resumes it - but it does not belong on Continue watching and it
         # does not belong in the cache queue, which was filling with episodes nobody
@@ -1032,6 +1203,11 @@ class Library:
                 best, best_len = kind, len(root)
         return best
 
+    #: set by the server: True for a file a download has not finished. qBittorrent sizes a
+    #: file in full before a byte of it arrives, so a film 2% in was indexed as a film
+    #: and offered with Play. Such a file is left out, and dropped if it was taken in.
+    still_coming = None
+
     def scan(self, probe=True, identify=True):
         """Walk the configured folders and bring the index up to date."""
         cfg = self.config()
@@ -1045,6 +1221,11 @@ class Library:
             if path in seen_paths:
                 continue
             seen_paths.add(path)
+            try:
+                if self.still_coming and self.still_coming(path):
+                    continue                # not here yet: it comes in when it is whole
+            except Exception:
+                pass
             found.append((self.kind_for(path, folders) or "mixed", path, st))
         self.scan_state.update(total=len(found), phase="indexing")
         con = self.db()
@@ -1057,7 +1238,7 @@ class Library:
                 continue                                    # unchanged
             # new path, same name and size as a file already indexed: a move, not an arrival
             was = None if row else self._moved_from(con, path, st)
-            self._index_file(con, kind, path, st, moved_from=was)
+            self._index_file(con, kind, path, st, moved_from=was, known=bool(row))
             self.scan_state["done"] += 1
         # Rows the walk did not produce: either the file is gone, or it is no longer
         # one of ours - a sample, an extra, or a folder taken off the list. Both are
@@ -1073,6 +1254,9 @@ class Library:
             if not os.path.exists(row["path"]) or under_a_live_root:
                 con.execute("DELETE FROM file WHERE id=?", (row["id"],))
         con.execute("DELETE FROM item WHERE id NOT IN (SELECT DISTINCT item_id FROM file)")
+        # and the episodes of a programme that has just gone: left behind, one with a
+        # place in it stood on Continue watching as a card with no programme's name
+        con.execute("DELETE FROM episode WHERE item_id NOT IN (SELECT id FROM item)")
         self.mend_links(con)
         con.commit()
         con.close()
@@ -1081,20 +1265,152 @@ class Library:
         if identify and self.config().get("tmdb_key"):
             self.identify_pending()
             self.merge_duplicates()      # two spellings, one title
+            # a new episode of a series already here: its name and air date now, not
+            # from the hourly backlog - without an air date it is off Recently released
+            try:
+                self._named_nothing.clear()
+                self.episodes_backlog(most=20, pause=0.1)
+            except Exception:
+                pass
+        try:
+            self.find_extras()
+        except Exception:
+            pass
         self.scan_state.update(running=False, phase="idle")
         return self.stats()
 
+    #: a folder of extras, or a file that says it is one
+    #  - plural, a folder's own word for what it holds: "Extra-Terrestrial" is a film
+    EXTRA_FOLDER = re.compile(r"(?i)(^|[ ._(-])(extras|extars|featurettes|special[ ._-]?features|"
+                              r"bonus[ ._-]features|behind[ ._-]the[ ._-]scenes|"
+                              r"deleted[ ._-]scenes|interviews)($|[ ._)-])")
+    EXTRA_NAME = re.compile(r"(?i)(^|[ ._-])(extras?|bonus|featurette|animatic|making[ ._-]of|"
+                            r"interview|deleted[ ._-]scenes?|behind[ ._-]the[ ._-]scenes|"
+                            r"music[ ._-]video|unaired[ ._-]pilot|webisodes?)($|[ ._-])")
+
+    def find_extras(self):
+        """Tie the files that are extras to the title they belong to.
+
+        Only a film nothing was matched to is looked at: a matched film is a film. It is
+        an extra of a title when the nearest folder above it that holds anything else
+        holds one title only - an episode's series or a film - or, where it holds
+        several, the one whose name the file or its folder starts with. A file that
+        says it is an extra and has no such title is kept as an extra with no home,
+        for somebody to place. A choice made by hand is never redone.
+        """
+        con = self.db()
+        try:
+            con.execute("DELETE FROM extra WHERE item_id NOT IN (SELECT id FROM item)")
+            decided = {r["item_id"] for r in con.execute("SELECT item_id FROM extra")}
+            # and a matched one filed in a folder of extras: a DVD extra matched to a
+            # film that shares a word with it
+            loose = [r for r in con.execute(
+                "SELECT i.id, i.title, f.path, COALESCE(i.tmdb_id, 0) AS tmdb FROM item i "
+                "JOIN file f ON f.item_id = i.id "
+                "WHERE i.type = 'movie' AND f.episode_id IS NULL").fetchall()
+                if not r["tmdb"] or self._in_extras(r["path"])]
+            files = con.execute(
+                "SELECT f.path, f.item_id, i.title, i.type, COALESCE(i.tmdb_id, 0) AS tmdb "
+                "FROM file f JOIN item i ON i.id = f.item_id").fetchall()
+            for row in loose:
+                if row["id"] in decided:
+                    continue
+                parent = self._extra_home(row, files)
+                said = (self.EXTRA_NAME.search(os.path.basename(row["path"])) or
+                        any(self.EXTRA_FOLDER.search(part) for part in
+                            os.path.normpath(row["path"]).split(os.sep)[1:-1]))
+                if not parent and not said:
+                    continue
+                con.execute("INSERT OR REPLACE INTO extra (item_id, parent, how) "
+                            "VALUES (?, ?, 'auto')", (row["id"], parent or "?"))
+            con.commit()
+        finally:
+            con.close()
+
+    @classmethod
+    def _in_extras(cls, path):
+        """Whether the folder a file is in is a folder of extras."""
+        return bool(cls.EXTRA_FOLDER.search(os.path.basename(os.path.dirname(path))))
+
+    @classmethod
+    def _extra_home(cls, row, files):
+        """The title a loose file sits beside, or None."""
+        flat = lambda t: re.sub(r"^the", "", re.sub(r"[^a-z0-9]", "", (t or "").lower()))
+        here = os.path.normcase(os.path.dirname(row["path"]))
+        name = flat(os.path.basename(row["path"]))
+        for _ in range(3):
+            if not here or os.path.dirname(here) == here:
+                return None
+            inside = {}
+            for f in files:
+                if f["item_id"] == row["id"]:
+                    continue
+                # only a title that is one: an unmatched film beside it is a neighbour,
+                # and so is anything filed among the extras
+                if f["type"] == "movie" and (not f["tmdb"] or cls._in_extras(f["path"])):
+                    continue
+                if os.path.normcase(f["path"]).startswith(here + os.sep):
+                    inside[f["item_id"]] = f["title"]
+            if len(inside) == 1:
+                return next(iter(inside))
+            if inside:
+                folder = flat(os.path.basename(here))
+                named = [k for k, t in inside.items()
+                         if flat(t) and (name.startswith(flat(t)) or folder.startswith(flat(t)))]
+                return named[0] if len(named) == 1 else None
+            here = os.path.dirname(here)
+        return None
+
+    def take_in(self, paths):
+        """Index files that have just finished downloading, now, rather than at the end
+        of a full scan: a walk of every folder, probing and identifying takes minutes on
+        a library holding packs, and the film sat as "arriving" all that time with the
+        file whole on the disk. Only files inside a library folder; the scan that follows
+        does the rest. Returns how many were added."""
+        cfg = self.config()
+        folders = ([(f, "movie") for f in cfg.get("movies", [])] +
+                   [(f, "show") for f in cfg.get("tv", [])] +
+                   [(f, "mixed") for f in cfg.get("mixed", [])])
+        took = 0
+        con = self.db()
+        try:
+            for path in paths or []:
+                if not path or not os.path.isfile(path):
+                    continue
+                kind = self.kind_for(path, folders)
+                if not kind:
+                    continue                  # outside the library: the scan decides
+                if con.execute("SELECT 1 FROM file WHERE path=?", (path,)).fetchone():
+                    continue
+                self._index_file(con, kind, path, os.stat(path))
+                took += 1
+            if took:
+                self.mend_links(con)
+                con.commit()
+        finally:
+            con.close()
+        if took and not self.scan_state.get("running"):
+            was = dict(self.scan_state)
+            try:
+                self.probe_pending(limit=took + 5)
+            finally:
+                self.scan_state = was
+        return took
+
     @staticmethod
     def _moved_from(con, path, st):
-        """item_id of an indexed file at another path with this name and size, else None."""
+        """item_id of an indexed file at another path with this name, else None.
+
+        By name alone: a scan that lands mid-copy sees the new file shorter than the
+        old one, and matched on size too it was an arrival, dated today."""
         name = os.path.normcase(os.path.basename(path))
-        for other in con.execute("SELECT path, item_id FROM file WHERE size=? AND path<>?",
-                                 (st.st_size, path)):
+        for other in con.execute("SELECT path, item_id FROM file WHERE path<>?", (path,)):
             if os.path.normcase(os.path.basename(other["path"] or "")) == name:
                 return other["item_id"]
         return None
 
-    def _index_file(self, con, kind, path, st, reset_probe=True, moved_from=None):
+    def _index_file(self, con, kind, path, st, reset_probe=True, moved_from=None,
+                    known=False):
         """What a file is comes from the list its folder is in.
 
         A series folder yields episodes, taking the season from the folder when the
@@ -1103,7 +1419,7 @@ class Library:
         being inferred, and which is how whole seasons come to sit in a download folder.
         A mixed folder has nothing but the filename to go on either way.
 
-        What the folder buys is protection from the looser reading: "Alien 3" in a film
+        What the folder buys is protection from the looser reading: "Sequel 3" in a film
         folder stays a film, where in a series folder it would be episode three.
         """
         parsed = parse_episode(path)                  # unambiguous in any folder
@@ -1132,7 +1448,9 @@ class Library:
             title, year = parse_movie(path)
             if not title:
                 return
-            item_id = self._upsert_item(con, "movie", title, year)
+            had = con.execute("SELECT item_id FROM file WHERE path=?", (path,)).fetchone()
+            item_id = self._upsert_item(con, "movie", title, year,
+                                        stay=had["item_id"] if had else None)
             episode_id = None
         # re-parsing a filename must not discard what ffprobe already learned: that
         # costs minutes to rebuild and nothing about the file itself has changed
@@ -1146,7 +1464,11 @@ class Library:
                     (item_id, episode_id, path, st.st_size, int(st.st_mtime), ctime))
         # "recently added" should mean when it arrived here, not when the scan ran.
         # A moved file gets a new ctime on another drive; it keeps the date it first came.
-        if moved_from is None:
+        # A file already indexed at this path that changed size - the end of a copy, a
+        # download growing - is not an arrival either.
+        if known:
+            pass
+        elif moved_from is None:
             con.execute("""UPDATE item SET added = MAX(COALESCE(added, 0), ?) WHERE id = ?""",
                         (ctime, item_id))
         elif moved_from != item_id:
@@ -1154,8 +1476,26 @@ class Library:
                              COALESCE((SELECT added FROM item WHERE id = ?), 0)) WHERE id = ?""",
                         (moved_from, item_id))
 
-    def _upsert_item(self, con, kind, title, year):
+    @staticmethod
+    def _article(title):
+        """The leading the/a/an of a title, or nothing."""
+        m = re.match(r"(the|a|an)\s+", (title or "").lower().strip())
+        return m.group(1) if m else ""
+
+    def _upsert_item(self, con, kind, title, year, stay=None):
         sort = re.sub(r"^(the|a|an)\s+", "", (title or "").lower()).strip()
+        # the sort title drops the article, so "Harbour" and "The Harbour" of the same
+        # year met on it and became one film. A name that only differs by it is a
+        # new item; if it is the same film, the merge by TMDB id folds it back.
+        art = self._article(title)
+        same = lambda other: self._article(other["title"]) == art
+        # a file already filed under a title of that name stays: TMDB's title may add
+        # or drop the article the filename has, and that was settled when it was filed
+        if stay:
+            held = con.execute("SELECT id, sort_title FROM item WHERE id=? AND type=? AND "
+                               "(year IS ? OR year=?)", (stay, kind, year, year)).fetchone()
+            if held and flatten_title(held["sort_title"] or "") == flatten_title(sort):
+                return held["id"]
         # A filename for an episode carries no year and the catalogue's row does:
         # "its.always.sunny.s18e05" against a programme filed under 2005. Matched on
         # the year, the two can never meet, and every new episode started a second,
@@ -1166,25 +1506,25 @@ class Library:
             plain = flatten_title(sort)
             if plain:
                 for other in con.execute(
-                        "SELECT id, sort_title, tmdb_id FROM item WHERE type=? "
+                        "SELECT id, title, sort_title, tmdb_id FROM item WHERE type=? "
                         "AND tmdb_id IS NOT NULL", (kind,)):
-                    if flatten_title(other["sort_title"] or "") == plain:
+                    if flatten_title(other["sort_title"] or "") == plain and same(other):
                         return other["id"]
-        row = con.execute("SELECT id FROM item WHERE type=? AND sort_title=? AND "
-                          "(year IS ? OR year=?)", (kind, sort, year, year)).fetchone()
-        if row:
-            return row["id"]
+        for row in con.execute("SELECT id, title FROM item WHERE type=? AND sort_title=? AND "
+                               "(year IS ? OR year=?)", (kind, sort, year, year)):
+            if same(row):
+                return row["id"]
         # The stored title is whatever TMDB called it, and a filename never spells it
-        # the same way: "Its Always Sunny in Philadelphia" against "It's Always Sunny
-        # in Philadelphia" is one programme. Without this, re-reading the filenames
+        # the same way: "Its a Long Way Down" against "It's a Long Way
+        # Down" is one programme. Without this, re-reading the filenames
         # made a second, unidentified item and left the first with no files - which is
         # a library that loses every poster it had.
         plain = flatten_title(sort)
         if plain:
             for other in con.execute(
-                    "SELECT id, sort_title FROM item WHERE type=? AND (year IS ? OR year=?)",
+                    "SELECT id, title, sort_title FROM item WHERE type=? AND (year IS ? OR year=?)",
                     (kind, year, year)):
-                if flatten_title(other["sort_title"] or "") == plain:
+                if flatten_title(other["sort_title"] or "") == plain and same(other):
                     return other["id"]
         # A filename for an episode carries no year, and the row the catalogue made
         # carries one: "its.always.sunny.s18e05" against a programme filed under 2005.
@@ -1196,8 +1536,8 @@ class Library:
         if plain and year is None:
             best = None
             for other in con.execute(
-                    "SELECT id, sort_title, tmdb_id FROM item WHERE type=?", (kind,)):
-                if flatten_title(other["sort_title"] or "") != plain:
+                    "SELECT id, title, sort_title, tmdb_id FROM item WHERE type=?", (kind,)):
+                if flatten_title(other["sort_title"] or "") != plain or not same(other):
                     continue
                 if other["tmdb_id"]:
                     return other["id"]
@@ -1399,6 +1739,74 @@ class Library:
             # on it: a quarter of a second apart is four a second and no strain.
             time.sleep(pause)
         return done
+
+    def episodes_backlog(self, most=6, pause=0.25):
+        """Fill in the name and the picture of episodes that arrived without either.
+
+        A season is read from TMDB when its programme is identified. An episode that
+        turns up afterwards - a new one, or one fetched out of a pack - has a file and
+        a number and nothing else, so it draws as a blank card called "Episode 7".
+        This walks the seasons that have such an episode in them, a few at a time.
+        Returns how many seasons were filled, so a caller can stop when there are none.
+        """
+        if not (self.config().get("tmdb_key") or "").strip():
+            return 0
+        con = self.db()
+        try:
+            # Newest file first: an episode that arrived this morning is the one
+            # somebody is looking for, and without an order the queue was whatever
+            # the table handed back - a programme with twelve nameless episodes a
+            # season stood in front of everything else for ever.
+            waiting = con.execute(
+                """SELECT e.item_id AS item_id, e.season AS season,
+                          i.tmdb_id AS tmdb_id, MAX(f.mtime) AS newest
+                     FROM episode e JOIN item i ON i.id = e.item_id
+                     JOIN file f ON f.episode_id = e.id
+                    WHERE i.tmdb_id > 0 AND (e.title IS NULL OR e.title = '')
+                 GROUP BY e.item_id, e.season
+                 ORDER BY newest DESC
+                    LIMIT ?""", (most * 6,)).fetchall()
+            done = 0
+            for row in waiting:
+                if done >= most:
+                    break
+                mark = "%s|%s" % (row["item_id"], row["season"])
+                # A season the catalogue cannot name is not tried again this run.
+                # Without this the same unnameable seasons were fetched every pass
+                # and nothing else was ever reached.
+                if mark in self._named_nothing:
+                    continue
+                try:
+                    data = self.tmdb("/tv/%d/season/%d" % (int(row["tmdb_id"]),
+                                                           int(row["season"])))
+                except Exception:
+                    self._named_nothing.add(mark)
+                    continue
+                before = con.execute(
+                    """SELECT COUNT(*) c FROM episode
+                        WHERE item_id=? AND season=? AND (title IS NULL OR title='')""",
+                    (row["item_id"], int(row["season"]))).fetchone()["c"]
+                for ep in (data or {}).get("episodes", []):
+                    con.execute(
+                        """UPDATE episode SET title=?, overview=?, aired=?, still=?
+                            WHERE item_id=? AND season=? AND number=?""",
+                        (ep.get("name"), ep.get("overview"), ep.get("air_date"),
+                         ep.get("still_path"), row["item_id"], int(row["season"]),
+                         ep.get("episode_number")))
+                con.commit()
+                after = con.execute(
+                    """SELECT COUNT(*) c FROM episode
+                        WHERE item_id=? AND season=? AND (title IS NULL OR title='')""",
+                    (row["item_id"], int(row["season"]))).fetchone()["c"]
+                if after >= before:
+                    # the catalogue knows the season but not these episodes: a
+                    # numbering of its own, or episodes it has never heard of
+                    self._named_nothing.add(mark)
+                done += 1
+                time.sleep(pause)
+            return done
+        finally:
+            con.close()
 
     def face_of(self, person):
         """Where TMDB keeps that person's picture, as any row of ours has it."""

@@ -147,6 +147,19 @@ private fun imageLoader(): coil.ImageLoader {
                 .build()
         }
         .crossfade(false)                 // two dropped frames per poster, on this box
+        // a name the network will not resolve falls back on its last known address
+        .okHttpClient {
+            okhttp3.OkHttpClient.Builder().dns(KnownHosts)
+                // a picture from a house address, off the house network: refused at
+                // once rather than waited on for ten seconds a poster
+                .addInterceptor { chain ->
+                    val host = chain.request().url.host
+                    if (!Api.homeHere("http://$host"))
+                        throw java.io.IOException("a house address, not this network")
+                    chain.proceed(chain.request())
+                }
+                .build()
+        }
         .build()
         .also { loader = it }
 }
@@ -253,6 +266,8 @@ fun fromTheHold(e: android.view.KeyEvent): Boolean =
 @Composable
 fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 56,
         scale: ContentScale = ContentScale.Crop,
+        /* drawn in one colour: a studio's mark is dark on nothing as often as not */
+        tint: Color? = null,
         /* what shows where the picture does not reach. A poster fills its slot, so
            this is the grey a missing one leaves behind; a backdrop is fitted rather
            than cropped, and the grey either side of it reads as a band down the edge
@@ -264,10 +279,26 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
                  fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
         }
         if (url != null) {
+            // A poster that failed is asked for again, three times with a pause between:
+            // switching servers asks a whole screen of them at once, and one that timed
+            // out then stayed blank until the app was started again.
+            var tries by remember(url) { mutableStateOf(0) }
+            var failed by remember(url) { mutableStateOf(false) }
+            if (failed && tries < 3) {
+                androidx.compose.runtime.LaunchedEffect(url, tries) {
+                    kotlinx.coroutines.delay(1500L * (tries + 1))
+                    failed = false
+                    tries += 1
+                }
+            }
+            val asked = if (tries == 0) url
+                        else url + (if (url.contains("?")) "&" else "?") + "again=" + tries
             // Crop fills a poster-shaped slot; Fit is for the backdrop, where cropping
             // a tall poster into a squarish box pushes its head and feet off the screen
-            AsyncImage(model = url, contentDescription = title, imageLoader = imageLoader(),
-                       contentScale = scale, modifier = Modifier.fillMaxSize())
+            AsyncImage(model = asked, contentDescription = title, imageLoader = imageLoader(),
+                       contentScale = scale, modifier = Modifier.fillMaxSize(),
+                       colorFilter = tint?.let { androidx.compose.ui.graphics.ColorFilter.tint(it) },
+                       onError = { failed = true })
         }
     }
 }
@@ -277,7 +308,7 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
  *  The poster is clipped, so the band ends at its edges rather than inside them. */
 @Composable
 fun androidx.compose.foundation.layout.BoxScope.CornerBand(
-    word: String, width: Int, colour: Color = Skin.Accent) {
+    word: String, width: Int, colour: Color = Skin.Accent, ink: Color = Color.White) {
     // `width` is the poster's real width, measured, not the number the caller passed:
     // in a grid the column decides it, and a band placed by a nominal width sits too
     // near the corner, where the readable run is short and a word loses its last
@@ -288,7 +319,7 @@ fun androidx.compose.foundation.layout.BoxScope.CornerBand(
             .width((width * 0.95f).dp)
             .background(colour),
         contentAlignment = Alignment.Center) {
-        Text(word, color = Color.White,
+        Text(word, color = ink,
              fontSize = (width / 13).coerceIn(8, 13).sp,
              fontWeight = FontWeight.Bold,
              maxLines = 1, softWrap = false,
@@ -309,6 +340,15 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
            modifier: Modifier = Modifier,
            /** held rather than pressed, where a screen has something to offer for it */
            onHold: (() -> Unit)? = null,
+           /** an episode's number in the corner - Home only, where an episode card
+            *  stands among films and series and its number is what tells it apart */
+           episodeMark: Boolean = false,
+           /** on a series: the number of its newest episode, as an episode's own */
+           latestMark: Boolean = false,
+           /** written across the foot of the picture: an episode's number and name,
+            *  where every episode wears the same season poster and a line under it
+            *  fell below the edge of a television's screen */
+           onPicture: String? = null,
            onClick: () -> Unit) {
     // Tied to the film, because a lazy grid reuses these.
     //
@@ -429,7 +469,13 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 // instruction, so the picture grows and the slot does not. Anywhere
                 // in the column's own chain it changes the bounds a lazy grid
                 // measures, and the page drifts as the remote moves sideways.
-                .graphicsLayer { scaleX = scale; scaleY = scale }
+                //
+                // and faded where this machine has no file for it: the place is real
+                // and worth showing, the film simply is not here tonight.
+                .graphicsLayer {
+                    scaleX = scale; scaleY = scale
+                    if (m.unplayable) alpha = 0.42f
+                }
                 .onSizeChanged { realPx = it.width }
                 // no shadow: it is a blur pass under a moving poster, and the white
                 // ring already says which one has the focus
@@ -443,7 +489,13 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // A film on offer is shown in full colour like any other: the artwork is
             // what makes it recognisable, and drained of it a shelf of them read as
             // broken rather than available. The mark below says it is not here yet.
-            Art(Api.artUrl(m, pixels), m.title, Modifier.fillMaxSize(), mark = width / 3)
+            // greyed for an episode that has not come yet: it is a date, not a film
+            // a series on the released shelf wears the season its newest episode is in
+            Art(Api.artUrl(m, pixels, if (latestMark) m.latestThumb.ifEmpty { null } else null),
+                m.title,
+                Modifier.fillMaxSize().then(if (m.upcoming) Modifier.alpha(
+                    if (m.fetchable) 0.75f else 0.38f) else Modifier),
+                mark = width / 3)
             // A band across the corner for anything that is not here and cannot be
             // played: it reads at a glance on a shelf where everything else can be.
             // The poster is clipped, so the band ends at its edges.
@@ -454,8 +506,12 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // a film on offer from a torrent pack: how far its download has got, from the live
             // download list (refreshed every 10 s); the shelf row is a snapshot from when the
             // grid loaded and kept showing Queued or 0% while the film came in
-            val live = if (m.offered)
+            // and a new release being fetched from the tracker, which is a title to ask
+            // for wearing a download
+            val live = if (m.offered || m.askable)
                 Api.downloading.value.firstOrNull { it.ratingKey == m.ratingKey } else null
+            val coming = m.offered || live != null ||
+                (m.askable && m.offerState in setOf("queued", "downloading"))
             // gone from the live list after getting near the end: it is in, whatever
             // the shelf's snapshot still says
             val state = live?.offerState
@@ -463,11 +519,14 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             val progress = live?.offerProgress ?: m.offerProgress
             val eta = live?.offerEta ?: m.offerEta
             val mbit = live?.offerMbit ?: m.offerMbit
+            // which version: a film already here showed a percentage and nothing to
+            // say what was coming in
+            val version = (live?.offerVersion ?: m.offerVersion).let { if (it.isEmpty()) "" else "$it · " }
             // the mark always, and words only when there are some: a film nobody
             // has asked for yet said nothing but a character, and on a television
             // that was a smudge in the corner of the picture
-            val said = if (!m.offered) "" else when (state) {
-                "downloading" -> "${(progress * 100).toInt()}%" +
+            val said = if (!coming) "" else when (state) {
+                "downloading" -> version + "${(progress * 100).toInt()}%" +
                     (if (eta >= 0) " · " + (
                         if (eta < 60) "$eta s"
                         else if (eta < 3600) "${eta / 60} min"
@@ -488,11 +547,26 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // nothing happening yet: the band, which reads across a room. Once it is
             // coming in the badge stays - the band holds one word, and the percentage
             // and the rate are the point while it arrives.
-            if (m.askable) CornerBand(if (m.asked) "ASKED" else "REQUEST", bandW,
+            // something on the tracker for it: the band says what pressing it
+            // does, and asking is not what it does any more
+            if (m.askable && said.isNotEmpty()) { /* coming in: the badge says how far */ }
+            else if (m.askable && m.onTracker) CornerBand("DOWNLOAD", bandW)
+            else if (m.askable) CornerBand(if (m.asked) "ASKED" else "REQUEST", bandW,
                                       if (m.asked) Color(0xFF2F6B35) else Skin.Accent)
+            // on the tracker already, before its date or after: it can be fetched
+            else if (m.upcoming && m.fetchable) CornerBand("DOWNLOAD", bandW)
+            // out already, and nothing here or on the tracker to fetch it from
+            else if (m.upcoming && m.missing) CornerBand("MISSING", bandW, Skin.Dim)
+            // out today, and not on the tracker yet
+            else if (m.upcoming && m.airsToday) CornerBand("TODAY", bandW, Color(0xFFE6E8EB), Color(0xFF111111))
+            else if (m.upcoming) CornerBand("UPCOMING", bandW, Skin.Dim)
             else if (m.shuffle.isNotEmpty()) CornerBand("SHUFFLE", bandW)
+            // here, and aired this past week
+            else if (m.fresh) CornerBand("NEW", bandW, Color(0xFFD9A21B))
+            // off the popular list and not held yet: pressing it adds it
+            else if (m.addable) CornerBand("ADD", bandW)
             else if (m.offered && said.isEmpty()) CornerBand("DOWNLOAD", bandW)
-            if (m.offered && said.isNotEmpty()) {
+            if (coming && said.isNotEmpty()) {
                 Row(Modifier.align(Alignment.TopStart).padding(5.dp)
                         .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
                         .padding(horizontal = 4.dp, vertical = 3.dp),
@@ -506,7 +580,40 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // held in 2160 lines somewhere. Bottom right: the watched tick has the
             // top right, and the progress bar runs along the bottom, so it is
             // lifted clear of that.
-            if (m.maxHeight >= 1700) {
+            // which episode, bottom right: S02E03 - lifted above the 4K mark when both
+            // on a television only on the poster the remote is on; a phone has no such
+            // poster, so there it stays
+            val markSE = when {
+                episodeMark && m.type == "episode" && m.parentIndex != null && m.index != null ->
+                    Pair(m.parentIndex!!, m.index!!)
+                latestMark && m.type == "show" && m.latestNumber > 0 ->
+                    Pair(m.latestSeason, m.latestNumber)
+                else -> null
+            }
+            if (markSE != null && (ring || !focusShows())) {
+                Box(Modifier.align(Alignment.BottomEnd)
+                        .padding(start = 5.dp, top = 5.dp, end = 5.dp,
+                                 bottom = if (m.maxHeight >= 1700) 28.dp else 8.dp)
+                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)) {
+                    Text(String.format(java.util.Locale.US, "S%02dE%02d", markSE.first, markSE.second),
+                         color = Skin.Fg, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            // on a television the marks below show on the focused poster only; the
+            // ribbons stay. A phone has no focus, so there they always show.
+            val marks = ring || !focusShows()
+            // held in more than one cut: bottom left, opposite the 4K mark
+            if (marks && m.cuts > 1) {
+                Box(Modifier.align(Alignment.BottomStart)
+                        .padding(start = 5.dp, top = 5.dp, end = 5.dp, bottom = 8.dp)
+                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)) {
+                    Text("${m.cuts} CUTS", color = Color(0xFFE0B341), fontSize = 10.sp,
+                         fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (marks && m.maxHeight >= 1700) {
                 Box(Modifier.align(Alignment.BottomEnd)
                         .padding(start = 5.dp, top = 5.dp, end = 5.dp, bottom = 8.dp)
                         .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
@@ -518,14 +625,15 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // finished, or part way through a series. Not under a band: both want the
             // same corner, and a shuffled row is the shelf rather than the episode it
             // happens to be showing.
-            if ((m.watched || m.watchedEpisodes > 0) && m.shuffle.isEmpty()) {
+            // a season or a series with every episode seen gets the tick a film gets;
+            // part way through is not counted on the poster
+            val allSeen = m.watched ||
+                (m.episodeCount > 0 && m.watchedEpisodes >= m.episodeCount)
+            if (allSeen && m.shuffle.isEmpty()) {
                 Box(Modifier.align(Alignment.TopEnd).padding(5.dp)
                         .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
                         .padding(horizontal = 5.dp, vertical = 2.dp)) {
-                    Text(if (m.watched) "\u2713"
-                         else m.watchedEpisodes.toString() + "/" + m.episodeCount,
-                         color = if (m.watched) Color(0xFF5FD08A) else Skin.Accent,
-                         fontSize = if (m.watched) 12.sp else 10.sp,
+                    Text("✓", color = Color(0xFF5FD08A), fontSize = 12.sp,
                          fontWeight = FontWeight.SemiBold)
                 }
             }
@@ -533,7 +641,8 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // the machine that keeps copies is holding this one: it plays when the
             // server with the library on it is off. Bottom left, lifted clear of the
             // progress bar where there is one.
-            if (Api.copiedHere(m)) {
+            val dot = marks && Api.copiedHere(m)
+            if (dot) {
                 Box(Modifier.align(Alignment.BottomStart)
                         .padding(start = 6.dp, bottom = if (p > 0f) 12.dp else 7.dp)
                         .size(9.dp)
@@ -548,7 +657,19 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                      modifier = Modifier.align(Alignment.BottomStart)
                          .padding(start = 5.dp,
                                   bottom = ((if (p > 0f) 10 else 4) +
-                                            (if (Api.copiedHere(m)) 11 else 0)).dp))
+                                            (if (dot) 11 else 0)).dp))
+            }
+            if (!onPicture.isNullOrEmpty()) {
+                Box(Modifier.align(Alignment.BottomStart).fillMaxWidth()
+                        .background(androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(Color(0x00000000), Color(0xE6000000))))
+                        .padding(start = 8.dp, end = 8.dp, top = 22.dp,
+                                 bottom = if (p > 0f) 10.dp else 7.dp)) {
+                    Text(onPicture, color = Color.White,
+                         fontSize = if (width < 110) 11.sp else 13.sp,
+                         fontWeight = FontWeight.SemiBold, maxLines = 3,
+                         overflow = TextOverflow.Ellipsis, lineHeight = 15.sp)
+                }
             }
             if (p > 0f) {
                 Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(4.dp)
@@ -565,6 +686,8 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
         if (instead != null && instead.isNotEmpty()) {
             Text(instead, color = if (ring) Skin.Fg else Color(0xFFD3DAE2),
                  fontSize = if (width < 110) 11.sp else 12.5.sp,
+                 // the theme's 24sp line left a blank line's gap inside a wrapped name
+                 lineHeight = if (width < 110) 13.sp else 15.sp,
                  fontWeight = FontWeight.Medium, maxLines = 2,
                  overflow = TextOverflow.Ellipsis,
                  modifier = Modifier.padding(top = 5.dp))
@@ -680,6 +803,24 @@ fun focusShows(): Boolean =
     androidx.compose.ui.platform.LocalInputModeManager.current.inputMode ==
         androidx.compose.ui.input.InputMode.Keyboard
 
+/** Which keyboard a television types with: the app's own on screen, or - when this
+ *  device is set so - the system's, which Google TV hands to a phone. Kept per device. */
+object Typing {
+    val phone = androidx.compose.runtime.mutableStateOf(false)
+    private var read = false
+    fun load(ctx: android.content.Context) {
+        if (read) return
+        read = true
+        phone.value = ctx.getSharedPreferences("palladium", android.content.Context.MODE_PRIVATE)
+            .getBoolean("phoneKeyboard", false)
+    }
+    fun set(ctx: android.content.Context, on: Boolean) {
+        phone.value = on
+        ctx.getSharedPreferences("palladium", android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean("phoneKeyboard", on).apply()
+    }
+}
+
 /** True on a television, where the remote is the only input device. */
 @Composable
 fun onTv(): Boolean {
@@ -704,10 +845,14 @@ fun TextBox(
     multiline: Boolean = false,
     /** dots rather than letters, for the one box where somebody is being watched */
     password: Boolean = false,
+    /** a name to offer on the keyboard as one press: the programme, for a collection */
+    suggestion: String = "",
     onValue: (String) -> Unit,
 ) {
     var editing by remember { mutableStateOf(false) }
-    val tv = onTv()
+    // the app's own keyboard on a television, unless this device is set to type on a phone
+    Typing.load(androidx.compose.ui.platform.LocalContext.current)
+    val tv = onTv() && !Typing.phone.value
     var focused by remember { mutableStateOf(false) }
 
     Box(
@@ -752,7 +897,7 @@ fun TextBox(
     }
 
     if (editing) {
-        KeyboardDialog(value, placeholder, multiline,
+        KeyboardDialog(value, placeholder, multiline, suggestion,
                        onDone = { onValue(it); editing = false },
                        onDismiss = { editing = false })
     }
@@ -770,6 +915,7 @@ private fun KeyboardDialog(
     initial: String,
     label: String,
     multiline: Boolean,
+    suggestion: String,
     onDone: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -811,6 +957,11 @@ private fun KeyboardDialog(
                      modifier = Modifier.fillMaxWidth()
                          .background(Skin.Panel2, RoundedCornerShape(8.dp))
                          .padding(horizontal = 14.dp, vertical = 12.dp))
+                // offered as one press, and kept offered while it is not what is typed
+                if (suggestion.isNotBlank() && buffer != suggestion) {
+                    Spacer(Modifier.height(8.dp))
+                    Pill(suggestion) { buffer = suggestion }
+                }
                 Spacer(Modifier.height(12.dp))
                 // every row fills the width and its keys share it equally, so a
                 // row of ten fits by construction rather than by my arithmetic
@@ -898,7 +1049,10 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
 @Composable
 fun androidx.compose.foundation.layout.BoxScope.OfferProgress(loaded: Media) {
     val m = Api.liveOffer(loaded)          // live progress, not the page's snapshot
-    if (!loaded.offered || m.offerState !in setOf("queued", "downloading")) return
+    // a film on offer, or any title with a download in the live list: a new release
+    // being fetched from the tracker showed nothing on its own page
+    if (!(loaded.offered || m !== loaded || loaded.askable) ||
+        m.offerState !in setOf("queued", "downloading")) return
     Box(Modifier.align(Alignment.TopEnd).padding(6.dp)
             .background(Color(0xD9070A0E), RoundedCornerShape(6.dp))
             .padding(horizontal = 7.dp, vertical = 3.dp)) {

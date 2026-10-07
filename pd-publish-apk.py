@@ -90,7 +90,12 @@ def _watching():
 #: episode - the publish did it, not the install that followed. So the house is read
 #: first, and --anyway is the way to say it does not matter this time.
 def _house_is_clear(force):
-    live = _watching()
+    # A machine copying a file is not somebody watching. It has no app to relaunch and
+    # a publish does not touch it - it holds its own place in the file and carries on -
+    # so counting it as a viewer meant waiting hours for a copy to finish.
+    live = [r for r in _watching()
+            if str(r.get("how") or r.get("state") or "") != "syncing"
+            and str(r.get("app") or "") != "follower"]
     if not live or force:
         for r in live:
             print("  publishing over %s - %s, %s" %

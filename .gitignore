@@ -89,3 +89,27 @@ library.db-shm
 library.db-wal
 # what the link has been seen to carry, written while the server runs
 traffic.json
+
+# the Handla Android app, copied in by handla-android/publish.py
+site-grovestick/food/handla.apk
+
+# the web test tool: jsdom, installed by npm
+.webtest/
+
+# state and logs written while the server or a build runs here
+tracker.json
+streaming.json
+top_shows.json
+meters.json
+watching.txt
+cacert.pem
+*.log
+speech/
+android/.kotlin/
+
+# another site kept beside this one: its worker, pages and scripts are not this project
+site-grovestick/_worker.js
+site-grovestick/food/
+site-grovestick/travel/
+pd-publish-grovestick.py
+pd-travel-*.py

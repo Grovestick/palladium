@@ -35,6 +35,8 @@ fun VersionPanel(
     media: Media,
     onPick: (Int) -> Unit,
     onClose: () -> Unit,
+    /** the versions the tracker carries, to download another; null where there are none */
+    onOther: (() -> Unit)? = null,
 ) {
     AlertDialog(
         onDismissRequest = onClose,
@@ -43,11 +45,13 @@ fun VersionPanel(
         modifier = Modifier.wrapContentWidth().widthIn(min = 480.dp, max = 700.dp),
         containerColor = Skin.Panel,
         title = {
-            Text("Which copy to play", color = Skin.Fg, fontSize = 16.sp,
+            Text("Versions", color = Skin.Fg, fontSize = 16.sp,
                  fontWeight = FontWeight.SemiBold)
         },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Here - the one to play", color = Skin.Dim, fontSize = 12.sp,
+                     modifier = Modifier.padding(bottom = 2.dp))
                 media.copies.forEachIndexed { at, copy ->
                     val here = copy.mi == media.mi
                     var onIt by remember { mutableStateOf(false) }
@@ -89,6 +93,12 @@ fun VersionPanel(
                                  modifier = Modifier.padding(start = 10.dp))
                         }
                     }
+                }
+                // and another one, from the tracker: its list opens in its place
+                onOther?.let { ask ->
+                    Text("Another version", color = Skin.Dim, fontSize = 12.sp,
+                         modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
+                    Pill("⤓ Download other version…", small = true) { ask() }
                 }
             }
         },

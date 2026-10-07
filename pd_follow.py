@@ -35,7 +35,13 @@ KEYS = {"learn": None, "last": 0.0, "stamp": 0}
 
 #: Where the main server had got to, and when we last asked. Copying the films without the
 #: places in them means a shelf of things that all start at the beginning.
-PLACES = {"since": 0, "at": 0.0, "gave": 0.0, "gavesince": 0}
+PLACES = {"since": 0, "at": 0.0, "gave": 0.0, "gavesince": 0, "full": 0.0}
+#: how often to ask for every place rather than only what has changed. The window
+#: asked for moves forward each pass, so a place missed in the pass that covered it -
+#: a restart, a machine asleep, a refused write - was never asked about again, and the
+#: two shelves then disagreed about that one title for good. Asking for the lot costs
+#: one answer of a few hundred rows.
+ALL_AGAIN = 30 * 60
 
 #: what the main server calls its owner. Their places arrive under that name and are filed
 #: here against whoever owns this machine - which is a different person, or none.
@@ -140,6 +146,14 @@ def night_length(one):
     frm = int(one.get("nightFrom", 22)) % 24
     to = int(one.get("nightTo", 8)) % 24
     return float((to - frm) % 24 or 24)
+
+
+def keep_days(one):
+    """Days a title stays here after it was watched; seven unless set."""
+    try:
+        return max(0.0, float(one.get("keepDays", 7)))
+    except (TypeError, ValueError):
+        return 7.0
 
 
 def hours_wanted(one):
@@ -304,6 +318,92 @@ def quick_mark(path):
         return ""
 
 
+#: the fields a watch-log row carries between the two machines
+LOG_FIELDS = ("who", "key", "title", "device", "client", "started", "updated",
+              "position", "duration", "casual", "app")
+
+
+def log_rows_played_here(con, since, name, most=2000):
+    """This machine's own watch-log rows changed since a time, tagged with its name."""
+    rows = con.execute(
+        "SELECT id, %s FROM watchlog WHERE origin IS NULL AND updated > ? "
+        "ORDER BY updated LIMIT ?" % ", ".join(LOG_FIELDS), (int(since), most)).fetchall()
+    out = []
+    for r in rows:
+        one = {k: r[k] for k in LOG_FIELDS}
+        one["origin"] = "%s:%s" % (name, r["id"])
+        one["machine"] = name
+        out.append(one)
+    return out
+
+
+def log_rows_take(con, rows):
+    """Keep the other machine's rows beside ours: one row per play, updated in place."""
+    taken = 0
+    for one in rows or []:
+        if not isinstance(one, dict) or not one.get("origin"):
+            continue
+        vals = [one.get(k) for k in LOG_FIELDS] + [one.get("machine") or "", one["origin"]]
+        con.execute(
+            "INSERT INTO watchlog (%s, machine, origin) VALUES (%s) "
+            "ON CONFLICT(origin) WHERE origin IS NOT NULL DO UPDATE SET "
+            "updated=excluded.updated, position=excluded.position, "
+            "duration=excluded.duration, title=excluded.title, app=excluded.app"
+            % (", ".join(LOG_FIELDS), ",".join("?" * (len(LOG_FIELDS) + 2))), vals)
+        taken += 1
+    con.commit()
+    return taken
+
+
+#: how far each way the watch logs have been traded, this run
+LOG_TRADE = {"sent": 0, "got": 0, "at": 0.0}
+LOG_EVERY = 120
+
+
+#: when the endings were last asked for, and the newest one taken
+ENDINGS = {"at": 0.0, "since": 0}
+
+
+def take_the_endings(one):
+    """Where each title's story ends, as the main server measured it: every half hour,
+    only what is new. This machine marks things watched by the same line."""
+    if time.time() - ENDINGS["at"] < 1800:
+        return
+    ENDINGS["at"] = time.time()
+    import pd_credits
+    said = ask(one, "/follow/endings?since=%d" % ENDINGS["since"], 30)
+    rows = (said or {}).get("endings") or []
+    if rows:
+        pd_credits.take_rows(rows)
+        ENDINGS["since"] = max(int(r.get("measured") or 0) for r in rows)
+
+
+def trade_the_logs(one, api, name):
+    """Send the main server what played here, and keep what played there.
+
+    Each machine logged only its own plays, so the evening one was off was missing
+    from the other's log, and a row carries which machine it ran on. Rows go by their
+    time last updated, so a play still going is sent again as it moves.
+    """
+    if time.time() - LOG_TRADE["at"] < LOG_EVERY:
+        return 0
+    LOG_TRADE["at"] = time.time()
+    con = api.lib.db()
+    try:
+        mine = log_rows_played_here(con, LOG_TRADE["sent"], name)
+        said = tell(one, "/follow/watchlog",
+                    {"machine": name, "rows": mine, "since": LOG_TRADE["got"]}, 60)
+        if mine:
+            LOG_TRADE["sent"] = max(int(r["updated"] or 0) for r in mine)
+        theirs = said.get("rows") or []
+        taken = log_rows_take(con, theirs)
+        if theirs:
+            LOG_TRADE["got"] = max(int(r.get("updated") or 0) for r in theirs)
+        return taken
+    finally:
+        con.close()
+
+
 def tell(one, path, what, patience=20):
     """Say something to the main server. Same key, a body rather than a question."""
     url = one["master"].rstrip("/") + path
@@ -376,7 +476,7 @@ def mirror_app(one):
 #: Both ways in to the machine this one follows, as that machine names them. Asked
 #: while it can be reached, because the point of holding them is the hour it cannot:
 #: somebody who finds this machine first should be able to find the main server from here.
-HOUSE = {"at": 0.0, "lan": "", "outside": "", "name": ""}
+HOUSE = {"at": 0.0, "lan": "", "outside": "", "name": "", "id": ""}
 HOUSE_EVERY = 900
 
 
@@ -402,7 +502,7 @@ def remember_doors():
     try:
         with open(doors_path(), "w", encoding="utf-8") as f:
             json.dump({"lan": HOUSE["lan"], "outside": HOUSE["outside"],
-                       "name": HOUSE["name"]}, f)
+                       "name": HOUSE["name"], "id": HOUSE["id"]}, f)
     except OSError:
         pass
 
@@ -414,7 +514,7 @@ def recall_doors():
     except (OSError, ValueError):
         return
     with LOCK:
-        for k in ("lan", "outside", "name"):
+        for k in ("lan", "outside", "name", "id"):
             if not HOUSE.get(k):
                 HOUSE[k] = str(said.get(k) or "")
 
@@ -422,13 +522,13 @@ def recall_doors():
 def house_doors():
     with LOCK:
         got = {"lan": HOUSE["lan"], "outside": HOUSE["outside"],
-               "name": HOUSE["name"]}
+               "name": HOUSE["name"], "id": HOUSE["id"]}
     if got["lan"] or got["outside"]:
         return got
     recall_doors()
     with LOCK:
         return {"lan": HOUSE["lan"], "outside": HOUSE["outside"],
-                "name": HOUSE["name"]}
+                "name": HOUSE["name"], "id": HOUSE["id"]}
 
 
 GROWN = {"at": 0.0}
@@ -502,6 +602,23 @@ def tell_what_we_fetched(one):
     return int((said or {}).get("taking") or 0)
 
 
+def _viewers_here(api):
+    """Every viewer this machine has written a place for, and its own besides."""
+    out = ["me"]
+    try:
+        con = api.lib.db()
+        try:
+            for row in con.execute("SELECT DISTINCT who FROM progress"):
+                who = str(row["who"] or "")
+                if who and who not in out:
+                    out.append(who)
+        finally:
+            con.close()
+    except Exception:
+        pass
+    return out
+
+
 def learn_the_viewers(one, settings_path, api=None):
     """Take a copy of what each viewer keeps, so this machine knows them too.
 
@@ -526,6 +643,10 @@ def learn_the_viewers(one, settings_path, api=None):
     if mine is None:
         return 0                  # unreadable: writing what is in hand would empty it
     before = json.loads(json.dumps(mine))
+    # the main server's choices for everyone, taken as they are: a mirror, not a merge
+    for name, value in (said.get("house") or {}).items():
+        if name in ("libraryShows", "homeRowsDefault") and mine.get(name) != value:
+            mine[name] = value
     users = mine.setdefault("users", {})
     filled = 0
     mine_to_send = []
@@ -545,20 +666,14 @@ def learn_the_viewers(one, settings_path, api=None):
         # One made sitting here is kept - only the main server's own are replaced.
         house_colls = [c for c in (theirs.get("collections") or [])
                        if isinstance(c, dict) and c.get("id")]
-        if house_colls:
+        # The main server's list as it stands: a shelf deleted there was kept here
+        # for good, because anything not in the new list was taken for one made on
+        # this machine. The copy is a mirror of the viewer's shelves.
+        if "collections" in theirs:
             ours = [c for c in (here.get("collections") or [])
                     if isinstance(c, dict) and c.get("id")]
-            theirs_by_id = {str(c["id"]): c for c in house_colls}
-            merged, seen = [], set()
-            for c in ours:
-                cid = str(c["id"])
-                seen.add(cid)
-                merged.append(theirs_by_id.get(cid, c))
-            for c in house_colls:
-                if str(c["id"]) not in seen:
-                    merged.append(c)
-            if merged != ours:
-                here["collections"] = merged
+            if house_colls != ours:
+                here["collections"] = house_colls
                 filled += 1
         # shuffle rounds, per shelf: the newer round is taken whole, and one moved
         # here while the main server was off goes back up
@@ -581,17 +696,31 @@ def learn_the_viewers(one, settings_path, api=None):
         if api is not None and (theirs or {}).get("watchlistIs") is not None:
             con = api.lib.db()
             try:
-                theirs_here = [k for k in (api.key_of(con, w) for w in
-                                           (theirs.get("watchlistIs") or [])) if k]
+                # Kept whole, and kept up to date.
+                #
+                # Two faults met here. A key this library could not place was thrown
+                # away - so a film on offer or one somebody asked for vanished, and a
+                # watchlist of eleven arrived as four. And the list was only taken at
+                # all when none of the keys already here resolved, so one snapshot
+                # early on left the two lists drifting apart for good.
+                theirs_here = []
+                for w in (theirs.get("watchlistIs") or []):
+                    placed = api.key_of(con, w)
+                    if placed or w:
+                        theirs_here.append(str(placed or w))
                 ours = [str(k) for k in (here.get("watchlist") or [])]
-                usable = [k for k in ours if api.what_it_is(con, k)]
             except Exception:
-                theirs_here, usable, ours = [], [], []
+                theirs_here, ours = [], []
             finally:
                 con.close()
-            if theirs_here and not usable and ours != theirs_here:
-                here["watchlist"] = theirs_here
-                filled += 1
+            if theirs_here:
+                # the house's list, then anything put on sitting here that it has not
+                # heard of - which has nowhere else to live until there is a way to
+                # send it up, the way a shuffle round goes
+                merged = theirs_here + [k for k in ours if k not in theirs_here]
+                if merged != ours:
+                    here["watchlist"] = merged
+                    filled += 1
     for who, rounds in mine_to_send:
         try:
             tell(one, "/follow/round", {"who": who, "shuffles": rounds}, 20)
@@ -609,7 +738,9 @@ def learn_the_viewers(one, settings_path, api=None):
         fresh = _read_settings_file(settings_path)
         if fresh is None or (not fresh and before):
             return filled
-        for name in ("ownerIs", "ownerName"):
+        # and the house's own choices: taken above and then dropped here, so the
+        # copy's Popular shows row stayed at whatever it held of the list
+        for name in ("ownerIs", "ownerName", "libraryShows", "homeRowsDefault"):
             if mine.get(name) != before.get(name):
                 fresh[name] = mine.get(name)
         users = fresh.setdefault("users", {})
@@ -684,6 +815,9 @@ def where_is_the_house(one):
         HOUSE["lan"] = str(told.get("lan") or "")
         HOUSE["outside"] = str(told.get("outside") or "")
         HOUSE["name"] = str(told.get("name") or "")
+        # and who it is, so a screen learning the main server through this one files
+        # it under the same id as it would from the machine itself
+        HOUSE["id"] = str(told.get("id") or "")
     remember_doors()
 
 
@@ -1262,6 +1396,75 @@ def clear_unwanted(folder, qualified, keeping):
     return {"files": gone, "gb": round(freed / 1e9, 2)}
 
 
+def take_over_half_copies(one):
+    """A copy the main server went away in the middle of, finished by downloading it.
+
+    Only once this machine has taken over the packs - the main server silent for long
+    enough - and only for a file a pack here carries: the half that arrived is handed
+    to qBittorrent where that pack keeps it, checked piece by piece, and only the rest
+    is downloaded. A file of the main server's own, not from any pack, stays as it is.
+    """
+    import pd_torrents
+    folder = (one.get("folder") or "").strip()
+    if pd_torrents.house_is_up():
+        # only the tidying while the main server is up: stale notes, nothing taken over
+        if folder and os.path.isdir(folder):
+            for name in os.listdir(folder):
+                note = os.path.join(folder, name)
+                if (name.endswith(".part.want") and not os.path.exists(note[:-5])
+                        and time.time() - os.path.getmtime(note) > 600):
+                    try:
+                        os.remove(note)
+                    except OSError:
+                        pass
+        return 0
+    if not folder or not os.path.isdir(folder):
+        return 0
+    taken = 0
+    for name in os.listdir(folder):
+        if not name.endswith(".part.want"):
+            continue
+        note = os.path.join(folder, name)
+        part = note[:-len(".want")]
+        try:
+            want = json.loads(io.open(note, encoding="utf-8").read() or "{}")
+        except (OSError, ValueError):
+            continue
+        # a note whose copy came to nothing - dropped for arriving empty - goes too
+        if not os.path.exists(part):
+            if time.time() - os.path.getmtime(note) > 600:
+                try:
+                    os.remove(note)
+                except OSError:
+                    pass
+            continue
+        # not while it may still be being written
+        if time.time() - os.path.getmtime(part) < 60:
+            continue
+        said = pd_torrents.take_over_copy(part, int(want.get("size") or 0),
+                                          str(want.get("name") or ""))
+        if said.get("ok"):
+            taken += 1
+        if said.get("ok") or said.get("gone"):
+            try:
+                os.remove(note)
+            except OSError:
+                pass
+    return taken
+
+
+def log_line(text):
+    """One line in this machine's own debug log."""
+    where = os.path.dirname(ME.get("settings") or "")
+    if not where:
+        return
+    try:
+        with io.open(os.path.join(where, "debug.log"), "a", encoding="utf-8") as f:
+            f.write("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)))
+    except OSError:
+        pass
+
+
 def copy_file(one, item, folder):
     """Fetch one film or episode, carrying on from whatever is already here."""
     name = a_safe_name(item.get("name"))
@@ -1288,6 +1491,14 @@ def copy_file(one, item, folder):
     if have:
         req.add_header("Range", "bytes=%d-" % have)
     said = int(item.get("size") or 0)
+    # what it will be once whole, beside it while it comes: if the main server goes
+    # before it is, the size is how the half that is here is matched to its pack
+    if said and item.get("side") is None:
+        try:
+            with io.open(part + ".want", "w", encoding="utf-8") as f:
+                f.write(json.dumps({"size": said, "name": name}))
+        except OSError:
+            pass
     with urllib.request.urlopen(req, timeout=60) as answer:
         with open(part, "ab" if have else "wb") as f:
             while True:
@@ -1321,6 +1532,10 @@ def copy_file(one, item, folder):
         os.remove(part)
         raise ValueError("what arrived is not the file that was offered")
     os.replace(part, into)
+    try:
+        os.remove(part + ".want")
+    except OSError:
+        pass
     note_ours(folder, into)
     with LOCK:
         STATE["copying"] = ""
@@ -1350,17 +1565,32 @@ def adopt_folder(one, lib):
     lib.save_config(cfg)
 
 
+def owner_here():
+    """What this machine calls its own owner, or "me" where it has no name for them.
+
+    One house, one owner, and usually one key for them on both machines - the second
+    machine is set up with the first one's invitation. Where that is so, places must
+    arrive under that key: filing them under "me" instead wrote every evening to a
+    viewer nothing reads, and the two shelves disagreed while both were being kept
+    faithfully.
+    """
+    said = _read_settings_file(ME["settings"]) if ME.get("settings") else None
+    mine = str((said or {}).get("ownerIs") or "").strip()
+    return mine or "me"
+
+
 def as_ours(rows):
     """The main server's owner, read as whoever owns this machine.
 
     This is a second server, not a second person: the places that arrive under the
     house's own name belong, here, to whoever sits at this one.
     """
+    mine = owner_here()
     out = []
     for row in rows or []:
         row = dict(row)
         if HOUSE["owner"] and row.get("who") == HOUSE["owner"]:
-            row["who"] = "me"
+            row["who"] = mine
         out.append(row)
     return out
 
@@ -1619,6 +1849,73 @@ def dress_the_copies(one, lib, folder, wanted):
     return dressed
 
 
+def dress_the_strangers(one, lib, keys):
+    """Give a name and a picture to rows made for places on titles this machine has not got.
+
+    The row itself is enough for the shelf to say where somebody had got to, but a card
+    with no picture reads as a library that has lost something. The main server knows
+    what the title is - it is the machine the place came from - so the catalogue number
+    and the poster come from there, and the picture is fetched from it as with copies.
+    """
+    if not (lib and keys):
+        return 0
+    con = lib.db()
+    done = 0
+    try:
+        for key in list(keys)[:20]:
+            item = key
+            if str(key).startswith("e"):
+                row = con.execute("SELECT item_id FROM episode WHERE id=?",
+                                  (str(key),)).fetchone()
+                item = row["item_id"] if row else ""
+            if not item:
+                continue
+            row = con.execute("SELECT poster FROM item WHERE id=?", (item,)).fetchone()
+            if not row or row["poster"]:
+                continue                  # already dressed, or gone
+            said = ask(one, "/follow/facts?key=" + urllib.parse.quote(str(item)), 20) or {}
+            art = said.get("art") or {}
+            if not (art.get("poster") or art.get("tmdb")):
+                continue
+            con.execute("""UPDATE item SET tmdb_id = COALESCE(?, tmdb_id),
+                                           poster = COALESCE(?, poster),
+                                           backdrop = COALESCE(?, backdrop),
+                                           overview = COALESCE(?, overview),
+                                           year = COALESCE(NULLIF(year, 0), ?),
+                                           identified = 1
+                           WHERE id = ?""",
+                        (art.get("tmdb"), art.get("poster"), art.get("backdrop"),
+                         said.get("overview"), said.get("year"), item))
+            done += 1
+            for which, size in (("poster", "w500"), ("backdrop", "w780")):
+                path = art.get(which)
+                if not path:
+                    continue
+                spot = os.path.join(lib.root, "cache",
+                                    size + "_" + path.strip("/").replace("/", "_"))
+                if os.path.exists(spot) and os.path.getsize(spot):
+                    continue
+                try:
+                    url = (one["master"].rstrip("/") + "/local/art/%s/%s?t=%s"
+                           % (item, which, urllib.parse.quote(one["key"])))
+                    req = urllib.request.Request(
+                        url, headers={"X-Palladium-App": "follower"})
+                    with urllib.request.urlopen(req, timeout=30) as answer:
+                        blob = answer.read()
+                    if blob[:2] == bytes([0xFF, 0xD8]) or blob[:4] == bytes([0x89, 80, 78, 71]):
+                        os.makedirs(os.path.dirname(spot), exist_ok=True)
+                        with open(spot, "wb") as f:
+                            f.write(blob)
+                except Exception:
+                    pass                  # a missing picture is not worth a fault
+        con.commit()
+    except Exception:
+        pass
+    finally:
+        con.close()
+    return done
+
+
 def _art_key(item):
     """Which number the main server files the picture under.
 
@@ -1762,8 +2059,22 @@ def light_round(one, lib=None, api=None):
     if api and time.time() - PLACES["at"] > 120:
         PLACES["at"] = time.time()
         try:
-            said = ask(one, "/follow/progress?since=%d" % PLACES["since"], 30)
-            api.take_progress(as_ours(said.get("progress") or []))
+            # now and then, everything: see ALL_AGAIN
+            whole = time.time() - PLACES["full"] > ALL_AGAIN
+            if whole:
+                PLACES["full"] = time.time()
+            said = ask(one, "/follow/progress?since=%d"
+                       % (0 if whole else PLACES["since"]), 30)
+            # what an older build filed under "me" while this machine knew its owner
+            # by their key. Moved once, newest note winning, or Continue watching here
+            # keeps reading the half of the evenings written before the fix.
+            if not PLACES.get("merged"):
+                PLACES["merged"] = True
+                mine = owner_here()
+                if mine != "me":
+                    api.merge_places("me", mine)
+            api.take_progress(as_ours(said.get("progress") or []), may_stub=True)
+            dress_the_strangers(one, lib, getattr(api, "stubs_made", []))
             # the five minutes of overlap are so a place written while this was asked
             # is not missed. Not when there was more than fitted in one answer: then
             # "now" is the last place sent, and going back before it never gets past.
@@ -1772,11 +2083,11 @@ def light_round(one, lib=None, api=None):
         except Exception:
             pass
     try:
-        forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s" % (
+        forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s&keep=%s" % (
             hours_wanted(one), one.get("episodes") or 6,
             one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
             ",".join(kinds_now(one)),
-            urllib.parse.quote(for_whom(one)))
+            urllib.parse.quote(for_whom(one)), keep_days(one))
         said = ask(one, "/follow/playing?deck=1&" + forward, 30)
         wanted = said.get("wanted") or []
         say_what_is_here(one, folder, wanted)
@@ -1845,11 +2156,11 @@ def _round(one, lib, api, folder):
                     lib.save_config(cfg)
         except Exception:
             pass
-    forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s" % (
+    forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s&keep=%s" % (
         hours_wanted(one), one.get("episodes") or 6,
         one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
         ",".join(kinds_now(one)),
-        urllib.parse.quote(for_whom(one)))
+        urllib.parse.quote(for_whom(one)), keep_days(one))
     # One question, always the whole of it: what is on a screen, what people are
     # part-way through, and every watchlist. Asking a short question first and a
     # fuller one afterwards gave the main server two different lists - and the page could
@@ -1886,6 +2197,13 @@ def _round(one, lib, api, folder):
     holding = said.get("holding")
     if not isinstance(holding, list) or not holding:
         holding = wanted
+    # downloads started here while the main server was away, for files it now lists:
+    # copying brings those
+    try:
+        import pd_torrents
+        pd_torrents.drop_own_copied(str(i.get("name") or "") for i in holding)
+    except Exception:
+        pass
     qualified = set()
     for item in holding:
         safe = a_safe_name(item.get("name"))
@@ -1994,6 +2312,14 @@ def _round(one, lib, api, folder):
                      and still_wanted(w)), None)
         if item is None:
             break
+        # why, and for whom, said as it starts: the list it came off changes by the
+        # minute, and afterwards there was no way to ask why a file had been copied
+        if item.get("side") is None and not os.path.exists(
+                os.path.join(folder, a_safe_name(item.get("name")) or "")):
+            log_line("copying %s - %s%s" % (
+                item.get("title") or item.get("name") or "?",
+                item.get("why") or "no reason given",
+                (" (" + str(item.get("who")) + ")") if item.get("who") else ""))
         try:
             copy_file(one, item, folder)
             # A subtitle is a few kilobytes riding along with its film, not one of
@@ -2048,8 +2374,22 @@ def _round(one, lib, api, folder):
     if api and time.time() - PLACES["at"] > 120:
         PLACES["at"] = time.time()
         try:
-            said = ask(one, "/follow/progress?since=%d" % PLACES["since"], 30)
-            api.take_progress(as_ours(said.get("progress") or []))
+            # now and then, everything: see ALL_AGAIN
+            whole = time.time() - PLACES["full"] > ALL_AGAIN
+            if whole:
+                PLACES["full"] = time.time()
+            said = ask(one, "/follow/progress?since=%d"
+                       % (0 if whole else PLACES["since"]), 30)
+            # what an older build filed under "me" while this machine knew its owner
+            # by their key. Moved once, newest note winning, or Continue watching here
+            # keeps reading the half of the evenings written before the fix.
+            if not PLACES.get("merged"):
+                PLACES["merged"] = True
+                mine = owner_here()
+                if mine != "me":
+                    api.merge_places("me", mine)
+            api.take_progress(as_ours(said.get("progress") or []), may_stub=True)
+            dress_the_strangers(one, lib, getattr(api, "stubs_made", []))
             # the five minutes of overlap are so a place written while this was asked
             # is not missed. Not when there was more than fitted in one answer: then
             # "now" is the last place sent, and going back before it never gets past.
@@ -2063,14 +2403,22 @@ def _round(one, lib, api, folder):
         try:
             # this machine's own viewers, from the last week: an evening here is
             # the main server's evening, and the main server keeps the book
-            mine, mark = api.progress_of(["me"], PLACES["gavesince"] or
+            # Everybody who watched here, not only this machine's own viewer.
+            #
+            # An evening on the cache belongs in the same book whoever sat through it:
+            # a guest carried here while the main server was off had his place written
+            # under his own key, and only "me" was ever sent back - so the main server
+            # came up knowing nothing about it and the two shelves disagreed for good.
+            here = _viewers_here(api)
+            mine, mark = api.progress_of(here, PLACES["gavesince"] or
                                          int(time.time()) - 86400 * 7,
                                          with_mark=True)
             if mine:
-                # sent back under the name the main server files them under, or they
-                # would arrive there belonging to a machine nobody watches on
+                # "me" is this machine's word for whoever set it up; everybody else
+                # travels under the key they already watch by, which is the same key
+                # on both machines
                 for row in mine:
-                    if HOUSE["owner"]:
+                    if str(row.get("who") or "") in ("", "me") and HOUSE["owner"]:
                         row["who"] = HOUSE["owner"]
                 tell(one, "/follow/watched", {"progress": mine})
                 # only as far as was actually sent, or the ones past the end of a
@@ -2097,6 +2445,18 @@ def _round(one, lib, api, folder):
         STATE["why"] = "fetched: %s: %s" % (type(e).__name__, str(e)[:120])
     # and what the people watching keep - their watchlists, their shelves - so this
     # machine knows them when it is the one answering
+    # and the two watch logs, so each machine keeps both, each row saying where
+    try:
+        take_the_endings(one)
+    except Exception as e:
+        STATE["why"] = "endings: %s: %s" % (type(e).__name__, str(e)[:120])
+    try:
+        import socket
+        cfg = api.lib.config() if api else {}
+        trade_the_logs(one, api, str(cfg.get("serverName") or "").strip()
+                       or socket.gethostname())
+    except Exception as e:
+        STATE["why"] = "watch log: %s: %s" % (type(e).__name__, str(e)[:120])
     try:
         learn_the_viewers(one, ME.get("settings") or "", api)
     except Exception as e:
@@ -2252,6 +2612,11 @@ def start(config, library=None, quiet=None, me=None, keys=None, api=None, carry=
                     PASS_NOW["thread"] = threading.Thread(
                         target=one_pass, args=(one,), daemon=True)
                     PASS_NOW["thread"].start()
+                try:
+                    take_over_half_copies(one)
+                except Exception as e:
+                    with LOCK:
+                        STATE["why"] = "half copies: %s" % str(e)[:140]
             time.sleep(ASK_EVERY)
 
     threading.Thread(target=work, daemon=True).start()

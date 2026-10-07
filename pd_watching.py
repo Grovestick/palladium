@@ -7,6 +7,7 @@ average since the start, because the interesting number is what the line is carr
 this minute - a paused film still has a large total and a rate of zero.
 """
 import itertools
+import json
 import os
 import threading
 import time
@@ -21,6 +22,13 @@ PEAK_WINDOW = 3.0        # what "fastest" is measured over
 # and closing, so a list built from open sockets alone flickered - a row appearing
 # and vanishing several times a minute while somebody sat watching one film.
 LINGER = 30.0
+#: how long what a viewing has taken is remembered, so a seek or a pause
+#: does not start the count again. Longer than LINGER.
+CARRIED = 900.0
+#: how long a viewing's total waits through a pause: an evening, not a quarter of an
+#: hour - paused twenty minutes, an episode counted from nought again and finished well
+#: short of its file's size
+SITTING_KEEP = 4 * 3600.0
 _next_id = itertools.count(1)
 
 
@@ -34,15 +42,52 @@ class Watching:
         # play reads in chunks, and one chunk over its own short life measured
         # several times the film's bitrate
         self.flows = {}
+        # what a viewing had taken when its last stream closed, so carrying on after
+        # a seek or a pause adds to the sitting instead of starting from nothing
+        self.spent = {}
+        # what a sitting has taken altogether, by person, title and screen - not by
+        # address, which a television changes between the house's two doors - added
+        # to by every byte of every stream, and forgotten after a quarter of an hour
+        # with nothing sent
+        self.sitting = {}
+
+    def keep_in(self, folder):
+        """The sittings written down every half minute and read back at a start: an
+        install restarts the server, and a film carried on through it counted its
+        megabytes from nought - the panel said 22 MB where the television said 500."""
+        where = os.path.join(folder, "sittings.json")
+        try:
+            with open(where, encoding="utf-8") as f:
+                rows = json.load(f)
+            now = time.time()
+            with self.lock:
+                for k, t, n in rows:
+                    if now - float(t) < SITTING_KEEP:
+                        self.sitting[tuple(k)] = (float(t), int(n))
+        except Exception:
+            pass
+
+        def write():
+            while True:
+                time.sleep(30)
+                with self.lock:
+                    rows = [[list(k), v[0], v[1]] for k, v in self.sitting.items()]
+                try:
+                    with open(where + ".new", "w", encoding="utf-8") as f:
+                        json.dump(rows, f)
+                    os.replace(where + ".new", where)
+                except Exception:
+                    pass
+        threading.Thread(target=write, daemon=True).start()
 
     def start(self, who, title, quality, how, address, key="", app="", device="",
               # why this file is being sent and whose watching asked for it. A log of
               # what moved says nothing about why it moved, and the reason is three
               # functions away by the time the bytes are going out.
-              why="", asked_for="", path=""):
+              why="", asked_for="", path="", offset=0, size=0):
         sid = next(_next_id)
         with self.lock:
-            self.live[sid] = {
+            row = {
                 "id": sid, "who": who, "title": title, "quality": quality,
                 "how": how, "address": address, "started": time.time(),
                 # what is playing it: the build the client says it is, and what kind
@@ -56,8 +101,27 @@ class Watching:
                 # them are being read this minute
                 "path": str(path or ""),
                 "why": str(why or ""), "for": str(asked_for or ""),
+                # a copy: where in the file this stream began, and the file's size
+                "offset": int(offset or 0), "size": int(size or 0),
                 "bytes": 0, "marks": [(time.time(), 0)], "peak": 0.0,
             }
+            # carrying on with the same title on the same screen: the sitting keeps
+            # what it had taken before the stream was closed and opened again
+            now = time.time()
+            mark = self._same(row)
+            for old in list(self.spent):
+                if now - self.spent[old][0] > CARRIED:
+                    del self.spent[old]
+            for old in list(self.sitting):
+                if now - self.sitting[old][0] > SITTING_KEEP:
+                    del self.sitting[old]
+            had = self.spent.get(mark)
+            if had:
+                row["bytes"] = int(had[1] or 0)
+                row["started"] = min(row["started"], float(had[2] or row["started"]))
+                row["peak"] = max(row["peak"], float(had[3] or 0.0))
+                row["marks"] = [(now, row["bytes"])]
+            self.live[sid] = row
         return sid
 
     def paths(self):
@@ -98,6 +162,9 @@ class Watching:
                 return
             s["bytes"] += n
             now = time.time()
+            seat = self._seat(s)
+            was = self.sitting.get(seat)
+            self.sitting[seat] = (now, (was[1] if was and now - was[0] < SITTING_KEEP else 0) + n)
             mark = self._same(s)
             f = self.flows.get(mark)
             if f is None or now - f["marks"][-1][0] > LINGER + WINDOW:
@@ -131,6 +198,11 @@ class Watching:
                         s["peak"] = max(s["peak"], rate)
 
     @staticmethod
+    def _seat(s):
+        """One sitting: a person, a title, a screen, whichever door it came in by."""
+        return (s.get("who") or "", str(s.get("key") or ""), s.get("kind") or "")
+
+    @staticmethod
     def _same(s):
         """What makes two sessions one viewing: a person, a title, a screen."""
         return (s.get("who") or "", str(s.get("key") or ""),
@@ -154,7 +226,10 @@ class Watching:
                 # remembered rather than forgotten, so the gap between one range
                 # request and the next does not empty the list
                 s["closed"] = True
-                self.gone[self._same(s)] = (time.time(), s)
+                mark = self._same(s)
+                self.gone[mark] = (time.time(), s)
+                self.spent[mark] = (time.time(), s.get("bytes", 0),
+                                    s.get("started", time.time()), s.get("peak", 0.0))
 
     def snapshot(self):
         now = time.time()
@@ -203,7 +278,12 @@ class Watching:
                     # when the connection opened, so the list can be kept in the order
                     # people arrived rather than shuffled by name
                     "started": int(s["started"]),
-                    "mb": round(s["bytes"] / 1048576.0, 1),
+                    # the sitting's total, kept across reconnects, seeks and doors
+                    "mb": round(((s.get("offset", 0) + s["bytes"]) if s.get("size")
+                                 else max(s["bytes"], (self.sitting.get(self._seat(s))
+                                                       or (0, 0))[1])) / 1048576.0, 1),
+                    # a copy: how big the whole file is, so "of" can be said
+                    "ofMb": round(s.get("size", 0) / 1048576.0, 1) if s.get("size") else None,
                     # megabytes a second, as measured
                     "mbps": round(rate if rate > 0.01 else average, 2),
                     # and the same number as a line speed, which is how a network is

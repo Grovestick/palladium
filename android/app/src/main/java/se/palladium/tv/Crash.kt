@@ -18,6 +18,9 @@ import java.net.URL
 object Crash {
 
     fun install(ctx: Context) {
+        // whatever could not be sent last time - the machine refused it or was off -
+        // goes now, to whichever server this start opens
+        Thread { runCatching { sendKept(ctx) } }.start()
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             // The crash usually happens on the main thread, and Android forbids network
@@ -52,23 +55,54 @@ object Crash {
             append("thread=").append(thread).append("\n\n")
             append(trace)
         }
+        // kept first, so a report the server refuses or never receives is not lost
+        keep(ctx, body)
+        if (post(ctx, body)) forget(ctx, body)
+    }
+
+    private fun post(ctx: Context, body: String): Boolean {
         val base = Api.base.ifEmpty {
             ctx.getSharedPreferences("palladium", Context.MODE_PRIVATE)
                 .getString("server", "") ?: ""
         }
-        if (base.isEmpty()) return
+        if (base.isEmpty()) return false
+        // a house address away from home: kept for the next start rather than waited on
+        if (!Api.homeHere(base)) return false
+        // The key the way the server reads it: in the address and in its own header.
+        // Sent as X-Plex-Token it was never seen, and every crash away from home was
+        // refused as having no key.
+        val key = runCatching { Api.token }.getOrDefault("")
         // a crash report must not hang the dying process, hence the short timeouts
-        val conn = URL("$base/applog").openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        // the key if there is one: away from home the door asks for it, and a crash
-        // on somebody else's sofa is the one hardest to learn about otherwise
-        runCatching {
-            if (Api.token.isNotEmpty()) conn.setRequestProperty("X-Plex-Token", Api.token)
+        val conn = Net.open("$base/applog" + (if (key.isEmpty()) "" else "?t=" + key),
+                            2500, 2500, key, "POST")
+        Net.send(conn, body)
+        return conn.responseCode in 200..299
+    }
+
+    private fun prefs(ctx: Context) =
+        ctx.getSharedPreferences("palladium-crashes", Context.MODE_PRIVATE)
+
+    /** Up to five reports waiting to be sent, newest last. */
+    private fun keep(ctx: Context, body: String) {
+        val had = prefs(ctx).getStringSet("waiting", emptySet()).orEmpty().toMutableSet()
+        had.add(System.currentTimeMillis().toString() + "\n" + body)
+        val five = had.sorted().takeLast(5).toSet()
+        prefs(ctx).edit().putStringSet("waiting", five).commit()
+    }
+
+    private fun forget(ctx: Context, body: String) {
+        val had = prefs(ctx).getStringSet("waiting", emptySet()).orEmpty()
+        prefs(ctx).edit()
+            .putStringSet("waiting", had.filterNot { it.substringAfter("\n") == body }.toSet())
+            .commit()
+    }
+
+    private fun sendKept(ctx: Context) {
+        // the server is known once the app has loaded it; a moment is enough
+        Thread.sleep(8000)
+        for (one in prefs(ctx).getStringSet("waiting", emptySet()).orEmpty().sorted()) {
+            val body = one.substringAfter("\n")
+            if (runCatching { post(ctx, body) }.getOrDefault(false)) forget(ctx, body)
         }
-        conn.connectTimeout = 2500
-        conn.readTimeout = 2500
-        conn.doOutput = true
-        conn.outputStream.use { it.write(body.toByteArray()) }
-        conn.responseCode
     }
 }

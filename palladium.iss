@@ -86,7 +86,14 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
-  Exec(ExpandConstant('{sys}	askkill.exe'), '/IM palladium-server.exe',
+  // Asked over loopback first, on either port: the server takes its tray icon down
+  // and ends. taskkill's close never reaches the icon's hidden window.
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       '-NoProfile -Command "foreach ($p in 8765, 8764) { try { Invoke-WebRequest ' +
+       '-UseBasicParsing -Method Post -TimeoutSec 3 http://127.0.0.1:$p/app/quit ' +
+       '| Out-Null } catch {} }; Start-Sleep -Seconds 2"',
+       '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM palladium-server.exe',
        '', SW_HIDE, ewWaitUntilTerminated, Code);
   if Code = 0 then
     Sleep(2500);          // let it take its icon down and let go of its files

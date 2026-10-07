@@ -16,6 +16,7 @@ subtitle matched by title alone is frequently out by several seconds, having bee
 for a different cut.
 """
 import json
+import time
 import os
 import re
 import struct
@@ -71,12 +72,23 @@ class OpenSubtitles:
             return True
         if not (self.user and self.password):
             return False
-        try:
-            out = self._call("/login", {"username": self.user, "password": self.password})
-            self.token = out.get("token", "")
-            return bool(self.token)
-        except Exception:
-            return False
+        held = TOKENS.get(self.user)
+        if held and time.time() - held[1] < 12 * 3600:
+            self.token = held[0]
+            return True
+        # logins are rate limited; a new client per download was refused mid-run
+        for wait in (0, 2, 5):
+            time.sleep(wait)
+            try:
+                out = self._call("/login", {"username": self.user,
+                                            "password": self.password})
+                self.token = out.get("token", "")
+            except Exception:
+                continue
+            if self.token:
+                TOKENS[self.user] = (self.token, time.time())
+                return True
+        return False
 
     def search(self, title, year=None, languages="en", path=None, season=None,
                episode=None, imdb=""):
@@ -138,9 +150,21 @@ class OpenSubtitles:
     def download(self, file_id):
         """The subtitle itself, as text. Requires the login and its daily allowance."""
         if not self.login():
+            if self.user and self.password:
+                return None, "OpenSubtitles did not accept the login just now."
             return None, "Downloading needs the OpenSubtitles username and password."
         try:
-            out = self._call("/download", {"file_id": int(file_id)}, token=True)
+            try:
+                out = self._call("/download", {"file_id": int(file_id)}, token=True)
+            except urllib.error.HTTPError as e:
+                if e.code != 401:
+                    raise
+                # a kept token that has expired: log in again once
+                TOKENS.pop(self.user, None)
+                self.token = ""
+                if not self.login():
+                    raise
+                out = self._call("/download", {"file_id": int(file_id)}, token=True)
         except urllib.error.HTTPError as e:
             body = ""
             try:
@@ -151,6 +175,8 @@ class OpenSubtitles:
         except Exception as e:
             return None, str(e)[:100]
         link = out.get("link")
+        if out.get("remaining") is not None:
+            ALLOWANCE.update(left=int(out.get("remaining") or 0), at=time.time())
         if not link:
             return None, "No download link came back (allowance used up?)."
         try:
@@ -169,6 +195,13 @@ class OpenSubtitles:
             except UnicodeDecodeError:
                 continue
         return raw.decode("utf-8", "replace"), ""
+
+
+#: login token per user, with when it was issued; shared by every client
+TOKENS = {}
+
+#: what OpenSubtitles said was left of today's downloads, and when it said it
+ALLOWANCE = {"left": None, "at": 0.0}
 
 
 def release_tag(release):
@@ -201,3 +234,51 @@ def sidecar_path(video, language, release=""):
         if len(named) <= 250:
             return named
     return "%s.%s.srt" % (stem, lang)
+
+
+# ---------------------------------------------------------------- what to check next
+
+#: a subtitle found good is not looked at again
+GOOD = ("fits", "verified", "inside")
+#: the provider said no for today: asked again tomorrow, whoever asks
+TOMORROW = ("login", "allowance")
+
+
+def due(done, first, rest, languages, asked, now, again, stop_at_one=False):
+    """What is left to check, first to last: (key, language, fetch).
+
+    `done` is what each (key, language) was last found to be and when. `first` are
+    the titles worth fetching a subtitle for, in order; `rest` the library's others,
+    whose own subtitle is only measured. One found good is never looked at again; one
+    that was not is left `again` seconds before another try.
+
+    `asked` are the (key, language) pairs somebody asked to have gone through. They
+    come before everything, a subtitle is fetched for them, and the wait since the
+    last try does not hold them back - that try is what they asked to have redone.
+    Only the provider's own refusal for the day still waits for tomorrow.
+    """
+    out, seen = [], set()
+
+    def take(key, lang, fetch, forced):
+        if (key, lang) in seen:
+            return False
+        at, verdict = done.get((key, lang), (0, ""))
+        if verdict in GOOD:
+            return False
+        wait = 86400 if verdict in TOMORROW else (0 if forced else again)
+        if at and now - at < wait:
+            return False
+        seen.add((key, lang))
+        out.append((key, lang, fetch))
+        return True
+
+    for key, lang in asked or []:
+        if take(str(key), str(lang), True, True) and stop_at_one:
+            return out
+    ahead = set(first)
+    for fetch, keys in ((True, first), (False, [k for k in rest if k not in ahead])):
+        for key in keys:
+            for lang in languages:
+                if take(key, lang, fetch, False) and stop_at_one:
+                    return out
+    return out

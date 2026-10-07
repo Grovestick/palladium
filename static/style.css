@@ -78,6 +78,19 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 .card .t.link:hover,.card .s.link:hover{color:var(--accent)}
 .bar{position:absolute;left:0;right:0;bottom:0;height:4px;background:#0007}
 .bar i{display:block;height:100%;background:var(--accent)}
+/* the same bar standing on its own in a settings block, rather than across a poster */
+/* a quiet word rather than a button: the small offer on a film already here */
+.linky{background:none;border:0;color:var(--dim);font:inherit;font-size:12.5px;
+       text-decoration:underline;cursor:pointer;padding:2px 4px}
+.linky:hover{color:var(--accent)}
+.switchver{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-width:0;flex:1 1 auto}
+/* the list of versions takes the room, the Download button stays on its right */
+.switchver select{flex:1 1 auto;min-width:0;max-width:100%}
+.switchver .btn{flex:0 0 auto;white-space:nowrap}
+.switchver .roomleft{flex:0 0 auto;font-size:12px;color:var(--dim);white-space:nowrap}
+.meter{position:relative;height:6px;border-radius:3px;background:#0003;overflow:hidden;margin:2px 0 8px}
+.meter i{display:block;height:100%;background:var(--accent);transition:width .4s}
+.meter.second i{background:#2f6b35}
 
 /* ---- detail ---- */
 /* flex stretches its children by default, so the poster grew to match whatever was
@@ -99,6 +112,52 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 .detail .tellme:hover,.detail .tellme:focus-visible{background:#ffffff0f;outline:none}
 /* who is in it */
 .detail .cast{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 20px}
+/* the strip under the topbar: one line per download coming in from the tracker */
+.fetching{display:flex;flex-direction:column;gap:4px;padding:8px 18px;
+  background:var(--panel2);border-bottom:1px solid var(--line)}
+.fetching .one{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--dim)}
+.fetching .bar{flex:0 0 120px;height:5px;border-radius:999px;background:var(--line);
+  overflow:hidden}
+.fetching .bar i{display:block;height:100%;background:var(--accent)}
+.fetching .what{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fetching .done{color:var(--ok,#5fd08a)}
+
+/* the top shows under settings: one column, each show a full-width line to tick */
+.showlist{display:flex;flex-direction:column;gap:4px;margin-top:12px;max-width:900px}
+.showlist .showrow{display:flex;gap:6px;align-items:center}
+.showlist .btn{text-align:left;flex:1 1 auto;min-width:0}
+.showlist .pick{flex:0 1 55%;min-width:0}
+.showlist .showpacks{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px 18px}
+.showlist .showpacks .subrow{width:100%;margin-top:2px}
+.showlist .showpacks .btn{flex:0 0 auto}
+.showlist .showmodes{display:flex;gap:4px;flex:0 0 auto;align-items:center}
+.showlist .showrow>.btn:first-child{flex:0 0 300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.showlist .showrow .pick{flex:1 1 auto}
+.showlist .showmodes .btn{flex:0 0 auto}
+.showlist .showmodes input{padding:2px 4px}
+/* the lines under a series - its pack, its chosen packs - read smaller than the series */
+.showlist .showrow .pick{font-size:12px;padding:3px 6px;text-overflow:ellipsis}
+.showlist .showpacks .btn{font-size:12px;padding:3px 8px}
+.showlist .showpacks .sublabel,.showlist .showpacks select{font-size:12px}
+
+/* the next episode of a series somebody is waiting on: not here, not playable, dated */
+.card.upcoming .poster img{filter:grayscale(1);opacity:.42}
+.card.upcoming .t,.card.upcoming .s{opacity:.6}
+.ribbon.soon span{background:var(--dim);color:#111}
+/* where a new release can be watched: the services' marks under its title */
+.providers{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 2px}
+.providers img{width:34px;height:34px;border-radius:8px;display:block}
+/* the studios behind a film: marks of every colour, drawn in one - most are dark
+   on nothing, and would not show on this ground at all */
+.studios{display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:10px 0 2px}
+.studios img{height:22px;max-width:130px;object-fit:contain;display:block;
+  filter:brightness(0) invert(1);opacity:.78}
+.studios span{font-size:12px;color:var(--dim)}
+/* not the accent: that band is a press that fetches something */
+.ribbon.today span{background:#e6e8eb;color:#111}
+
+/* the names a search found, laid out like the cast row but outside a detail page */
+.faces{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 20px}
 .detail .cast .lbl{color:var(--dim);font-size:12px;margin-right:2px}
 .bubble{border-radius:999px!important;font-size:12px;padding:4px 12px 4px 4px;
   display:inline-flex;align-items:center;gap:7px;line-height:1}
@@ -120,6 +179,9 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 .btn{background:var(--accent);color:#111;font-weight:600;padding:9px 20px;
   border-radius:6px}
 .btn.ghost{background:var(--panel2);color:var(--fg);font-weight:400}
+/* the version chosen is one this house already holds: green says so, and the button
+   still fetches - a file here can be broken, or half a pack */
+.btn.here{background:#5fd08a;color:#10261a}
 .btn:hover{filter:brightness(1.1)}
 select{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
   border-radius:6px;padding:8px}
@@ -563,6 +625,8 @@ h2 .makecoll + .makecoll{margin-left:8px}
 .homename.off{color:var(--dim);text-decoration:line-through}
 .homerow .btn[disabled]{opacity:.3;cursor:default}
 
+/* a press that is asking rather than doing: the one that empties a shuffle's hat */
+.deckdone.asking{color:#fff;background:#b3261e;font-weight:700}
 .deckdone.face{color:var(--dim)}
 .deckdone.face.on{color:var(--accent)}
 
@@ -613,7 +677,7 @@ h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
 .liverows{max-width:940px}
 .livetotals{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 18px;max-width:940px}
 .livetotals .total{background:var(--panel);border:1px solid var(--line);
-  border-radius:10px;padding:10px 16px;min-width:120px}
+  border-radius:10px;padding:10px 16px;min-width:120px;flex:1 1 0}
 .livetotals .total b{display:block;color:var(--accent);font-size:20px;
   font-variant-numeric:tabular-nums}
 .livetotals .total span{color:var(--dim);font-size:12px}
@@ -694,7 +758,7 @@ h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
 #matchbox .subhead h4{margin:0}
 #qpanel .subhead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 #qpanel .subhead h4{margin:0}
-#qpanel .qrow{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:4px 0}
+#qpanel .qrow{display:flex;align-items:center;flex-wrap:nowrap;gap:6px;margin:4px 0}
 #qpanel .qlabel{width:64px;color:var(--dim);font-size:13px}
 #qpanel .qrow .btn{font-size:12.5px;padding:5px 10px}
 .xclose{margin-left:auto;color:var(--dim);font-size:15px;line-height:1;
@@ -888,7 +952,6 @@ body.watching #watermark{display:none}
 .card .seen{position:absolute;top:6px;right:6px;background:rgba(11,13,16,.85);
   color:#5fd08a;font-size:13px;line-height:1;padding:4px 6px;border-radius:5px;
   pointer-events:none}
-.card .seen.part{color:var(--accent);font-size:10.5px;letter-spacing:.02em}
 .ep.seen-row{opacity:.62}
 .ep .eptick{margin-left:auto;background:none;border:1px solid var(--line);color:var(--dim);
   border-radius:6px;padding:4px 9px;font-size:13px;cursor:pointer;align-self:center}
@@ -1298,6 +1361,8 @@ body.has-copynote{padding-top:38px}
 .srvrow em{font-style:normal;font-size:11px;color:var(--accent)}
 .srvrow .dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}
 .srvrow .dot.waiting{opacity:.4}
+/* being asked, right now: grey and faint until the machine answers or does not */
+.srvrow .dot.asking{background:var(--dim);opacity:.45}
 .srvrow .dot.up{background:#42c96a}
 .srvrow .dot.down{background:#8a4038}
 
@@ -1491,3 +1556,167 @@ body.has-copynote{padding-top:38px}
   font-size:12px;color:var(--dim);padding:1px 0 1px 12px}
 .heldlist .heldone .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .heldlist .heldone .g{flex:none;opacity:.75}
+/* the episode somebody is in the middle of, or next up */
+.heldlist .heldone.now{color:#5fd08a}
+
+/* the release to fetch, where the tracker is carrying more than one. Wide, because
+   the name is the information: the cut, the source and the size are all in it. */
+.pick{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+  border-radius:6px;padding:7px 10px;max-width:min(520px,60vw);font-size:13px;
+  margin-right:8px}
+.pick:focus{outline:2px solid var(--accent);outline-offset:1px}
+
+/* A place written here for something this machine has no file for: the other
+   one holds it. Faded rather than gone - a row that disappears reads as lost. */
+.card.faded .poster{opacity:.42;filter:grayscale(1)}
+.card.faded:hover .poster,.card.faded:focus-within .poster{opacity:.62}
+
+/* an episode the catalogue knows of and nothing here has: greyed, not pressable */
+.ep.upcoming, .ep.upcoming:hover { opacity: .42; cursor: default; background: none; }
+.ep.upcoming img { filter: grayscale(1); }
+.ep.upcoming .s { color: var(--fg); }
+#season option.upcoming { color: var(--dim); }
+/* on the tracker already: pressable, and its releases open under it */
+.ep.upcoming.fetchable, .ep.upcoming.fetchable:hover { opacity: .8; cursor: pointer; }
+.ep.upcoming.fetchable .s { color: #5fd08a; }
+.epdl { margin-top: 8px; display: grid; gap: 6px; }
+.epdlrow { display: flex; gap: 10px; align-items: center; font-size: 13px; }
+.epdlrow span { overflow-wrap: anywhere; }
+.ribbon.new span{background:#d9a21b;color:#111}
+.epnew{display:inline-block;margin-right:6px;padding:0 6px;border-radius:4px;background:#d9a21b;color:#111;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;vertical-align:1px}
+/* Settings, Upgrade: a film, what is here, what Choosing would pick */
+.upgrades{display:flex;flex-direction:column;gap:10px;margin-top:10px;max-width:900px}
+.upgrade{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:var(--panel2)}
+.upgrade .have{font-size:12px;color:#e0b341}
+.upgrade div.pick{font-size:12px;color:#5fd08a}
+.upgrade div.pick.pack{color:#7fb4ff}
+.upgrade .note a{color:#7fb4ff;text-decoration:underline;word-break:break-all}
+.upgrade .btn{align-self:flex-start;margin-top:4px}
+/* #monitor: Now playing alone, for a tablet on a stand - one screen, never scrolled */
+body.monitor #topbar{display:none}
+body.monitor{height:calc(var(--vh, 1vh) * 100);overflow:hidden}
+body.monitor main{height:calc(var(--vh, 1vh) * 100);box-sizing:border-box;display:flex;flex-direction:column;
+  overflow:hidden;padding:8px 12px 48px}
+body.monitor main>h2,body.monitor main>.subtabs{display:none}
+body.monitor main>.setblock{margin:0 0 8px;padding:6px;flex:0 1 auto;min-height:0;
+  display:flex;flex-direction:column}
+body.monitor main>.setblock h3,body.monitor main>.setblock>.btn{display:none}
+body.monitor .wirebox{flex:1 1 auto;min-height:0;margin:0}
+body.monitor .wiring{width:100%;height:100%;max-height:calc(var(--vh, 1vh) * 44)}
+body.monitor .livetotals{margin:0 0 8px;gap:8px;flex:0 0 auto}
+body.monitor .livetotals .total{padding:6px 10px}
+body.monitor .liverows{flex:1 1 0;min-height:0;overflow:auto}
+body.monitor .person{flex-wrap:wrap}
+/* nothing wider than the screen: a long file name or a card's minimum pushed the page
+   past a phone's edge */
+body.monitor main{width:100vw;max-width:100vw}
+body.monitor main>*{max-width:100%;min-width:0;box-sizing:border-box}
+body.monitor .livetotals .total{min-width:0;flex:1 1 0}
+body.monitor .person *{min-width:0;overflow-wrap:anywhere}
+@media (max-width:600px){
+  body.monitor .livetotals .total{flex:1 1 28%}
+  body.monitor .livetotals .total b{font-size:16px}
+  body.monitor .livetotals .total span{font-size:11px}
+  body.monitor .designbar{left:8px;right:8px;justify-content:center}
+}
+/* the switch between looks, in the corner, reachable with a remote */
+.designbar{position:fixed;right:10px;bottom:8px;display:flex;gap:6px;z-index:30}
+.designbar .btn{padding:4px 10px;font-size:12px;opacity:.75}
+.designbar .btn.on,.designbar .btn:focus{opacity:1}
+.designbar .btn:focus{outline:2px solid #fff;outline-offset:2px}
+/* Drawing: the wiring alone, as large as the screen allows */
+body.monitor[data-design="drawing"] .livetotals,
+body.monitor[data-design="drawing"] .liverows{display:none}
+body.monitor[data-design="drawing"] main>.setblock{flex:1 1 auto}
+body.monitor[data-design="drawing"] .wiring{max-height:none}
+/* Streams: the rows as cards in a grid */
+body.monitor[data-design="streams"] main>.setblock{display:none}
+body.monitor[data-design="streams"] .liverows{display:grid;align-content:start;gap:10px;
+  grid-template-columns:repeat(auto-fill,minmax(min(100%,440px),1fr))}
+body.monitor[data-design="streams"] .person{background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;padding:10px 12px;border-bottom:1px solid var(--line)}
+/* Numbers: the totals, big enough to read across a room */
+body.monitor[data-design="numbers"] main>.setblock,
+body.monitor[data-design="numbers"] .liverows{display:none}
+body.monitor[data-design="numbers"] .livetotals{flex:1 1 auto;align-content:center;gap:16px}
+body.monitor[data-design="numbers"] .livetotals .total{display:flex;flex-direction:column;
+  justify-content:center;align-items:center;min-width:40%;padding:calc(var(--vh, 1vh) * 3) 2vw}
+body.monitor[data-design="numbers"] .livetotals .total b{font-size:min(calc(var(--vh, 1vh) * 10),11vw);line-height:1.05;
+  white-space:nowrap;text-align:center}
+body.monitor[data-design="numbers"] .livetotals .total span{text-align:center}
+body.monitor[data-design="numbers"] .livetotals .total span{font-size:calc(var(--vh, 1vh) * 2.6)}
+body.monitor .liverows,body.monitor .livetotals,body.monitor .setblock{max-width:none}
+/* Now playing: how far through each stream is, under its row */
+.person.live{flex-wrap:wrap}
+.liveprogress{flex:1 0 100%;height:4px;border-radius:2px;background:rgba(255,255,255,.08);
+  overflow:hidden;margin-top:6px}
+.liveprogress i{display:block;height:100%;background:var(--accent)}
+/* Monitor rows: four to a television screen - one line of title, one of detail,
+   a thin bar - and the rest reached with the remote */
+body.monitor:not([data-design="streams"]) .person.live{padding:4px 0;gap:6px}
+body.monitor:not([data-design="streams"]) .person.live .pmeta{min-width:0;gap:1px}
+body.monitor:not([data-design="streams"]) .person.live .pmeta b,
+body.monitor:not([data-design="streams"]) .person.live .pmeta .note{white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
+body.monitor:not([data-design="streams"]) .person.live .pmeta b{font-size:13px}
+body.monitor:not([data-design="streams"]) .person.live .pmeta .note{font-size:10.5px}
+body.monitor:not([data-design="streams"]) .person.live .rate{min-width:56px}
+body.monitor:not([data-design="streams"]) .person.live .rate b{font-size:14px}
+body.monitor:not([data-design="streams"]) .person.live .rate span{font-size:9.5px}
+body.monitor:not([data-design="streams"]) .liveprogress{height:3px;margin-top:1px}
+body.monitor:not([data-design="streams"]) .person.live{padding:2px 0}
+body.monitor:not([data-design="streams"]) .person.live .pmeta b,
+body.monitor:not([data-design="streams"]) .person.live .pmeta .note,
+body.monitor:not([data-design="streams"]) .person.live .rate b,
+body.monitor:not([data-design="streams"]) .person.live .rate span{line-height:1.2}
+body.monitor:not([data-design="streams"]) .liveprogress{margin-top:0}
+/* the overview's totals a size smaller, so the drawing keeps its height and four
+   playing rows still fit under it */
+body.monitor[data-design="overview"] .livetotals{margin-bottom:4px}
+body.monitor[data-design="overview"] .livetotals .total{padding:3px 10px}
+body.monitor[data-design="overview"] .livetotals .total b{font-size:16px;line-height:1.15}
+body.monitor[data-design="overview"] .livetotals .total span{font-size:10.5px;line-height:1.15}
+body.monitor[data-design="overview"] .person.live .pmeta b{font-size:12.5px;line-height:1.15}
+body.monitor[data-design="overview"] .person.live .pmeta .note{font-size:10px;line-height:1.15}
+
+/* Automatic runs: whether each job is alive */
+.rundot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle;background:#666}
+.rundot.up{background:#5fd08a}
+.rundot.down{background:#ff6b6b}
+.runsaid{font-size:12px;color:var(--dim);margin-left:8px}
+
+/* extras: moving one under a title */
+.extrapick{display:flex;flex-direction:column;gap:6px;width:100%;margin-top:6px}
+.extrapick input{flex:1;min-width:0}
+.extrafound{display:flex;flex-wrap:wrap;gap:4px}
+.extraline{flex-wrap:wrap}
+
+/* a subtitle already beside the film, in the download list */
+.btn.kind.ondisk{color:#e0b341}
+
+/* a version to download, beside the Version menu */
+.dlhere{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+/* packs: a row each - name and actions, a bar of how much has come, its figures as chips */
+.packlist{display:flex;flex-direction:column;gap:8px;margin-top:10px;max-width:900px}
+.packrow{background:var(--panel2,#0002);border:1px solid var(--line,#ffffff14);border-radius:8px;padding:8px 10px}
+.packhead{display:flex;align-items:center;gap:8px;min-width:0}
+.packhead b{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px}
+.packacts{display:flex;gap:6px;flex:0 0 auto}
+.packacts .btn{font-size:12px;padding:3px 8px}
+.packmeter{margin:6px 0 6px}
+.packfacts{display:flex;flex-wrap:wrap;gap:6px}
+.packchip{font-size:12px;padding:2px 8px;border-radius:10px;background:#0003;color:var(--dim,#aab)}
+.packchip.here{color:#e0b341}
+.packchip.offer{color:#7fb4ff}
+.packchip.going{color:#5fd08a}
+.packchip.bad{color:#ff6b6b}
+.card .cuts{position:absolute;bottom:8px;left:6px;z-index:2;
+  background:rgba(11,13,16,.82);color:#e0b341;
+  font-size:10.5px;font-weight:600;line-height:1;letter-spacing:.06em;
+  padding:3px 5px;border-radius:3px;text-transform:uppercase}
+.packinside{margin-top:8px;max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.packfilm{font-size:12px;color:var(--dim,#93a0b0);padding:2px 4px;border-radius:4px}
+.packfilm.here{color:#e0b341}
+.packfilm.offered{color:#7fb4ff}
+.packfilm.downloading,.packfilm.queued{color:#5fd08a}
+.packfilm.notmatched{color:#ff6b6b}

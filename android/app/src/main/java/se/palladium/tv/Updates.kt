@@ -32,16 +32,27 @@ object Updates {
     private fun homes(ctx: Context?): List<Pair<String, String>> {
         val known = if (ctx == null) emptyList() else Servers.all(ctx)
         val places = ArrayList<Pair<String, String>>()
+        // the address each server answers on now, from the background check: away from
+        // home that is the outside one, which nothing below would otherwise ask
+        known.forEach { row -> Reach.doorOf(row)?.let { places.add(Pair(it, row.token)) } }
         // the server this app is actually using answers from wherever the phone is,
         // which the address baked in at build time does not
         if (Api.base.isNotEmpty()) places.add(Pair(Api.base, Api.token))
-        known.forEach { places.add(Pair(it.base, it.token)) }
+        known.forEach {
+            places.add(Pair(it.base, it.token))
+            places.add(Pair(it.outside, it.token))
+        }
         if (BuildConfig.UPDATE_HOME.isNotEmpty()) {
             // a token for it if this phone happens to know one
             val tok = known.firstOrNull { it.base == BuildConfig.UPDATE_HOME }?.token ?: ""
             places.add(Pair(BuildConfig.UPDATE_HOME, tok))
         }
-        return places.distinctBy { it.first }.filter { it.first.isNotEmpty() }
+        // not a house address off the house network, nor one the check found off:
+        // away from home every one of them was four seconds for nothing
+        return places.map { Pair(it.first.trimEnd('/'), it.second) }
+            .distinctBy { it.first }
+            .filter { it.first.isNotEmpty() && Api.homeHere(it.first) &&
+                      Reach.upAt(it.first) != false }
     }
 
     @Volatile private var from: String = ""      // where the offer on screen came from
@@ -60,27 +71,55 @@ object Updates {
 
     suspend fun check(ignoreSkip: Boolean = false, ctx: Context? = null): Available? =
         withContext(Dispatchers.IO) {
-        for ((host, tok) in homes(ctx)) {
-            try {
-                val ask = "$host/app/version" + (if (tok.isEmpty()) "" else "?t=$tok")
-                val conn = URL(ask).openConnection() as HttpURLConnection
-                conn.connectTimeout = 4000
-                conn.readTimeout = 6000
-                val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
-                val o = JSONObject(body)
-                val code = o.optInt("versionCode")
-                if (code > BuildConfig.VERSION_CODE && (ignoreSkip || code != skip)) {
-                    from = host
-                    fromToken = tok
-                    return@withContext Available(o.optString("versionName"), code,
-                                                 o.optDouble("sizeMb"))
+        // which servers answer, and where: asked at the very start, this ran before the
+        // check had said, and away from home it knew only the house addresses
+        Reach.awaitFirst(4000)
+        answered = false
+        val places = homes(ctx)
+        var why = ""
+        // twice round: asked once each, one lost connection on a poor network was
+        // every server failing, and that was reported as being up to date
+        repeat(2) { round ->
+            for ((host, tok) in places) {
+                try {
+                    val ask = "$host/app/version" + (if (tok.isEmpty()) "" else "?t=$tok")
+                    val body = Net.text(Net.open(ask, 4000, 6000, tok))
+                    val o = JSONObject(body)
+                    val code = o.optInt("versionCode")
+                    answered = true
+                    said("update: " + Servers.hostOf(host) + " offers " + code + ", this is " +
+                         BuildConfig.VERSION_CODE + (if (code == skip && !ignoreSkip)
+                                                         " (skipped)" else ""))
+                    if (code > BuildConfig.VERSION_CODE && (ignoreSkip || code != skip)) {
+                        from = host
+                        fromToken = tok
+                        return@withContext Available(o.optString("versionName"), code,
+                                                     o.optDouble("sizeMb"))
+                    }
+                    return@withContext null      // reachable and current: nothing to do
+                } catch (e: Exception) {
+                    why = Servers.hostOf(host) + " " + e.javaClass.simpleName + ": " +
+                        (e.message ?: "").take(60)
                 }
-                return@withContext null          // reachable and current: nothing to do
-            } catch (e: Exception) {
-                continue                         // try the next one
             }
+            if (round == 0) kotlinx.coroutines.delay(1500)
         }
+        said("update: nobody answered of " + places.size + " - " + why)
         null                         // an update check is never worth an error on screen
+    }
+
+    /** Whether the last check was answered by any server: unanswered is not up to date. */
+    @Volatile var answered: Boolean = false
+
+    @Volatile private var lastSaid = ""
+
+    /** What a check found, once, to the server: why a phone somewhere else was not
+     *  offered a build cannot be seen from the house. */
+    private suspend fun said(what: String) {
+        android.util.Log.i("Palladium", what)
+        if (what == lastSaid) return
+        lastSaid = what
+        runCatching { Api.trace(what) }
     }
 
     /**
@@ -120,9 +159,7 @@ object Updates {
             // the invitation travels with it: from outside the house there is no other
             // way to be recognised, and the file is refused without one
             val url = "$host/palladium.apk" + (if (tok.isEmpty()) "" else "?t=$tok")
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout = 8000
-            conn.readTimeout = 60000
+            val conn = Net.open(url, 8000, 60000, tok)
             val total = conn.contentLengthLong
             conn.inputStream.use { input ->
                 out.outputStream().use { file ->
@@ -166,10 +203,12 @@ object Updates {
     fun installFile(ctx: Context, apk: java.io.File): Boolean {
         val uri = androidx.core.content.FileProvider.getUriForFile(
             ctx, ctx.packageName + ".files", apk)
+        // CLEAR_TASK: the installer's task from the last update is still there, and
+        // without it the press was delivered to that old task and only closed it
         val view = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                      Intent.FLAG_ACTIVITY_NEW_TASK)
+                      Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         if (runCatching { ctx.startActivity(view); true }.getOrDefault(false)) return true
         @Suppress("DEPRECATION")
         val old = Intent(Intent.ACTION_INSTALL_PACKAGE)
@@ -177,7 +216,7 @@ object Updates {
             .putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
             .putExtra(Intent.EXTRA_RETURN_RESULT, false)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                      Intent.FLAG_ACTIVITY_NEW_TASK)
+                      Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         return runCatching { ctx.startActivity(old); true }.getOrDefault(false)
     }
 

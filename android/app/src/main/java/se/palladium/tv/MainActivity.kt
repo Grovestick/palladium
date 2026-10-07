@@ -78,6 +78,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.joinAll
 
 /**
  * AppCompatActivity rather than ComponentActivity, and not for the theme: the cast
@@ -86,6 +87,34 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : AppCompatActivity() {
     companion object {
+        private var started = 0
+        private var watching = false
+        private var turning = false
+
+        /** Counts the app's screens on view; none to one is the app opened again from
+         *  the background, and only then is the main server looked for anew - the
+         *  player closing back onto this screen is not an opening. */
+        fun watchOpenings(app: android.app.Application) {
+            if (watching) return
+            watching = true
+            app.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+                override fun onActivityStarted(a: android.app.Activity) {
+                    if (started++ == 0 && !turning) Api.openedAgain()
+                    turning = false
+                }
+                override fun onActivityStopped(a: android.app.Activity) {
+                    // a screen turned is stopped and started again: not an opening
+                    turning = a.isChangingConfigurations
+                    started = maxOf(0, started - 1)
+                }
+                override fun onActivityCreated(a: android.app.Activity, b: Bundle?) {}
+                override fun onActivityResumed(a: android.app.Activity) {}
+                override fun onActivityPaused(a: android.app.Activity) {}
+                override fun onActivitySaveInstanceState(a: android.app.Activity, b: Bundle) {}
+                override fun onActivityDestroyed(a: android.app.Activity) {}
+            })
+        }
+
         /** Bumped whenever the app comes back to the front, so screens can refresh. */
         val returned = androidx.compose.runtime.mutableStateOf(0)
 
@@ -97,6 +126,9 @@ class MainActivity : AppCompatActivity() {
          * which is what somebody browsing wants.
          */
         val reveal = androidx.compose.runtime.mutableStateOf<String?>(null)
+
+        /** Season key to the episode a programme is up to: its season page opens on it. */
+        val upIn = java.util.concurrent.ConcurrentHashMap<String, String>()
 
         /**
          * The last notice this app has shown, wherever it showed it.
@@ -176,6 +208,17 @@ class MainActivity : AppCompatActivity() {
     /** When the short way was last looked for, so coming back to the app is cheap. */
     private var lastLookedForTheShortWay = 0L
 
+    override fun onStart() {
+        super.onStart()
+        Reach.onView++
+        Reach.poke()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Reach.onView = maxOf(0, Reach.onView - 1)
+    }
+
     override fun onResume() {
         super.onResume()
         // the picker steps aside again: coming back to the app is an arrival like any
@@ -188,12 +231,13 @@ class MainActivity : AppCompatActivity() {
         // making a new one - so coming home changed nothing and every poster went out
         // to the internet and back in to a machine three metres away. Looked for again
         // here, because this is the moment the network has usually changed.
+        // a new network forgets which addresses answered on the last one
+        Api.networkNow(this)
         val now = System.currentTimeMillis()
-        if (now - lastLookedForTheShortWay > 20_000L) {
+        if (now - lastLookedForTheShortWay > 20_000L || Api.homeUnlooked()) {
             lastLookedForTheShortWay = now
             lifecycleScope.launch(Dispatchers.IO) {
                 Api.openTheDoorThatAnswers(this@MainActivity)
-                Api.fileThemWhereTheyAnswer(this@MainActivity)
             }
         }
     }
@@ -201,6 +245,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Crash.install(applicationContext)      // before anything that might throw
+        watchOpenings(application)
+        KnownHosts.load(applicationContext)   // the addresses names last resolved to
         // themes cover the static case; this covers phones that recolour the bars when
         // the app resumes, and keeps the icons light against our dark ground
         window.statusBarColor = 0xFF0B0D10.toInt()
@@ -213,6 +259,8 @@ class MainActivity : AppCompatActivity() {
         // one, not the episode it rolled on from
         Opening.key = intent.getStringExtra("openKey") ?: ""
         Api.loadServer(this)
+        // which servers answer, asked before anything is fetched and kept asking
+        Reach.start(this)
         Api.learnDevice(this)                          // a television wants larger text
         // which language this viewer reads subtitles in, before anything opens one
         lifecycleScope.launch { Api.learnLanguage() }
@@ -225,9 +273,6 @@ class MainActivity : AppCompatActivity() {
         // is, open it by the one that does
         lifecycleScope.launch(Dispatchers.IO) {
             Api.openTheDoorThatAnswers(this@MainActivity)
-            // and every other machine in the list gets the same treatment, so the
-            // list says what is actually reachable from where this screen is
-            Api.fileThemWhereTheyAnswer(this@MainActivity)
         }
         // how this machine is dressed: a copy after dark, or a card given to a game
         lifecycleScope.launch { Api.learnMood() }
@@ -268,6 +313,8 @@ private fun App() {
     //: which screen the server list was opened from, so Back leads back to it
     var cameFrom by remember { mutableStateOf("home") }
     val stack = remember { mutableStateListOf<Media>() }
+    // a popular programme not held yet, whose page is open for choosing a version
+    var adding by remember { mutableStateOf<Media?>(null) }
     val browse = remember { Browse() }          // outlives the detail screen
 
     // One screen is swapped for another here, and whatever had the remote goes out of
@@ -336,7 +383,12 @@ private fun App() {
                 BackHandler { screen = "home" }
                 SettingsScreen(onBack = { screen = "home" },
                                onServers = { cameFrom = "settings"; screen = "setup" },
-                               onPeople = { screen = "people" })
+                               onPeople = { screen = "people" },
+                               onMonitor = { screen = "monitor" })
+            }
+            screen == "monitor" -> {
+                BackHandler { screen = "settings" }
+                MonitorScreen(onBack = { screen = "settings" })
             }
             screen == "reports" -> {
                 BackHandler { screen = "home" }
@@ -364,45 +416,7 @@ private fun App() {
                              // A name from the cast: everything this house holds with
                              // them in it, opened as a shelf of its own. Asked of the
                              // library, so what comes back can be watched tonight.
-                             onPerson = { who ->
-                                 val scope = (ctx as AppCompatActivity).lifecycleScope
-                                 scope.launch {
-                                     val theirs = runCatching {
-                                         Api.withPerson(ctx, who.id, who.name)
-                                     }.getOrDefault(emptyList())
-                                     if (theirs.isEmpty()) {
-                                         android.widget.Toast.makeText(
-                                             ctx, "Nothing here with " + who.name + " in it",
-                                             android.widget.Toast.LENGTH_SHORT).show()
-                                         return@launch
-                                     }
-                                     browse.moreWas = Filters(
-                                         browse.genre, browse.decade, browse.genres,
-                                         browse.decades, browse.collSortKey,
-                                         browse.collSortAsc)
-                                     browse.grid = theirs
-                                     browse.moreAll = theirs
-                                     browse.genres = theirs.flatMap { it.genres }
-                                         .groupingBy { it }.eachCount().toList()
-                                         .sortedBy { it.first.lowercase() }
-                                     browse.decades = theirs.mapNotNull { one ->
-                                         (one.year ?: 0).takeIf { it > 0 }
-                                             ?.let { (it / 10 * 10).toString() }
-                                     }.groupingBy { it }.eachCount().toList()
-                                         .sortedByDescending { it.first }
-                                     browse.genre = ""; browse.decade = ""
-                                     browse.collSortKey = "originallyAvailableAt"
-                                     browse.collSortAsc = false
-                                     browse.moreRow = who.name
-                                     browse.focusKey = theirs.first().ratingKey
-                                     // the page being read, to come back to. The
-                                     // shelf needs the title's page off the stack to
-                                     // be seen at all, so back had nothing left to
-                                     // return to and landed on the front page.
-                                     browse.personFrom = stack.lastOrNull()
-                                     stack.clear()
-                                 }
-                             })
+                             onPerson = { who -> openPerson(ctx, browse, stack, who) })
             }
             else -> {
                 // Back from a title's page. The list underneath is the same list, so
@@ -433,11 +447,38 @@ private fun App() {
                 LaunchedEffect(Api.openWanted.value) {
                     Api.openWanted.value?.let { Api.openWanted.value = null; stack.add(it) }
                 }
-                HomeScreen(browse, onOpen = { browse.backdrop = it; stack.add(it) },
+                // or, with more than one coming in, the queue: reorder, or open one
+                if (Api.queueOpen.value) {
+                    DownloadQueue(onClose = { Api.queueOpen.value = false },
+                                  onOpen = { m -> Api.queueOpen.value = false; stack.add(m) })
+                }
+                HomeScreen(browse, onOpen = { picked ->
+                               // not held yet: its page, where a version is chosen
+                               if (picked.addable) adding = picked
+                               // an episode still to come: its season, on the greyed
+                               // episode with its air date
+                               // an episode: its season, scrolled to it
+                               else if (picked.upcoming || picked.type == "episode")
+                                   goToTitle(ctx, picked) { stack.add(it) }
+                               else { browse.backdrop = picked; stack.add(picked) }
+                           },
                            onSettings = { cameFrom = "home"; screen = "setup" },
                            onPeople = { screen = "people" },
                            onPrefs = { screen = "settings" },
-                           onReports = { screen = "reports" })
+                           onReports = { screen = "reports" },
+                           onPerson = { who -> openPerson(ctx, browse, stack, who) })
+                adding?.let { one ->
+                    AddShowPage(one, onClose = { adding = null }, onAdded = { key ->
+                        adding = null
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            val full = runCatching {
+                                Api.metadata(one.copy(ratingKey = key)
+                                                 .also { it.srv = one.srv })
+                            }.getOrNull()
+                            if (full != null) stack.add(full)
+                        }
+                    })
+                }
             }
         }
     }
@@ -1022,10 +1063,29 @@ private fun ReportsScreen(onBack: () -> Unit) {
     }
 }
 
+/**
+ * A setting whose choices are too many to stand beside its name.
+ *
+ * Five pills and a label share a line comfortably on a television and not at all on a
+ * phone held upright, where they were squeezed to nothing. These go on the line below
+ * and wrap onto a second one when they have to.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun SettingsChoices(title: String, value: String,
+                            choices: @Composable FlowRowScope.() -> Unit) {
+    SettingsRow(title, value, extra = {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                content = choices)
+    })
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
-                           onPeople: (() -> Unit)? = null) {
+                           onPeople: (() -> Unit)? = null,
+                           onMonitor: (() -> Unit)? = null) {
     val ctx = LocalContext.current as AppCompatActivity
     var editing by remember { mutableStateOf<String?>(null) }
     var looks by remember { mutableStateOf<Map<String, Api.SubLook>>(emptyMap()) }
@@ -1037,6 +1097,15 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
     var rollOn by remember { mutableStateOf(true) }
     // which of the three kinds the film shelf stands for this viewer
     var films by remember { mutableStateOf(Api.FilmsShow()) }
+    var meters by remember { mutableStateOf(Api.Meters()) }
+    // what this server takes us for, which is not the same as whose server it is:
+    // the owner reaching their own machine from outside is a guest to it
+    var guest by remember { mutableStateOf(false) }
+    // whether this is the owner's key, at home or away: drawn as it was last known,
+    // so the row it decides is not put up and taken down again a moment later
+    var owner by remember { mutableStateOf(Api.ownerKept(ctx)) }
+    // asked on its own, not behind the nine other things this screen asks for
+    LaunchedEffect(Unit) { owner = Api.amOwner(ctx) }
     var reports by remember { mutableStateOf<List<Api.Report>>(emptyList()) }
     var changes by remember { mutableStateOf<List<Api.Release>>(emptyList()) }
     // what the server is running, and what it says while it is being replaced
@@ -1063,6 +1132,8 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         reload()
         rollOn = Api.autoNext()
         films = Api.filmsShow()
+        meters = Api.meters()
+        guest = Api.amGuest()
         server = runCatching { Api.serverBuild() }.getOrNull()
         reports = Api.reports()
         changes = runCatching { Api.changes() }.getOrDefault(emptyList())
@@ -1082,6 +1153,16 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                  fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 12.dp))
         }
 
+        // what the server is sending now, on a page of its own: the owner's, away
+        // from the house as much as in it. Asked by "not a guest" it stood there until
+        // the server answered and then went, because away the owner's key is a guest's.
+        if (owner && onMonitor != null) {
+            SettingsHeading("NOW PLAYING")
+            SettingsRow("Monitor", "Every stream going out, full screen") {
+                Pill("Monitor") { onMonitor() }
+            }
+        }
+
         SettingsHeading("SUBTITLES")
         // Which language a subtitle is chosen in when a film has one. Everybody has
         // their own, kept by the server, so it is the same answer on the television
@@ -1089,7 +1170,8 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         var speaks by remember { mutableStateOf("") }
         LaunchedEffect(Unit) { speaks = Api.subtitleLanguage() }
         SettingsRow("Subtitle language",
-                    (SubLanguages.firstOrNull { it.first == speaks }?.second
+                    if (speaks == "off") "Off  ·  films start without subtitles"
+                    else (SubLanguages.firstOrNull { it.first == speaks }?.second
                         ?: "English") + "  ·  chosen for you when a film has one") {
             var open by remember { mutableStateOf(false) }
             Pill("Change") { open = true }
@@ -1106,7 +1188,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                                  "when you go looking for one.",
                                  color = Skin.Dim, fontSize = 13.sp,
                                  modifier = Modifier.padding(bottom = 10.dp))
-                            SubLanguages.forEach { (code, name) ->
+                            (listOf("off" to "Off") + SubLanguages).forEach { (code, name) ->
                                 Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
                                     Pill(name, active = code == speaks) {
                                         speaks = code
@@ -1130,10 +1212,13 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         var alsoSpeaks by remember { mutableStateOf("") }
         LaunchedEffect(Unit) { alsoSpeaks = Api.subtitleLanguage2() }
         SettingsRow("Second choice",
-                    (if (alsoSpeaks.isEmpty()) "None"
-                     else SubLanguages.firstOrNull { it.first == alsoSpeaks }?.second
-                         ?: alsoSpeaks) +
-                    "  ·  read when the film has nothing in the first") {
+                    when {
+                        alsoSpeaks == "off" -> "Off  ·  no subtitle when the first language is missing"
+                        alsoSpeaks.isEmpty() -> "Any  ·  whatever the film has when the first is missing"
+                        else -> (SubLanguages.firstOrNull { it.first == alsoSpeaks }?.second
+                                     ?: alsoSpeaks) +
+                                "  ·  read when the film has nothing in the first"
+                    }) {
             var open by remember { mutableStateOf(false) }
             Pill("Change") { open = true }
             if (open) {
@@ -1144,15 +1229,20 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                     text = {
                         Column(Modifier.verticalScroll(rememberScrollState())) {
                             Text("Read when the film carries no subtitle in the first " +
-                                 "language. None means whatever the film has is used.",
+                                 "language. Off starts it without one; Any uses " +
+                                 "whatever the film has.",
                                  color = Skin.Dim, fontSize = 13.sp,
                                  modifier = Modifier.padding(bottom = 10.dp))
-                            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                                Pill("None", active = alsoSpeaks.isEmpty()) {
-                                    alsoSpeaks = ""
-                                    Api.myLanguage2 = ""
-                                    open = false
-                                    ctx.lifecycleScope.launch { Api.setSubtitleLanguage2("") }
+                            listOf("off" to "Off", "" to "Any").forEach { (code, name) ->
+                                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                    Pill(name, active = alsoSpeaks == code) {
+                                        alsoSpeaks = code
+                                        Api.myLanguage2 = code
+                                        open = false
+                                        ctx.lifecycleScope.launch {
+                                            Api.setSubtitleLanguage2(code)
+                                        }
+                                    }
                                 }
                             }
                             SubLanguages.filter { it.first.isNotEmpty() }
@@ -1254,7 +1344,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         listOf(
             Triple("disk", "On disk", "Films this house holds a file for. These play."),
             Triple("download", "Download",
-                   "Films one of the packs carries. Fetching one is a button."),
+                   "Films one of the packs carries. Downloading one is a button."),
             Triple("request", "Request",
                    "New on streaming and nowhere in the house. All anybody can do is ask."))
             .forEach { (name, label, note) ->
@@ -1274,6 +1364,52 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                     }
                 }
             }
+
+        // Which scores a new film has to have satisfied. Both to begin with; a film
+        // passes every meter that is on and has a number, and one out this week
+        // often has neither yet, which does not hold it back.
+        listOf(
+            Triple("audience", "Popcornmeter",
+                   "What the people who watched it thought. Hide keeps back " +
+                   "anything under sixty per cent - unless the other score vouches " +
+                   "for it, since either one is enough."),
+            Triple("critics", "Tomatometer",
+                   "What the reviewers thought, by the same bar."))
+            .forEach { (name, label, note) ->
+                val on = if (name == "audience") meters.audience else meters.critics
+                SettingsRow(label, note) {
+                    // The pair the films rows use: both values spelled out, the
+                    // chosen one lit. Said as what it does to the film rather than
+                    // to the score - "ignore" read as ignoring the film, which is
+                    // the opposite of what it did.
+                    listOf(false to "Show", true to "Hide").forEach { (want, word) ->
+                        Pill(word, active = on == want, small = true, narrow = true) {
+                            meters = if (name == "audience") meters.copy(audience = want)
+                                     else meters.copy(critics = want)
+                            ctx.lifecycleScope.launch { meters = Api.setMeters(meters) }
+                        }
+                    }
+                }
+            }
+
+        // Typing on a television: the app's own keyboard walked with the remote, or the
+        // system's, which Google TV hands to a phone. This device's own choice.
+        if (onTv()) {
+            Typing.load(ctx)
+            SettingsChoices("Keyboard", if (Typing.phone.value)
+                "Text boxes type on your phone, through the Google TV app's remote."
+                else "Text boxes open a keyboard on the screen, walked with the remote.") {
+                listOf(false to "On screen", true to "Phone").forEach { (want, word) ->
+                    Pill(word, active = Typing.phone.value == want, small = true, narrow = true) {
+                        Typing.set(ctx, want)
+                    }
+                }
+            }
+        }
+
+        // Who may download, how big, the tracker and which release is recommended are
+        // the server's own settings, set in its Settings page in the browser: here they
+        // were shown to everybody and refused for anybody but the owner at home.
 
         SettingsHeading("SERVERS")
         SettingsRow(Servers.inUse(ctx)?.name ?: "None yet",
@@ -1740,8 +1876,9 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                             val u = Updates.check(ignoreSkip = true, ctx = ctx)
                             checking = false
                             waiting = u
-                            found = if (u == null) "up to date"
-                                    else named(u) + " ready to install"
+                            found = if (u != null) named(u) + " ready to install"
+                                    else if (Updates.answered) "up to date"
+                                    else "no server answered - try again"
                         }
                     }
                 }
@@ -1814,6 +1951,16 @@ private fun SettingsRow(title: String, value: String, accent: Boolean = false,
             control()
         }
         extra?.let { Spacer(Modifier.height(8.dp)); it() }
+    }
+}
+
+/** How far along something is, as a line. Dim behind, the accent across it. */
+@Composable
+private fun Meter(part: Float, colour: Color = Skin.Accent) {
+    Box(Modifier.fillMaxWidth().height(6.dp)
+            .background(Skin.Dim.copy(alpha = 0.25f), RoundedCornerShape(3.dp))) {
+        Box(Modifier.fillMaxWidth(part.coerceIn(0f, 1f)).fillMaxHeight()
+                .background(colour, RoundedCornerShape(3.dp)))
     }
 }
 
@@ -2061,15 +2208,17 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
             // and smaller. On a television every point of height above the shelves is
             // a shelf that does not fit under them.
             val squat = LocalConfiguration.current.screenHeightDp < 560
+            // a tablet has the width: the picker between the name and search, not under
+            val inline = squat || LocalConfiguration.current.screenWidthDp >= 600
             // and the name at the left with the picker after it: the word is what
             // says where you are, and it belongs where reading starts
             val holder: @Composable (@Composable () -> Unit) -> Unit =
-                if (squat) { inner -> Row(verticalAlignment = Alignment.CenterVertically,
+                if (inline) { inner -> Row(verticalAlignment = Alignment.CenterVertically,
                                           content = { inner() }) }
                 else { inner -> Column(content = { inner() }) }
             holder {
                 Row(verticalAlignment = Alignment.CenterVertically,
-                    modifier = if (squat) Modifier.padding(end = 12.dp) else Modifier) {
+                    modifier = if (inline) Modifier.padding(end = 12.dp) else Modifier) {
                     Text("P", color = Skin.Accent, fontSize = if (squat) 16.sp else 22.sp,
                          fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
                     Text("PALLADIUM", color = Skin.Fg,
@@ -2087,7 +2236,7 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                 // the cache was reached by whichever way answered, and matching only
                 // the address a row was filed under left the bar naming the machine
                 // that had gone off
-                val here = remember(Api.base) { Servers.inUse(ctx) }
+                val here = remember(Api.base, Api.swapped.value) { Servers.inUse(ctx) }
                 // and a press away from every other one: moving used to mean going
                 // back to the server list and finding it there
                 var picking by remember { mutableStateOf(false) }
@@ -2241,7 +2390,8 @@ private fun DownloadLine(up: FocusRequester? = null, inline: Boolean = false) {
                  (if (more > 0) "  +$more" else ""),
              filled = true, small = true,
              modifier = Modifier.edge(up = { moveTo(up) })) {
-            Api.openWanted.value = d
+            // one coming in: its poster; more: the queue, where they can be reordered
+            if (more > 0) Api.queueOpen.value = true else Api.openWanted.value = d
         }
     }
 }
@@ -2373,6 +2523,10 @@ private class Browse {
     var diskOnly by mutableStateOf(false)
     var sortKey by mutableStateOf("originallyAvailableAt")
     var sortAsc by mutableStateOf(false)
+    /** Each shelf keeps its own order: films open on what came out last, series by
+     *  name - a programme is looked for by what it is called. */
+    val sortByTab = mutableMapOf("films" to ("originallyAvailableAt" to false),
+                                 "tv" to ("titleSort" to true))
     var genre by mutableStateOf("")            // "" is everything
     var genres by mutableStateOf<List<Pair<String, Int>>>(emptyList())
     var decade by mutableStateOf("")           // comma-joined; "" is every year
@@ -2381,9 +2535,13 @@ private class Browse {
     var filtersFor by mutableStateOf("")
     var decades by mutableStateOf<List<Pair<String, Int>>>(emptyList())
     var query by mutableStateOf("")
+    /** the names a search found, their own row above the titles */
+    var people by mutableStateOf<List<Api.Face>>(emptyList())
     var loaded by mutableStateOf("")           // which tab and order the lists hold
     var update by mutableStateOf<Updates.Available?>(null)
     var checkedUpdate = false                  // once a launch, not once a screen
+    var updateAsked = 0L                       // when a newer build was last asked for
+    var updateLater = 0                        // the build put off with Later, this run
     /** the server build this app has been told about, and the one it last saw */
     var serverNow by mutableStateOf<String?>(null)
     var serverWas: String? = null
@@ -2473,6 +2631,7 @@ private fun named(u: Updates.Available): String =
 
 /** The row that resumes rather than opens. */
 private const val DECK = "Continue watching"
+private const val SEASONAL = "Seasonal"
 
 /** How many of a shelf are drawn on it; the rest are behind Show more. */
 private const val SHELF_SHOWS = 10
@@ -2487,11 +2646,14 @@ private const val SHELF_SHOWS = 10
  */
 private const val RESUME_FROM = 30
 
-@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class,
+       androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -> Unit,
                        onPeople: () -> Unit, onPrefs: () -> Unit,
-                       onReports: () -> Unit) {
+                       onReports: () -> Unit,
+                       /** a name a search found: everything held with them in it */
+                       onPerson: (Media.Player) -> Unit = {}) {
     val ctx = LocalContext.current
     // Checked once per launch and remembered on the holder. It used to run every time
     // this screen was entered, so crossing between Home, Films and TV re-raised the
@@ -2499,8 +2661,29 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     LaunchedEffect(Unit) {
         if (!browse.checkedUpdate) {
             browse.checkedUpdate = true
+            browse.updateAsked = System.currentTimeMillis()
+            // whose key this is, learned as the app opens: Settings draws the owner's
+            // rows from it at once
+            launch { runCatching { Api.amOwner(ctx) } }
             browse.update = Updates.check(ctx = ctx)
+            if (!Updates.answered) browse.updateAsked = 0
         }
+    }
+    // And again whenever the app comes back to the front. A phone keeps the app for
+    // days without launching it, and a build published meanwhile was never offered.
+    // Crossing between tabs is not coming back, so the banner is not raised again
+    // by that; a build put off with Later stays put off until the app is launched.
+    LaunchedEffect(MainActivity.returned.value) {
+        val now = System.currentTimeMillis()
+        if (!Route.updateDue(browse.update != null, browse.updateAsked, now))
+            return@LaunchedEffect
+        browse.updateAsked = now
+        val offer = Updates.check(ctx = ctx)
+        // nobody answered: asked again the next time the app comes forward, not in
+        // five minutes
+        if (!Updates.answered) browse.updateAsked = 0
+        if (offer != null && Route.updateOffered(offer.versionCode, browse.updateLater))
+            browse.update = offer
     }
     // The server can be replaced while the app is open - it takes about ten seconds -
     // and nothing said so. Asked on the way in and whenever the app comes back to the
@@ -2571,6 +2754,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         browse.genre + "|" + browse.decade + "|" +
                browse.query.trim() + "|" +
         (browse.collectionOn?.ratingKey ?: "") +
+        // and again when the library moves to another machine, home included: the
+        // page stayed drawn from the cache after the main server was back
+        "|" + Api.swapped.value +
         // the two shelves are what a mark changes, so they alone are refetched when
         // one is changed; a grid of films does not move because a series was marked
         (if (browse.tab == "watchlist")
@@ -2579,7 +2765,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // which genres exist, for the tab in hand: asked once per tab
     // and again whenever a mark changes: the numbers are counted among what is
     // already marked, so they are only true for the marks that were sent
-    LaunchedEffect(browse.tab, browse.genre, browse.decade) {
+    // and again when the machine answering changes under it. A call that falls over
+    // to the other server succeeds, so nothing looks wrong - but the shelves were
+    // already drawn empty against the machine that is off, and only changing tab
+    // asked a second time.
+    LaunchedEffect(browse.tab, browse.genre, browse.decade, Api.swapped.value) {
         // a mark that empties a list is still the mark somebody just made; a tab that
         // has never heard of it is another matter
         val tabChanged = browse.filtersFor != browse.tab
@@ -2704,17 +2894,24 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             }
         }
         val query = browse.query
+        // the names row belongs to the words that found it and to nothing else
+        if (query.trim().isEmpty()) browse.people = emptyList()
         try {
             when {
                 // A search comes first, whichever tab is open: from Home it looks
                 // through everything, since Home is not a section of the library.
-                query.trim().length >= 2 -> {
+                // one letter is a title too: V
+                query.trim().isNotEmpty() -> {
                     val found = Api.search(ctx, query.trim())
                     browse.grid = when (tab) {
                         "films" -> found.filter { it.type == "movie" }
                         "tv" -> found.filter { it.type == "show" || it.type == "episode" }
                         else -> found
                     }
+                    // and the names the words spell, above the titles
+                    browse.people = runCatching {
+                        Api.searchPeople(ctx, query.trim())
+                    }.getOrDefault(emptyList())
                     browse.more = false
                 }
                 // A shelf that could not be fetched is not an empty shelf. Both came
@@ -2726,18 +2923,43 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // own and they were asked in order, so the screen waited for the sum
                 // of seven round trips - and for every retry of a slow one - before it
                 // drew anything. Asked together it waits for the slowest.
-                tab == "home" -> browse.rows = coroutineScope {
-                    listOf<Pair<String, suspend () -> List<Media>>>(
+                tab == "home" -> coroutineScope {
+                    // A shelf nobody answered for was dropped without a word, which
+                    // with one machine off reads as a library that has lost half of
+                    // itself. The names of the ones that gave up are said instead.
+                    val short = java.util.Collections.synchronizedList(
+                        mutableListOf<String>())
+                    val order = listOf<Pair<String, suspend () -> List<Media>>>(
                         DECK to { Api.onDeck(ctx) },
+                        SEASONAL to { Api.seasonal(ctx) },
                         "Recently added films" to { Api.recentFilms(ctx) },
                         "Recently released films" to { Api.releasedFilms(ctx) },
-                        "Recently added TV" to { Api.recentEpisodes(ctx) },
                         "Recently released series" to { Api.releasedShows(ctx) },
-                    ).map { (name, get) ->
-                        name to async { askAgain(get) }
-                    }.map { (name, job) ->
-                        name to job.await()
-                    }.filter { it.second.isNotEmpty() }
+                        "Popular shows" to { Api.popularShows(ctx) },
+                    )
+                    // Drawn from the top down as they arrive, rather than the whole page
+                    // waiting for the slowest: a row shows once every row above it is in,
+                    // so nothing is ever put in above what is on screen and the page
+                    // stays at its top. Continue watching comes first.
+                    val got = java.util.concurrent.ConcurrentHashMap<String, List<Media>>()
+                    order.map { (name, get) ->
+                        launch {
+                            got[name] = askAgain(get) { short.add(name) }
+                            val ready = order.takeWhile { (n, _) -> got.containsKey(n) }
+                            browse.rows = ready.mapNotNull { (n, _) ->
+                                got[n]?.takeIf { it.isNotEmpty() }?.let {
+                                    // the season's shelf is called what its cards say
+                                    (if (n == SEASONAL) it.first().shelf.ifEmpty { n }
+                                     else n) to it
+                                }
+                            }
+                            if (ready.isNotEmpty()) browse.loading = false
+                        }
+                    }.joinAll()
+                    if (short.isNotEmpty()) {
+                        browse.notice = short.joinToString(", ") +
+                            " could not be read - no machine answered"
+                    }
                 }
                 tab == "watchlist" -> {
                     // marked for later, newest mark first: the order it was thought of
@@ -2747,7 +2969,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     val keptKeys = kept.map { it.ratingKey }.toSet()
                     runCatching { Api.favored() }
                     browse.favs = narrowed(kept)
-                    browse.grid = narrowed(Api.watchlist(ctx)).filter { it.ratingKey !in keptKeys }
+                    browse.grid = narrowed(patiently { Api.watchlist(ctx) })
+                        .filter { it.ratingKey !in keptKeys }
                     browse.more = false
                 }
                 tab == "collections" -> {
@@ -2758,9 +2981,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     browse.more = false
                 }
                 tab == "films" -> {
-                    browse.grid = Api.movies(ctx, order, genre = browse.genre,
+                    browse.grid = patiently { Api.movies(ctx, order, genre = browse.genre,
                                              decade = browse.decade,
-                                             diskOnly = browse.diskOnly)
+                                             diskOnly = browse.diskOnly) }
                     // a machine that said nothing holds films that are not on this
                     // shelf, and the shelf is short rather than complete
                     if (Api.silent.isNotEmpty())
@@ -2771,9 +2994,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         browse.matching = Api.shelfCount(ctx, 1, browse.genre, browse.decade)
                 }
                 tab == "tv" -> {
-                    browse.grid = Api.shows(ctx, order, genre = browse.genre,
+                    browse.grid = patiently { Api.shows(ctx, order, genre = browse.genre,
                                             decade = browse.decade,
-                                            diskOnly = browse.diskOnly)
+                                            diskOnly = browse.diskOnly) }
                     if (Api.silent.isNotEmpty())
                         browse.failed = Api.silent + " did not answer - this is only part of the library"
                     browse.more = browse.grid.size >= PAGE
@@ -2800,7 +3023,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // is; the button only appears where it would work.
     var owner by remember { mutableStateOf(false) }
     LaunchedEffect(Api.base) {
-        owner = Api.invites() != null
+        // not asked of a server that takes this screen for a guest - from outside the
+        // house, the owner's phone is one - which refused it on every start
+        owner = Api.mayInvite() && Api.invites() != null
         // which machine each stored address belongs to: two addresses for this server
         // must not put every film on the screen twice
         runCatching { Servers.identify(ctx) }
@@ -2885,7 +3110,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 browse.opened = true
                 runCatching { browse.rowsState.scrollToItem(0) }
             }
-            runCatching { tabFocus[browse.tab]?.requestFocus() }
+            // not over an offer to install: the bar takes the remote itself, and this
+            // ran after it and put it back on Home
+            if (browse.update == null) runCatching { tabFocus[browse.tab]?.requestFocus() }
         }
     }
 
@@ -3008,11 +3235,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                        if (chosen == "home") {
                            browse.column = 0
                            browse.rowNow = 0
-                           backScope.launch {
-                               runCatching { browse.rowsState.scrollToItem(0) }
-                               browse.rowStates.values.forEach {
-                                   runCatching { it.scrollToItem(0) }
-                               }
+                           // requested, not awaited: a suspended scroll on a shelf off
+                           // the page held up every shelf after it, and a shelf drawn
+                           // meanwhile changed the map under the loop
+                           browse.shelfWas.clear()
+                           runCatching { browse.rowsState.requestScrollToItem(0) }
+                           browse.rowStates.values.toList().forEach {
+                               runCatching { it.requestScrollToItem(0) }
                            }
                        }
                        // Where this tab was left, so pressing it again comes back
@@ -3050,6 +3279,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                            backScope.launch {
                                runCatching { browse.gridFor(chosen).scrollToItem(0) }
                            }
+                       }
+                       // the order the shelf being left was in is kept for it, and
+                       // the one being opened comes back in its own
+                       browse.sortByTab[browse.tab] = browse.sortKey to browse.sortAsc
+                       browse.sortByTab[chosen]?.let { (k, up) ->
+                           browse.sortKey = k; browse.sortAsc = up
                        }
                        browse.tab = chosen; browse.query = ""
                        // and closes a row that was opened whole, so a tab pressed
@@ -3117,37 +3352,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                  onDecade = { browse.decade = it })
                }) else null,
                search = if (browse.tab in setOf("home", "films", "tv")) ({
-                   FilterControls(browse.query, { browse.query = it },
+                   // new words close a person's shelf: it stood over the new results
+                   FilterControls(browse.query, {
+                                      if (browse.moreRow != null && it != browse.query)
+                                          browse.leaveMoreRow()
+                                      browse.query = it
+                                  },
                                   onTyping = { browse.typing = it })
                }) else null,
                filters = null)
         if (chatting) {
             ChatPanel(scope = (ctx as AppCompatActivity).lifecycleScope) {
                 chatting = false
-            }
-        }
-        // This server keeps copies of another one: say which, and what of this
-        // viewer's it was asked to keep. It does not go away, because the shelves do
-        // not stop being short.
-        // Read once and put away, and it stays away: a state remembered inside a
-        // composable comes back every time the screen is rebuilt, which on a phone is
-        // every rotation and every return from a film. Kept against the words
-        // themselves, so a note that changes is a note worth showing again.
-        val notes = remember { ctx.getSharedPreferences("notes", 0) }
-        var copySaid by remember {
-            mutableStateOf(notes.getString("copyNote", "") != Api.copyNote)
-        }
-        if (Api.copyNote.isNotEmpty() && copySaid) {
-            Row(Modifier.fillMaxWidth().background(Color(0xFF102618))
-                    .padding(horizontal = 20.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Text(Api.copyNote, color = Color(0xFFCFE9D8), fontSize = 13.sp,
-                     modifier = Modifier.weight(1f))
-                // read once and put away, like any other notice
-                Pill("Right") {
-                    notes.edit().putString("copyNote", Api.copyNote).apply()
-                    copySaid = false
-                }
             }
         }
         browse.notice?.let { words ->
@@ -3218,7 +3434,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                      },
                      color = Color(0xFFFFF3DE), fontSize = 13.sp,
                      modifier = Modifier.weight(1f))
-                if (!busy) Pill("Later") { shown = false; browse.update = null }
+                if (!busy) Pill("Later") {
+                    shown = false
+                    browse.updateLater = browse.update?.versionCode ?: 0
+                    browse.update = null
+                }
                 // On a television nothing has focus until something asks for it, and
                 // the offer is the reason the bar is there: the remote should be on
                 // it when the app opens, not three presses away.
@@ -3233,14 +3453,30 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         runCatching { takeIt.requestFocus() }
                     }
                 }
+                // Downloaded, or back from Android's installer prompt: the white ring
+                // looks like focus, and without it the first press only landed focus
+                var onInstall by remember { mutableStateOf(false) }
+                LaunchedEffect(ready, MainActivity.returned.value) {
+                    // asked again until it holds: the page is still being drawn, and
+                    // a request made before the button is placed comes to nothing
+                    if (ready != null) repeat(8) {
+                        kotlinx.coroutines.delay(150)
+                        if (onInstall) return@LaunchedEffect
+                        runCatching { takeIt.requestFocus() }
+                    }
+                }
                 // Downloaded and waiting: white, because it is a different act from
                 // fetching it - one press and the app is replaced.
                 Pill(when {
                          busy -> pct.toString() + "%"
                          ready != null -> "Install"
                          else -> "Update"
-                     }, primary = true, ready = ready != null,
-                     modifier = Modifier.focusRequester(takeIt)) {
+                     },
+                     // yellow only with the remote on it: lit while resting, it read
+                     // as still selected after the remote had moved to Later
+                     primary = onInstall || !onTv(), filled = true,
+                     modifier = Modifier.focusRequester(takeIt)
+                         .onFocusChanged { onInstall = it.hasFocus }) {
                     if (busy) {
                         // locked while it is fetching: pressing again used to start
                         // the same sixteen megabytes over
@@ -3274,6 +3510,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 }
             }
         }
+        // No strip of downloads across every page: the downloads pill says what is
+        // coming in, and a film's own page carries its progress and its Cancel.
         // The casual shelf's own row: how it plays, how far it has got, and the
         // button that puts something on. Its own line because a television's top bar
         // has no room left after the tabs, and what fell off the end was the button
@@ -3302,10 +3540,42 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                              },
                              color = Skin.Dim, fontSize = 14.sp)
                         Spacer(Modifier.height(12.dp))
-                        // the title's own page; an episode has none, so its programme's
-                        Pill("→ Go to title") {
-                            browse.held = null
-                            goToTitle(ctx, one, onOpen)
+                        // A shuffle card stands for the shelf rather than the episode
+                        // showing on it, so its way out is to the shelf: the rule,
+                        // what is in it, and the reset are all there. Everything else
+                        // goes to its own page - an episode to its programme's.
+                        if (shelf.isNotEmpty()) FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Pill("→ Go to collection") {
+                                browse.held = null
+                                (ctx as AppCompatActivity).lifecycleScope.launch {
+                                    val id = shelf.removePrefix("coll:")
+                                    val shelves = runCatching { Api.collections(ctx) }
+                                        .getOrDefault(emptyList())
+                                    val it0 = shelves.firstOrNull {
+                                        it.ratingKey.removePrefix("coll:") == id
+                                    }
+                                    if (it0 != null) {
+                                        browse.collectionOn = it0
+                                        browse.tab = "collections"
+                                        browse.loaded = ""
+                                    }
+                                }
+                            }
+                            // the programme of the episode the hat drew last
+                            one.grandparentKey?.takeIf { it.isNotEmpty() }?.let { show ->
+                                Pill("→ Go to show") {
+                                    browse.held = null
+                                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                                        Api.item(show, one.srv)?.let { onOpen(it) }
+                                    }
+                                }
+                            }
+                        } else {
+                            Pill("→ Go to title") {
+                                browse.held = null
+                                goToTitle(ctx, one, onOpen)
+                            }
                         }
                     }
                 },
@@ -3326,11 +3596,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // the screen and not a moment later
                         cardMarked(browse, one, true)
                         (ctx as AppCompatActivity).lifecycleScope.launch {
+                            // marking it watched is the whole of it: the shelf
+                            // reads the mark and moves on by itself
                             Api.setWatched(one, true)
-                            // and off the shelf with it: marking one episode watched
-                            // otherwise hands the shelf to the next episode, which
-                            // reads as nothing having happened
-                            Api.aside(one)
                         }
                     }
                 }),
@@ -3343,7 +3611,6 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         cardMarked(browse, one, false)
                         (ctx as AppCompatActivity).lifecycleScope.launch {
                             Api.setWatched(one, false)
-                            Api.aside(one)
                         }
                     }
                 }))
@@ -3448,9 +3715,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             else ctx.startActivity(
                                 playIntent(ctx, full,
                                            full.viewOffsetMs,
-                                           full.pickedSub ?: full.openWith(
-                                               Api.myLanguage)
-                                               ?.index))
+                                           full.startSub(), fresh = true))
                         }
                     }
                     val order = collectionOrder(browse.grid, browse.collSortKey,
@@ -3466,14 +3731,26 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // carries on from eight minutes in is a promise about what
                         // pressing it does that pressing it does not keep.
                         val carryOn = browse.shuffled && open.shelfResumeAt > 30
-                        Pill(if (carryOn)
+                        // One draw at a time. With a server off, every press waited
+                        // out a connection and the presses stacked up behind it - and
+                        // when one finally got through they all did, each one drawing
+                        // and starting something. A press while a draw is in the air
+                        // is the same press.
+                        var drawing by remember(open.ratingKey) { mutableStateOf(false) }
+                        Pill(if (drawing) "Drawing…"
+                             else if (carryOn)
                                  "▶ Resume  " + fmt(open.shelfResumeAt.toLong())
                              else "▶ Play",
                              primary = true,
                              narrow = tightRow, small = tightRow) {
-                            if (browse.shuffled) {
+                            if (browse.shuffled && !drawing) {
+                                drawing = true
                                 (ctx as AppCompatActivity).lifecycleScope.launch {
-                                    val drew = Api.shelfDraw(open, true)
+                                    val drew = try {
+                                        Api.shelfDraw(open, true)
+                                    } finally {
+                                        drawing = false
+                                    }
                                     if (drew == null) {
                                         browse.notice = "Nothing to play on that shelf"
                                     } else if (drew.media.offered ||
@@ -3486,7 +3763,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                         val full = (runCatching {
                                             Api.metadata(drew.media)
                                         }.getOrNull() ?: drew.media)
-                                        browse.notice = "Fetching " + drew.media.title
+                                        browse.notice = "Downloading " + drew.media.title
                                         onOpen(full)
                                     } else {
                                         // the shelf's copy carries no streams: the
@@ -3499,8 +3776,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                         ctx.startActivity(
                                             playIntent(ctx, full,
                                                        drew.resumeAt,
-                                                       full.pickedSub ?: full.openWith(
-                                                           Api.myLanguage)?.index)
+                                                       full.startSub(), fresh = true)
                                                 // put on rather than chosen, and the
                                                 // shelf it came off, so Next draws
                                                 // from that shelf rather than handing
@@ -3544,7 +3820,15 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 Text(browse.failed!!, color = Skin.Dim, fontSize = 15.sp)
             }
             browse.tab == "home" && browse.moreRow == null &&
-                browse.query.trim().length < 2 -> LazyColumn(
+                browse.query.trim().isEmpty() -> androidx.compose.foundation.layout.BoxWithConstraints {
+              // On a television the posters are sized to the height left under the tabs,
+              // so two whole shelves fit whatever stands above them: per shelf its name
+              // (18), the poster at 1.5 its width, and 8 of air.
+              val short = LocalConfiguration.current.screenHeightDp < 560
+              val homeW = if (short && focusShows())
+                  (((maxHeight.value / 2f) - 18f - 8f) / 1.5f).toInt().coerceIn(96, 124)
+                  else shelfPoster()
+              LazyColumn(
                 state = browse.rowsState,
                 modifier = Modifier.onFocusChanged { inContent = it.hasFocus },
                 contentPadding = PaddingValues(bottom = 28.dp)) {
@@ -3565,7 +3849,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     val gap = if (LocalConfiguration.current.screenHeightDp < 560) 2 else 16
                     SectionTitle(title,
                                  Modifier.padding(start = 21.dp, top = gap.dp, bottom = 2.dp))
-                    val w = shelfPoster()
+                    val w = homeW
                     val rowState = browse.rowStates.getOrPut(title) {
                         androidx.compose.foundation.lazy.LazyListState() }
                     // Back from a title opened in this row: scroll the row to it, then
@@ -3613,7 +3897,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                     browse.focusKey = ""
                                 }
                             }
-                            Poster(m, width = w,
+                            Poster(m, width = w, episodeMark = true,
+                                   latestMark = title == "Recently released series",
                                    // A card taken off a shelf leaves a gap, and the
                                    // rest of the row closes it by moving rather than
                                    // by the shelf being read again from the server -
@@ -3678,7 +3963,20 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                 // away, and a shuffle lost its shelf on the way: the
                                 // page carries no shelf, so Next handed over the next
                                 // episode of the programme rather than drawing.
-                                if (title == DECK && m.shuffleId.isNotEmpty()) {
+                                if (m.upcoming) {
+                                    // not here yet: the series it belongs to
+                                    onOpen(m)
+                                } else if (title == "Recently released series" &&
+                                           m.type == "show" && m.latestKey.isNotEmpty()) {
+                                    // the newest episode, in its season, scrolled to
+                                    browse.openedRow = title; browse.openedKey = m.ratingKey
+                                    onOpen(m.copy(type = "episode", ratingKey = m.latestKey,
+                                                  grandparentKey = m.ratingKey,
+                                                  parentKey = null,
+                                                  parentIndex = m.latestSeason,
+                                                  index = m.latestNumber)
+                                               .also { it.srv = m.srv; it.upcoming = false })
+                                } else if (title == DECK && m.shuffleId.isNotEmpty()) {
                                     // A shuffle's own row, standing for a shelf: it
                                     // asks the shelf rather than playing the card.
                                     // What the row shows is whatever the hat drew
@@ -3692,42 +3990,15 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                     // on this shelf is the episode itself, folder or
                                     // not, so the test was never true and none of it
                                     // ran.
-                                    (ctx as AppCompatActivity).lifecycleScope.launch {
-                                        val drew = Api.shelfDraw(m.shuffleId, m.srv,
-                                                                 resume = true)
-                                        if (drew == null) {
-                                            browse.notice = "Nothing to play on that shelf"
-                                        } else if (drew.media.offered ||
-                                                   drew.media.ratingKey.startsWith("o")) {
-                                            browse.notice = "Fetching " + drew.media.title
-                                            onOpen(runCatching { Api.metadata(drew.media) }
-                                                       .getOrNull() ?: drew.media)
-                                        } else {
-                                            val full = (runCatching {
-                                                Api.metadata(drew.media)
-                                            }.getOrNull() ?: drew.media)
-                                                .let { Api.atHome(ctx, it) ?: it }
-                                            full.shuffleId = m.shuffleId
-                                            play(ctx, full, drew.resumeAt,
-                                                 full.pickedSub
-                                                     ?: full.openWith(Api.myLanguage)?.index)
-                                        }
-                                    }
+                                    // the player at once, loading there
+                                    playFromCard(ctx, m, shelf = true)
                                 } else if (title == DECK && !m.isFolder) {
                                     // asked for in full first. A row on this shelf is
                                     // brief - no codecs, no part, nothing about the
                                     // file - and a film that cannot say what it is
                                     // cannot be played as it is, so every resume from
                                     // here went through the encoder.
-                                    (ctx as AppCompatActivity).lifecycleScope.launch {
-                                        val full = (runCatching { Api.metadata(m) }
-                                            .getOrNull() ?: m)
-                                            .let { Api.atHome(ctx, it) ?: it }
-                                        full.shuffleId = m.shuffleId
-                                        val pick = full.pickedSub
-                                            ?: full.openWith(Api.myLanguage)?.index
-                                        play(ctx, full, m.viewOffsetMs / 1000, pick)
-                                    }
+                                    playFromCard(ctx, m, shelf = false)
                                 } else {
                                     browse.openedRow = title; browse.openedKey = m.ratingKey
                                     onOpen(m)
@@ -3737,7 +4008,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // The end of a row, where there is more than fits on it:
                         // everything it holds, on a page. A shelf shows what the
                         // screen has room for and the rest was simply not reachable.
-                        if (list.size > shown.size) {
+                        // The popular row always has one: what it opens onto is the
+                        // whole list, which is far more than the row itself holds.
+                        if (list.size > shown.size || title == "Popular shows") {
                             // keyed, like the cards beside it: an item a lazy row
                             // cannot name is one it reuses by position
                             item(key = "more:" + title) {
@@ -3818,6 +4091,22 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                             // somewhere else.
                                             browse.collSortKey = "originallyAvailableAt"
                                             browse.collSortAsc = false
+                                            // the popular row opens onto the whole
+                                            // list, most watched first
+                                            if (title == "Popular shows") {
+                                                browse.collSortKey = "popularity"
+                                                (ctx as AppCompatActivity).lifecycleScope
+                                                    .launch {
+                                                    val all = runCatching {
+                                                        Api.popularAll(ctx)
+                                                    }.getOrDefault(emptyList())
+                                                    if (all.isNotEmpty() &&
+                                                        browse.moreRow == title) {
+                                                        browse.grid = all
+                                                        browse.moreAll = all
+                                                    }
+                                                }
+                                            }
                                             browse.moreRow = title
                                             // and the remote on the first of them.
                                             // Nothing asking for it means the page
@@ -3835,6 +4124,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         }
                     }
                 }
+            }
             }
             browse.grid.isEmpty() &&
                 !(browse.tab == "watchlist" && browse.favs.isNotEmpty()) ->
@@ -4026,6 +4316,25 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                             browse.collSortAsc)
                         else -> browse.grid
                     }
+                    // The names the words spell, above the titles that carry them.
+                    // A word that is nobody's film is often somebody's name.
+                    if (browse.people.isNotEmpty()) {
+                        item(span = {
+                                 androidx.compose.foundation.lazy.grid
+                                     .GridItemSpan(maxLineSpan)
+                             }, key = "who") {
+                            Column(Modifier.padding(bottom = 12.dp)) {
+                                Text("Actors", color = Skin.Dim, fontSize = 12.sp,
+                                     modifier = Modifier.padding(bottom = 6.dp))
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    browse.people.forEach { one ->
+                                        FaceBubble(one) { onPerson(one.who) }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     itemsIndexed(shown, key = { _, m -> m.ratingKey },
                                     contentType = { _, m -> m.ratingKey }) { at, m ->
                         // Nothing under the card but its own line. Sorted by
@@ -4034,7 +4343,22 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // order - which does not fit the width on a television, and
                         // wrapped over the title beneath it. The browser has room for
                         // it and still says it there.
-                        val instead: String? = null
+                        // Except a season or an episode: on a collection every season of a
+                        // programme is the programme's poster, nine times, and only the
+                        // line says which one it is.
+                        // by number: a season's title is its programme's, which said
+                        // the programme's name under all thirty of them
+                        val instead: String? = when {
+                            m.type == "season" ->
+                                if (m.index != null) "Season " + m.index else m.title
+                            // and its own name - `title` is the programme's
+                            m.type == "episode" && m.parentIndex != null && m.index != null ->
+                                String.format(java.util.Locale.US, "S%02dE%02d",
+                                              m.parentIndex, m.index) +
+                                    (if (m.episodeName.isNotBlank()) "  " + m.episodeName
+                                     else "")
+                            else -> null
+                        }
                         val here = remember { FocusRequester() }
                         LaunchedEffect(browse.focusKey) {
                             if (browse.focusKey == m.ratingKey) {
@@ -4264,25 +4588,46 @@ private fun cardMarked(browse: Browse, one: Media, watched: Boolean) {
  * Three tries, a second or two apart, and then it really is empty. A shelf that answers
  * with nothing is not retried - that is an answer.
  */
-private suspend fun askAgain(get: suspend () -> List<Media>): List<Media> {
-    repeat(3) { at ->
+private suspend fun askAgain(get: suspend () -> List<Media>,
+                             /** said when it gives up, so a missing shelf is not silent */
+                             gaveUp: (String) -> Unit = {}): List<Media> {
+    // six tries over about 20 s: with the other machine off, the cache answered the
+    // first shelves late and three tries in 4 s gave up before it did
+    repeat(6) { at ->
         try {
             return get()
         } catch (stopped: kotlinx.coroutines.CancellationException) {
             throw stopped              // the page moved on: not a failure
         } catch (e: Exception) {
-            if (at == 2) {
+            if (at == 5) {
                 android.util.Log.i("Palladium", "shelf gave up: " + (e.message ?: ""))
+                gaveUp(e.message ?: "no machine answered")
                 return emptyList()
             }
-            kotlinx.coroutines.delay(1200L * (at + 1))
+            kotlinx.coroutines.delay(minOf(1500L * (at + 1), 5000L))
         }
     }
     return emptyList()
 }
 
+/** The same patience for a tab's grid: the last failure is thrown, for the page to say. */
+private suspend fun <T> patiently(get: suspend () -> T): T {
+    var last: Exception? = null
+    repeat(6) { at ->
+        try {
+            return get()
+        } catch (stopped: kotlinx.coroutines.CancellationException) {
+            throw stopped
+        } catch (e: Exception) {
+            last = e
+            if (at < 5) kotlinx.coroutines.delay(minOf(1500L * (at + 1), 5000L))
+        }
+    }
+    throw last ?: Exception("could not reach the server")
+}
 
-private fun goToTitle(ctx: android.content.Context, one: Media, onOpen: (Media) -> Unit) {
+
+internal fun goToTitle(ctx: android.content.Context, one: Media, onOpen: (Media) -> Unit) {
     if (one.type != "episode") {
         onOpen(one)
         return
@@ -4322,13 +4667,29 @@ private fun collectionOrder(list: List<Media>, key: String, asc: Boolean): List<
         "titleSort" -> compareBy { it.titleSort.ifEmpty { it.title }.lowercase() }
         "year" -> compareBy { it.year ?: 0 }
         "quality" -> compareBy { it.maxHeight }
+        "popularity" -> compareBy { it.popularity }
         // a date where there is one, the year otherwise
         else -> compareBy {
             it.released.ifEmpty { (it.year ?: 0).toString().padStart(4, '0') + "-01-01" }
         }
     }
-    val out = list.sortedWith(by.thenBy { it.title.lowercase() })
-    return if (asc) out else out.reversed()
+    val sorted = list.sortedWith(by.thenBy { it.title.lowercase() })
+    val out = if (asc) sorted else sorted.reversed()
+    // One programme's seasons and episodes stay in their own order, where the programme
+    // first comes in the sort: all nine seasons of a series carry its year, and newest
+    // first ran them 9 to 1 - the last card, taken for season 9, was season 1.
+    fun programme(m: Media) = when (m.type) {
+        "season" -> m.parentKey ?: m.grandparentKey ?: ""
+        "episode" -> m.grandparentKey ?: ""
+        else -> ""
+    }.orEmpty()
+    val groups = LinkedHashMap<String, MutableList<Media>>()
+    out.forEachIndexed { i, m -> groups.getOrPut(programme(m).ifEmpty { "#$i" }) { ArrayList() }.add(m) }
+    return groups.values.flatMap { g ->
+        if (g.size < 2) g
+        else g.sortedWith(compareBy<Media>({ if (it.type == "season") it.index ?: 0 else it.parentIndex ?: 0 },
+                                           { if (it.type == "season") 0 else it.index ?: 0 }))
+    }
 }
 
 /**
@@ -4617,6 +4978,205 @@ private fun RowScope.DecadeControl(
     }
 }
 
+/** A face and a name to press, the way the cast row under a film draws one. */
+@Composable
+private fun FaceBubble(one: Api.Face, onPress: () -> Unit) {
+    var onIt by remember(one.who.name) { mutableStateOf(false) }
+    val ring = onIt && focusShows()
+    Row(verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (ring) Skin.Accent else Skin.Panel2)
+            .border(if (ring) 2.dp else 0.dp,
+                    if (ring) Color.White else Color.Transparent,
+                    RoundedCornerShape(999.dp))
+            .onFocusChanged { onIt = it.isFocused || it.hasFocus }
+            .focusable()
+            .clickable { onPress() }
+            .padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp)) {
+        val face = Api.faceUrl(one.who, one.srv)
+        if (face != null) {
+            Art(face, one.who.name,
+                Modifier.size(28.dp).clip(RoundedCornerShape(999.dp)), mark = 0)
+        } else {
+            Box(Modifier.size(28.dp).clip(RoundedCornerShape(999.dp))
+                    .background(Color(0x1AFFFFFF)),
+                contentAlignment = Alignment.Center) {
+                Text(one.who.name.take(1).uppercase(), color = Skin.Dim,
+                     fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(one.who.name, color = if (ring) Color.White else Skin.Fg, fontSize = 13.sp)
+    }
+}
+
+/**
+ * A popular programme not held yet: its poster, what it is, and the versions the
+ * tracker holds, one of which is added as a pack.
+ *
+ * Adding downloads nothing. The pack is a link; its episodes stand on the TV shelf
+ * with a button each, and a file comes only when one is played.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit) {
+    val ctx = LocalContext.current
+    var full by remember(m.ratingKey) { mutableStateOf(m) }
+    var packs by remember(m.ratingKey) { mutableStateOf<List<Api.ShowPack>?>(null) }
+    var busy by remember(m.ratingKey) { mutableStateOf(false) }
+    LaunchedEffect(m.ratingKey) {
+        full = runCatching { Api.metadata(m) }.getOrNull() ?: m
+        packs = Api.showPacks(m.title)
+    }
+    val add: (String) -> Unit = { id ->
+        if (!busy) {
+            busy = true
+            (ctx as AppCompatActivity).lifecycleScope.launch {
+                val key = Api.addShowPack(full.also { it.tmdb = m.tmdb }, id)
+                busy = false
+                if (key.isEmpty()) {
+                    Toast.makeText(ctx, "Could not add that one", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(ctx, "In the library - its episodes come in as a pack",
+                                   Toast.LENGTH_SHORT).show()
+                    onAdded(key)
+                }
+            }
+        }
+    }
+    val span = { list: List<Int> ->
+        when {
+            list.isEmpty() -> ""
+            list.size == 1 -> "S%02d".format(list[0])
+            else -> "S%02d–S%02d".format(list.first(), list.last())
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onClose,
+        containerColor = Skin.Panel,
+        title = { Text(full.title, color = Skin.Fg, fontSize = 18.sp) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Row {
+                    Api.artUrl(full, 300)?.let { url ->
+                        Art(url, full.title, Modifier.width(96.dp).height(144.dp)
+                                .clip(RoundedCornerShape(8.dp)), mark = 0)
+                        Spacer(Modifier.width(12.dp))
+                    }
+                    Column {
+                        Text(listOfNotNull(full.year?.toString(),
+                                           full.genres.take(3).joinToString(", ")
+                                               .ifEmpty { null })
+                                 .joinToString("  ·  "),
+                             color = Skin.Dim, fontSize = 12.sp)
+                    }
+                }
+                // what it is and who is in it, which is what decides whether to add it
+                if (full.summary.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(full.summary, color = Skin.Fg, fontSize = 13.sp, lineHeight = 18.sp)
+                }
+                if (full.cast.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        full.cast.take(10).forEach { who ->
+                            FaceBubble(Api.Face(who, full.srv)) { }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(if (packs == null) "Looking on the tracker…"
+                     else if (packs!!.isEmpty()) "Nothing packed on the tracker for it yet."
+                     else "Choose a version to add as a pack",
+                     color = Skin.Dim, fontSize = 12.sp)
+                Spacer(Modifier.height(6.dp))
+                (packs ?: emptyList()).forEach { one ->
+                    PackChoice(onPress = { add(one.id) }) { lit ->
+                        Text(one.name, fontSize = 13.sp, lineHeight = 17.sp,
+                             color = if (lit) Color(0xFF111111)
+                                     else if (one.pick) Color(0xFF5FD08A) else Skin.Fg)
+                        Text(listOfNotNull(
+                                 if (one.complete) "complete" else span(one.seasons),
+                                 one.size.takeIf { it > 0 }?.let {
+                                     String.format(java.util.Locale.US, "%.1f GB",
+                                                   it / 1073741824.0) },
+                                 one.seeds.takeIf { it > 0 }?.let { "$it seeding" })
+                                 .joinToString("   ·   "),
+                             color = if (lit) Color(0xFF333333) else Skin.Dim,
+                             fontSize = 11.5.sp)
+                    }
+                }
+                if (packs != null) {
+                    PackChoice(onPress = { add("") }) { lit ->
+                        Text("Let it find packs by itself, a season at a time",
+                             color = if (lit) Color(0xFF111111) else Skin.Fg,
+                             fontSize = 13.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = { Pill(if (busy) "Adding…" else "Close") { onClose() } })
+}
+
+/** One choice on the add-pack page: white while focused, so a remote shows where it is. */
+@Composable
+private fun PackChoice(onPress: () -> Unit,
+                       content: @Composable ColumnScope.(lit: Boolean) -> Unit) {
+    var lit by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)
+               .clip(RoundedCornerShape(8.dp))
+               .background(if (lit) Color.White else Skin.Panel2)
+               .onFocusChanged { lit = it.isFocused }
+               .clickable { onPress() }
+               .padding(10.dp)) {
+        content(lit)
+    }
+}
+
+/**
+ * Everything this house holds with one person in it, opened as a shelf of its own.
+ *
+ * Asked of the library, so what comes back can be watched tonight. Pressed from a
+ * film's cast row, and from the row of names a search found.
+ */
+private fun openPerson(ctx: Context, browse: Browse,
+                       stack: androidx.compose.runtime.snapshots.SnapshotStateList<Media>,
+                       who: Media.Player) {
+    (ctx as AppCompatActivity).lifecycleScope.launch {
+        val theirs = runCatching {
+            Api.withPerson(ctx, who.id, who.name)
+        }.getOrDefault(emptyList())
+        if (theirs.isEmpty()) {
+            android.widget.Toast.makeText(
+                ctx, "Nothing here with " + who.name + " in it",
+                android.widget.Toast.LENGTH_SHORT).show()
+            return@launch
+        }
+        browse.moreWas = Filters(browse.genre, browse.decade, browse.genres,
+                                 browse.decades, browse.collSortKey, browse.collSortAsc)
+        browse.grid = theirs
+        browse.moreAll = theirs
+        browse.genres = theirs.flatMap { it.genres }
+            .groupingBy { it }.eachCount().toList()
+            .sortedBy { it.first.lowercase() }
+        browse.decades = theirs.mapNotNull { one ->
+            (one.year ?: 0).takeIf { it > 0 }?.let { (it / 10 * 10).toString() }
+        }.groupingBy { it }.eachCount().toList().sortedByDescending { it.first }
+        browse.genre = ""; browse.decade = ""
+        browse.collSortKey = "originallyAvailableAt"
+        browse.collSortAsc = false
+        browse.moreRow = who.name
+        browse.focusKey = theirs.first().ratingKey
+        // the page being read, to come back to. The shelf needs the title's page off
+        // the stack to be seen at all, so back had nothing left to return to and
+        // landed on the front page.
+        browse.personFrom = stack.lastOrNull()
+        stack.clear()
+    }
+}
+
 /** What is left of the row once the sort and the genre have gone up among the tabs. */
 @Composable
 private fun RowScope.FilterControls(
@@ -4698,6 +5258,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     var styling by remember(m.ratingKey) { mutableStateOf(false) }
     // the cache chooser, for a title the library holds more than once
     var versions by remember(m.ratingKey) { mutableStateOf(false) }
+    // what the tracker carries of this film, asked for from the Version panel
+    var other by remember(m.ratingKey) { mutableStateOf(Api.Carrying()) }
+    var otherOpen by remember(m.ratingKey) { mutableStateOf(false) }
+    var otherSaid by remember(m.ratingKey) { mutableStateOf("") }
     var downloading by remember(m.ratingKey) { mutableStateOf(false) }
     //: waiting for a subtitle being written, so the remote can be put on Play as soon
     //: as there is enough of it to start
@@ -4741,9 +5305,11 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             // which is all a fresh download usually has. Leaving that last case out
             // meant an episode with nothing but its own English track opened with no
             // subtitle at all and nothing to say why.
-            sub = it.pickedSub
-                ?: it.openWith(Api.myLanguage)?.index
+            sub = it.startSub()
                 ?: sub
+            // a film's extras, a row under it
+            if (it.type == "movie")
+                children = runCatching { Api.children(it) }.getOrDefault(emptyList())
         }
         // once the film is known, what else carries its genres
         val genres = full.genres.filter { it.isNotBlank() }
@@ -4801,12 +5367,44 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     }
 
     val facts: @Composable () -> Unit = {
+        // where a new release has come out to be watched: the services' marks
+        if (full.providers.isNotEmpty()) {
+            Row(Modifier.padding(top = if (cramped || roomForShelf) 4.dp else 10.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                full.providers.forEach { (name, logo, _) ->
+                    Art(Api.artUrl(full, 0, logo), name,
+                        Modifier.padding(end = 8.dp).size(if (cramped) 26.dp else 32.dp)
+                            .clip(RoundedCornerShape(7.dp)), mark = 0)
+                }
+            }
+        }
+        // the studios behind it: each one's mark in white, or its name where it has none
+        if (full.studios.isNotEmpty()) {
+            Row(Modifier.padding(top = if (cramped || roomForShelf) 4.dp else 10.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                full.studios.forEach { (name, logo) ->
+                    if (logo.isNotEmpty()) {
+                        Art(Api.artUrl(full, 0, logo), name,
+                            Modifier.padding(end = 14.dp).height(if (cramped) 16.dp else 20.dp)
+                                .width(if (cramped) 64.dp else 80.dp),
+                            mark = 0, scale = ContentScale.Fit,
+                            tint = Skin.Fg.copy(alpha = 0.8f),
+                            ground = androidx.compose.ui.graphics.SolidColor(Color.Transparent))
+                    } else {
+                        Text(name, color = Skin.Dim, fontSize = 11.sp,
+                             modifier = Modifier.padding(end = 14.dp))
+                    }
+                }
+            }
+        }
         // Six chips - year, size, codecs, rate, how it will play - are wider than a
         // phone held upright. A Row does not wrap, so the last one was squeezed to a
         // single column of letters running down the edge of the screen.
         FlowRow(Modifier.padding(top = if (cramped || roomForShelf) 4.dp else 10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)) {
             full.year?.let { Chip(it.toString()) }
+            // which cut this is, where the file says: two cuts of one film are two films
+            if (full.edition.isNotEmpty()) Chip(full.edition)
             if (full.isFolder) {
                 // a show or a season has no codecs and nothing to transcode; saying
                 // "Transcoded" on a folder was simply wrong
@@ -4835,6 +5433,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
         // rather than down among the codecs
         val line = listOfNotNull(
             if (full.type == "movie") full.year?.toString() else full.subtitle,
+            // and the day it came out, or comes out: this page is reached from a
+            // shelf that carries the week ahead as well, where a bare year does
+            // not say whether a film can be watched yet
+            releaseDay(full.released),
             runtime(full.durationMs),
         ).filter { it.isNotEmpty() }.joinToString("  ·  ")
         if (line.isNotEmpty()) {
@@ -4842,6 +5444,71 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             Text(line, color = Skin.Dim,
                  fontSize = if (roomForShelf) 13.sp else 15.sp,
                  modifier = Modifier.padding(top = if (roomForShelf) 2.dp else 4.dp))
+        }
+    }
+
+    /**
+     * A better copy of something already here, under the Version button: the file on
+     * the disk is one release of many, and a poor rip fetched years ago is worth
+     * replacing without going looking for the film on the tracker by hand.
+     */
+    val otherVersion: @Composable () -> Unit = {
+        if (full.type == "movie" && !full.offered && !full.askable) {
+          // a line of its own, under the file it would replace
+          FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp),
+                  verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (otherSaid.isNotEmpty() && !otherOpen) {
+                Text(otherSaid, color = Skin.Dim, fontSize = 12.sp)
+            }
+            // and what is already coming in from the tracker, with its own
+            // stop: a download nobody can cancel is a disk filling up with
+            // something somebody pressed by mistake
+            var taking by remember(full.ratingKey) {
+                mutableStateOf<List<Api.Taking>>(emptyList())
+            }
+            LaunchedEffect(full.ratingKey, otherSaid) {
+                while (true) {
+                    // this film's own download, not everything coming in
+                    val flat = { t: String -> t.lowercase().filter { it.isLetterOrDigit() } }
+                    taking = Api.trackerTaking(full.srv).filter {
+                        flat(it.title) == flat(full.title) &&
+                            (it.year == 0 || full.year == null || it.year == full.year)
+                    }
+                    kotlinx.coroutines.delay(
+                        if (taking.isEmpty()) 15000 else 5000)
+                }
+            }
+            taking.forEach { one ->
+                val pct = (one.progress * 100).toInt()
+                if (one.done) {
+                    // finished: cancelling now would delete the file, so
+                    // there is nothing to press - only what it did
+                    Text("Done  ·  " + one.name, color = Skin.Dim,
+                         fontSize = 12.sp)
+                    return@forEach
+                }
+                Pill("✕ Cancel " +
+                         (if (one.state == "queued") "queued"
+                          else "$pct%") +
+                         (if (one.mbit > 0)
+                              String.format(java.util.Locale.US,
+                                            "  ·  %.1f Mbit/s", one.mbit)
+                          else ""),
+                     small = true) {
+                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                        if (Api.trackerCancel(one.hash, full.srv)) {
+                            otherSaid = "Cancelled"
+                            taking = taking.filter { it.hash != one.hash }
+                        }
+                    }
+                }
+            }
+            if (otherOpen) {
+                DownloadPicker(full, other.rows, free = other.free,
+                               onClose = { otherOpen = false },
+                               onSaid = { otherSaid = it })
+            }
+          }
         }
     }
 
@@ -4907,12 +5574,17 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
               Pill("Aa", filled = true) { styling = true }
               // Two files of the same film carry different subtitles and are out by
               // different amounts, so which one is playing has to be settled here.
-              if (full.copies.size > 1) {
+              // every film and episode: what is here to choose from, and the box for
+              // another - an episode's other releases are on the tracker as a film's are
+              if (full.copies.size > 1 ||
+                  ((full.type == "movie" || full.type == "episode") &&
+                   !full.offered && !full.askable && !full.upcoming)) {
                   val copy = full.copies.firstOrNull { it.mi == full.mi }
-                  Pill("Copy: " + (copy?.brief() ?: (full.mi + 1).toString()) +
-                       "  (" + full.copies.size + ")") { versions = true }
+                  Pill("Version: " + (copy?.brief() ?: (full.mi + 1).toString()) +
+                       "  (" + full.copies.size.coerceAtLeast(1) + ")") { versions = true }
               }
             }
+            otherVersion()
         }
     }
     /**
@@ -5007,7 +5679,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                  "comes on when it is ready",
                             android.widget.Toast.LENGTH_LONG).show()
                         ctx.startActivity(
-                            playIntent(ctx, full, at, NO_SUBS)
+                            playIntent(ctx, full, at, NO_SUBS, fresh = true)
                                 .putExtra("wantMade", true)
                                 .also { go ->
                                     if (m.shuffleId.isNotEmpty()) {
@@ -5070,6 +5742,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // a film on offer from a torrent pack: the one thing to do is fetch it
                 if (full.offered) {
                     var said by remember(m.ratingKey) { mutableStateOf("") }
+                    var offerChoices by remember(m.ratingKey) { mutableStateOf(Api.Carrying()) }
+                    var choosingOffer by remember(m.ratingKey) { mutableStateOf(false) }
                     // while it comes in: read again every few seconds, until it is done
                     // and once it has come in, the film's own page: the server answers the
                     // offer with the film, and this page becomes it
@@ -5090,13 +5764,18 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     val busy = full.offerRefused.isNotEmpty() ||
                         showing in setOf("queued", "downloading", "done")
                     Pill(if (full.offerRefused.isNotEmpty()) "Cannot download" else when (showing) {
-                             "downloading" -> "Downloading " + (live.offerProgress * 100).toInt() + "%" +
+                             "downloading" -> "Downloading " +
+                                 (if (live.offerVersion.isNotEmpty()) live.offerVersion + "  ·  " else "") +
+                                 (live.offerProgress * 100).toInt() + "%" +
                                  (if (live.offerMbit > 0)
                                       String.format(java.util.Locale.US, "  \u00b7  %.1f Mbit/s",
                                                     live.offerMbit) else "") +
                                  (if (live.offerEta >= 0) "  \u00b7  " + etaWords(live.offerEta) else "")
                              "queued" -> "Queued" +
-                                 (if (live.offerPlace > 0) " · ${live.offerPlace} ahead" else "")
+                                 (if (live.offerPlace > 0) " · ${live.offerPlace} ahead" else "") +
+                                 // one of yours waiting behind others: pressed, it goes first
+                                 (if (live.offerPlace > 1 && live.offerMine) "  ·  Move to top"
+                                  else "")
                              "done" -> "Downloaded - arriving"
                              else -> "\u2913 Download"
                          } + (if (full.offerSize > 0)
@@ -5107,16 +5786,44 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                                 full.offerFree) else ""),
                          primary = !busy,
                          modifier = Modifier.focusRequester(actFocus)) {
-                        // A film on a pack is fetched from here, as it always was.
-                        // Asking is for a title with no file anywhere - there is
-                        // nothing to fetch for one of those.
-                        if (!busy) (ctx as AppCompatActivity).lifecycleScope.launch {
-                            val (ok, words) = Api.torrentGet(full)
-                            said = if (ok) "Downloading - it appears in Films when it has arrived"
-                                   else words
-                            Api.metadata(full)?.let { full = it }
-                            Api.refreshDownloading(ctx)
+                        // Every version to choose from, the pack's copies and the
+                        // tracker's releases alike - one included, so a download is
+                        // always something somebody confirmed.
+                        if (showing == "queued" && live.offerMine && live.offerPlace > 1) {
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                // first among the waiting: the one downloading now carries on
+                                val waiting = Api.downloading.value.filter {
+                                    it.offerState == "queued" && it.offerQueueKey != live.offerQueueKey }
+                                said = if (Api.reorderDownloads(listOf(live) + waiting))
+                                           "Next to download" else "Could not move it"
+                                Api.refreshDownloading(ctx)
+                                Api.metadata(full)?.let { full = it }
+                            }
+                        } else if (!busy) (ctx as AppCompatActivity).lifecycleScope.launch {
+                            said = "Looking…"
+                            offerChoices = Api.trackerVersions(full)
+                            said = ""
+                            if (offerChoices.rows.isNotEmpty()) {
+                                choosingOffer = true
+                            } else {
+                                val (ok, words) = Api.torrentGet(full)
+                                said = if (ok) "Downloading - it appears in Films when it has arrived"
+                                       else words
+                                Api.metadata(full)?.let { full = it }
+                                Api.refreshDownloading(ctx)
+                            }
                         }
+                    }
+                    if (choosingOffer) {
+                        DownloadPicker(full, offerChoices.rows, free = offerChoices.free,
+                                       onClose = { choosingOffer = false },
+                                       onSaid = { word ->
+                                           said = word
+                                           (ctx as AppCompatActivity).lifecycleScope.launch {
+                                               Api.metadata(full)?.let { full = it }
+                                               Api.refreshDownloading(ctx)
+                                           }
+                                       })
                     }
                     if (live.offerState == "queued" || live.offerState == "downloading") {
                         Pill("Cancel download") {
@@ -5125,19 +5832,6 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                 said = words
                                 if (ok) Api.metadata(full)?.let { full = it }
                                 Api.refreshDownloading(ctx)
-                            }
-                        }
-                    }
-                    // one poster for a film its pack carries more than once: the release is
-                    // chosen here, and Download fetches the one chosen
-                    if (full.offerVersions.size > 1) {
-                        full.offerVersions.forEach { (key, label) ->
-                            Pill(label, outline = key == full.ratingKey, small = true) {
-                                if (key != full.ratingKey) (ctx as AppCompatActivity).lifecycleScope.launch {
-                                    val was = full
-                                    Api.metadata(was.copy(ratingKey = key).also { it.srv = was.srv })
-                                        ?.takeIf { it.offered }?.let { full = it; said = "" }
-                                }
                             }
                         }
                     }
@@ -5152,12 +5846,75 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 if (full.askable) {
                     var said by remember(m.ratingKey) { mutableStateOf("") }
                     var askedAlready by remember(m.ratingKey) { mutableStateOf(full.asked) }
+                    // the versions the tracker is carrying, and whether to show them
+                    var versions by remember(m.ratingKey) {
+                        mutableStateOf(Api.Carrying())
+                    }
+                    // asked for as the page opens rather than on the press, so the
+                    // button can say how big the thing is and what room is left
+                    // before somebody decides. It is also what the picker shows, so
+                    // pressing Download is then instant.
+                    //
+                    // Asked whatever the film is marked as, the way the browser asks:
+                    // the list searches the tracker itself when nothing is known
+                    // about a title, and gating this on what the index already held
+                    // meant a film nobody had swept yet offered only a Request -
+                    // for something the tracker was carrying all along.
+                    LaunchedEffect(m.ratingKey, full.onTracker) {
+                        if (versions.rows.isEmpty()) {
+                            versions = Api.trackerVersions(full)
+                        }
+                    }
+                    // what the tracker turned out to carry, which is what decides
+                    // between fetching it and asking somebody for it
+                    val carried = full.onTracker || versions.rows.isNotEmpty()
+                    var picking by remember(m.ratingKey) { mutableStateOf(false) }
+                    if (picking) {
+                        DownloadPicker(full, versions.rows, free = versions.free,
+                                       onClose = { picking = false },
+                                       onSaid = { said = it })
+                    }
                     // how many are waiting on it, beside the button: one is the
                     // person holding the remote and goes without saying
                     // one press each: the count is people, not presses, so it
                     // says at least one as soon as this viewer is one of them
                     val waiting = maxOf(full.asks, if (askedAlready) 1 else 0)
-                    Pill((if (askedAlready) "Requested" else "Request") +
+                    // something to fetch for it: the asking can be skipped, and
+                    // what comes into the house is still only the owner's to start
+                    // Shown wherever there is something to fetch. Whether this
+                    // viewer may is the server's to answer, and it says so in the
+                    // line under the buttons - working it out here as well only
+                    // meant a button that hid itself for the wrong reasons.
+                    if (carried) {
+                        // The same button as a film on a pack wears: the arrow, the
+                        // word and the size beside it. Fetching from the tracker is
+                        // the same act, and it read as a lesser one.
+                        // the one most are carrying, which is what pressing it
+                        // would fetch if nobody chose - so its size is the one to say
+                        val biggest = versions.rows.firstOrNull { it.pick }
+                            ?: versions.rows.firstOrNull { it.why.isEmpty() }
+                            ?: versions.rows.maxByOrNull { it.seeds }
+                        Pill("⤓ Download" +
+                                 (if (biggest != null && biggest.size > 0)
+                                      String.format(java.util.Locale.US, "  %.1f GB",
+                                                    biggest.size / 1073741824.0) else "") +
+                                 (if (versions.free >= 0)
+                                      String.format(java.util.Locale.US, "  ·  %.0f GB free",
+                                                    versions.free) else ""),
+                             primary = true,
+                             modifier = Modifier.focusRequester(actFocus)) {
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                if (versions.rows.isEmpty()) {
+                                    said = "Looking…"
+                                    versions = Api.trackerVersions(full)
+                                }
+                                said = if (versions.rows.isEmpty())
+                                    "Nothing on the tracker for that one" else ""
+                                picking = versions.rows.isNotEmpty()
+                            }
+                        }
+                    }
+                    if (!carried) Pill((if (askedAlready) "Requested" else "Request") +
                          (if (waiting > 0) "  \u00b7  $waiting" else ""),
                          primary = !askedAlready,
                          modifier = Modifier.focusRequester(actFocus)) {
@@ -5167,7 +5924,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                             said = when {
                                 !ok -> "Could not ask for that just now"
                                 listed -> "Asked for, and on your watchlist."
-                                else -> "Asked for. The owner decides what comes in."
+                                else -> "Requested. It closes by itself once it can be downloaded."
                             }
                             if (ok) Toast.makeText(
                                 ctx,
@@ -5218,6 +5975,15 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     }
                 }
             }
+        } else if (full.type == "show" && !full.offered) {
+            // No Play of its own: the page stands on the season the programme is up
+            // to, and that season's page on the episode.
+            LaunchedEffect(full.ratingKey, Api.swapped.value) {
+                val ep = Api.nextUp(full) ?: return@LaunchedEffect
+                val season = ep.parentKey ?: return@LaunchedEffect
+                MainActivity.upIn[season] = ep.ratingKey
+                MainActivity.reveal.value = season
+            }
         }
     }
     // The whole of it, with what it is rated and who is in it - the three things the
@@ -5233,18 +5999,28 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     val rated = listOfNotNull(
                         full.rating.takeIf { it > 0f }
                             ?.let { "★ " + String.format("%.1f", it) + " of 10" },
+                        // Rotten Tomatoes, for a film not here yet: what decides
+                        // whether it is worth downloading
+                        full.critics.takeIf { it >= 0 }?.let { "Critics $it%" },
+                        full.audience.takeIf { it >= 0 }?.let { "Audience $it%" },
                         full.year?.takeIf { it > 0 }?.toString(),
+                        full.durationMs.takeIf { it > 0 }?.let { "${it / 60000} min" },
                         full.genres.take(3).joinToString(", ").ifEmpty { null },
+                        full.directors.takeIf { it.isNotEmpty() }
+                            ?.let { "Directed by " + it.joinToString(", ") },
                     ).joinToString("   ·   ")
                     if (rated.isNotEmpty()) {
                         Text(rated, color = Skin.Dim, fontSize = 12.5.sp,
                              modifier = Modifier.padding(bottom = 10.dp))
                     }
+                    if (full.tagline.isNotEmpty()) {
+                        Text(full.tagline, color = Skin.Dim, fontSize = 13.sp,
+                             fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                             modifier = Modifier.padding(bottom = 10.dp))
+                    }
                     Text(full.summary, color = Color(0xFFBFC9D4), fontSize = 14.sp,
                          lineHeight = 21.sp, modifier = Modifier.padding(bottom = 14.dp))
                     if (full.cast.isNotEmpty()) {
-                        Text("With", color = Skin.Dim, fontSize = 12.sp,
-                             modifier = Modifier.padding(bottom = 6.dp))
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             full.cast.forEach { who ->
@@ -5411,8 +6187,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // is a number that means something else here
                 val was = full
                 full = full.asCopy(which)
-                sub = full.pickedSub
-                    ?: full.openWith(Api.myLanguage)?.index
+                sub = full.startSub()
                 // and it holds: the browser and the television open on it too
                 was.copies.getOrNull(which)?.let { copy ->
                     (ctx as AppCompatActivity).lifecycleScope.launch {
@@ -5420,7 +6195,19 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     }
                 }
             },
-            onClose = { versions = false })
+            onClose = { versions = false },
+            // the tracker's list, from the foot of the panel
+            onOther = if ((full.type == "movie" || full.type == "episode") &&
+                          !full.offered && !full.askable && !full.upcoming) ({
+                versions = false
+                (ctx as AppCompatActivity).lifecycleScope.launch {
+                    otherSaid = "Looking…"
+                    other = Api.trackerVersions(full)
+                    otherSaid = if (other.rows.isEmpty())
+                        "Nothing on the tracker for that one" else ""
+                    otherOpen = other.rows.isNotEmpty()
+                }
+            }) else null)
     }
 
     if (styling) {
@@ -5484,7 +6271,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             if (portrait) {
                 Box(Modifier.padding(top = 14.dp).width(120.dp).height(180.dp)
                         .clip(RoundedCornerShape(10.dp))) {
-                    Art(Api.artUrl(full), full.title, Modifier.fillMaxSize(), mark = 44)
+                    Art(Api.coverUrl(full), full.title, Modifier.fillMaxSize(), mark = 44)
                     OfferProgress(full)
                 }
                 Text(full.title, color = Skin.Fg, fontSize = 24.sp,
@@ -5500,7 +6287,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                             .height(if (cramped) 165.dp
                                     else if (roomForShelf) 225.dp else 270.dp)
                             .clip(RoundedCornerShape(10.dp))) {
-                        Art(Api.artUrl(full), full.title, Modifier.fillMaxSize(),
+                        Art(Api.coverUrl(full), full.title, Modifier.fillMaxSize(),
                             mark = if (cramped) 40 else 60)
                         OfferProgress(full)
                     }
@@ -5527,15 +6314,19 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 FlowRow(Modifier.padding(top = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionTitle(
-                        if (children.first().type == "season") "Seasons" else "Episodes",
+                        if (!full.isFolder) "Extras"
+                        else if (children.first().type == "season") "Seasons" else "Episodes",
                         Modifier.align(Alignment.CenterVertically)
                             .padding(start = 7.dp, end = 10.dp))
                     // The whole series, or the whole season, in one press - and one
                     // press is how a season of places got forgotten by accident, so
                     // it asks first. Plain until the remote reaches them, which is
                     // the only state worth marking.
-                    Pill("Mark all watched") { marking = true }
-                    Pill("Mark all unwatched") { marking = false }
+                    // not under a film's extras: the film is what they would mark
+                    if (full.isFolder) {
+                        Pill("Mark all watched") { marking = true }
+                        Pill("Mark all unwatched") { marking = false }
+                    }
                     // Up a level. A season is arrived at from an episode now, so the
                     // programme it belongs to is a page that was never opened - and
                     // Back goes where you came from, which is the film or the shelf,
@@ -5591,6 +6382,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // and the padding at the end keeps the next episode composed and
                 // reachable before it is needed.
                 val episodes = rememberLazyListState()
+                // an episode not here that the tracker has: its releases, in a dialog
+                var fetchingEp by remember { mutableStateOf<Media?>(null) }
+                fetchingEp?.let { EpisodeDownloads(it) { fetchingEp = null } }
                 // Arrived from an episode's own page: stand on that episode rather
                 // than at the start of the season. Cleared once used, so opening the
                 // season any other way starts where it always did.
@@ -5603,13 +6397,16 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     mutableStateOf<String?>(null)
                 }
                 LaunchedEffect(children, MainActivity.reveal.value) {
-                    val want = MainActivity.reveal.value
+                    val asked = MainActivity.reveal.value
+                    val want = asked?.takeIf { it.isNotEmpty() }
+                               ?: MainActivity.upIn[full.ratingKey]
                     if (!want.isNullOrEmpty()) {
                         val at = children.indexOfFirst { it.ratingKey == want }
                         if (at >= 0) {
                             episodes.scrollToItem(at)
                             standing = want
-                            MainActivity.reveal.value = null
+                            if (want == asked) MainActivity.reveal.value = null
+                            else MainActivity.upIn.remove(full.ratingKey)
                         }
                     }
                 }
@@ -5640,15 +6437,27 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         // its episodes one still each: say which is which under them
                         val say = when {
                             c.type == "season" ->
-                                c.title.ifBlank { "Season " + (c.index ?: "") }
+                                (if (c.index != null) "Season " + c.index else c.title) +
+                                    (if (c.upcoming) "  ·  " + c.airs else "")
+                            // an extra has a name, not a number
+                            c.type == "episode" && c.parentIndex == -1 -> c.title
+                            // its own name: `title` is the programme's, which wrote the
+                            // series name on every episode of the season
                             c.type == "episode" ->
-                                "E" + (c.index ?: "") + "  " + c.title
+                                "E" + (c.index ?: "") + "  " +
+                                    (if (c.upcoming) c.airs else c.episodeName)
                             else -> ""
                         }
+                        // an episode still to come has no page and nothing to play -
+                        // unless the tracker has it, early or late: then its releases
                         Poster(c, width = shelfPoster(), instead = say,
                                modifier = if (c.ratingKey == standing)
                                               Modifier.focusRequester(standOn)
-                                          else Modifier) { onOpen(c) }
+                                          else Modifier) {
+                            if (c.upcoming && c.type == "episode") {
+                                if (c.fetchable) fetchingEp = c
+                            } else onOpen(c)
+                        }
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -5768,6 +6577,20 @@ private fun shelfPoster(): Int {
     }
 }
 
+/** The day a film was released, as a date; "from" it while it is still ahead. */
+private fun releaseDay(said: String): String {
+    val day = said.take(10)
+    if (!Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$").matches(day)) return ""
+    val month = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    val n = day.substring(5, 7).toIntOrNull() ?: return ""
+    val said2 = day.substring(8, 10).trimStart('0') + " " +
+        (month.getOrNull(n - 1) ?: "") + " " + day.substring(0, 4)
+    val now = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        .format(java.util.Date())
+    return if (day > now) "from " + said2 else said2
+}
+
 private fun runtime(ms: Long): String? {
     val mins = Math.round(ms / 60000.0).toInt()
     if (mins < 1) return null
@@ -5780,16 +6603,28 @@ private fun fmt(sec: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
-private fun play(ctx: Context, m: Media, positionSec: Long, subIndex: Int? = null) {
+internal fun play(ctx: Context, m: Media, positionSec: Long, subIndex: Int? = null) {
+    ctx.startActivity(playGo(ctx, m, positionSec, subIndex))
+}
+
+/** What starting the player on one title amounts to. */
+internal fun playGo(ctx: Context, m: Media, positionSec: Long, subIndex: Int? = null): Intent {
     // A row the hat is holding stays the hat's when it is pressed. Opening it from
     // Continue watching and playing it wrote an ordinary place instead, so the shelf
     // lost track of its own evening and Next handed over the next episode of the
     // programme rather than drawing.
-    val go = playIntent(ctx, m, positionSec, subIndex)
+    val go = playIntent(ctx, m, positionSec, subIndex, fresh = true)
     if (m.shuffleId.isNotEmpty()) {
         go.putExtra("casual", true).putExtra("shelf", m.shuffleId)
     }
-    ctx.startActivity(go)
+    return go
+}
+
+/** The player, up at once on a card from Continue watching, loading there. */
+internal fun playFromCard(ctx: Context, m: Media, shelf: Boolean) {
+    PlayerActivity.pending = m
+    PlayerActivity.pendingAt = android.os.SystemClock.elapsedRealtime()
+    ctx.startActivity(Intent(ctx, PlayerActivity::class.java).putExtra("loadShelf", shelf))
 }
 
 /** Everything the player needs, in one place, so the next episode can start itself. */
@@ -5837,9 +6672,10 @@ fun throughHeadphones(ctx: Context): Boolean {
     }.getOrDefault(false)
 }
 
-fun playIntent(ctx: Context, m: Media, positionSec: Long, subIndex: Int? = null,
+fun playIntent(ctx: Context, m: Media, at: Long, subIndex: Int? = null,
                audioIndex: Int? = null, height: Int = 0, mbit: Int = 0,
-               plainSound: Boolean? = null): Intent {
+               plainSound: Boolean? = null, fresh: Boolean = false): Intent {
+    val positionSec = Route.leadStart(at, m.skipStart, fresh)
     // A picture track - PGS off a disc, VobSub off a DVD - is a set of images, and
     // only something that can decode them can show it. The framework decodes the
     // first kind, so a film played straight from disk has its Blu-ray subtitle drawn

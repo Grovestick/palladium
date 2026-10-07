@@ -162,22 +162,34 @@ def find_ffmpeg():
 FFMPEG, ENCODER = find_ffmpeg()
 
 
-def loudness(path, index=None, seconds=180):
+#: where the loudness samples are taken, as parts of the running time: twenty, 5-95 %
+SPREAD = tuple(0.05 + 0.9 * i / 19 for i in range(20))
+
+
+def loudness(path, index=None, seconds=300, length=0):
     """Integrated loudness in LUFS, or None when it cannot be measured.
 
-    180 s from 5:00 in: past the titles, and a few seconds of ffmpeg. Reference
-    points: EBU R128 broadcast is -23, streaming around -16, a cinema mix near -27.
+    Twenty 15 s samples spread from 5 % to 95 % of the running time, measured as one:
+    within 0.4 dB of the whole film where one window at 5:00 was 0.6-2 dB out. Without
+    a known length, 180 s from 5:00.
+    Reference points: EBU R128 broadcast is -23, streaming around -16, a cinema mix
+    near -27.
     """
     if not FFMPEG or not path or not os.path.exists(path):
         return None
-    where = ["-ss", "300"]
-    cmd = [FFMPEG, "-nostdin", "-hide_banner"] + where + [
-        "-t", str(int(seconds)), "-i", path]
-    if index is not None:
-        cmd += ["-map", "0:a:%d" % int(index)]
+    track = "%d:a:%d" % (0, int(index or 0))
+    cmd = [FFMPEG, "-nostdin", "-hide_banner"]
+    if length and float(length) >= 600:
+        each = max(10, int(seconds) // len(SPREAD))
+        for n, at in enumerate(SPREAD):
+            cmd += ["-ss", "%.1f" % (float(length) * at), "-t", str(each), "-i", path]
+        cmd += ["-filter_complex",
+                "".join("[%d:a:%d]" % (n, int(index or 0)) for n in range(len(SPREAD))) +
+                "concat=n=%d:v=0:a=1,ebur128=framelog=quiet" % len(SPREAD),
+                "-f", "null", "-"]
     else:
-        cmd += ["-map", "0:a:0"]
-    cmd += ["-af", "ebur128=framelog=quiet", "-f", "null", "-"]
+        cmd += ["-ss", "300", "-t", "180", "-i", path, "-map", track,
+                "-af", "ebur128=framelog=quiet", "-f", "null", "-"]
     try:
         done = subprocess.run(cmd, stdout=subprocess.DEVNULL,
                               stderr=subprocess.PIPE, timeout=180,
@@ -193,6 +205,60 @@ def loudness(path, index=None, seconds=180):
         return float(found[-1])
     except ValueError:
         return None
+
+
+def dialnorm(path, index=None):
+    """The dialogue level an AC-3 or E-AC-3 track declares, in dB (-31 to -1), or None.
+
+    A receiver decoding the track itself turns it down by 31 + this; a decoder in the
+    player, as the loudness measurement uses, does not."""
+    if not FFMPEG or not path or not os.path.exists(path):
+        return None
+    try:
+        done = subprocess.run(
+            [FFMPEG, "-nostdin", "-hide_banner", "-ss", "60", "-i", path,
+             "-map", "0:a:%d" % int(index or 0), "-c", "copy", "-t", "0.5",
+             "-f", "data", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
+            creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    raw = done.stdout or b""
+    at = raw.find(b"\x0b\x77")
+    if at < 0 or len(raw) < at + 12:
+        return None
+    bits, left = int.from_bytes(raw[at:at + 12], "big"), 96
+
+    def take(k):
+        nonlocal left
+        left -= k
+        return (bits >> left) & ((1 << k) - 1)
+
+    take(16)
+    bsid = (bits >> (96 - 16 - 24 - 5)) & 0x1f
+    if bsid <= 10:                      # AC-3
+        take(16), take(8)
+        take(5), take(3)
+        acmod = take(3)
+        if (acmod & 1) and acmod != 1:
+            take(2)
+        if acmod & 4:
+            take(2)
+        if acmod == 2:
+            take(2)
+        take(1)
+        value = take(5)
+    elif bsid == 16:                    # E-AC-3
+        take(2), take(3), take(11)
+        if take(2) == 3:
+            take(2)
+        else:
+            take(2)
+        take(3), take(1), take(5)
+        value = take(5)
+    else:
+        return None
+    return -(value or 31)
 
 
 def rescan():
@@ -288,6 +354,19 @@ class Stream:
         lines = [ln.strip() for ln in said.splitlines() if ln.strip()]
         # the first complaint is the cause; the ones after it are its consequences
         return lines[0][:200] if lines else ""
+
+    def speeds(self, many=3):
+        """The encoder's last few speeds, as it reported them: 1.0 is the picture's own
+        pace, and under it the viewer's buffer is being eaten."""
+        try:
+            self.log.flush()
+            with open(self.log.name, "rb") as f:
+                f.seek(max(0, os.path.getsize(self.log.name) - 4000))
+                said = f.read().decode("utf-8", "replace")
+        except Exception:
+            return []
+        import re as _re
+        return [float(x) for x in _re.findall(r"speed=\s*([0-9.]+)x", said)][-many:]
 
     def stop(self):
         try:
@@ -406,7 +485,10 @@ class Engine:
                 ENCODER["scale"], ("-2:%d:" % height) if smaller else "")
         else:
             scale = ("scale=-2:%d,format=yuv420p" % height) if smaller else "format=yuv420p"
-        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin"]
+        # errors only, and its speed every five seconds: a stream that stops with a
+        # clean log still says whether it had fallen behind the picture first
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-stats", "-stats_period", "5",
+               "-nostdin"]
         # Burning a bitmap subtitle (PGS/VobSub) needs the picture in system memory for
         # the overlay filter, but the decode can still happen on the GPU: pull the frames
         # down as p010 (hwdownload rejects nv12 for 10-bit sources, which is most of this

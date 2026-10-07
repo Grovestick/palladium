@@ -151,27 +151,12 @@ fun ChatPanel(scope: CoroutineScope, onClose: () -> Unit) {
                     }
                 }
 
-                // A plain field: Compose's own, so a television's on-screen keyboard
-                // opens on it and a phone's does too.
+                // The app's own keyboard on a television, as every box in it: Google TV
+                // otherwise sends the typing to a phone. A phone types in place.
                 Row(Modifier.padding(top = 10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Skin.Panel2)
-                            .border(1.dp, Skin.Line, RoundedCornerShape(8.dp))
-                            .padding(horizontal = 10.dp, vertical = 9.dp)) {
-                        if (line.isEmpty()) {
-                            Text("Say something", color = Skin.Dim, fontSize = 13.sp)
-                        }
-                        BasicTextField(
-                            value = line,
-                            onValueChange = { line = it.take(300) },
-                            singleLine = true,
-                            textStyle = TextStyle(color = Skin.Fg, fontSize = 13.sp),
-                            cursorBrush = SolidColor(Skin.Accent),
-                            modifier = Modifier.fillMaxWidth().focusRequester(write))
-                    }
+                    TextBox(line, "Say something",
+                            Modifier.weight(1f).focusRequester(write)) { line = it.take(300) }
                     Spacer(Modifier.width(8.dp))
                     Pill(if (sending) "…" else "Send", primary = true) {
                         val text = line.trim()

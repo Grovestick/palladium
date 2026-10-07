@@ -1,5 +1,6 @@
 package se.palladium.tv
 
+import kotlinx.coroutines.launch
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -185,7 +186,23 @@ object Servers {
         val list = all(ctx)
         if (list.isEmpty()) return null
         val want = prefs(ctx).getString("current", "") ?: ""
-        return withKey(list, list.firstOrNull { it.base == want } ?: list.first())
+        val row = Route.chosen(list, want) ?: return null
+        if (want.isNotEmpty() && row.base != want) {
+            // written down again, so the choice stays where this put it
+            prefs(ctx).edit().putString("current", row.base).apply()
+            note("chosen: " + hostOf(want) + " is no row; now " + row.name + "@" + hostOf(row.base))
+        }
+        return withKey(list, row)
+    }
+
+    /** A change of the open server, in the log and to the server: which row an app
+     *  away from the house opens on cannot be seen from the house. */
+    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+    private fun note(what: String) {
+        android.util.Log.i("Palladium", what)
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { Api.trace(what) }
+        }
     }
 
     /**
@@ -236,7 +253,13 @@ object Servers {
     }
 
     private fun using(ctx: Context, s: Server) {
+        val was = prefs(ctx).getString("current", "") ?: ""
         prefs(ctx).edit().putString("current", s.base).apply()
+        if (was != s.base) {
+            val by = Throwable().stackTrace.drop(2).take(3).joinToString(" < ") {
+                it.className.substringAfterLast('.') + "." + it.methodName }
+            note("chosen: " + s.name + "@" + hostOf(s.base) + " (was " + hostOf(was) + ") by " + by)
+        }
         // Opening a server shows it. The machine that keeps copies is added hidden,
         // so its shelf does not stand beside the same films from the server it
         // copies - but switching to it and finding nothing there is not hiding, it
@@ -249,11 +272,12 @@ object Servers {
         // server instead and drew its library under the other one's name.
         val kept = s.copy(on = true)
         val had = all(ctx)
-        val list = if (had.any { it.base == kept.base || it.base == kept.outside }) {
-            had.map { if (it.base == kept.base || it.base == kept.outside) kept else it }
-        } else {
-            had + kept
-        }
+        // never over another machine's row: the second address can be wrong, and a row
+        // with another id that lives there is that machine, not this one
+        val same = { it: Server -> (it.base == kept.base || it.base == kept.outside) &&
+            (it.id.isEmpty() || kept.id.isEmpty() || it.id == kept.id) }
+        val list = if (had.any(same)) had.map { if (same(it)) kept else it }
+                   else had + kept
         save(ctx, list)
         Api.use(kept)
     }
@@ -279,6 +303,20 @@ object Servers {
         // was off - kept it for ever. The list then stood there calling the cache
         // by the main server's name, and every screen believed it.
         val callIt = named.ifEmpty { had.name }
+        // Filed away from home under the bare address, and the machine now names itself
+        // from outside: the name is the way in, since the provider changes the address.
+        // The address is kept as the other way in.
+        val out = outside.trimEnd('/')
+        val bare = { u: String -> Regex("""^\d+\.\d+\.\d+\.\d+(:\d+)?$""").matches(hostOf(u)) }
+        if (!athome(at) && bare(at) && out.isNotEmpty() && !bare(out) && !athome(out) &&
+            out != at) {
+            val moved = had.copy(base = out, outside = at, name = callIt)
+            save(ctx, list.map { if (it.base == had.base) moved else it })
+            val cur = prefs(ctx).getString("current", "") ?: ""
+            if (cur.trimEnd('/') == at) prefs(ctx).edit().putString("current", out).apply()
+            if (Api.base.trimEnd('/') == at) Api.use(withKey(all(ctx), moved))
+            return
+        }
         if (had.outside.trimEnd('/') == other && callIt == had.name) return
         save(ctx, list.map {
             if (it.base == had.base)
@@ -384,9 +422,49 @@ object Servers {
             .map { it.trimEnd('/') }
             .firstOrNull { it.isNotEmpty() && athome(it) }
         if (home != null && itselfAt(s, home)) return home
-        if (Api.answering(s.base, s.token)) return s.base
-        if (s.outside.isNotEmpty() && Api.answering(s.outside, s.token)) return s.outside
+        // and only an address that answers as this machine: a row that had the
+        // cache's address written on it opened the cache, and going home went nowhere
+        if (itselfAt(s, s.base.trimEnd('/'))) return s.base
+        if (s.outside.isNotEmpty() && itselfAt(s, s.outside.trimEnd('/'))) return s.outside
         return s.base
+    }
+
+    /** Whether the machine answering at that address is this row's, by its id. */
+    suspend fun isItself(s: Server, where: String): Boolean = itselfAt(s, where)
+
+    /**
+     * Put back rows that carry another machine's address.
+     *
+     * A reply from the cache filed under the main server's row, while the app moved
+     * between them, gave that row the cache's address: the row then opened the cache,
+     * read as already open in the list and could not be chosen. Each address of a row
+     * with an id is asked who answers there; one that answers as another machine is
+     * taken off the row, and a row left on the wrong address moves to its right one.
+     */
+    suspend fun healDoors(ctx: Context) {
+        val list = all(ctx)
+        var changed = false
+        val fixed = list.map { r ->
+            if (r.id.isEmpty()) return@map r
+            val b = r.base.trimEnd('/')
+            val o = r.outside.trimEnd('/')
+            val atBase = hello(b, r.token)?.optString("serverId").orEmpty()
+            val atOut = if (o.isEmpty()) "" else
+                hello(o, r.token)?.optString("serverId").orEmpty()
+            val baseWrong = atBase.isNotEmpty() && atBase != r.id
+            val outWrong = atOut.isNotEmpty() && atOut != r.id
+            when {
+                baseWrong && atOut == r.id -> { changed = true; r.copy(base = o, outside = "") }
+                outWrong -> { changed = true; r.copy(outside = "") }
+                else -> r
+            }
+        }
+        if (!changed) return
+        save(ctx, fixed)
+        android.util.Log.i("Palladium", "server rows put back on their own addresses")
+        runCatching { Api.trace("rows healed: " + fixed.joinToString("; ") {
+            it.name + "@" + it.base + (if (it.outside.isEmpty()) "" else "|" + it.outside)
+        }) }
     }
 
     /**
@@ -529,20 +607,29 @@ object Servers {
             }
             else -> all(ctx).filter { it.base != cur.base && it.on }
         }
+        // what the background check knows: a server seen off is not asked, and when the
+        // one that is open is off, the machine keeping its copies stands in for it,
+        // hidden or not - asking only the server that was off drew an empty library
+        val curDown = Reach.upRow(cur) == false
+        val alive = others.filter { Reach.upRow(it) != false }
+        val standIns = if (!curDown) emptyList() else all(ctx).filter { r ->
+            r.base != cur.base && Reach.upRow(r) == true && Reach.keepsCopiesOf(r, cur) &&
+                alive.none { it.base == r.base }
+        }
         val out = ArrayList<Server>()
         val machines = HashSet<String>()
         // The server that is open always stands on its own shelves. Hiding it is a
         // state with no way out from inside the app: it goes on being named on the
         // bar and asked about settings and updates, while every shelf is built from
-        // whatever other machine is left - so the app said Maverick, updated from
-        // Maverick, and showed the cache's short library with none of its packs.
+        // whatever other machine is left - so the app named the main server, updated from
+        // it, and showed the cache's short library with none of its packs.
         // Hiding is for the *other* machines, which is what it was ever for.
-        val head = listOf(cur)
+        val head = if (curDown && (alive + standIns).isNotEmpty()) emptyList() else listOf(cur)
         // The same film on two machines is one card, and the card that survives is
         // the first one seen - so the order is how quickly each answered when it was
         // last asked. A copy in the cupboard beats the same film from a server two
         // hundred milliseconds away, whichever of them happens to be open.
-        val order = (head + others).sortedBy { Api.paceOf(it.base) }
+        val order = (head + alive + standIns).sortedBy { Api.paceOf(it.base) }
         order.forEach { srv ->
             // an address not yet identified counts as its own machine: better to ask
             // twice once than to hide a server that is genuinely somebody else's
@@ -554,11 +641,12 @@ object Servers {
         // round trip per shelf to a machine that is usually the slower of the two.
         // It stays in the list, it is still opened and switched to; it is simply not
         // asked twice for the same film.
-        val alsoHere = out.map { it.base.trimEnd('/') }.toSet()
+        // Known as a copy by its row or by what it told the background check it
+        // follows: a row that never had copyOf written on it was asked anyway, and the
+        // date it took a copy put an old film at the top of Recently added.
         val worth = out.filterNot { srv ->
-            srv.copyOf.isNotEmpty() && srv.base != cur.base &&
-                (srv.copyOf.trimEnd('/') in alsoHere ||
-                 out.any { it.outside.trimEnd('/') == srv.copyOf.trimEnd('/') })
+            srv.base != cur.base &&
+                out.any { other -> other !== srv && Reach.keepsCopiesOf(srv, other) }
         }
         return if (worth.isEmpty()) out else worth
     }
@@ -593,11 +681,7 @@ object Servers {
     suspend fun redeem(base: String, code: String): String? =
         withContext(Dispatchers.IO) {
             try {
-                val conn = URL("$base/i/${code.uppercase()}/setup")
-                    .openConnection() as HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.readTimeout = 8000
-                val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                val body = Net.text(Net.open("$base/i/${code.uppercase()}/setup", 5000, 8000))
                 JSONObject(body).optString("token").ifEmpty { null }
             } catch (e: Exception) {
                 null
@@ -632,11 +716,7 @@ object Servers {
     suspend fun answers(base: String): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                val conn = URL("$base/").openConnection() as HttpURLConnection
-                conn.connectTimeout = 4000
-                conn.readTimeout = 5000
-                conn.requestMethod = "GET"
-                conn.responseCode > 0
+                Net.open("$base/", 4000, 5000).responseCode > 0
             } catch (e: Exception) {
                 false
             }
@@ -669,12 +749,11 @@ object Servers {
     /** What /config says, or null if the address did not answer. */
     private suspend fun hello(base: String, token: String): JSONObject? =
         withContext(Dispatchers.IO) {
+            // a house address off the house network is refused at once by Net.open:
+            // healing the rows waited five seconds on each one away from home
             try {
                 val sep = if (token.isEmpty()) "" else "?t=$token"
-                val conn = URL("$base/config$sep").openConnection() as HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.readTimeout = 8000
-                val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                val body = Net.text(Net.open("$base/config$sep", 5000, 8000, token))
                 JSONObject(body)
             } catch (e: Exception) {
                 null

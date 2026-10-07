@@ -167,8 +167,11 @@ fun SubtitlePanel(
                 }
                 val showing = tracks.firstOrNull { it.index == chosen }
                 val nameOf: (SubTrack) -> String = { track ->
-                    // language first: "Forced" alone does not say which language
-                    track.shown()
+                    // language first: "Forced" alone does not say which language; and
+                    // for a fetched one, how many had downloaded it
+                    track.shown() +
+                        (if (track.downloads > 0) "  \u00b7  " + track.downloads +
+                             " downloads" else "")
                 }
                 // The tick is drawn separately and in its own green: the name is
                 // coloured for how the track reaches the screen, and a tick that took
@@ -188,8 +191,12 @@ fun SubtitlePanel(
                     }
                 }
                 // colour says how it reaches the screen; the key explains the colours
+                // green for one cut for this very release, which is the one in time
+                // and green with its tick once the subtitle check has measured it
+                // against the speech and found it fits
                 val kindOf: (SubTrack) -> Color = { track ->
-                    if (bitmap.any { it.index == track.index }) BurnKind else TextKind
+                    if (track.match || track.confirmed) Verified
+                    else if (bitmap.any { it.index == track.index }) BurnKind else TextKind
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Show", color = Skin.Dim, fontSize = 13.sp,

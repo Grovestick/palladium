@@ -413,11 +413,7 @@ class TwoWays(
      */
     private fun answers(url: String): Boolean = runCatching {
         val at = java.net.URL(url)
-        val conn = (java.net.URL(at.protocol + "://" + at.authority + "/app/version")
-            .openConnection() as java.net.HttpURLConnection)
-        conn.connectTimeout = 1_500
-        conn.readTimeout = 1_500
-        conn.requestMethod = "GET"
+        val conn = Net.open(at.protocol + "://" + at.authority + "/app/version", 1_500, 1_500)
         try {
             conn.responseCode in 200..499     // answering at all is the question
         } finally {

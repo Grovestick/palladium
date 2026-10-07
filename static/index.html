@@ -38,6 +38,10 @@
   <google-cast-launcher id="castbtn" title="Cast"></google-cast-launcher>
 </header>
 
+<!-- what is coming in from the tracker, on every page rather than only on the film
+     it was started from: a download outlives the page that asked for it -->
+<div id="fetching" class="fetching hidden"></div>
+
 <main id="main"></main>
 
 <div id="player" class="hidden">
@@ -93,15 +97,15 @@
 </div>
 
 <div id="copynote" class="hidden"></div>
-<div id="stale" class="hidden">This tab is running an old version — <button onclick="location.reload(true)">reload</button></div>
+<div id="stale" class="hidden">This tab is running an old version — <button onclick="window.reloadHere ? reloadHere() : location.reload()">reload</button></div>
 <div id="toast"></div>
 
 <script src="dash.all.min.js"></script>
 <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 <script src="tizen.js"></script>
 <script src="setup.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=0.18.192"></script>
 <script src="controls.js"></script>
-<script src="settings.js"></script>
+<script src="settings.js?v=0.18.192"></script>
 </body>
 </html>

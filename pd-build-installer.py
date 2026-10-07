@@ -37,7 +37,10 @@ DIST = os.path.join(OUT, "Palladium")
 #: pd_subs_make.py is a script rather than a module: it is run by whichever Python
 #: on the machine has the speech model, never by the compiled server itself.
 CARRIED = ["static", "changes.json", "config.example.json", "library.example.json",
-           "pd_subs_make.py"]
+           "pd_subs_make.py", "pd_credits_make.py",
+           # the certificate chain, because the Windows store on a machine nobody
+           # browses on is too thin for Python to finish one
+           "cacert.pem"]
 
 def hand_over(made):
     """Put the installer where a running server can serve it at /server.
@@ -159,7 +162,9 @@ def compile_one(script, name, console):
            "--include-module=pd_traffic", "--include-module=pd_built",
            "--include-module=pd_faults", "--include-module=pd_skins",
            "--include-module=pd_ai_subs", "--include-module=pd_tray",
-           "--include-module=pd_torrents", "--include-module=pd_machine"]
+           "--include-module=pd_torrents", "--include-module=pd_machine", "--include-module=pd_receiver",
+           "--include-module=pd_credits", "--include-module=pd_apart",
+           "--include-module=pd_holidays", "--include-module=pd_leads"]
     if not console:
         cmd.append("--windows-console-mode=disable")
     cmd.append(os.path.join(HERE, script))

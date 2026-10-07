@@ -1,5 +1,2683 @@
 [
   {
+    "version": "0.18.464",
+    "when": "2026-10-07",
+    "title": "Receiver volume back down on leaving the player",
+    "items": [
+      "App: Home pressed during a passed-through film no longer raises the receiver again; the last progress report re-sent the raise after the lowering.",
+      "Server: a lowering the receiver does not answer is retried every 5 s, 6 times, to the level fixed at the first try; the raise was forgotten and the volume stayed up."
+    ]
+  },
+  {
+    "version": "0.18.463",
+    "when": "2026-10-07",
+    "title": "Skip at start",
+    "items": [
+      "Skip at start: a programme, season or episode can be given seconds to begin past when started from the beginning; set under Settings, Library.",
+      "Settings can listen to a programme's episodes and suggest the seconds for each season that opens with the same sound.",
+      "Resuming keeps its place and 0:00 can still be seeked to; the copy server uses the main server's rules."
+    ]
+  },
+  {
+    "version": "0.18.462",
+    "when": "2026-10-07",
+    "title": "A season replaced by a pack, and subtitles gone through on asking",
+    "items": [
+      "An episode whose file has gone and that a pack carries is listed as the pack's, to fetch; it stood as held with nothing to play.",
+      "Subtitles: a programme's held episodes can be put on a list to be gone through in one language; they come first, and a recent try does not hold them back.",
+      "The subtitle check waits one minute between checks, and fifteen seconds while that list has anything on it; it waited two."
+    ]
+  },
+  {
+    "version": "0.18.461",
+    "when": "2026-10-07",
+    "title": "New releases kept through a catalogue that did not answer",
+    "items": [
+      "New releases: a film already on the list stays when the catalogue does not answer for it; eight left the shelf for a reading because eight lookups in a row failed.",
+      "The log says how many lookups failed at a reading."
+    ]
+  },
+  {
+    "version": "0.18.460",
+    "when": "2026-10-07",
+    "title": "New releases matched by their own name, and a restart waited out on the web",
+    "items": [
+      "New releases: a title is matched to the catalogue by its own name; three stood on the shelf under the poster of a well-known older film whose name only began or ended the same.",
+      "Web: the page waits half a minute for its own server before using the copy, asking every two seconds; it went to the copy a second into every restart and came straight back."
+    ]
+  },
+  {
+    "version": "0.18.459",
+    "when": "2026-10-07",
+    "title": "The web page changes what a press changed, and no more",
+    "items": [
+      "Web: marking a film watched or not changes its play button; the whole page was drawn again for it.",
+      "Web: marking a season, an episode or a watchlist star repaints the rows where they stand; the list was emptied and fetched again.",
+      "Web: an episode's row no longer offers to resume a place its mark has forgotten.",
+      "Web: a favorite on the watchlist puts the heart on that card; the whole list was fetched and drawn again.",
+      "Web: a collection's Shuffle and Reset change their two buttons, not the page.",
+      "Web: a subtitle fetched on a film's page fills its menu again and leaves the page alone.",
+      "Web: Settings is redrawn out of sight and swapped in whole, with the scroll kept; every press blanked it and went back to the top.",
+      "Build: the web page's pieces are tested on a made-up page before anything is installed."
+    ]
+  },
+  {
+    "version": "0.18.458",
+    "when": "2026-10-07",
+    "title": "Monitor there when Settings opens",
+    "items": [
+      "App: whose key it is is learned as the app opens and kept between launches, so the Monitor row is there when Settings opens; it came up seconds later, behind nine other requests."
+    ]
+  },
+  {
+    "version": "0.18.457",
+    "when": "2026-10-07",
+    "title": "Monitor stays in the app's Settings",
+    "items": [
+      "App: the Monitor row is shown to the owner's key away from the house as well; it stood there until the server answered and then went."
+    ]
+  },
+  {
+    "version": "0.18.456",
+    "when": "2026-10-07",
+    "title": "The studio before the company beside it",
+    "items": [
+      "A film's studio stands ahead of the company that financed it or made it for the studio."
+    ]
+  },
+  {
+    "version": "0.18.455",
+    "when": "2026-10-07",
+    "title": "The studio a label belonged to",
+    "items": [
+      "A film's studios: a label is shown as the studio it was a name for, the well-known studios come first, and smaller companies fill what room is left."
+    ]
+  },
+  {
+    "version": "0.18.454",
+    "when": "2026-10-07",
+    "title": "Studios on film pages, and which streaming services are shown",
+    "items": [
+      "A film's page shows the studios behind it: each one's mark, or its name where it has none.",
+      "Settings, Library, Streaming services: a country, and which of its services a new release's page shows. None lit is all of them.",
+      "The JustWatch label after the services is gone."
+    ]
+  },
+  {
+    "version": "0.18.453",
+    "when": "2026-10-07",
+    "title": "Where to watch, the most widespread first",
+    "items": [
+      "A new release's services are listed most widespread first; one streaming it in a single country stood ahead of those carrying it in thirty."
+    ]
+  },
+  {
+    "version": "0.18.452",
+    "when": "2026-10-07",
+    "title": "Where a new release can be watched",
+    "items": [
+      "A new release's page shows the marks of the services it can be watched on: subscriptions first, then the shops that rent or sell it."
+    ]
+  },
+  {
+    "version": "0.18.451",
+    "when": "2026-10-07",
+    "title": "A server's name that will not resolve",
+    "items": [
+      "App: every connection asks by the server's last known number when its name will not resolve - the update check, the build itself and the film, as the library already did.",
+      "App: a name that failed is not looked up again for a minute."
+    ]
+  },
+  {
+    "version": "0.18.450",
+    "when": "2026-10-07",
+    "title": "Downloads on the shelf, new releases by their at-home date",
+    "items": [
+      "A film being fetched from the tracker stands first on Recently added, with how far it has got on its poster.",
+      "Its poster says how far on the row of new releases and on its own page as well.",
+      "New releases take the date the source gives for coming to be watched at home: a film the catalogue had no such date for, or an old film new to streaming, is no longer left out.",
+      "Build: the library's shelves are tested on a copy before anything is installed."
+    ]
+  },
+  {
+    "version": "0.18.449",
+    "when": "2026-10-07",
+    "title": "An update check that says when nobody answered",
+    "items": [
+      "App: the check for a newer build asks every server twice; asked once each, one lost connection was reported as being up to date.",
+      "App: Settings says \"no server answered\" when none did, and the check's outcome is written to the server's log."
+    ]
+  },
+  {
+    "version": "0.18.448",
+    "when": "2026-10-07",
+    "title": "The update banner on coming back to the app",
+    "items": [
+      "App: a newer build is asked for whenever the app comes back to the front, at most every five minutes; it was asked for at launch only, so an app left open never saw one."
+    ]
+  },
+  {
+    "version": "0.18.447",
+    "when": "2026-10-07",
+    "title": "A seasonal row",
+    "items": [
+      "A seasonal row on the front page: Christmas, Halloween, New Year's Eve, Valentine's Day or Easter films, from the library and the packs, the best known first.",
+      "Switched on under Settings, Library, Seasonal row: one holiday by name, or by the calendar, where each holiday has its days. Off until chosen.",
+      "Build: the gate gives its copy a holiday and checks the row."
+    ]
+  },
+  {
+    "version": "0.18.446",
+    "when": "2026-10-07",
+    "title": "Main server first, faster season lists, new releases closer to the source",
+    "items": [
+      "App: requests that fail together count as one miss, and a request never gives the second; a waking phone no longer jumps to the copy and back.",
+      "App: at opening the main server is asked first; its copy is opened only once the main server is known to be off.",
+      "App: a server gets 1.7 s, not 0.7 s, to answer before the second look.",
+      "App: back in the app while on the copy, the main server is asked before any shelf is fetched.",
+      "The TODAY ribbon is light grey, not the accent colour.",
+      "The part-watched count is gone from posters; the tick for fully watched stays.",
+      "A series' season list answers in 0.1 s; it took up to 2.8 s.",
+      "New releases: a film the source has scored is no longer held back for having few votes in the catalogue.",
+      "Build: small rules are tested on their own before anything is installed."
+    ]
+  },
+  {
+    "version": "0.18.445",
+    "when": "2026-10-05",
+    "title": "The app opens on the server it was left on",
+    "items": [
+      "App: a saved server address that matches no row opens the main server, not whichever row is first in the list.",
+      "App: every change of the saved server is written to the server's log, with what made it."
+    ]
+  },
+  {
+    "version": "0.18.444",
+    "when": "2026-10-05",
+    "title": "Next episode wears its season's poster",
+    "items": [
+      "The card for an episode still to come wears its season's poster on Recently released and Continue watching.",
+      "Build: the gate reads the catalogue, so cards for episodes still to come are checked too."
+    ]
+  },
+  {
+    "version": "0.18.443",
+    "when": "2026-10-05",
+    "title": "Away from home: one missed connection no longer moves the app",
+    "items": [
+      "App: a server counts as down after two missed looks in a row, not one; the second look comes 0.7 s after the first.",
+      "App: outside addresses get at least 4 s to connect; the 1.2 s limit that followed any slow answer is gone.",
+      "App: a request that cannot connect waits for the next look, then goes to the same address or to the copy.",
+      "App: the check uses the server's last known address when its name does not resolve, and a lookup that hangs no longer stalls it.",
+      "App: each move between servers is written to the server's log.",
+      "Web: the same two-miss rule.",
+      "Recently released: episodes and series wear their season's poster.",
+      "Server: matching pack episodes to the catalogue failed on every pass; fixed.",
+      "Build: the server is run on a copy of the live state, with the shuffle rules and the app's routing tests, before anything is installed."
+    ]
+  },
+  {
+    "version": "0.18.442",
+    "when": "2026-10-05",
+    "title": "Shuffle Back and Next, tracker index kept safe",
+    "items": [
+      "Server: a shuffle holds each title under one key; an episode that had come in from a pack was in the round under the library's key and on the shelf under the pack's, so it was put into the order again at a random place on every press and Back and Next landed anywhere. The place stays on its title when repeats are taken out.",
+      "Server: the tracker index is never written over when its file could not be read, and a copy is kept each day for seven days, as the download queue's now is."
+    ]
+  },
+  {
+    "version": "0.18.441",
+    "when": "2026-10-05",
+    "title": "Download queue restored and made safe",
+    "items": [
+      "Server: the download queue's state was read before it knew where its file was, kept empty and saved over the real one at each start since 0.18.439; it is now read only once it knows, a file that cannot be read is never taken for an empty one, and a copy is kept each day for seven days.",
+      "Server: a pack's file counts as downloaded when it is whole on the disk - every piece in qBittorrent and the file at its full length - whatever the history says; checked every ten minutes and when one is asked for, so nothing already here is fetched again.",
+      "Server: each step of the download worker runs on its own and logs its failure; one failing step skipped every step after it, every round, and said nothing.",
+      "App and web: an upcoming episode whose air date is today wears a TODAY ribbon in place of Upcoming."
+    ]
+  },
+  {
+    "version": "0.18.440",
+    "when": "2026-10-05",
+    "title": "One way to open a connection",
+    "items": [
+      "App: every connection to a server is opened in one place, which refuses a house address off the house network at once and sends the app's name and the key; fourteen places did it each their own way.",
+      "Web: the background check and the server picker ask whether a server answers the same way, and the picker's lights read the check's answers.",
+      "Server: one settings reader and one list of the languages people read, where there were two of each.",
+      "Server: what each shuffle draws next that only a pack holds is fetched every ten minutes by the main server; it was asked only when the machine keeping copies asked for its list, at night and at its start."
+    ]
+  },
+  {
+    "version": "0.18.439",
+    "when": "2026-10-05",
+    "title": "Lists faster",
+    "items": [
+      "Server: files are indexed by episode; every episode in a join read the whole file table, and Continue watching took 0.65 s - now 0.02 s.",
+      "Server: the episodes after a finished one are found by bisection rather than by walking the whole series.",
+      "Server: a title's simplified name is worked out once and kept; every shelf on the collections page read the whole library again, and the page took 0.45 s - now 0.04 s.",
+      "Server: which files qBittorrent is still writing is read in the background at start; the first film page after a restart waited 5 s on 285 torrents, while the copy still waits for the answer."
+    ]
+  },
+  {
+    "version": "0.18.438",
+    "when": "2026-10-05",
+    "title": "Lists compressed, app settings trimmed",
+    "items": [
+      "Server: answers in JSON are gzipped for an app or browser that accepts it; the film list goes from 5.8 MB to 1.4 MB, seconds less on mobile data.",
+      "App: who may download, the biggest download, the tracker and which release is recommended are no longer in the app's Settings; they are the server's, set in its Settings page."
+    ]
+  },
+  {
+    "version": "0.18.437",
+    "when": "2026-10-05",
+    "title": "Owner from away, part by part",
+    "items": [
+      "Server and web: under Running this server from away, Chosen parts turns invitations, downloads, library, settings, the second machine and updates on one by one for the owner's key from outside the house; set from the house only.",
+      "App: the People button shows away from home when invitations are turned on for the owner's key."
+    ]
+  },
+  {
+    "version": "0.18.436",
+    "when": "2026-10-05",
+    "title": "No owner questions from a guest",
+    "items": [
+      "App: the invitation list is asked for only where the server takes this screen for its owner; from outside the house it was refused on every start.",
+      "App: a refused request is no longer reported to the server as slow; only one that could not connect or took over 2.5 s is.",
+      "App: the machine keeping copies is left out of the shelves while the main server is on them, known by what it told the background check it follows; the day it took a copy put an old film at the top of Recently added."
+    ]
+  },
+  {
+    "version": "0.18.435",
+    "when": "2026-10-05",
+    "title": "One check decides where the library is",
+    "items": [
+      "App: one background check asks every address of every server every 10 s and decides which server and which address the app uses; reads, writes, pictures, streams, update checks and reports all use its answer, and a request that cannot connect tells it and is retried once where it decided.",
+      "App: removed the separate fallback chains in reads, writes, the opening on the copy and the address memory, each of which waited on house addresses away from home.",
+      "App: opening on the cache goes home to the main server when it answers, decided by the check rather than by a probe of its own.",
+      "App: the update check asks the address each server answers on now, its outside one included; away from home it asked only house addresses.",
+      "Web: the background check asks both of the cache's addresses and the page moves to the one that answers, rather than the one guessed from the address the page was opened at."
+    ]
+  },
+  {
+    "version": "0.18.434",
+    "when": "2026-10-05",
+    "title": "Quick start away from home",
+    "items": [
+      "App: watchlist, favourites, settings and reports are written by the same route as reads; away from home each one waited 8 s on the house address first.",
+      "App: the server check answers before it sends its report; the report went to the house address and held every request up to 2.5 s for 8 s.",
+      "App: a house address off the house network is counted down at once by the check and by posters, instead of waited on for its connect time."
+    ]
+  },
+  {
+    "version": "0.18.433",
+    "when": "2026-10-05",
+    "title": "Loudness count",
+    "items": [
+      "Server: the loudness line counts measured and remaining files from the library; it counted measurements of files long gone and a work list read once, and said 1 to go with 4 left."
+    ]
+  },
+  {
+    "version": "0.18.432",
+    "when": "2026-10-04",
+    "title": "Subtitles off by language",
+    "items": [
+      "App and web: the first subtitle language has Off, and a film then starts without subtitles; the app had no Off, and the web's was saved as English.",
+      "App and web: the second choice has Off, nothing when the first language is missing, beside Any, whatever the film has.",
+      "Server: a viewer with subtitles off has none fetched ahead for them."
+    ]
+  },
+  {
+    "version": "0.18.431",
+    "when": "2026-10-04",
+    "title": "Downloads page, error reports",
+    "items": [
+      "Web: Settings > Downloads no longer lists the month's downloads by person; the list below already says who asked for each.",
+      "Server: the library settings file is written beside and swapped in; a read during a write threw and failed the request.",
+      "Server: a file taken back from the cache is looked for where it would be put; for a pack not in this machine's client the same files were fetched again every round and each filed as an error.",
+      "Web: a request given up on because the server is not answering is no longer filed as an error."
+    ]
+  },
+  {
+    "version": "0.18.430",
+    "when": "2026-10-04",
+    "title": "Install lit only under the remote",
+    "items": [
+      "App: the update bar's Install is yellow only while the remote is on it; it stayed lit after the remote moved to Later."
+    ]
+  },
+  {
+    "version": "0.18.429",
+    "when": "2026-10-04",
+    "title": "Install takes the remote",
+    "items": [
+      "App: the update bar keeps the remote on Install; the Home tab took it back as the page finished drawing.",
+      "App: Install no longer wears a white ring while resting; it looked focused when it was not."
+    ]
+  },
+  {
+    "version": "0.18.428",
+    "when": "2026-10-04",
+    "title": "Install on the first press",
+    "items": [
+      "App: Install opens a fresh Android installer; the press went to the installer left over from the last update and only closed it, so it took two."
+    ]
+  },
+  {
+    "version": "0.18.427",
+    "when": "2026-10-04",
+    "title": "Upgrade reads resolution off the picture",
+    "items": [
+      "Server: Upgrade judges a file's resolution by its picture; a 1920x800 film was called lower than 1080p, and a file whose name carries no resolution was called not 1080p."
+    ]
+  },
+  {
+    "version": "0.18.426",
+    "when": "2026-10-04",
+    "title": "Season posters on Continue watching",
+    "items": [
+      "Server: an episode on Continue watching, shuffled or not, shows its own season's poster."
+    ]
+  },
+  {
+    "version": "0.18.425",
+    "when": "2026-10-04",
+    "title": "Go to show from a shuffle card",
+    "items": [
+      "App: holding a shuffle card offers Go to show beside Go to collection, for the programme of the episode on it."
+    ]
+  },
+  {
+    "version": "0.18.424",
+    "when": "2026-10-04",
+    "title": "Install button focus",
+    "items": [
+      "App: the update bar's Install button takes the remote once downloaded and on return from the installer; it looked focused and the first press only focused it."
+    ]
+  },
+  {
+    "version": "0.18.423",
+    "when": "2026-10-04",
+    "title": "App series page",
+    "items": [
+      "App: a series page has no Play button; it stands on the season the series is up to, and that season's page on the episode.",
+      "App: a name under a poster that wraps to two lines no longer has a blank line's gap between them."
+    ]
+  },
+  {
+    "version": "0.18.422",
+    "when": "2026-10-04",
+    "title": "Web series page",
+    "items": [
+      "Web: a series page's large poster follows the chosen season.",
+      "Web: a series page opens on the season and episode it is up to, scrolled there; the separate Play button is gone."
+    ]
+  },
+  {
+    "version": "0.18.421",
+    "when": "2026-10-04",
+    "title": "Season posters, films apart by their article",
+    "items": [
+      "Server: a film whose name differs from another of the same year only by a leading The or A is filed as its own title; the two were folded into one.",
+      "App: an episode's number and name sit under its picture again; focusing the row scrolls them into view on a television.",
+      "Server and web: a season shows its own poster from TMDB, on its card, its page and its episodes; the series poster where it has none."
+    ]
+  },
+  {
+    "version": "0.18.420",
+    "when": "2026-10-04",
+    "title": "Episode and season names",
+    "items": [
+      "App: episode labels on a season's page and in collections use the episode's own name; they used the programme's, which is what a card's title holds.",
+      "App: season cards in a collection say Season and their number; they said the programme's name on every season.",
+      "Server: each episode a pack holds is offered once; two packs of one series without a chosen pack listed every episode twice. A season comes from the pack carrying most of it, the sharper picture on a tie, and an episode that pack lacks still comes from another."
+    ]
+  },
+  {
+    "version": "0.18.419",
+    "when": "2026-10-04",
+    "title": "Episode names on the picture",
+    "items": [
+      "App: on a season's page each episode's number and name are written across the foot of its picture; the line under the picture fell below the edge of a television's screen, and every episode wears the same season poster."
+    ]
+  },
+  {
+    "version": "0.18.418",
+    "when": "2026-10-04",
+    "title": "Play on a programme's page",
+    "items": [
+      "Server: /library/metadata/<programme>/nextUp names the episode Play starts: one left part-way, else the one after the last watched, else the first; specials left out.",
+      "App and web: a programme's page has Play - Resume SxxEyy with its place, Play SxxEyy for the next one, Play from S01E01 for one not started - and From start beside a resume.",
+      "App: an episode card in a collection carries the episode's name after its number; every episode wears the season's poster.",
+      "Server: a crash in native code writes every thread's stack to fault.log; the server fell over twice with an access violation and left no trace."
+    ]
+  },
+  {
+    "version": "0.18.417",
+    "when": "2026-10-04",
+    "title": "Web knows which servers answer",
+    "items": [
+      "Web: the page asks its own server and the machine keeping copies whether they answer, at load and every 10 s, and learns the copy's address from its server when it does not have it.",
+      "Web: a broken stream moves to the copy at once when the check has seen the server off, and is opened again only when the server answers; it was opened on the server that was off, twice, before anything moved.",
+      "Web: the shelves go straight to the copy while the server is seen off.",
+      "Web: a stream ending long before the film does is a broken stream, not the end of the episode; it rolled on to the next episode and the player was gone.",
+      "Web: the reopen count starts over only when the picture moves; the play event reset it, so the second try that moves to the copy never came.",
+      "Web: back on the main server for the next episode once it answers, and the page goes home when nothing is playing."
+    ]
+  },
+  {
+    "version": "0.18.416",
+    "when": "2026-10-04",
+    "title": "Web player comes back after a restart",
+    "items": [
+      "Web: a reopen that fails while the server is restarting is tried again every 6 s; the first attempt failed and nothing tried again, so the episode stopped for good.",
+      "Web: when the player itself is gone after a failed attempt, the episode is started again at its place, on the machine keeping copies after two misses.",
+      "Web: a pause of the viewer's own is not taken for a broken stream."
+    ]
+  },
+  {
+    "version": "0.18.415",
+    "when": "2026-10-04",
+    "title": "Server check before the library",
+    "items": [
+      "App: every address of every known server is asked who it is at start, every 10 s while the app is open, on a network change and after a failed connect; requests never wait on a server seen off.",
+      "App: with the main server off the library comes from the cache within seconds; it went through the main server's addresses with 8 s waits each, and the shelves asked only the server that was off.",
+      "App: back to the main server within about 10 s of it answering again, and the page and the server name redraw from it.",
+      "App: posters, streams, subtitles and progress use the address of the server that answers; posters stayed empty when only its other address did.",
+      "App: after a failed connect the main server is no longer tried again for the full timeout when the check has just seen it off."
+    ]
+  },
+  {
+    "version": "0.18.414",
+    "when": "2026-10-03",
+    "title": "Moving to the cache no longer crashes",
+    "items": [
+      "App: the player checked whether the main server was back on the main thread right after moving a transcode to the cache, and crashed; the check runs in the background.",
+      "App: another machine counts as holding the film only when it answers; the main server was listed while it was off."
+    ]
+  },
+  {
+    "version": "0.18.413",
+    "when": "2026-10-03",
+    "title": "Crash reports from away",
+    "items": [
+      "App: crash reports carry the key the way the server reads it; sent as X-Plex-Token every crash away from home was refused as having no key.",
+      "App: a crash report that does not get through is kept and sent again on the next start, up to five."
+    ]
+  },
+  {
+    "version": "0.18.412",
+    "when": "2026-10-03",
+    "title": "Receiver raise from the new measurement only",
+    "items": [
+      "Receiver: by loudness uses only the 20-sample measurement; a film measured the old way is measured when its passthrough starts and raised once that is done. One window at 5:00 read a film 8.8 dB quieter than it is and turned it up 13 dB.",
+      "Server: files measured the old way are measured again while something plays, from drives nobody is watching from.",
+      "App: the information line says the receiver is measuring the film, then the move it made.",
+      "App: a player restarting the same title (sound, subtitle, quality) leaves the receiver where it is; each restart turned it down and up again by the whole raise."
+    ]
+  },
+  {
+    "version": "0.18.411",
+    "when": "2026-10-03",
+    "title": "Receiver raise per episode",
+    "items": [
+      "Receiver: the raise is undone as soon as an episode ends; the next one starts at the volume set by hand and is raised when its own passthrough is seen. It used to carry over for 15 s into the next episode.",
+      "App: the player's information line shows the receiver's move for the film in dB and whether it is fixed steps or by loudness."
+    ]
+  },
+  {
+    "version": "0.18.410",
+    "when": "2026-10-03",
+    "title": "Receiver mode saves",
+    "items": [
+      "Server: the receiver setting saves the chosen mode; Fixed steps / By loudness was dropped on the way in."
+    ]
+  },
+  {
+    "version": "0.18.409",
+    "when": "2026-10-03",
+    "title": "Back to the main server after a restart",
+    "items": [
+      "App: the cache's reply to where its copy lives is asked of the server it is filed under; asked of whichever was open, it wrote the cache's address onto the main server's row during a restart.",
+      "App: a server row only opens, and is only moved to, an address that answers with that server's id; the main server's row opened the cache and going home looped on the cache.",
+      "App: rows carrying another server's address are put back on their own on the next opening; the main server could not be chosen in the server list.",
+      "App: switching servers never overwrites another server's row.",
+      "Server: a browser tab opens on the first start only; every update restart opened another one.",
+      "Installer: the server is asked over loopback to take its tray icon down and exit before files are replaced; the polite close never reached the icon and its path held a tab character, so every update left a dead tray icon.",
+      "Server: /app/quit from the machine itself takes the tray icon down and ends the server.",
+      "Self-update: asks the server to quit the same way and starts it again without opening a browser tab."
+    ]
+  },
+  {
+    "version": "0.18.408",
+    "when": "2026-10-03",
+    "title": "Receiver by loudness",
+    "items": [
+      "Server: loudness measured from twenty 15 s samples spread over 5-95 % of the running time, within 0.4 dB of the whole film; one window at 5:00 was up to 2 dB out. Files measured the old way are measured again.",
+      "Server: the dialnorm of AC-3 and E-AC-3 tracks is read and kept with the loudness.",
+      "Receiver: setting to raise by each film's measured loudness instead of fixed steps - target less the film's LUFS plus the receiver's dialnorm cut, +15 to -8 dB; fixed steps for a film not measured yet.",
+      "Receiver: a raise is kept per screen address; the app version in it made every update a new screen, and old raises were never lowered.",
+      "Receiver: a new film on the same screen takes over the raise instead of stacking a second one; raises older than 8 h are dropped.",
+      "Settings: the receiver status shows the move in dB per screen."
+    ]
+  },
+  {
+    "version": "0.18.407",
+    "when": "2026-10-03",
+    "title": "Watched episodes leave Continue watching",
+    "items": [
+      "Server: an episode counts as watched by the furthest point reached, not where it was left; an episode rewound after the end came back on Continue watching through the episode before it.",
+      "Server: a shuffle drawn from a pack marks its title finished when the episode is watched under its library key; the shuffle card kept offering it."
+    ]
+  },
+  {
+    "version": "0.18.406",
+    "when": "2026-10-03",
+    "title": "Subtitles: the group that fits is tried first",
+    "items": [
+      "Server: a subtitle correction worked out on the main server is used on the cache for the same subtitle, matched by its file name; the cache keeps its copies in another folder and played the subtitle uncorrected, 1.9 s early.",
+      "Server: subtitle candidates from the release group whose subtitles fitted other episodes of the series are tried first.",
+      "Server: OpenSubtitles login kept for 12 h and retried; a refused login read as missing credentials and marked episodes as having no fitting subtitle for 14 days.",
+      "App and web: a subtitle picked by hand starts without a correction and is measured against the sound at once."
+    ]
+  },
+  {
+    "version": "0.18.405",
+    "when": "2026-10-03",
+    "title": "One megabyte count everywhere",
+    "items": [
+      "Server and app: the player shows the server's count of what the viewing has taken - the number the panel shows - instead of its own, which began at a different moment.",
+      "Server: a viewing's count is kept through a pause of up to four hours; a pause of twenty minutes started it from nought and an episode finished well short of its file's size.",
+      "App: a film read off both machines adds both machines' counts."
+    ]
+  },
+  {
+    "version": "0.18.404",
+    "when": "2026-10-03",
+    "title": "Session megabytes survive a restart",
+    "items": [
+      "Server: what each viewing has taken is written down every half minute and read back after a restart, so an install no longer resets the megabytes the panel and the lists show to nought."
+    ]
+  },
+  {
+    "version": "0.18.403",
+    "when": "2026-10-03",
+    "title": "Only whole files are films",
+    "items": [
+      "Server: the library leaves out a file a torrent is still writing, and takes out one it already had, until it is whole; qBittorrent sizes a file in full before any of it arrives, so a film 2% in showed Play.",
+      "Server: unfinished is judged file by file across every torrent - a pack that reads finished still holds films switched off part way - and a file one torrent has whole counts as whole.",
+      "Server: a download that has just finished goes onto the shelf at once rather than after the next look at qBittorrent.",
+      "Server: a film's own subtitle is answered within eight seconds - the first stretch if it is read by then, otherwise an empty partial answer the player asks again after - and the read carries on behind. A request was held on the whole read of a busy disk and the subtitles stayed off for up to fifteen minutes.",
+      "App: the film's own text tracks are never drawn by the player - with Subtitles off, the track a file marked default came up in black boxes."
+    ]
+  },
+  {
+    "version": "0.18.402",
+    "when": "2026-10-03",
+    "title": "Unfinished files are no version",
+    "items": [
+      "Server: a file qBittorrent has not finished - downloading, or switched off part way - is no longer listed as a version of its film or played; it has its full size on disk and stopped where the pieces did.",
+      "Server: the same files are kept off the cache's list, including ones switched off part way; qBittorrent is read in the background every 30 s.",
+      "Server: a film of a pack switched on in qBittorrent by hand is taken in as the owner's download instead of being switched off again.",
+      "Web: front-page rows are ten across only where ten posters can each be 150 px; a narrower window shows as many full-size posters as fit.",
+      "Server: what is switched on or off by hand in qBittorrent stands - a finished film switched off stays off, and switched on again it is kept on without a second download."
+    ]
+  },
+  {
+    "version": "0.18.401",
+    "when": "2026-10-03",
+    "title": "Downloads finish before they are copied",
+    "items": [
+      "Server: a file qBittorrent is still downloading is left off the cache's list until it is complete; a half-written file was being copied under its final name."
+    ]
+  },
+  {
+    "version": "0.18.400",
+    "when": "2026-10-03",
+    "title": "Seasons with their own year",
+    "items": [
+      "Server, app and web: a season says the year it first aired, on its page, on the programme's list and on a collection, instead of the programme's first year.",
+      "Server: a season's episode count includes the episodes a pack can give, which its page already lists with the Download ribbon."
+    ]
+  },
+  {
+    "version": "0.18.399",
+    "when": "2026-10-03",
+    "title": "Collections in order, no false moves to the cache",
+    "items": [
+      "App and web: a programme's seasons and episodes on a collection stay in their own order whatever the sort; season cards on the app say which season they are. Newest first had run them 9 to 1.",
+      "Server: a collection's tick for a programme counts every episode, the pack's too; holding the programme no longer reads as all of it.",
+      "Server: a shuffle on the main server draws pack episodes again and fetches them; the cache draws only what it holds.",
+      "App: a film moves to the cache only when the main server does not answer. A long buffer, a slow device, a dropped stream after a pause or a slow answer under load opens it again on the main server instead.",
+      "App: a slow answer is not a server gone - only a connection that cannot be made moves the menus to the cache, and a request is never sent twice to two machines.",
+      "App: opening the app on the cache goes to the main server even when the cache was never named as its copy."
+    ]
+  },
+  {
+    "version": "0.18.398",
+    "when": "2026-10-03",
+    "title": "Remote keyboard everywhere",
+    "items": [
+      "Server: putting a whole series or a season on a collection takes the episodes only a pack holds as well, and they read as their seasons on it.",
+      "App: the chat line uses the app's own remote keyboard on a television, like every other box; nothing is typed on a phone.",
+      "App: Settings has a Keyboard choice on a television - On screen (the default) or Phone - kept per device."
+    ]
+  },
+  {
+    "version": "0.18.396",
+    "when": "2026-10-03",
+    "title": "Season range shown in the editor",
+    "items": [
+      "Server and web: editing a collection limited to a range of seasons shows the seasons outside the range in red."
+    ]
+  },
+  {
+    "version": "0.18.395",
+    "when": "2026-10-03",
+    "title": "Whole subtitles only, named collections",
+    "items": [
+      "Server: a subtitle track read out of a film is kept only when ffmpeg finished and the line count matches the container's; a cut-short read had been kept as the whole track.",
+      "App: naming a new collection uses the app's own remote keyboard, with the programme or title offered as one press; Make it with nothing typed takes it.",
+      "App: the collection picker on a season or an episode chooses the whole series, the season or the episode; ticking starts on the page's own, a new collection on the whole series."
+    ]
+  },
+  {
+    "version": "0.18.394",
+    "when": "2026-10-03",
+    "title": "Web player fixes",
+    "items": [
+      "Web: a seek, a subtitle or soundtrack change keeps the picture size and Mbit chosen in the player.",
+      "Web: subtitles are placed by the top of their box, as Chrome draws them; a two-line subtitle no longer drops its second line below the window.",
+      "Web: the reload on the old-version banner comes back to the same screen - tab, Settings tab and sub-tab, title - and to the film playing where it was.",
+      "Web: the front page rows are ten across, posters sized to fit."
+    ]
+  },
+  {
+    "version": "0.18.393",
+    "when": "2026-10-03",
+    "title": "Recently released opens the episode",
+    "items": [
+      "Server: a series row carries its newest aired episode.",
+      "App: Recently released series shows that episode's SxxEyy on the poster, on a television on the focused one only, and pressing it opens its season on that episode.",
+      "App: pressing an episode on a home shelf opens its season scrolled to it.",
+      "Web: the quality picker is gone from the film page; quality is chosen in the player.",
+      "Web: the player's quality panel calls its rate row Mbit, with Original and plain numbers on one line."
+    ]
+  },
+  {
+    "version": "0.18.392",
+    "when": "2026-10-03",
+    "title": "Resolution by picture size",
+    "items": [
+      "Server, web and app: resolution labels count a wide-screen picture's width, so a 3840x1600 file reads 4K, not 1080p or 1600p."
+    ]
+  },
+  {
+    "version": "0.18.391",
+    "when": "2026-10-03",
+    "title": "Shuffle rewritten",
+    "items": [
+      "Server, app and web: shuffle rewritten as one fixed order and a place in it; Next and Back move the place, nothing goes back in the hat, new titles go in ahead of the next one.",
+      "Web: the network map shows one box per person and kind of app, the latest build only.",
+      "Web: the cache's network map says when it last heard from the main server instead of a date in 1970.",
+      "App: on a television the home posters are sized to the height under the tabs, so two whole shelves fit.",
+      "Web: a film on offer lists its pack releases once, in the menu of where to fetch it from; the separate row of release buttons is gone."
+    ]
+  },
+  {
+    "version": "0.18.390",
+    "when": "2026-10-03",
+    "title": "Cache search finds pack films",
+    "items": [
+      "Server: search on the cache finds the main server's pack films while it is up, and a download pressed there is fetched by the main server."
+    ]
+  },
+  {
+    "version": "0.18.389",
+    "when": "2026-10-03",
+    "title": "Search forgives a letter, packs open",
+    "items": [
+      "Server: a search that finds nothing tries titles a letter or two off - a name one letter short still finds the film.",
+      "Server and web: pressing a pack's name under Film packs lists every film in it, with whether it is here, on offer or downloading.",
+      "Web: the Look tab is called Search, and what the tracker holds and its session stand under Downloads; the Tracker tab is gone.",
+      "Server and web: two plain releases of one film on offer are told apart by release group instead of both reading Standard.",
+      "App: on a television the cuts, 4K and copy marks show on the focused poster only; ribbons stay."
+    ]
+  },
+  {
+    "version": "0.18.388",
+    "when": "2026-10-03",
+    "title": "Episode number on the chosen poster",
+    "items": [
+      "App: on a television the episode number on Home shows only on the poster the remote is on; on a phone it stays."
+    ]
+  },
+  {
+    "version": "0.18.387",
+    "when": "2026-10-03",
+    "title": "New films found by their number",
+    "items": [
+      "Server: the catalogue of new films keeps the IMDb numbers it has learned through a refresh, and learns 200 a pass rather than 20; most had none, so the tracker was searched by name.",
+      "Server: a film's version list looks up a missing IMDb number from TMDB; a film searched by its short name found other recordings, not the 25 releases under its full title."
+    ]
+  },
+  {
+    "version": "0.18.386",
+    "when": "2026-10-03",
+    "title": "Episode number on Home",
+    "items": [
+      "App: an episode's poster on Home carries its number, S02E03, small in the bottom right corner."
+    ]
+  },
+  {
+    "version": "0.18.385",
+    "when": "2026-10-03",
+    "title": "Each cut its own timeline",
+    "items": [
+      "Web and app: choosing a version three minutes longer or shorter starts it from the beginning; a place kept in one cut is not carried to another.",
+      "Web and app: a resume point past the end of the version that will play starts it over; the fan edition's 2:18 sent the 2:16 theatrical copy into a loop of empty streams in the browser.",
+      "Web and app: the timeline is the playing version's own length, not the film's first version's; the 2:16 theatrical copy was drawn on the 2:57 fan edition's timeline."
+    ]
+  },
+  {
+    "version": "0.18.384",
+    "when": "2026-10-02",
+    "title": "Two machines, the right file",
+    "items": [
+      "App: a film is split between the two machines by the file actually playing, compared with every version the other machine holds and read from its matching copy; the last title's file name, or the film's first version, kept a film on one machine."
+    ]
+  },
+  {
+    "version": "0.18.383",
+    "when": "2026-10-02",
+    "title": "Every version played is copied",
+    "items": [
+      "Server: the cache machine is given every version of a film played in the last 30 days, not only its first file - two versions of one film watched are two files kept, so either can be read off both machines.",
+      "App: a subtitle picked on one version of a film is not carried to another version that has no such track; the 4K copy loaded the fan edition's subtitle, timed for another cut."
+    ]
+  },
+  {
+    "version": "0.18.382",
+    "when": "2026-10-02",
+    "title": "Duplicates folder links, silent loudness readings",
+    "items": [
+      "Web: every copy under Duplicates shows where it is on disk; pressing the path opens its folder in Explorer on the server.",
+      "Server: a loudness reading of -70 LUFS - silence, from a file still downloading or a track it could not read - is not kept, and the 45 kept so far are measured again.",
+      "App: a soundtrack the player has not selected yet is looked at again after 2.5 s before the sound is re-encoded; the moment of choosing it read as a device that cannot decode Dolby and switched passthrough to stereo AAC."
+    ]
+  },
+  {
+    "version": "0.18.381",
+    "when": "2026-10-02",
+    "title": "Every file in Upgrade",
+    "items": [
+      "Server and web: Upgrade lists every file, not only the biggest of each cut; other copies of a cut whose chosen release is here are marked spare, with a Spare copies filter for clearing out."
+    ]
+  },
+  {
+    "version": "0.18.380",
+    "when": "2026-10-02",
+    "title": "Upgrade by cut",
+    "items": [
+      "Server and web: Upgrade reads each cut of a film on its own - a 720p theatrical copy is matched against theatrical releases - where it was hidden behind the extended copy beside it."
+    ]
+  },
+  {
+    "version": "0.18.379",
+    "when": "2026-10-02",
+    "title": "Missing episodes, versions coming in",
+    "items": [
+      "Server, web and app: an episode that has aired but is neither here nor on the tracker or a pack wears Missing, not Upcoming.",
+      "Server, web and app: a download says which version it is - \"4K WEB-DL HDR - MiON\" - beside its percentage, on the poster, the film's page and the download line."
+    ]
+  },
+  {
+    "version": "0.18.378",
+    "when": "2026-10-02",
+    "title": "Main server's card first",
+    "items": [
+      "App: a film both servers hold is shown with the main server's card, which has every version; on the copy machine the shelf offered only the versions it had copied.",
+      "App: a main server that does not connect is asked once more, with the full connect time, before the app moves to the copy; on the copy it looks for the main every 15 seconds, not every minute."
+    ]
+  },
+  {
+    "version": "0.18.377",
+    "when": "2026-10-02",
+    "title": "Shuffle order holds",
+    "items": [
+      "Server: an episode added to a shuffled shelf is put in at a random place of its own; the rest of the order stays as drawn and the next episode never changes."
+    ]
+  },
+  {
+    "version": "0.18.376",
+    "when": "2026-10-02",
+    "title": "Paused episodes named",
+    "items": [
+      "Server: a paused episode on Now playing is named with its programme and number, not only the episode's own name."
+    ]
+  },
+  {
+    "version": "0.18.375",
+    "when": "2026-10-02",
+    "title": "Copy progress",
+    "items": [
+      "Server: a copy to the cache machine counts from where in the file it began, with the file's size beside it - a restart no longer reads as 160 MB synced of a film half copied."
+    ]
+  },
+  {
+    "version": "0.18.374",
+    "when": "2026-10-02",
+    "title": "Session totals and case covers",
+    "items": [
+      "Server: what a viewing has taken is one total per person, title and screen, kept across reconnects, seeks and the house's two addresses for a quarter of an hour.",
+      "Server: a version's cover that is a whole case wrap is cut to its front.",
+      "Server: Recently added lists only films with a file; the cache machine put its places for films it has not copied - no file, no poster - at the top."
+    ]
+  },
+  {
+    "version": "0.18.373",
+    "when": "2026-10-02",
+    "title": "Cuts and subtitle language",
+    "items": [
+      "Server, web and app: a film held in more than one cut - by its name or a length three minutes apart - wears \"N cuts\" on its poster; copies that differ only in quality do not count.",
+      "Server, web and app: each version is labelled with its cut, and choosing one with its own cover beside it shows that cover on the film's page.",
+      "Server: EE reads as Extended and an alternative or fan edition as a cut of its own.",
+      "App: the subtitle a title opens with is the first language's unless the one picked last time was in it; the second language only when the first has none."
+    ]
+  },
+  {
+    "version": "0.18.372",
+    "when": "2026-10-02",
+    "title": "Sources per stream",
+    "items": [
+      "Server: /watching says how many machines are sending each stream - two when blocks came from the copy in the last half minute.",
+      "Server: reading the subtitles out of a big file is allowed a minute per GB; a 31 GB film ran past the fifteen-minute limit and never got its subtitles.",
+      "App: subtitles still being read out of the film are asked for over half an hour, not seven minutes, and the player says a minute in that they are still being read, so a downloaded subtitle can be picked instead."
+    ]
+  },
+  {
+    "version": "0.18.371",
+    "when": "2026-10-02",
+    "title": "Packs and series names",
+    "items": [
+      "Server: a series a pack spells differently (no full stop) is the library's own series - one row on the shelf and under Series, with the pack's episodes inside it.",
+      "Server: pack episodes in a loose folder (\"0 Extras\") or named only \"S03E07 Title\" take the programme from the folders above or the pack's name.",
+      "Server: an episode a pack offers opens its own versions - single-episode releases and the pack's copy, the copy in a chosen pack recommended - not whole-series packs.",
+      "Server: a followed series' newest episode comes from its chosen pack when that pack carries it.",
+      "Web: film packs have a tab of their own; series packs stand under Series."
+    ]
+  },
+  {
+    "version": "0.18.370",
+    "when": "2026-10-02",
+    "title": "Readable path in Upgrade",
+    "items": [
+      "Web: the file path in Upgrade is drawn in the same light blue as a pack pick; the dark link blue was unreadable.",
+      "Web: pressing the download line with more than one coming in opens the queue under Settings, Downloads.",
+      "Web: Settings, Downloads lists the queue in order - progress, speed, time left, who - with Move to top for a waiting pack film.",
+      "Web: the month of downloads by person moved from Settings, Downloads to Logs, Downloads.",
+      "Web: a Settings tab still loading when another was opened no longer draws its blocks under the new one.",
+      "Server: a film moved between library drives keeps its added date; a scan that caught the copy half-written dated it today and put it first in Recently added.",
+      "Server: faults in background work - the end-credits reader among them - go on Reports, Errors, once an hour per fault; they reached only the debug log.",
+      "Server and web: Choosing has a Series bitrate - episodes' own window, or the films' one - and a Close call: a release within 10, 25 or 50% of the pick's quality counts as level, and the most seeded wins."
+    ]
+  },
+  {
+    "version": "0.18.369",
+    "when": "2026-10-02",
+    "title": "File path in Upgrade",
+    "items": [
+      "Server and web: each film in Upgrade shows where its file is on disk; pressing the path opens the folder in Explorer on the server with the file selected.",
+      "Web: the who-downloaded-what list is gone from the Downloads tab; it is under Logs, Downloads.",
+      "App: every opening of the app - a start or back from the home screen - goes to the main server when it answers; before, only a fresh start did."
+    ]
+  },
+  {
+    "version": "0.18.368",
+    "when": "2026-10-02",
+    "title": "Open folder in Upgrade",
+    "items": [
+      "Server and web: each film in Upgrade has an Open folder button that opens its folder in Explorer on the server, file selected."
+    ]
+  },
+  {
+    "version": "0.18.367",
+    "when": "2026-10-02",
+    "title": "Receiver down when leaving the app",
+    "items": [
+      "App and server: leaving the player with Home or for another app turns the receiver back down, and it goes up again once the film is back on screen; coming back within fifteen seconds leaves it where it is."
+    ]
+  },
+  {
+    "version": "0.18.366",
+    "when": "2026-10-01",
+    "title": "Receiver steps as its display counts",
+    "items": [
+      "Server and web: the receiver's steps are counted as its display counts - +5 is 5.0 more, not 2.5.",
+      "Server: pressing next, or rolling on to the next episode, keeps the receiver where it is - the raise moves to the next one - instead of lowering it and raising it again.",
+      "Server: a raise is kept on disk, so a server restarted mid-film still turns the receiver down when the film ends.",
+      "App: Next starts the next episode where it was left, when it was started before and not finished; it began every one from the start.",
+      "App: Next keeps the place in the episode left - it stays on Continue watching - where it used to forget it; Previous unwatches the episode left instead.",
+      "Server and app: in a shuffle, Next keeps the place of the episode left - it was given up, and an episode pressed past never came round again - and opening the shuffle goes back to it; Previous clears the place of the episode stepped back from."
+    ]
+  },
+  {
+    "version": "0.18.365",
+    "when": "2026-10-01",
+    "title": "The receiver turned up for passthrough",
+    "items": [
+      "Server, app and web: Settings has a Receiver tab - whether the Yamaha receiver answers, its input and volume - and a setting that turns it up by a number of steps while the device set there (by its address: the Streamer in front of it) passes a film's Dolby sound through, and down by as many when the film ends, from wherever it then is."
+    ]
+  },
+  {
+    "version": "0.18.364",
+    "when": "2026-10-01",
+    "title": "Tracker downloads in the app's list",
+    "items": [
+      "Server: a release coming straight from the tracker is in the app's download line and queue, with its progress and who asked, and opens the film's page; only what came out of packs was there.",
+      "Server: a tracker release is matched to qBittorrent's copy with the file ending left off, so who asked for it and its progress reach the download logs and Now playing."
+    ]
+  },
+  {
+    "version": "0.18.363",
+    "when": "2026-10-01",
+    "title": "A series, not a film of the same name",
+    "items": [
+      "Server: a series' pack search leaves out releases whose year after the name is not the year the series began - House 1985, a film, beside House from 2004."
+    ]
+  },
+  {
+    "version": "0.18.362",
+    "when": "2026-10-01",
+    "title": "A series' own packs",
+    "items": [
+      "Server: a series' pack search keeps only releases named for that series - its name, or another it goes by, before the season or the year - so a one-word name no longer lists other series with that word in theirs.",
+      "Server: a file named UHD or 4K is read as 4K again on the Upgrade tab; the word boundaries in that check had been written as control characters, so only 2160p counted."
+    ]
+  },
+  {
+    "version": "0.18.361",
+    "when": "2026-10-01",
+    "title": "Other versions of an episode",
+    "items": [
+      "Server, app and web: an episode here can be swapped for another release from the tracker as a film can - in the app's Version menu, on the web under the episode's row.",
+      "Server: an upcoming episode that is out and on the tracker goes first on Continue watching.",
+      "Server: a series' pack search also asks for its complete run and the other names it goes by, so the series itself is found among everything else with the word in it.",
+      "App: the Monitor opens by the server's last known address when the network cannot resolve its name; it showed the web view's error picture."
+    ]
+  },
+  {
+    "version": "0.18.360",
+    "when": "2026-10-01",
+    "title": "No second copy of a new episode",
+    "items": [
+      "Server: a new episode taken by hand from the tracker counts as fetched while it downloads, so Download newest does not take a second release of it before the first has arrived."
+    ]
+  },
+  {
+    "version": "0.18.359",
+    "when": "2026-10-01",
+    "title": "Queue in queue order",
+    "items": [
+      "Server: downloads waiting their turn stand on Recently added in the order of the queue, the one downloading first; they were newest asked first, which drew the queue backwards.",
+      "Server and web: Now playing lists the downloads waiting their turn after the one coming in, each with how many are ahead of it.",
+      "App: a download of yours waiting behind others says Move to top on its page, and pressing it makes it the next to download."
+    ]
+  },
+  {
+    "version": "0.18.358",
+    "when": "2026-09-30",
+    "title": "Passthrough beside the sound",
+    "items": [
+      "App: sound handed to the amplifier as it is says passthrough beside its format in the player's line, and the loudness correction that cannot reach the speakers is no longer shown beside the LUFS."
+    ]
+  },
+  {
+    "version": "0.18.357",
+    "when": "2026-09-30",
+    "title": "Posters when a name will not resolve",
+    "items": [
+      "App: the address a server's name last resolved to is kept, and used for posters and requests when a network cannot resolve the name; on a guest wifi that failed the lookup half the time, the library loaded by IP and half the posters stayed blank."
+    ]
+  },
+  {
+    "version": "0.18.356",
+    "when": "2026-09-30",
+    "title": "Every poster on the cache",
+    "items": [
+      "Server: the machine keeping copies fetches a poster or backdrop it has no row for from the main server and keeps it; it lists the whole catalogue but held pictures only for what it keeps, and every other card was blank.",
+      "App: a poster that fails to load is asked for again, three times with a pause between; after switching servers some stayed blank until the app was restarted."
+    ]
+  },
+  {
+    "version": "0.18.355",
+    "when": "2026-09-30",
+    "title": "No waiting on the house address away from home",
+    "items": [
+      "App: a house address is skipped at once when the device is on another network - its own address is not in the same range - so the way in from outside is used straight away; on another wifi the library waited eight seconds for 192.168.0.181 on every shelf at start.",
+      "App: the notice, held open on purpose, is left out of the slow-request reports."
+    ]
+  },
+  {
+    "version": "0.18.354",
+    "when": "2026-09-29",
+    "title": "Screens go home from the copy",
+    "items": [
+      "App: when the app starts on the machine keeping copies while the main server answers, it moves to the main server, shows it and writes that down; after an update a television came back on the copy with the main server hidden and only the copy's films on screen. Only at start, and not while the main server asks screens to use the copy."
+    ]
+  },
+  {
+    "version": "0.18.353",
+    "when": "2026-09-29",
+    "title": "Release group in Choosing",
+    "items": [
+      "Server and web: Choosing has a Release group row - OFT, nikt0 and Other groups - each switched on or off and put in order like the other rows, and moved up or down among them.",
+      "Web: the Upgrade tab has a Group filter for the films an OFT or nikt0 encode is on offer for, on the tracker or in a pack."
+    ]
+  },
+  {
+    "version": "0.18.352",
+    "when": "2026-09-29",
+    "title": "Slow requests reported",
+    "items": [
+      "App: a request that takes over 2.5 s or fails is reported to the server with the address it went to, how long it took and why, so a slow library away from home can be traced."
+    ]
+  },
+  {
+    "version": "0.18.351",
+    "when": "2026-09-29",
+    "title": "Stopped torrents are not downloads",
+    "items": [
+      "Server: Now playing leaves out torrents that are stopped or paused in qBittorrent; a stopped pack showed as downloading."
+    ]
+  },
+  {
+    "version": "0.18.350",
+    "when": "2026-09-29",
+    "title": "Now playing shows everything the server does",
+    "items": [
+      "Server: the credits start is the first credits frame that the next keyframes agree with; one card that looked like credits, then film, then the scroll put the start 47 s early. Readings made by the picture are measured again.",
+      "Web: the Watch log lists viewings only; every download is under Log, Downloads.",
+      "Server and web: Now playing lists every download in progress, from qBittorrent itself - packs, the tracker and anything added by hand - with its speed, time left, who asked and why.",
+      "Server and web: Now playing lists every other piece of work the machines are on: a worker in the middle of a step, a library scan, a subtitle being written from the sound.",
+      "Web: the drawing shows downloads coming in on the line from outside, and the main server's box names the work it is on."
+    ]
+  },
+  {
+    "version": "0.18.349",
+    "when": "2026-09-29",
+    "title": "WAN box fits its names",
+    "items": [
+      "Web: the WAN box in Where it all goes is as wide as its longest address, and the boxes beside it move over; the name ran into the main server's box.",
+      "Server and web: the cache's box in Where it all goes shows its address in the house, from away too; from outside it showed the address used to reach it instead."
+    ]
+  },
+  {
+    "version": "0.18.348",
+    "when": "2026-09-29",
+    "title": "Now playing holds still",
+    "items": [
+      "App and web: Now playing keeps what it shows when an answer is missed or refused; it flicked between the streams and Nothing playing whenever a connection stumbled.",
+      "Web: Now playing away from home asks the cache by its outside address; its home address answered nothing from outside."
+    ]
+  },
+  {
+    "version": "0.18.347",
+    "when": "2026-09-29",
+    "title": "Library on somebody else's wifi",
+    "items": [
+      "App: on a wifi that is not the house's, a server's home address is given up on quickly and its outside address used and remembered until the network changes; each shelf waited for the home address to time out, and one server's shelves never tried its outside address.",
+      "Server and web: the owner's key away from home with Remote admin off may read Now playing, the drawing of the house and the logs; settings stay home-only."
+    ]
+  },
+  {
+    "version": "0.18.346",
+    "when": "2026-09-29",
+    "title": "Show more on films not here yet",
+    "items": [
+      "Web: a film not in the library has Show more, as a film here has: rating, runtime, genres, director and everybody in it.",
+      "Server, app and web: a new release not here yet carries its Rotten Tomatoes critics and audience scores, runtime, tagline and director, on its page and in Show more."
+    ]
+  },
+  {
+    "version": "0.18.345",
+    "when": "2026-09-29",
+    "title": "Why a download started",
+    "items": [
+      "Server and web: the download logs say where each download came from - a pack, the tracker's RSS feed or a tracker search - and why one nobody pressed for started: the next episode while one plays, episodes ahead, a shuffle, or the newest episode of a followed series."
+    ]
+  },
+  {
+    "version": "0.18.344",
+    "when": "2026-09-29",
+    "title": "Download band on missing episodes",
+    "items": [
+      "App and web: a missing episode the tracker has wears the Download band, like other things that can be downloaded, instead of On tracker.",
+      "Server and web: releases taken straight from the tracker, by hand or by themselves, are in Log - Downloads and the Watch log with their progress; only what came out of the packs was there."
+    ]
+  },
+  {
+    "version": "0.18.343",
+    "when": "2026-09-29",
+    "title": "Credits reading works again",
+    "items": [
+      "Server: the credits picture model is kept as plain files beside the server; read through the model cache's links it failed on every title for a day, and nothing was measured."
+    ]
+  },
+  {
+    "version": "0.18.342",
+    "when": "2026-09-29",
+    "title": "Missing episodes from the tracker",
+    "items": [
+      "Server: the Security tab no longer lists the house's own outside address.",
+      "Server: an episode whose air date is today says Airs today instead of Out, not here yet; the catalogue's date is the American evening, so it reaches the tracker in the night.",
+      "Server, app and web: an episode missing from a season that the tracker already has - before its air date too - is marked On tracker, and pressing it lists its releases to download, the recommended one green.",
+      "Server: opening a season with missing episodes asks the tracker for that season in the background.",
+      "Server: new episodes posted before their air date are added as links like any other, when the catalogue lists the episode."
+    ]
+  },
+  {
+    "version": "0.18.341",
+    "when": "2026-09-29",
+    "title": "Invite codes guarded",
+    "items": [
+      "Server: every invite-code address is limited to 20 wrong codes an hour per address, and codes stop for everyone for an hour after 100 wrong in an hour; the web and app-download paths had no limit.",
+      "Server: guessing is warned about under Reports - Errors, for the owner only, and Reports has a Security tab listing strangers refused in the last day.",
+      "Server: only guests have a code; the owner's, the cache's and the panel's keys no longer answer to one.",
+      "App: a server filed away from home under the bare address moves to its outside name once it names one, and keeps the address as the other way in."
+    ]
+  },
+  {
+    "version": "0.18.340",
+    "when": "2026-09-29",
+    "title": "Outside name instead of the address",
+    "items": [
+      "Server: a Name from outside setting (the router's DDNS name) is used in invite links and in the outside address the apps learn, instead of the bare address the provider changes."
+    ]
+  },
+  {
+    "version": "0.18.339",
+    "when": "2026-09-29",
+    "title": "Release build again",
+    "items": [
+      "App: shipped as a release build again; for the last week every device had a debug build, which starts about five times slower."
+    ]
+  },
+  {
+    "version": "0.18.338",
+    "when": "2026-09-28",
+    "title": "New episodes named at the scan",
+    "items": [
+      "Server: a new episode of a series already in the library gets its name and air date in the scan that finds it, not up to an hour later, so it shows on Recently released episodes straight away.",
+      "App: the home shelves and the Films, TV and Watchlist tabs keep asking for about 20 s before saying a server did not answer; with one machine off the other answered after the app had given up."
+    ]
+  },
+  {
+    "version": "0.18.337",
+    "when": "2026-09-28",
+    "title": "Credits reading waits for the picture",
+    "items": [
+      "Server: when the picture check fails, a title's end is read again later instead of being taken from the last spoken word alone."
+    ]
+  },
+  {
+    "version": "0.18.336",
+    "when": "2026-09-28",
+    "title": "Download subtitles opens again",
+    "items": [
+      "Web: Download subtitles in a title's subtitle menu opens its list; the menu closing shut the list the moment it opened.",
+      "App: on a tablet the server picker sits between the name and search instead of under the name."
+    ]
+  },
+  {
+    "version": "0.18.335",
+    "when": "2026-09-28",
+    "title": "Only the chosen one coloured",
+    "items": [
+      "Web: in a coloured menu the plain choices keep the ordinary text colour; the box's colour had spread to all of them.",
+      "Web: the Version menu's Download other version, and the list it opens, show for anybody the house lets download - the owner away from home included; they were hidden from every guest.",
+      "Web: the Version menu holds the files here to play and ends with Download other version; choosing it fills the same menu with every version the tracker and the packs carry and opens it again. One chosen there puts its Download button, size and free space beside the menu.",
+      "Web: each version to download says in words what its colour means - Recommended, In a pack here, On disk already - and a pack's file is named without its .mkv.",
+      "Web: subtitle settings and the player's Aa panel use the app's rows and words; the Face (font) choice, which the app has not, is gone."
+    ]
+  },
+  {
+    "version": "0.18.334",
+    "when": "2026-09-28",
+    "title": "Menus wear their choice's colour",
+    "items": [
+      "Web: a closed menu - versions to download, series packs, subtitles - shows the chosen one in its colour, green, blue, orange or red, before it is opened and after a choice; only the open list was coloured. The other choices keep the ordinary colour."
+    ]
+  },
+  {
+    "version": "0.18.333",
+    "when": "2026-09-28",
+    "title": "What a request does",
+    "items": [
+      "A title not in the library says what can be done: the tracker has it and Download fetches it, or there is nothing to download yet and a request closes by itself once there is; it said nothing is downloaded by asking and the owner decides.",
+      "Web: in Show more, the first actor can be pressed - it had become the Close button - and pressing any actor closes the window and shows their films."
+    ]
+  },
+  {
+    "version": "0.18.332",
+    "when": "2026-09-28",
+    "title": "Collections tab lit",
+    "items": [
+      "Web: pressing a shuffle's title opens its collection with the Collections tab lit; Home stayed lit."
+    ]
+  },
+  {
+    "version": "0.18.331",
+    "when": "2026-09-28",
+    "title": "Requests close themselves",
+    "items": [
+      "Requests: a film request closes itself once the film can be downloaded - on the tracker or in a pack - or has arrived, checked every quarter of an hour.",
+      "New releases: a film sharing its name with an older one reads its scores from its own year's page; one was dropped for the older film's 0%.",
+      "New releases: scores read off a film's page are read again once a week old; they were kept from the first reading for good."
+    ]
+  },
+  {
+    "version": "0.18.330",
+    "when": "2026-09-28",
+    "title": "New on the series and its season",
+    "items": [
+      "New: a series with an episode here that aired this past week wears New on its poster and on that season's card, as the episode does; in the app, where a series opens on its seasons, the mark was out of sight.",
+      "Recently released episodes: sorted by air date throughout, the upcoming ones among them by their own dates; they stood at the front in no order.",
+      "New: marked for six days from the air date, the air day the first, set under Settings - Library - New on posters; a weekly episode no longer keeps it into the day the next one airs.",
+      "New: a watched episode wears no New, and a season or series keeps it only while it holds a new episode not yet watched."
+    ]
+  },
+  {
+    "version": "0.18.329",
+    "when": "2026-09-28",
+    "title": "Download: All, When burned in, None",
+    "items": [
+      "Settings - Subtitles: the download choice reads All, When burned in and None, with what each downloads written under it."
+    ]
+  },
+  {
+    "version": "0.18.328",
+    "when": "2026-09-28",
+    "title": "No download over a track of its own",
+    "items": [
+      "Subtitles: nothing is downloaded for a language the film carries itself, text or picture track - neither by the subtitle check nor ahead of the next episode.",
+      "Settings - Subtitles - Downloading subtitles: what the film's own subtitles mean for downloading (never, only over pictures, anyway), whether the subtitle check downloads or only measures, and which languages are downloaded."
+    ]
+  },
+  {
+    "version": "0.18.327",
+    "when": "2026-09-27",
+    "title": "Subtitles survive a reconnect",
+    "items": [
+      "Web: a player that reconnects after the server restarts keeps its subtitle, sound and copy; it took them from the film page's menus and came back with subtitles off."
+    ]
+  },
+  {
+    "version": "0.18.326",
+    "when": "2026-09-27",
+    "title": "One phone, one screen",
+    "items": [
+      "Monitor: an app reaching the server from two addresses - at home and by the house's own outside address, as part of a split stream does - is one screen, with its lines on it; it was two screens the lines jumped between, and dropped whenever it came in by the outside address."
+    ]
+  },
+  {
+    "version": "0.18.325",
+    "when": "2026-09-27",
+    "title": "Garbled subtitle text mended",
+    "items": [
+      "Subtitles: text a release saved garbled - UTF-8 read as Windows-1252, a music note shown as a-hat and TM - is mended as it is served, from a track inside the film or a file beside it.",
+      "Search: punctuation does not matter - \"dont\" finds Don't, a hyphenated name is found run together or spaced - for the library, the packs and new releases alike.",
+      "Monitor: a split stream keeps both its lines rather than blinking between one and two; each line is held a minute after its last reading.",
+      "Monitor: a paused viewer keeps their lines, drawn still rather than flowing."
+    ]
+  },
+  {
+    "version": "0.18.324",
+    "when": "2026-09-27",
+    "title": "Credits start at the scroll",
+    "items": [
+      "Credits analyser: the credits start where the picture turns to rolling names, whatever is sung over them; the sound decides only when the picture finds no scroll. Every film measured the old way is measured again."
+    ]
+  },
+  {
+    "version": "0.18.323",
+    "when": "2026-09-27",
+    "title": "A minute before the credits",
+    "items": [
+      "Watched: a film counts as watched from a minute before its measured credits, and by the furthest point reached rather than where the player was last left."
+    ]
+  },
+  {
+    "version": "0.18.322",
+    "when": "2026-09-27",
+    "title": "Tracker tab redraws",
+    "items": [
+      "Settings: the Tracker tab's status line redraws; every redraw stopped on a note declared out of its reach, the error reported most often.",
+      "Settings: Extras has a tab of its own.",
+      "Settings: Library - Index shows how much is free on every drive the library and the downloads use.",
+      "Web: the list of versions to download has its Download button on its right and how much is free on the download drive beside it.",
+      "App: the list of versions to download says how much is free on the download drive.",
+      "Upgrade: changing anything under Choosing works the list out again at once; it kept judging by the old bitrate window for up to ten minutes.",
+      "Tracker: its list is walked as a copy and saved from a snapshot, so another thread adding a row no longer stops a page or a save."
+    ]
+  },
+  {
+    "version": "0.18.321",
+    "when": "2026-09-27",
+    "title": "Versions in one place",
+    "items": [
+      "App: every film has a Version button; its panel lists the files here to play and, below them, Download other version, which opens the tracker's list. Download progress and Cancel stay on a line under the button.",
+      "Web: the film page matches the app: the Version menu lists the files here and ends with Download other version, and the Subtitles menu ends with Download subtitles; the separate buttons are gone."
+    ]
+  },
+  {
+    "version": "0.18.320",
+    "when": "2026-09-27",
+    "title": "Worst first",
+    "items": [
+      "Upgrade: with a reason or Lower/Higher chosen, Furthest from Choosing puts the biggest miss on that first - how far outside the bitrate window, how far from the resolution set; Name sorts by name.",
+      "Downloads: every download is logged with who asked for it - films from the packs and releases taken straight from the tracker, including the automatic ones - and listed under Settings - Torrents - Downloads."
+    ]
+  },
+  {
+    "version": "0.18.319",
+    "when": "2026-09-27",
+    "title": "Upgrade filters",
+    "items": [
+      "Web: every subtitle menu is in the app's order - files beside the film first, then the viewer's own subtitle language, then full tracks before forced or described ones.",
+      "Subtitles: in the download list a subtitle already beside the film is yellow and says on disk.",
+      "Upgrade: a Quality row shows all films, only files lower than Choosing asks for, or only higher, with how many of each.",
+      "Upgrade: a Reason row filters by why a file is outside Choosing - resolution higher or lower, bitrate higher or lower, sound, release, encoding - with how many for each."
+    ]
+  },
+  {
+    "version": "0.18.318",
+    "when": "2026-09-27",
+    "title": "Whole subtitle names",
+    "items": [
+      "App: the subtitle download list shows each name whole, over more lines where it needs them; it was cut to one line."
+    ]
+  },
+  {
+    "version": "0.18.317",
+    "when": "2026-09-27",
+    "title": "Which cut",
+    "items": [
+      "Films: the cut a file is - Director's Cut, Extended, Theatrical, Unrated, a named cut such as a Ulysses or Legacy Cut, Remastered, IMAX - is read from its name and shown on the film page and on each file in the File list; the release group is never read as a cut."
+    ]
+  },
+  {
+    "version": "0.18.316",
+    "when": "2026-09-27",
+    "title": "Measured subtitles in green",
+    "items": [
+      "Subtitles: one the subtitle check measured against the speech and found to fit is green with a tick in the app's list and the web menus.",
+      "Subtitle check and credits analyser: what has just arrived goes first, newest first, then everything on anybody's watchlist, then what is being watched, then the rest of the library."
+    ]
+  },
+  {
+    "version": "0.18.315",
+    "when": "2026-09-27",
+    "title": "Subtitles inside the file carry over",
+    "items": [
+      "App: a subtitle chosen in the player is remembered for that title, as one chosen on its page was.",
+      "Extras are placed from Settings - Library - Extras only, which can now find any film by name and mark it as an extra; the film page no longer carries the control.",
+      "Series: an episode watched with a track inside its file hands the next episode the same kind of track from its own file, and nothing is downloaded; a track with no language on it read as no subtitle.",
+      "Subtitles: files beside a title are listed cut-for-this-release first, marked green, then verified, then last chosen, then by how many downloaded them; the app kept them in reverse name order.",
+      "Subtitles: the download list puts this release first, then orders by downloads; the download count is kept for each fetched file and shown beside it.",
+      "Subtitle check: after titles being watched and new films it goes through every title with a subtitle file beside it, measuring and never fetching.",
+      "Settings: each automatic job shows how many are done and how many are left."
+    ]
+  },
+  {
+    "version": "0.18.314",
+    "when": "2026-09-27",
+    "title": "Extras",
+    "items": [
+      "App: a new search typed while a person's films are open shows the new results; it went on showing the first person's films.",
+      "Settings: an automatic job that has not run since the server started says First check not run yet, with the time until it does.",
+      "Extras: featurettes, making-ofs and pilots are found by each scan beside the series or film they came with, and kept off the film shelves and search.",
+      "Series pages end with an Extras card, the series poster marked EXTRAS; a film with extras has an Extras row on its page.",
+      "Extras can be moved by hand from Settings - Library - Extras or from the extra's own page: to a title, to no title yet, or back among the films.",
+      "Library: a season told in one file joins its series, and a sound channel count such as 5.1 is no longer read as the episode number."
+    ]
+  },
+  {
+    "version": "0.18.313",
+    "when": "2026-09-27",
+    "title": "Tracker search order",
+    "items": [
+      "Upgrade: the download picker shows releases in their usual colours; every one was green.",
+      "Upgrade: the button that opens the picker says Choose other version.",
+      "Recently added films: every film in the download queue has a card at the front, not only the one coming in.",
+      "Search: one letter searches; exact titles come first, and series held as pack links are found.",
+      "Library: an episode file with a release group before the series name joins the series its folder names.",
+      "Settings: Automatic runs has a dot per job, green while it runs and red when it has stalled, with what it is doing; the download worker has a row of its own.",
+      "Film page: each file in the File list shows its resolution and Mbit/s.",
+      "Film page: Download other version sits at the end of the File row.",
+      "Look: tracker results whose name matches every word typed come first; a one-letter title was buried under releases sharing its year."
+    ]
+  },
+  {
+    "version": "0.18.312",
+    "when": "2026-09-27",
+    "title": "Home resets the shelves",
+    "items": [
+      "App: pressing Home while on Home puts every shelf back at its first card.",
+      "Recently added films: a film downloading now leads the shelf with its progress.",
+      "Monitor: left and right on the remote reach Overview, Drawing, Streams and Numbers."
+    ]
+  },
+  {
+    "version": "0.18.311",
+    "when": "2026-09-27",
+    "title": "Very bottom stays below the picture",
+    "items": [
+      "Subtitles: Very bottom below the picture no longer moves the text on a film that fills the screen; that film keeps the on-screen height, in the app, the web player and the Aa preview.",
+      "Watched: a film whose credits have been measured counts as watched where they begin; the fixed 10 minutes / 3 minutes line is only for films not measured yet.",
+      "App: on a phone held sideways the Aa menu puts the previews beside the settings; above them they filled the screen and nothing could be pressed."
+    ]
+  },
+  {
+    "version": "0.18.310",
+    "when": "2026-09-27",
+    "title": "The Aa menu fits the television",
+    "items": [
+      "App: on a television the Aa menu fits the screen - the two previews down the left, each setting on one line beside them - so the remote reaches every row; down from Behind went straight to Done.",
+      "App: the on-screen height is read back after a change; it was dropped, the menu showed Just up again and the player kept using it."
+    ]
+  },
+  {
+    "version": "0.18.309",
+    "when": "2026-09-27",
+    "title": "The Aa menu, rewritten",
+    "items": [
+      "App: the Aa menu is rewritten; the preview stays at the top while the choices scroll, and shows two screens - a wide film with black below it and one that fills the screen - with the line where it will land on each.",
+      "App: each row of choices is one line the remote can walk along; a pill wrapped onto a second line could not be reached, which is how High could not be chosen.",
+      "App: the heights say what they are for: On screen height for films that fill the screen, Below the picture height for wide films, and the switch between them."
+    ]
+  },
+  {
+    "version": "0.18.308",
+    "when": "2026-09-27",
+    "title": "New episodes wait for a release inside Choosing",
+    "items": [
+      "New episodes: a release outside Choosing is never taken by itself; it used to be after 24 hours with nothing better. It can still be taken by hand from the Series list.",
+      "New episodes: one first posted between 22 and 08 waits until 08 for its good release, rather than an hour.",
+      "Subtitles: changing the colour, or anything else, from an app with an older copy of the look no longer wipes the on-screen height; the text went to the bottom edge instead of Just up."
+    ]
+  },
+  {
+    "version": "0.18.307",
+    "when": "2026-09-27",
+    "title": "4K in Upgrade and Duplicates",
+    "items": [
+      "Upgrade: 4K films Mixed in / Last; every film is listed, and Last puts the ones held in 4K after the rest.",
+      "Duplicates: a 4K copy and a 1080p copy of one film is a pair kept on purpose, so neither is transcoded; 4K + 1080p pairs Show / Hide; a pair is kept as a pair, one of each, labelled 4K and 1080p and listed after the real duplicates."
+    ]
+  },
+  {
+    "version": "0.18.306",
+    "when": "2026-09-27",
+    "title": "Upgrade says why",
+    "items": [
+      "Upgrade: sorted furthest from Choosing first, or by name; each film says which rules its file falls outside and why, the bitrate against its window, the sound, the release, the encoding.",
+      "Upgrade: a Duplicates list of films held more than once, each copy with its bitrate, size, which rules it falls outside and whether it is seeding, and the copy Choosing would keep marked; largest spare first.",
+      "Subtitles: Off screen is decided for the film - a band that holds one line keeps the text below the picture, and a two-line subtitle is lifted just enough to stay on the screen instead of jumping onto the picture."
+    ]
+  },
+  {
+    "version": "0.18.305",
+    "when": "2026-09-27",
+    "title": "A title's own subtitle height is the on-screen one",
+    "items": [
+      "Subtitles: a height set for one film or series before there were two heights is moved to its on-screen height; it was read as the off-screen height and the text sat on the wrong row.",
+      "Subtitles: every viewer's look and every film's and series' own look set back to the defaults once, Off screen nearest the picture and Just up on it; timing corrections are kept."
+    ]
+  },
+  {
+    "version": "0.18.304",
+    "when": "2026-09-27",
+    "title": "Off screen subtitles fall back to the picture",
+    "items": [
+      "Subtitles: Off screen is used where the black under the picture holds the lines with a blank above and below; where it does not, the text goes on the picture by the same Position steps. On screen and Off screen stay the choice of which to prefer.",
+      "Subtitles: each viewer keeps an on-screen height and an off-screen height; Off screen with no room below the picture uses the viewer's on-screen height, and switching between the two brings each one back.",
+      "Subtitles: everyone starts Off screen, nearest the picture, and one row up on the picture where there is no room below; viewers who had chosen a height on the picture keep it as their on-screen height, and anyone can change it.",
+      "Subtitles: with Off screen chosen, the settings say what it does and when it goes on the picture instead.",
+      "Subtitles: two heights of their own, On screen height and Off screen height, with Below the picture as an Off / On switch between them; the defaults are Just up, Nearest and On."
+    ]
+  },
+  {
+    "version": "0.18.303",
+    "when": "2026-09-27",
+    "title": "Monitor fits the television",
+    "items": [
+      "Monitor: sized from the window's measured height rather than 100vh, which the app's WebView fixed at 56 px on the television and squeezed the page into a strip.",
+      "Monitor: the playing rows are one line of title and one of detail, four to a television screen; up and down on the remote move through the rest.",
+      "Monitor: the drawing sits against the left edge instead of centred, the screens at the same distance from the servers as before.",
+      "Monitor: two screens at one address, the app and a page in the same television, each get a box of their own; they were drawn over each other.",
+      "Now playing: keeps updating; a list drawn twice could stop both its refreshes and freeze the page.",
+      "Monitor drawing: screens keep their place instead of trading rows as each one speaks, and a line from the cache to a screen is held 20 s so it does not blink.",
+      "Monitor drawing: five screens to a column, a sixth starts a column to the right; a screen keeps its box and place for 30 minutes after it goes quiet and gets the same place back.",
+      "Monitor drawing: one box per device, an updated app or a page with and without its version no longer drawn twice; a stream goes to the screen playing it, not every screen at that address. The Monitor page open inside an app is not drawn as a screen of its own; the drawing is as tall as its boxes, the same margin below as above.",
+      "Monitor: the drawing takes what the playing rows read from both machines, so a stream shown in the rows is on the map too; a row missing from one answer is held 15 s.",
+      "Shuffle: what has been played leads the order in the order it was played; played episodes scattered through it were stepped over by Next and looked skipped.",
+      "App: a step of subtitle Position is one line and the blank between two lines, read off the font; Bottom sits that blank above the screen's edge, or below the picture when off screen. A step was 71 px where a line is 64.",
+      "Web player: Bottom leaves the blank between two lines under the text, as the app does; a step stays one line."
+    ]
+  },
+  {
+    "version": "0.18.302",
+    "when": "2026-09-27",
+    "title": "The cache keeps what was watched for a week",
+    "items": [
+      "Cache: a title it holds stays for 7 days after it was last watched instead of being deleted once watched; Keep after watched, days, under How much to keep, sets it, 0 for the old way.",
+      "Subtitles made from the sound: a music note is left out when a line would cut it short or it would sit within half a second of one; it shows only in the clear, 2.5 s or more."
+    ]
+  },
+  {
+    "version": "0.18.301",
+    "when": "2026-09-27",
+    "title": "Shuffle goes back to the episode left part-way",
+    "items": [
+      "Shuffle: Next goes back to the one episode left part-way, from where it was left, before drawing a new one; Next pressed on that episode gives it up.",
+      "App: making subtitles from the sound says so once, not every five seconds; how far it has got is in the subtitle list.",
+      "App: the subtitle list shows the subtitle that is on after one made from the sound comes on, or one is downloaded; it said Off.",
+      "App: an episode opens with a subtitle file in the viewer's own language; a checked Swedish file beside it was opened for an English reader.",
+      "Series: a new episode is taken from the same group as the episode before it when that group has a release meeting Choosing; otherwise Choosing picks.",
+      "Series: each followed series has Newest as a link / Download newest, so one series can have its newest episode downloaded without turning it on for all.",
+      "Upgrade: Download opens the list of versions, with the files on disk marked, and a download started from that list can be cancelled.",
+      "Subtitles made from the sound: subtitle credits the model invents over music, a web address or a Swedish textning line, are left out.",
+      "Subtitles made from the sound: two lines said in quick succession are shown together rather than one flashing past; 72 lines under half a second became 12 on a test episode.",
+      "Subtitles made from the sound: a line heard again between two others that repeats one of them is left out.",
+      "Subtitles made from the sound: a music note on its own only for eight seconds or more of steady music with nobody talking, clear of the lines either side.",
+      "Cache: Continue watching is the main server's, rows and shuffle card alike, whenever the main server answers; the cache showed an episode of its own there."
+    ]
+  },
+  {
+    "version": "0.18.300",
+    "when": "2026-09-26",
+    "title": "Subtitles made from the sound, closer to published ones",
+    "items": [
+      "Subtitles made from the sound: a line comes on a quarter second before the voice and stays up at least a second, longer for a long line; a gap under 0.7 s to the next line is closed.",
+      "Subtitles made from the sound: music loud in the mix with nobody talking is marked with a note, and sung words are written between two notes.",
+      "Subtitles made from the sound: speech over music that the speech filter missed is heard again and written as ordinary lines.",
+      "Subtitles made from the sound: credit lines the model invents over music, such as a transcript notice, are left out."
+    ]
+  },
+  {
+    "version": "0.18.299",
+    "when": "2026-09-26",
+    "title": "Series subtitles stay in their language",
+    "items": [
+      "Subtitles: the idle subtitle check no longer changes a series' language; a Swedish match switched the next episodes to Swedish.",
+      "Subtitles: a series starts in the viewer's main language and continues in the language that viewer chose; each viewer keeps their own choice per series.",
+      "App: subtitles made from the sound, started from the player, come on by themselves once there is enough to read.",
+      "Subtitles made from the sound: each line is cut back to the speech under it, so it no longer starts early or stays on through a silence.",
+      "Subtitles made from the sound: a word or two stamped long before the rest of its sentence is shown with the sentence, not on its own.",
+      "Subtitles made from the sound: names are spelled one way through the whole file, using the cast and guest stars as hints."
+    ]
+  },
+  {
+    "version": "0.18.298",
+    "when": "2026-09-26",
+    "title": "Magnet links as packs",
+    "items": [
+      "Packs: a magnet link can be added as a pack; qBittorrent fetches its metadata first."
+    ]
+  },
+  {
+    "version": "0.18.297",
+    "when": "2026-09-26",
+    "title": "An actor's films in the order they came out",
+    "items": [
+      "Pressing an actor's name lists their films in release order, the newest first and the oldest last - the ones here, in the packs and on the new-release list together.",
+      "Search: an actor's whole name finds everything they are in, the way pressing the name does - the films here, the packs and the new releases - not only the films whose cast has been read so far."
+    ]
+  },
+  {
+    "version": "0.18.296",
+    "when": "2026-09-26",
+    "title": "Search by actor, cast on pack films",
+    "items": [
+      "Search: finds films and series by who is in them, not only by title - \"jet li\" finds his films here and in the packs whose cast is known.",
+      "Pack films: their page shows the cast, with Show more, the way a film here does; the cast is kept, so searching an actor finds the film afterwards.",
+      "Actor index: the cast of every film in the packs is read from the catalogue a film every few seconds, so an actor's name finds their pack films before anybody has opened one.",
+      "Settings: Automatic runs - the credits analyser, the subtitle check, the actor index, filling series' seasons, new episodes and the tracker's daily searches can each be turned off."
+    ]
+  },
+  {
+    "version": "0.18.295",
+    "when": "2026-09-26",
+    "title": "Endings measured again, with the picture",
+    "items": [
+      "Credits analyser: every ending measured while the picture reading was failing - from the sound alone - is measured again now that the picture works.",
+      "Monitor: fits the screen without scrolling on a phone and a television, and has four looks switched from the corner - Overview, Drawing, Streams, Numbers - kept per screen.",
+      "Now playing: each stream has a bar under it showing how far through it is.",
+      "Credits analyser: waits while anything at all is being streamed or encoded, not only while a player reports itself - an old app on a transcode never did.",
+      "Subtitle check: waits while anything is streamed, like the credits analyser.",
+      "Transcodes: a stream that ends before its film does is written to the log with the date, how far in, whether the encoder was still running, its last speeds and what else had the card; the encoder reports its speed every five seconds.",
+      "New releases: a film shows only once it can be watched at home - past its first digital or disc date, or with a real release on the tracker; one in cinemas with only a pre-order link waits until then."
+    ]
+  },
+  {
+    "version": "0.18.294",
+    "when": "2026-09-26",
+    "title": "Monitor",
+    "items": [
+      "App: Settings carries a Monitor button instead of the streams themselves; it opens the web's Now playing full screen - the same drawing and live rows as the browser - with the screen kept on.",
+      "Web: /#monitor opens Now playing alone, with nothing around it, across the whole width.",
+      "Now playing: the totals under the drawing are cards of one width across the row.",
+      "Watched: a measured ending only brings the watched line forward - the 90% / 10-minute line stands when the analyser puts the end later, as it did on a film whose last two seconds carried a sound.",
+      "Credits analyser: every title anybody has a place in is measured first, however long ago it was played.",
+      "Fixed: the credits analyser's picture reading failed on every film - it asked the model hub on each run, once a minute, until the hub refused; it now loads the copy already on disk."
+    ]
+  },
+  {
+    "version": "0.18.293",
+    "when": "2026-09-26",
+    "title": "Upgrade list and Now playing in the app",
+    "items": [
+      "Settings: an Upgrade tab under Torrents lists every film here whose file is not the release Choosing would pick from what the tracker and the packs carry - what is here, what would be picked, and a button to download it.",
+      "App: Settings opens with Now playing for the owner - a card per stream with how far it has got, how much picture the player holds ahead, and its rate over the last two minutes. Full screen opens it on a page of its own for a tablet on a stand: cards side by side, larger graphs, the screen kept on.",
+      "Download picker: a film nothing is found for by its short name is looked for once more by the catalogue's full title and IMDb number.",
+      "Fixed: qBittorrent was left at 512 KB/s both ways when the server restarted while easing off for a viewer running low; the limits it had are kept on disk and put back."
+    ]
+  },
+  {
+    "version": "0.18.292",
+    "when": "2026-09-26",
+    "title": "One download picker, always shown",
+    "items": [
+      "Download picker: it opens for every download, one version included, so a download is always confirmed - in the app a film in a pack now opens it too instead of starting at once.",
+      "Download picker: each version says where it comes from - Pack, Tracker or On disk - and a pack's copy is blue; the same release in a pack and on the tracker is two rows.",
+      "Download picker: a file this house holds that the tracker no longer lists is shown at the top, orange.",
+      "Download picker: the Standard / Standard edition buttons on a film in two packs are gone; the picker lists both copies with their details.",
+      "Web: Download other version is a button like the others.",
+      "Wording: download, not fetch, everywhere a page says it."
+    ]
+  },
+  {
+    "version": "0.18.291",
+    "when": "2026-09-26",
+    "title": "Searching with the year",
+    "items": [
+      "Tracker: a film is searched for by its title and year, not its title alone - \"F1\" found a hundred race broadcasts and one release of the film; \"F1 2025\" finds sixteen.",
+      "Download picker: a version on disk is orange even when it is the recommended one.",
+      "Choosing: a fresh install gives h265 the same bitrate window as h264, with the divide-by-1.6 lock off - the same size in h265 is the better picture.",
+      "App: the download picker opens with its recommended row lit on a television; the first request for focus came before the dialog's window could take it and was dropped."
+    ]
+  },
+  {
+    "version": "0.18.290",
+    "when": "2026-09-26",
+    "title": "Pack copies in the download picker",
+    "items": [
+      "Download picker: a copy of the film in a pack here is listed with the tracker's versions, with its seeders and Mbit/s, and fetched from the pack when chosen.",
+      "Download picker: a release is marked on disk by its folder's name too - a release folder holding a file named something else was not recognised.",
+      "App: the film page's button for choosing between files of one film reads Version, not Copy."
+    ]
+  },
+  {
+    "version": "0.18.289",
+    "when": "2026-09-26",
+    "title": "Mbit/s for films not held yet",
+    "items": [
+      "Download picker: a film not in the library yet takes its running time from the catalogue, so its versions show Mbit/s and the bitrate window applies to them.",
+      "Choosing: a fresh install starts with 1080p; BluRay, WEB-DL, WEBRip; DD+, AC3, Atmos, AAC; h264 and h265 both 5-8 Mbit/s; Quality Best; Seeders Most; rows in the order resolution, seeders, quality, bitrate, release, encoding, sound. A server that has run before keeps what it has.",
+      "Series: the pack line and the chosen packs under a series are in smaller type than the series itself.",
+      "Fixed: a finished download stayed at the top of every page as \"Done\" with no way to close it; the strip shows only what is still coming in.",
+      "App: no download strip across the top of every page; the downloads pill says what is coming in, and a film's own page has its progress and Cancel.",
+      "Fixed: every film's page in the app showed every download from the tracker with its Cancel; a page shows only its own film's download."
+    ]
+  },
+  {
+    "version": "0.18.288",
+    "when": "2026-09-26",
+    "title": "Only releases inside every pill are chosen",
+    "items": [
+      "Choosing: a release is green only when it is inside every pill that is set - resolution, bitrate window, release, encoding and sound; Quality and Seeders rank among those. None inside them all, nothing is green.",
+      "Choosing: a name that says a sound, source or encoding not chosen is outside; a name that says nothing about it is not. DTS and AAC are sounds of their own, with pills.",
+      "Choosing: Quality reads Highest (bitrate counted as h264) and Best (that per GB).",
+      "Choosing: the chosen pills in a row stand on the left, most preferred first, and a ◀ moves one a place left; among releases inside every pill, each row prefers its leftmost pill, row by row in the arrow order.",
+      "Choosing: every note cut to one line, with the rule said once at the top.",
+      "Choosing: Seeders ranks by the exact number carrying it, not in steps."
+    ]
+  },
+  {
+    "version": "0.18.287",
+    "when": "2026-09-26",
+    "title": "One added pack, one row",
+    "items": [
+      "Fixed: what a viewing has been sent started again every time the stream did - a seek on a transcode read as a few hundred megabytes when the sitting was over a gigabyte. Carrying on with the same title on the same screen keeps the total.",
+      "Fixed: an added pack took the seeder count of whichever release of the same seasons, size and kind the tracker listed first - a five-season pack read 59 where the release it is seeds at 298. The name now decides among those, and a pack answers for one row or none.",
+      "Choosing: Quality set to Best or Most per GB ranks inside the bitrate window that is set; a release outside it is lowest on that row.",
+      "Downloads: a finished film is indexed on its own the moment it completes, so its poster turns into a playable film within seconds instead of waiting minutes for a full library scan."
+    ]
+  },
+  {
+    "version": "0.18.286",
+    "when": "2026-09-26",
+    "title": "Download picker figures",
+    "items": [
+      "Packs: an added pack and the tracker row for the same release are drawn as one line and carry its seeder count, even when the two spell the release differently.",
+      "Settings: a bitrate band the wrong way round is refused and shown in red instead of being quietly turned around.",
+      "Download picker: each version reads seeders, picture Mbit/s and GB first, then the name, in the order the list is sorted; in the app it opens with the recommended one lit.",
+      "Fixed: two servers started in the same second (Startup shortcut and installer at logon) both ran; the cache had two copying into the same half-file, and an 8.5 GB film crossed the network as 13 GB. A named mutex now lets only one start."
+    ]
+  },
+  {
+    "version": "0.18.285",
+    "when": "2026-09-25",
+    "title": "The bitrate multiplier turns off again",
+    "items": [
+      "Fixed: the h265 multiplier could be turned on but not off - turning it off sends only the flag, and the settings door named every other wish but not that one.",
+      "Settings: the list of what a cache is keeping reads in the order the shuffle will draw it, instead of by title."
+    ]
+  },
+  {
+    "version": "0.18.284",
+    "when": "2026-09-25",
+    "title": "The shuffle keeps its ten, and a bitrate is a band",
+    "items": [
+      "Shuffle: the ten drawn are played in the order they were drawn, and a new ten is drawn only once they are used up; a forward press no longer puts a fresh title in the hat and fetches it from a pack.",
+      "Shuffle: a title added to the shelf is mixed into what is left to play rather than queued behind everything already drawn.",
+      "Shuffle: stepping back keeps what was still ahead, so going back and forward again is the same ten.",
+      "Settings: a bitrate is a band with a From and a To, typed in, instead of a ceiling that took a thin rip as readily as a good one.",
+      "Settings: h264 is the band that is set and h265 can follow it, divided by 1.6 for the same picture.",
+      "Settings: every row of tabs that switches panes is drawn as tabs - Users, Remote computer, Torrents, Reports and Log.",
+      "Fixed: the tracker client was refused by qBittorrent 5.2, which names its cookie for the port it serves on and answers a good login with 204.",
+      "Fixed: a download waiting its turn said it was arriving; it says queued, and how many are ahead of it."
+    ]
+  },
+  {
+    "version": "0.18.283",
+    "when": "2026-09-25",
+    "title": "Torrent lists by seeders",
+    "items": [
+      "Every list of torrents is ordered by seeders; the one the settings under Choosing put forward is green and preselected - series packs, a season's packs and film versions alike."
+    ]
+  },
+  {
+    "version": "0.18.282",
+    "when": "2026-09-25",
+    "title": "Bitrate targets and a quality figure",
+    "items": [
+      "Choosing: a bitrate target for h265 and one for h264, in Mbit/s of picture - the file's size over the film's length, less an estimate of the sound (DTS-HD and TrueHD 3-5 Mbit/s, DD+ under one); each button says what it is for a two-hour film.",
+      "Every version on the tracker has a quality figure: the picture's bitrate counted as h264 (h265 is worth 1.6), and that figure per GB.",
+      "Choosing: Quality (best, or most per GB) and Seeders are rows of their own in the arrow order; each sorts within the rows above it - quality in whole Mbit/s, seeders in steps."
+    ]
+  },
+  {
+    "version": "0.18.281",
+    "when": "2026-09-25",
+    "title": "Credits analyser retries",
+    "items": [
+      "Credits analyser: a failed reading is logged and retried after an hour instead of being stored as no ending for 30 days; the 83 stored that way are measured again.",
+      "Credits analyser: a failure reading the picture no longer throws away the speech reading.",
+      "Watched line for titles over an hour: 90% or 10 minutes left, whichever comes first (never below 85%); a measured ending still comes first.",
+      "Settings: Series and Popular series are one tab with an All series / Popular this week / With packs filter; one tick covers both lists, so a series added from the popular list shows as followed.",
+      "Settings: a pack added for a series shows its seeders from the client when the tracker's list no longer carries it."
+    ]
+  },
+  {
+    "version": "0.18.280",
+    "when": "2026-09-25",
+    "title": "Subtitles checked against speech",
+    "items": [
+      "Subtitles are measured against where people speak in the film while the server is idle; the one that fits is marked verified (green), in every language a viewer reads.",
+      "When none beside the film fits, up to three candidates are fetched and measured; the one that fits is kept and the rest deleted.",
+      "A subtitle that fits at a steady offset gets that offset written for its file."
+    ]
+  },
+  {
+    "version": "0.18.279",
+    "when": "2026-09-25",
+    "title": "Download queue",
+    "items": [
+      "App: pressing the download line opens the poster when one download is coming in, and with more than one a queue - the one downloading, then the waiting ones in the order they start. A name opens its poster; arrows move your own waiting downloads up or down.",
+      "The server keeps waiting downloads in the order set; a guest moves only their own, the owner any, and the one downloading is never moved.",
+      "Subtitles: a track read out of a film for the first time starts from where the film is played, not from its beginning; resumed an hour in, the first twenty minutes held nothing and the web player said so every few seconds.",
+      "Web: 'No subtitle cues came back' only for a whole answer, not for a first stretch still being read.",
+      "App: the player reports how much it has in hand every five seconds whether or not another machine holds the film; a film on one machine alone was never reported, so nothing held back when it ran low.",
+      "Downloads: while anybody's picture is running low, qBittorrent is held to 512 KB/s each way - it reads and writes the same disk as the film - and its own limits come back a minute after everybody is fine."
+    ]
+  },
+  {
+    "version": "0.18.278",
+    "when": "2026-09-25",
+    "title": "Subtitles in step after a seek",
+    "items": [
+      "Transcode: where a stream starts and whether its picture goes through are one decision; the start answer still said a DTS file's picture was passed through, and after a seek the subtitles were cut for a start the stream never had."
+    ]
+  },
+  {
+    "version": "0.18.277",
+    "when": "2026-09-25",
+    "title": "Host pauses by default",
+    "items": [
+      "Downloads: with the two servers on different connections, the host pauses the tracker unless something else is chosen.",
+      "Transcode: a file with DTS sound the device cannot take is encoded whole, picture as well; the picture passed through beside the re-encoded sound came out as coloured blocks on the television."
+    ]
+  },
+  {
+    "version": "0.18.276",
+    "when": "2026-09-25",
+    "title": "One tracker account, one place",
+    "items": [
+      "The host tells the cache where it is every three minutes - by the cache's outside address when it is away from home - and each compares public addresses.",
+      "Downloads: when the two are on different connections, the tracker is paused on the one chosen - Off, Host, Cache or Both: every running torrent stopped and remembered, no feed reads, searches or new downloads; the same torrents start again when they are together.",
+      "Notifications: a pack that finishes several episodes names each new one, once."
+    ]
+  },
+  {
+    "version": "0.18.275",
+    "when": "2026-09-25",
+    "title": "Release wishes in any order",
+    "items": [
+      "Choosing: the order resolution, release, encoding and sound count in is set with up and down arrows; the version lists, series packs and automatic episode downloads all follow it. Settle by stays last.",
+      "Shuffle: an episode played in a shuffle no longer sets off fetching the episodes after it in season order; the round fetches its own next ten.",
+      "Downloads fetched ahead of anybody asking - the next episodes, a shuffle's next draws, a half-copied file taken over - are marked, and the phone notification goes out only for downloads somebody asked for."
+    ]
+  },
+  {
+    "version": "0.18.274",
+    "when": "2026-09-25",
+    "title": "New films searched daily",
+    "items": [
+      "Tracker: a new film with no release on the tracker is searched by name once a day instead of once a week, within the day's search allowance; films with a release are rechecked weekly as before."
+    ]
+  },
+  {
+    "version": "0.18.273",
+    "when": "2026-09-25",
+    "title": "Watched where the credits start",
+    "items": [
+      "Watched: where a title's credits begin is measured per file - a credits chapter, otherwise the later of where the picture turns to credits and where the last words are spoken - and a title counts as watched from there. Without a measurement the line stays at 95% or 3 minutes from the end.",
+      "The measuring runs by day, 08-20, one file at a time, only while nobody is watching, no game is on and the card is idle; titles being watched first, then films over an hour, then episodes. The cache takes the results every half hour.",
+      "Now playing shows the measuring while it runs: the file, how long, how many found and how many to go.",
+      "Continue watching: a shuffle card is dated by when its round was last played; a finished episode left it undated and it fell to the end.",
+      "Shuffle: stepping back puts what was stepped over at the front of the next ten, in the order it was drawn, and resumes at the place left; the next ten keep their order and new draws join at the end."
+    ]
+  },
+  {
+    "version": "0.18.272",
+    "when": "2026-09-25",
+    "title": "Picked up where it was, after a rewind too",
+    "items": [
+      "App: a film picked up again after a fault starts at the latest place played, not the furthest; after a rewind the furthest was minutes ahead.",
+      "Tested on the Streamer: server restarted mid-play after a rewind, on a sound-only encode and on a full transcode; both carried on at the second on screen.",
+      "Notices and play-on-screen commands are numbered from the clock: after a server restart the screens ignored them until the count passed the old one."
+    ]
+  },
+  {
+    "version": "0.18.271",
+    "when": "2026-09-25",
+    "title": "A cut encode carries on where it was",
+    "items": [
+      "Transcode: a player asking a live encode to carry on at a byte is refused (416) instead of being given the encode again from where it began; the picture went back minutes after a server restart.",
+      "App: a refused encode is opened again at the second reached, up to five times a playing."
+    ]
+  },
+  {
+    "version": "0.18.270",
+    "when": "2026-09-25",
+    "title": "No subtitles for a longer cut",
+    "items": [
+      "Subtitles: a file beside the video whose last line comes more than 8% and a minute after the video ends is not offered or used; a fitting one is fetched instead.",
+      "Shuffle: a place or a finish recorded on the cache is also sent to the main server, where the round is drawn; a draw there no longer brings a finished episode back at its old place."
+    ]
+  },
+  {
+    "version": "0.18.269",
+    "when": "2026-09-25",
+    "title": "Watched line back to 95%",
+    "items": [
+      "Watched: back to 95% or 3 minutes from the end for everything. Measured on 168 files over an hour, 90% or 10 minutes left fell more than 3 minutes before the story ended in 141 of them."
+    ]
+  },
+  {
+    "version": "0.18.268",
+    "when": "2026-09-25",
+    "title": "Watched at 90% past an hour",
+    "items": [
+      "Watched: anything over an hour, film or episode, counts as watched at 90% or 10 minutes from the end, whichever comes first. Under an hour the line stays at 95% or 3 minutes from the end, never below 85%.",
+      "The same line in the server, the web player and the app."
+    ]
+  },
+  {
+    "version": "0.18.267",
+    "when": "2026-09-25",
+    "title": "No downloads twice",
+    "items": [
+      "Cache: its own pack downloads, started while the main server was away, are cancelled once the main server lists those files for copying.",
+      "Cache: a restart no longer reads as the main server being away; half-copied files are not handed to the torrent side on start-up."
+    ]
+  },
+  {
+    "version": "0.18.266",
+    "when": "2026-09-25",
+    "title": "Shuffle apart from ordinary play",
+    "items": [
+      "Continue watching: an upcoming episode is dated by ordinary play, not by a shuffle play of the same series.",
+      "Continue watching: a shuffle play at the start of an episode no longer stops the next-up walk of that series.",
+      "Cards resume from ordinary play only; a shuffle card resumes from the round's own place.",
+      "Watched: time sat through in a shuffle play no longer counts towards an ordinary viewing."
+    ]
+  },
+  {
+    "version": "0.18.265",
+    "when": "2026-09-25",
+    "title": "Shuffle in one group",
+    "items": [
+      "What is held: a shuffle title left part-way is listed under the shuffle's next, in green.",
+      "What is held: a file kept for several people is listed under each of them; totals still count it once."
+    ]
+  },
+  {
+    "version": "0.18.264",
+    "when": "2026-09-25",
+    "title": "Kept ahead",
+    "items": [
+      "Cache list: episodes held ahead of where somebody is are labelled kept ahead, not part-way through or the one before it.",
+      "What is held: a series reads as one run under kept ahead, with the episode somebody is in the middle of or next up in green."
+    ]
+  },
+  {
+    "version": "0.18.263",
+    "when": "2026-09-24",
+    "title": "Why the cache copied it",
+    "items": [
+      "Cache: each copy it starts is written in its log with the reason and for whom - on a screen, part-way, the shuffle's next, a watchlist.",
+      "Cache: the note left beside a copy that came to nothing is cleared after ten minutes.",
+      "Web player: a stream stuck buffering after a network drop is opened again at the same second.",
+      "Web: posters load from the cache while the page is carrying on from it.",
+      "Cache: each shuffle round has its own slots - its next ten and five part-way places - instead of sharing them across a viewer's rounds.",
+      "Shuffle: pack titles in a round's next ten are fetched on the main server even when the round was not just drawn.",
+      "Cache: a shuffle title that came in from a pack is copied; its pack key found no file before.",
+      "Shuffle: a pack title that has come in keeps its place in the round under the library's key.",
+      "Log: a shuffle round starting over is written with the reason."
+    ]
+  },
+  {
+    "version": "0.18.262",
+    "when": "2026-09-24",
+    "title": "No nameless cards",
+    "items": [
+      "A programme removed for having no files takes its episodes with it; left behind, one with a place in it stood on Continue watching as a card with no name.",
+      "Continue watching leaves out an episode whose programme is gone."
+    ]
+  },
+  {
+    "version": "0.18.261",
+    "when": "2026-09-24",
+    "title": "Episodes ahead for the cache",
+    "items": [
+      "Half way through an episode, as many episodes ahead are fetched from their packs as the cache keeps ahead, in order, so it can copy them; with no cache asking, one ahead as before."
+    ]
+  },
+  {
+    "version": "0.18.260",
+    "when": "2026-09-24",
+    "title": "Half copies finished by downloading",
+    "items": [
+      "Cache: a film or episode half copied when the main server went away is handed to its qBittorrent where its pack keeps it, checked, and only the rest downloaded; a file no pack carries is left as it is."
+    ]
+  },
+  {
+    "version": "0.18.259",
+    "when": "2026-09-24",
+    "title": "Cast without a heading",
+    "items": [
+      "The word With above a cast is gone, on the web and in the app.",
+      "Cache: the main server's ticked programmes and default rows are now kept when the cache saves, so its Popular shows row matches.",
+      "An episode downloaded while its page is open turns the button into Play when it arrives; it had stayed on Downloaded - arriving.",
+      "Web player: a subtitle just downloaded is turned on when it appears in the list, rather than the list falling back to Off."
+    ]
+  },
+  {
+    "version": "0.18.258",
+    "when": "2026-09-24",
+    "title": "Continue watching from outside",
+    "items": [
+      "App: a home row no machine answered for is asked again rather than left out, and Continue watching waits ten seconds rather than six; from outside on a slow first connection it was missing."
+    ]
+  },
+  {
+    "version": "0.18.257",
+    "when": "2026-09-24",
+    "title": "Faster pages on the web",
+    "items": [
+      "Web: the home rows come in from the top down as each arrives, with the marks on the cards read beside them.",
+      "Collections answer in a third of the time: the packs' titles are made plain once per list, and the list of programmes they offer is kept ten seconds.",
+      "App: the note about what the cache keeps, with its Right button, is gone."
+    ]
+  },
+  {
+    "version": "0.18.256",
+    "when": "2026-09-24",
+    "title": "Faster lists",
+    "items": [
+      "The film shelf answers in a tenth of the time: the tracker's list is looked up by name and number rather than scanned once per film that can be asked for.",
+      "App: home rows come in from the top down, each once the rows above it are in, so the page stays at its top."
+    ]
+  },
+  {
+    "version": "0.18.255",
+    "when": "2026-09-24",
+    "title": "Home screen first",
+    "items": [
+      "App: the home rows are drawn as each arrives, Continue watching usually first, rather than after the slowest.",
+      "Continue watching is answered in a tenth of the time: what each viewer has finished is read once, and each series' episodes once."
+    ]
+  },
+  {
+    "version": "0.18.254",
+    "when": "2026-09-24",
+    "title": "Player look while loading",
+    "items": [
+      "App: while a card loads, the screen is plain black until the player itself is up.",
+      "App: a film starts from where it was drawn without first checking the other machine for a copy; the player looks for that once it is playing.",
+      "App: whether the main server is back is asked beside a draw rather than before it.",
+      "App: each start from Continue watching writes how long each step took to the server's log."
+    ]
+  },
+  {
+    "version": "0.18.253",
+    "when": "2026-09-24",
+    "title": "Shuffle queue",
+    "items": [
+      "Shuffle: a round coming back from the cache keeps no played episode in its queue, and Continue watching never offers one already played this round.",
+      "App: a card on Continue watching opens the player at once; it draws from the shuffle or loads the title there and starts, and Back stops it. The Opening banner is gone."
+    ]
+  },
+  {
+    "version": "0.18.252",
+    "when": "2026-09-24",
+    "title": "Pack picker says what is in use",
+    "items": [
+      "Pack picker: packs already added stand in their place among the tracker's, most seeded first, in green.",
+      "With no pack chosen, the picker names the packs in use now and the seasons each gives.",
+      "Watch log: both servers keep both logs, each play saying which machine it ran on; the cache and the main server trade them every two minutes.",
+      "Watch log: a play logged by both machines is one line with the minutes on each, marked both where they ran at once, and a play that moved to the other machine is shown as a failover.",
+      "Watched: time sat through counts overlapping rows from the two machines once."
+    ]
+  },
+  {
+    "version": "0.18.251",
+    "when": "2026-09-24",
+    "title": "Old casual list removed",
+    "items": [
+      "What the old casual list left in each viewer's settings is removed at start, with the move that turned it into a collection.",
+      "A shuffle round whose collection is gone is removed, so the cache no longer copies ahead for it.",
+      "Keeping up skips episodes numbered past the last one the catalogue says has aired, which are the same episodes under another numbering."
+    ]
+  },
+  {
+    "version": "0.18.250",
+    "when": "2026-09-24",
+    "title": "Keeping up, and clearer lists",
+    "items": [
+      "New episodes are only those after the newest one here of a series, from a file or a pack; old releases the tracker list saw lately are no longer taken as new.",
+      "Series: the waiting episodes are one line per series, with the episodes behind a press, and missing seasons have their own heading.",
+      "Pack picker: one list, most seeded first, each release once; single-episode links are left out, and matching your choices is said in words rather than green.",
+      "Fetched in the last month names the episode, and a title asked for twice is one line.",
+      "Cache: subtitle files are counted beside the titles rather than listed as 0.00 GB each, and small files show in MB.",
+      "Cache: each viewer's collections are the main server's list as it stands, so a shelf deleted there goes from the cache too."
+    ]
+  },
+  {
+    "version": "0.18.249",
+    "when": "2026-09-24",
+    "title": "Cache mirrors the main server",
+    "items": [
+      "The cache takes watched from the main server's places, so a series up to date there shows its upcoming episode on the cache too.",
+      "The cache takes the main server's ticked series and default home rows, so its Popular shows row is the same.",
+      "App: the change to how a server saved twice is merged is taken back."
+    ]
+  },
+  {
+    "version": "0.18.248",
+    "when": "2026-09-23",
+    "title": "Series settings",
+    "items": [
+      "New episodes of every series in the library are added as links, followed or not; following decides only whether the newest one may be downloaded.",
+      "Torrents settings in order: Downloads, Series, Popular series, then Choosing, Look and Tracker.",
+      "Series lists every series here, including ones added from Popular series; Popular series lists only the popular list.",
+      "Shuffle: the cache no longer ends a round when its part of the shelf is used up, and a round coming back from it keeps the main server's history, so an episode is not drawn twice in one round.",
+      "TV remote while watching: any press brings up the controls on the progress bar; centre on the bar pauses, and again plays; down from the pause button goes to the bar.",
+      "Series rows keep one height when ticked: the name no longer wraps, and the chosen of All seasons, New only and From a season is lit.",
+      "Pack lists under Series and Popular series show how many are seeding each pack already in use.",
+      "Upcoming cards no longer disappear for six hours after the server was offline: a failed catalogue lookup is not kept.",
+      "App: one open at a time from Continue watching; presses while the servers are slow no longer stack into several players.",
+      "App: a server that just failed to answer gets a short wait on the next try, and the cache answers a shuffle itself for a minute after the main server fails.",
+      "App: the same server saved twice under another person's key no longer shows that person's collections and shelves."
+    ]
+  },
+  {
+    "version": "0.18.247",
+    "when": "2026-09-23",
+    "title": "Upcoming in released",
+    "items": [
+      "Upcoming episodes are listed greyed at the front of Recently released episodes (web) and Recently released series (app), instead of Recently added TV.",
+      "The Recently added TV row is gone from the home page for everyone."
+    ]
+  },
+  {
+    "version": "0.18.246",
+    "when": "2026-09-23",
+    "title": "Pack picker focus",
+    "items": [
+      "The add-pack choices on a TV turn white while focused, so the remote shows which one is selected.",
+      "Settings, Top shows also lists the programmes added by hand, with their pack choices.",
+      "Settings, Programmes is a one-column list like Top shows: a tick to follow each programme, how much of it, and its packs.",
+      "A shuffle row on Continue watching is dated by its last real play, so it no longer jumps ahead of what was watched last.",
+      "Packs under Top shows, Programmes and a programme's add page, and a film's versions, are listed most seeded first."
+    ]
+  },
+  {
+    "version": "0.18.245",
+    "when": "2026-09-23",
+    "title": "Recently added TV fix",
+    "items": [
+      "Recently added TV failed to load when a season held an episode aired before 1970; air dates are compared as dates now.",
+      "The next episode of a series, once it arrives, goes to the front of Continue watching."
+    ]
+  },
+  {
+    "version": "0.18.244",
+    "when": "2026-09-23",
+    "title": "New episodes",
+    "items": [
+      "An episode that is here carries a New ribbon until a week after its air date; so does its season's card on Recently added TV."
+    ]
+  },
+  {
+    "version": "0.18.243",
+    "when": "2026-09-23",
+    "title": "Upcoming opens its season",
+    "items": [
+      "An Upcoming card opens its season scrolled to the greyed episode and its air date, instead of the series page.",
+      "Next episode in the app skips greyed upcoming episodes, which have no file."
+    ]
+  },
+  {
+    "version": "0.18.242",
+    "when": "2026-09-23",
+    "title": "Seasons to come",
+    "items": [
+      "A season's episode list shows the episodes the catalogue knows and nothing here has, greyed, with their air date or 'Out, not here yet'; they cannot be played.",
+      "Seasons nothing here has yet are listed greyed with their air date."
+    ]
+  },
+  {
+    "version": "0.18.241",
+    "when": "2026-09-23",
+    "title": "Upcoming",
+    "items": [
+      "A series somebody is up to date with - the newest episode here watched - keeps a greyed card on Continue watching and at the front of Recently added TV for its next episode, marked Upcoming, with when it airs or that it is out and not here yet. Pressing it opens the series."
+    ]
+  },
+  {
+    "version": "0.18.240",
+    "when": "2026-09-23",
+    "title": "Who is in it",
+    "items": [
+      "A popular programme's page in the app shows its whole summary and who is in it, before anything is added."
+    ]
+  },
+  {
+    "version": "0.18.239",
+    "when": "2026-09-23",
+    "title": "From away",
+    "items": [
+      "The owner away from home can add popular programmes and choose their packs. Their invitation was stopped at the door as not a guest at all for these, before anything could see it was the owner's own key."
+    ]
+  },
+  {
+    "version": "0.18.238",
+    "when": "2026-09-23",
+    "title": "Choose a version",
+    "items": [
+      "A popular programme not held yet opens on a page of its own - poster, seasons, summary and cast - with the versions the tracker holds, best first. The one chosen is added as a pack and the programme goes into the library; or it can be left to find packs by itself, a season at a time."
+    ]
+  },
+  {
+    "version": "0.18.237",
+    "when": "2026-09-23",
+    "title": "See all popular",
+    "items": [
+      "The Popular shows row always ends with the card that opens the whole list. It only appeared on a row holding more than fits, and this one holds a dozen while the list holds a hundred."
+    ]
+  },
+  {
+    "version": "0.18.236",
+    "when": "2026-09-23",
+    "title": "All of them",
+    "items": [
+      "The Popular shows row stays in the order the programmes are being watched in, on both machines' answers merged together, and its See all opens every programme on the list - not only the ones held here.",
+      "A popular programme not held yet wears an Add band; pressing it puts it in the library and opens it there, its episodes arriving as packs are found."
+    ]
+  },
+  {
+    "version": "0.18.235",
+    "when": "2026-09-23",
+    "title": "Several packs",
+    "items": [
+      "A show can take its episodes from several chosen packs, shown under it with a cross each. Where two of them carry the same season, that season gets a dropdown of its own for which pack it comes from; otherwise the pack chosen last wins."
+    ]
+  },
+  {
+    "version": "0.18.234",
+    "when": "2026-09-23",
+    "title": "Its own seasons",
+    "items": [
+      "A pack chosen for a show supplies the seasons it carries and no others: a series is often several packs, and choosing one hid the seasons only the rest had."
+    ]
+  },
+  {
+    "version": "0.18.233",
+    "when": "2026-09-23",
+    "title": "Which pack",
+    "items": [
+      "A ticked show under Top shows has a dropdown of packs: the ones already carrying it, and on request what the tracker holds, best first by the wishes under Choosing and by how many seasons each covers. The one chosen is added as a link and becomes the only pack that show's episodes come from - two packs of one series no longer offer every episode twice."
+    ]
+  },
+  {
+    "version": "0.18.232",
+    "when": "2026-09-23",
+    "title": "Popular shows",
+    "items": [
+      "A Popular shows row on the front page, made of the programmes ticked under Top shows, most watched first. Ticking one gives it a library entry straight away - its poster and summary from the catalogue - which its pack episodes fold into as they arrive.",
+      "Top shows under settings is a single column, read down like a list."
+    ]
+  },
+  {
+    "version": "0.18.231",
+    "when": "2026-09-23",
+    "title": "Top shows",
+    "items": [
+      "A list of the programmes being watched now - trending this week and popular, a hundred or so, read daily - with a button each under Torrents. A chosen one is put in the library as pack links a season or two at a time: its episodes stand on the TV shelf with a download button each, and nothing is downloaded until one is played.",
+      "The TV shelf opens sorted by name, and each shelf keeps the order it was left in.",
+      "Film packs and TV packs are listed apart under Downloads.",
+      "A new release, or a film a pack carries, shows who is in it, like any film on the shelf - each name a way into what else they are in."
+    ]
+  },
+  {
+    "version": "0.18.230",
+    "when": "2026-09-23",
+    "title": "Whose settings these are",
+    "items": [
+      "A guest was shown the owner's settings - what everyone else may download, the size ceiling, and what the tracker holds. The browser tested a flag that is not on the answer it was reading, and the app did not test at all. Reaching your own machine from outside makes you a guest to it, which is where this showed.",
+      "The two scores a new film is judged by are set the way the film shelf is set: Show or Hide, the chosen one lit.",
+      "Settings whose choices run to five or seven put them on the line below the name and wrap them, rather than squeezing them in beside it on a phone held upright.",
+      "A mark follows its title. One starred while a pack was the only thing carrying it was kept under the pack's key, so the day the film arrived it stood on the watchlist with its star unlit.",
+      "Episodes that arrived with a number and nothing else are named newest first, and a season the catalogue cannot name steps aside instead of standing in front of the ones it can - which is why a new episode could sit on the disk unnamed, and missing from Recently released, behind twenty-two seasons nothing could be done about.",
+      "The first subtitle language is labelled like the second, so the two dropdowns line up."
+    ]
+  },
+  {
+    "version": "0.18.229",
+    "when": "2026-09-23",
+    "title": "Say what it does",
+    "items": [
+      "The two scores a new film is judged by are set with one button each, saying what happens to the film rather than what happens to the score.",
+      "What everyone else may download, and how big one download may be, are the owner's settings; the app was showing a guest two switches that could only fail."
+    ]
+  },
+  {
+    "version": "0.18.228",
+    "when": "2026-09-23",
+    "title": "Asked while you are looking",
+    "items": [
+      "The server picker asks each machine whether it is up as it opens, rather than showing an answer of up to a minute ago: the dot is grey while it asks and then says what is true now.",
+      "A shelf being shuffled takes one press at a time. With a machine off, every press waited out a connection and they queued behind each other - then all went through at once, each drawing and starting something."
+    ]
+  },
+  {
+    "version": "0.18.227",
+    "when": "2026-09-23",
+    "title": "A line every half minute",
+    "items": [
+      "Each machine writes a heartbeat to a file of its own every thirty seconds - connections taken, threads, processor time, and the gap since the last one. A server that was stalled and one that was refusing connections from a full queue look identical from outside; a log that is never quiet tells them apart."
+    ]
+  },
+  {
+    "version": "0.18.226",
+    "when": "2026-09-23",
+    "title": "The name and the year",
+    "items": [
+      "A new film sharing its name with an older one a pack carries was dropped from the film shelf as something the house already had. Eleven of them were hidden that way, including the newest release on the list."
+    ]
+  },
+  {
+    "version": "0.18.225",
+    "when": "2026-09-23",
+    "title": "When one machine is off",
+    "items": [
+      "A machine that does not answer is given a second to prove itself for the next minute, rather than the full connect timeout on every request. With one of two machines down, opening a tab took minutes, shuffle presses queued up and then all started at once, and shelves came back empty.",
+      "A shelf nobody answered for says which one it was instead of quietly disappearing, which read as a library that had lost half of itself.",
+      "A cross pressed on one machine reaches the other as what it is. It travelled as a place of nought with no length on it, and was written down as progress - so Continue watching showed episodes nobody had opened. Four such places were removed.",
+      "Either score is enough for a new film to be shown: the two having to agree let the critics alone decide, and kept films most of the audience liked off the shelf entirely."
+    ]
+  },
+  {
+    "version": "0.18.224",
+    "when": "2026-09-22",
+    "title": "As they came",
+    "items": [
+      "A followed programme with a season range on it was stored as its printed form, and read back as a programme with a bracket in its name.",
+      "Looking on the tracker by name has a tab of its own, beside the client, the tracker, the choosing and the programmes.",
+      "An episode pressed on a shelf opens its programme at that season with the episode scrolled to and marked, rather than starting it. Continue watching still resumes, which is what that shelf is for."
+    ]
+  },
+  {
+    "version": "0.18.223",
+    "when": "2026-09-22",
+    "title": "Filling in a programme",
+    "items": [
+      "Nothing downloads by itself: a new episode of a followed programme is added as a link, so it appears with its picture and the file comes when somebody plays it. One setting turns that into a download, and only for the newest episode.",
+      "The torrents tab is four groups - the client, the tracker, how a release is chosen, and the programmes followed - rather than one page of everything.",
+      "A followed programme says how much of it to keep up with: all of it, new episodes only, or a run of seasons.",
+      "The programmes to keep up with, and the release, encoding and sound a recommendation is chosen by, were accepted and quietly dropped: only two of the six settings were let through the door.",
+      "The list of programmes to keep up with is one row - the ones followed, each with a cross, and a list to add another from.",
+      "A followed programme says which of its seasons this house cannot reach - no file here and no pack offering one - and one press adds a pack that carries it. A pack is a link: nothing is downloaded until somebody plays an episode.",
+      "An episode that arrived with a number and nothing else - a new one, or one out of a pack - has its name, its description and its picture filled in on the same walk that fetches casts. 222 of them were drawing as blank cards."
+    ]
+  },
+  {
+    "version": "0.18.222",
+    "when": "2026-09-22",
+    "title": "Keeping up",
+    "items": [
+      "Programmes can be followed: a new episode is fetched by itself once a release that meets the house's wishes has been posted, waiting an hour after the first one appears so the good releases have landed, and taking the best there is after a day rather than none at all.",
+      "An episode that is waiting is listed the moment its first release appears, with what is on offer and a button to take it now rather than wait.",
+      "The wishes that decide a recommendation can name several answers at once - two resolutions, two encodings - and any of them meets the wish. They sit under the torrents tab with the rest of fetching.",
+      "Backing out of a shuffle inside half a minute puts the draw back in the hat: it was looked at, not watched, and shelves were quietly losing titles nobody had seen."
+    ]
+  },
+  {
+    "version": "0.18.221",
+    "when": "2026-09-22",
+    "title": "Asking on the way in",
+    "items": [
+      "Opening a title in the app asks the tracker as the page draws, the way the browser does: one nobody had swept yet offered only a request button, for something the tracker was carrying all along.",
+      "Handing the torrent client a release it already holds answers in words rather than the error number it replies with."
+    ]
+  },
+  {
+    "version": "0.18.220",
+    "when": "2026-09-22",
+    "title": "What a good version is",
+    "items": [
+      "The recommended version is now chosen by resolution, where the release came from, the encoding, the sound and the colour depth - each read in turn, with a settings row for each, and a wish nothing on offer meets is passed over rather than leaving nothing recommended.",
+      "A version already on the disk shows green on the download button and is not fetched a second time, in the browser and in the app; the server refuses it too."
+    ]
+  },
+  {
+    "version": "0.18.219",
+    "when": "2026-09-22",
+    "title": "Names, and what is coming in",
+    "items": [
+      "A search answers with a row of names as well as titles: pressing one opens everything here with that person in it. In the browser and in the app.",
+      "Downloads show on every page rather than only on the film they were started from, with how far they have got and the speed.",
+      "A download that has finished carries no Cancel - there is nothing left to stop, and stopping it would delete the file - and it drops off the list a few minutes after it lands.",
+      "A version list asks the tracker again behind itself every time it is opened, so what has been posted since is there the next time it is looked at."
+    ]
+  },
+  {
+    "version": "0.18.218",
+    "when": "2026-09-22",
+    "title": "The new list reads itself",
+    "items": [
+      "Every download button now carries the size and opens the version list first: a copy a pack here already holds is the first row in that list, so nothing is ever fetched on a single press.",
+      "Opening the version list for a film nothing is known about asks the tracker there and then, so films that have been in the library for years list their other versions too.",
+      "What has just come out is read again on its own clock instead of by whoever opens the shelf first after it has gone stale, so the list is current before anybody looks.",
+      "Where the release already on disk is the one that would be recommended, it is marked as such - there is nothing better to go and fetch.",
+      "A download that was cancelled no longer says it is on disk: the list reads the drive rather than the record, which still holds the row until the next scan."
+    ]
+  },
+  {
+    "version": "0.18.217",
+    "when": "2026-09-22",
+    "title": "Stopping one you started",
+    "items": [
+      "Something being fetched from the tracker says how far it has got and can be cancelled, in the browser and in the app; cancelling takes the part-file with it.",
+      "Whoever may fetch may also stop what they fetched, rather than only the owner."
+    ]
+  },
+  {
+    "version": "0.18.216",
+    "when": "2026-09-22",
+    "title": "Which one you already have",
+    "items": [
+      "A film already in the library offers a quiet line to download another version of it, with the same list of releases a new film gets.",
+      "The release the file on disk came from is marked in the list, so nobody fetches what they already have, and it is never the one recommended.",
+      "Settings says which resolution to put forward and whether to settle on the most carried or the smallest.",
+      "The recommended one is marked by its colour alone."
+    ]
+  },
+  {
+    "version": "0.18.215",
+    "when": "2026-09-22",
+    "title": "The one to take",
+    "items": [
+      "The most carried 1080p release stands at the top of the version list in green, marked recommended, and is what the download button offers unless you choose otherwise."
+    ]
+  },
+  {
+    "version": "0.18.214",
+    "when": "2026-09-22",
+    "title": "The same film, whatever it is called",
+    "items": [
+      "A film is matched to what the tracker is carrying by the number IMDb knows it by, not only by its title, so a release named differently from the way the list names the film is still found."
+    ]
+  },
+  {
+    "version": "0.18.213",
+    "when": "2026-09-22",
+    "title": "What you cannot fetch, said first",
+    "items": [
+      "A version you cannot fetch - over what you are allowed, or bigger than the room left - is red in the list with the reason beside it, and cannot be chosen, instead of being refused after you press."
+    ]
+  },
+  {
+    "version": "0.18.212",
+    "when": "2026-09-22",
+    "title": "A search that does not expire",
+    "items": [
+      "Searching the tracker goes through a local indexer that keeps its own login and signs in again by itself, so nothing has to be pasted in and nothing runs out; the hand-given session stays as the way in where no indexer is set up."
+    ]
+  },
+  {
+    "version": "0.18.211",
+    "when": "2026-09-22",
+    "title": "A shuffle leads to its shelf",
+    "items": [
+      "Pressing the name on a shuffle card opens the shelf it draws from instead of the programme that happened to be showing; in the app the hold menu says go to collection.",
+      "A season with every episode watched is ticked - in the list of seasons on a programme's page, and on the season's own card - instead of saying 37 of 37."
+    ]
+  },
+  {
+    "version": "0.18.210",
+    "when": "2026-09-22",
+    "title": "Looking it up yourself",
+    "items": [
+      "Settings has a search box for the tracker: type anything, see what it holds with the size and how many are carrying it, and either fetch it or add it as a pack to take an episode at a time from.",
+      "The second machine keeps the tracker session alive while the first is switched off, so a night with the main machine down no longer costs the session."
+    ]
+  },
+  {
+    "version": "0.18.209",
+    "when": "2026-09-22",
+    "title": "A shelf with seasons in its rule",
+    "items": [
+      "A shuffle of a shelf that names seasons draws every episode of them a pack can give, instead of holding whole seasons as single entries that played nothing."
+    ]
+  },
+  {
+    "version": "0.18.208",
+    "when": "2026-09-22",
+    "title": "The whole shelf in the hat",
+    "items": [
+      "A shuffle of a series draws from every episode the shelf lists, including the ones a pack can give, instead of only the few already on disk.",
+      "When the hat is drawn, everything in it is fetched from the pack, not only the next three - so a round of a whole series plays without waiting on a download each time."
+    ]
+  },
+  {
+    "version": "0.18.207",
+    "when": "2026-09-22",
+    "title": "As far as you got",
+    "items": [
+      "Whether something counts as watched is decided by the furthest you reached, not where the player was left, so rewinding to the beginning no longer makes a finished episode look untouched.",
+      "Ending a shuffle from Continue watching in the browser asks first: the press empties the hat and there is nothing to press to get it back."
+    ]
+  },
+  {
+    "version": "0.18.206",
+    "when": "2026-09-22",
+    "title": "The episode a programme is on",
+    "items": [
+      "An episode stays on Continue watching wherever it is, the beginning included, so a series rewound to the start still says which episode you are on; a film needs a place worth coming back to, so one opened for a second is not listed."
+    ]
+  },
+  {
+    "version": "0.18.205",
+    "when": "2026-09-22",
+    "title": "Where you were, on whichever machine",
+    "items": [
+      "Skipping to the next episode loses the place instead of claiming the episode was watched; only reaching the end marks it seen.",
+      "Anything you have started is on Continue watching, including a title rewound to the beginning - only crossing it off takes it away.",
+      "When the machine answering changes because the other one is off, the shelves ask it again instead of staying empty until you change tab."
+    ]
+  },
+  {
+    "version": "0.18.204",
+    "when": "2026-09-21",
+    "title": "Next means done with this one",
+    "items": [
+      "Pressing next episode takes the one you are leaving off Continue watching: marked watched if you were past the half of it, and simply forgotten if you were not.",
+      "The wait after pressing next or previous says which it is, instead of saying a shelf was being drawn from when none was, and only appears when the wait is long enough to be one.",
+      "Every download says how big it is and how much room is left on the drive, on the app as well as in the browser, for tracker releases as well as pack films."
+    ]
+  },
+  {
+    "version": "0.18.203",
+    "when": "2026-09-21",
+    "title": "One machine does the asking",
+    "items": [
+      "Only the main machine searches the tracker; the one that keeps copies reads the feeds as before. One session used from two machines is twice the asking and reads as a shared account.",
+      "The signed-in session is kept alive between searches, instead of idling out in the hour between them and having to be handed over again."
+    ]
+  },
+  {
+    "version": "0.18.202",
+    "when": "2026-09-21",
+    "title": "Ask it yourself",
+    "items": [
+      "A button in settings asks the tracker now, for a list with a hole in it after the machine has been off.",
+      "The asking carries on once everything is matched, going back round the list oldest first, so what was posted while a machine was off is still found.",
+      "Settings says how many releases are known, how many films are left to ask about, and whether the tracker session still works.",
+      "Two bars show it: how far round the list the asking has got, and how much of the list can be fetched rather than only asked for."
+    ]
+  },
+  {
+    "version": "0.18.201",
+    "when": "2026-09-21",
+    "title": "Asking, not just listening",
+    "items": [
+      "The list of what can be fetched is filled in by asking the tracker about films the feeds never carried - thirty a day, newest release first - instead of only what was posted today.",
+      "Releases found that way carry their size and how many are carrying them without anything being downloaded to measure it."
+    ]
+  },
+  {
+    "version": "0.18.200",
+    "when": "2026-09-21",
+    "title": "Nothing missed for good",
+    "items": [
+      "The second machine asks for every place twice an hour instead of only what changed since it last asked, so a place missed while it restarted is picked up rather than lost."
+    ]
+  },
+  {
+    "version": "0.18.199",
+    "when": "2026-09-21",
+    "title": "One viewer, not two",
+    "items": [
+      "Places arriving from the main server are filed under the viewer this machine already knows, instead of a second name nothing reads; what was written under the old one is moved across."
+    ]
+  },
+  {
+    "version": "0.18.198",
+    "when": "2026-09-21",
+    "title": "One button for fetching",
+    "items": [
+      "Fetching a release from the tracker wears the same button as fetching from a pack: the same word, with the size of the version chosen beside it."
+    ]
+  },
+  {
+    "version": "0.18.197",
+    "when": "2026-09-21",
+    "title": "The same shelf on both",
+    "items": [
+      "A place written on the main server for a film the second machine has not got now shows there too, faded and named, instead of being dropped on arrival."
+    ]
+  },
+  {
+    "version": "0.18.196",
+    "when": "2026-09-21",
+    "title": "How big anybody else may fetch",
+    "items": [
+      "A setting caps the size of a single download for everyone but you, at ten gigabytes to begin with; a release over it is refused with its size said."
+    ]
+  },
+  {
+    "version": "0.18.195",
+    "when": "2026-09-21",
+    "title": "What it is before it comes in",
+    "items": [
+      "A film the tracker is carrying says Download on its poster in the app, not Request.",
+      "The list of versions says how big each one is, read from the release itself."
+    ]
+  },
+  {
+    "version": "0.18.194",
+    "when": "2026-09-21",
+    "title": "Cleared on one, cleared on both",
+    "items": [
+      "Clearing a place on one machine clears it on the other, instead of the card coming back from the copy within minutes."
+    ]
+  },
+  {
+    "version": "0.18.193",
+    "when": "2026-09-21",
+    "title": "Every place you are at",
+    "items": [
+      "Continue watching lists every episode and film left part-way, not one card per programme, so a series watched out of order shows all of its places.",
+      "Clearing an episode that was only offered as the next one takes the programme off the shelf, instead of drawing the episode after it."
+    ]
+  },
+  {
+    "version": "0.18.192",
+    "when": "2026-09-21",
+    "title": "The second machine on its own",
+    "items": [
+      "The machine that keeps copies can reach the film database again, so it fills in posters, cast and what a title is instead of leaving them blank.",
+      "Your watchlist is the same list on both machines, including films that can only be asked for or downloaded.",
+      "A title the second machine has no file for no longer sends the player to a machine that is switched off; it says it cannot play it.",
+      "Screens no longer show the wrong machine name when only the second one is answering.",
+      "The browser no longer draws its own casting button over a film in full screen.",
+      "New on streaming reaches a week ahead, so a film about to arrive is listed before it does.",
+      "A film page says the day it came out, or the day it is coming.",
+      "Both scores are read - what the audience thought and what the reviewers thought - and a setting says which of them a new film has to satisfy.",
+      "Films on the new list say when there is something to fetch for them, and the versions carried are listed by name so you pick which one arrives.",
+      "Both machines keep their own list of what can be fetched, so either can answer when the other is off.",
+      "Continue watching is the same shelf on both machines: an evening watched on either is written into the other, whoever watched it.",
+      "A film the machine you are on holds no file for is shown faded on Continue watching rather than left out.",
+      "A film fetched from the tracker starts downloading instead of sitting stopped.",
+      "A setting says what everyone else may download - nothing, what the packs carry, or that and whatever the tracker is holding.",
+      "Everything part-way through stays on Continue watching. Putting a title aside is gone: a film leaves that shelf when it is marked watched, and not before."
+    ]
+  },
+  {
     "version": "0.18.191",
     "when": "2026-09-20",
     "title": "Back where you were",
@@ -5103,7 +7781,7 @@
     "title": "Collections",
     "items": [
       "Named shelves alongside the watchlist, each with a rule: words a title must carry, and optionally films only or programmes only. They sit as a row above the grid and open like a folder.",
-      "A rule rarely fits a canon exactly, so a collection also keeps two lists by hand - titles pinned in and titles struck out. Alien on this server matches eleven films by name: four of them belong to another series, and Prometheus belongs but never says so. Pinned and struck out, it comes to seven, in release order.",
+      "A rule rarely fits a canon exactly, so a collection also keeps two lists by hand - titles pinned in and titles struck out. A name rule can match films of another series and miss one that belongs; pinned and struck out, the list is exact.",
       "Collections belong to the viewer, like the watchlist, and a guest keeps their own. Deleting one leaves every film where it was."
     ]
   },

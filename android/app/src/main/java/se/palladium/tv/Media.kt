@@ -68,6 +68,10 @@ data class SubTrack(
     val short: Boolean = false,
     val confirmed: Boolean = false,
     val picked: Boolean = false,
+    //: how many had downloaded it where it came from
+    val downloads: Int = 0,
+    //: named for this very release: the one whose timing fits
+    val match: Boolean = false,
 ) {
     /** What to call it on screen: the language first, then what kind it is. */
     fun shown(): String {
@@ -121,6 +125,14 @@ fun languageName(tag: String): String = when (tag.lowercase()) {
  */
 data class Copy(
     val mi: Int,
+    /** which cut this file is, where its name says: Director's Cut, Ulysses Cut */
+    val edition: String = "",
+    /** the cut, from its name and its length, where the film is held in more than one */
+    val cut: String = "",
+    /** the cover that came with this copy, a server path, or "" */
+    val thumb: String = "",
+    /** this copy's own length: another cut of the film is another length */
+    val durationMs: Long = 0L,
     val container: String?,
     val videoCodec: String?,
     val audioCodec: String?,
@@ -148,11 +160,14 @@ data class Copy(
             videoCodec?.uppercase(),
             (bitrate / 1000f).takeIf { it >= 0.1f }?.let { "%.1f Mbit/s".format(it) },
         ).joinToString("  ·  ")
-        return fileName?.removeSuffix(".mkv")?.removeSuffix(".mp4") ?: facts
+        val named = fileName?.removeSuffix(".mkv")?.removeSuffix(".mp4") ?: facts
+        val which = cut.ifEmpty { edition }
+        return if (which.isNotEmpty()) "$which  ·  $named" else named
     }
 
     /** The same in a pill's worth of room: the facts, never the release name. */
     fun brief(): String = listOfNotNull(
+        edition.takeIf { it.isNotEmpty() },
         height?.let { if (it >= 1700) "4K" else it.toString() + "p" },
         videoCodec?.uppercase(),
     ).joinToString("  ·  ").ifEmpty { container?.uppercase() ?: "file" }
@@ -183,6 +198,8 @@ data class Media(
     val partKey: String?,
     /** what this copy is called on disk - the release a subtitle has to match */
     val fileName: String? = null,
+    /** which cut the copy described is, where its name says */
+    val edition: String = "",
     /** decibels this file wants, measured against everything else in the library */
     val gainDb: Float = 0f,
     /** and how loud it was measured to be */
@@ -198,17 +215,21 @@ data class Media(
     val watchedEpisodes: Int = 0,      // for a series or a season
     // a film's release date, or for a series the date of its newest episode
     val released: String = "",
-    /** The name the library sorts by: articles stripped, so "The Abyss" files as A. */
+    /** The name the library sorts by: articles stripped, so "The Anvil" files as A. */
     val titleSort: String = "",
     // this series is being watched with subtitles, so an episode of it starts with
     // whatever subtitle file is beside it turned on
     val subsWanted: Boolean = false,
+    // seconds of channel ident a fresh start begins past
+    val skipStart: Double = 0.0,
     // the subtitle chosen for this title last time, if there was one
     val pickedSub: Int? = null,
     // the release an episode of this series has been watched through with
     val subsConfirmed: String = "",
     /** lines in the tallest copy held, which is what makes a title 4K */
     val maxHeight: Int = 0,
+    /** how many different cuts are held - theatrical, extended, a fan edition */
+    val cuts: Int = 0,
     /** every file this title is held as, and which of them the fields above describe */
     val copies: List<Copy> = emptyList(),
     val mi: Int = 0,
@@ -233,6 +254,39 @@ data class Media(
     /** Which shelf's round is holding this place, where one is. Carried into the
      *  player so the shelf keeps the place and Next draws from that shelf. */
     var shuffleId: String = ""
+    /** How watched a programme is right now, for the popular row: higher first. */
+    var popularity: Int = 0
+    /** Off the popular list and not held yet: pressing it puts it in the library. */
+    var addable: Boolean = false
+    /** The next episode of a series being waited on: not here yet, and when it airs. */
+    var upcoming: Boolean = false
+    /** out already, and nowhere here or on the tracker to fetch it from */
+    var missing: Boolean = false
+    /** a series' newest aired episode: its key and number, for Recently released */
+    var latestKey: String = ""
+    /** on the season's shelf: what the shelf is called, and this card's place in it */
+    var shelf: String = ""
+    var seasonRank: Int = 0
+    /** that episode's season poster */
+    var latestThumb: String = ""
+    /** For the episode Play on a programme starts: "resume", "next" or "start". */
+    var nextUp: String = ""
+    var latestSeason: Int = 0
+    var latestNumber: Int = 0
+    /** Not here, but on the tracker already - early releases included: pressable. */
+    var fetchable: Boolean = false
+    /** an upcoming episode whose air date is today */
+    var airsToday: Boolean = false
+    /** Rotten Tomatoes for a film not held yet, percent; -1 when not known. */
+    var critics: Int = -1
+    var audience: Int = -1
+    /** what the film says of itself, and who directed it, for Show more */
+    var tagline: String = ""
+    var directors: List<String> = emptyList()
+    /** an episode here that aired this past week, or a season holding one */
+    var fresh: Boolean = false
+    var airs: String = ""
+    var tmdb: Int = 0
 
     /** The library's genres for this title, for narrowing a list it is on. */
     var genres: List<String> = emptyList()
@@ -253,15 +307,25 @@ data class Media(
 
     /** New on streaming and nowhere in this house: it can only be asked for. */
     var askable: Boolean = false
+    /** Something on the tracker to fetch for it, so asking can be skipped. */
+    var onTracker: Boolean = false
+    /** A place written on this machine for something it holds no file for. */
+    var unplayable: Boolean = false
     /** Somebody has asked for it already. */
     var asked: Boolean = false
     /** How many people are waiting on it. One is whoever is reading the screen. */
     var asks: Int = 0
     /** where it was read about, kept with the request so it can be found again */
     var askWhere: String = ""
+    /** where a new release can be watched: each service's name, mark and kind */
+    var providers: List<Triple<String, String, String>> = emptyList()
+    /** the studios behind a film: each one's name, and its mark or "" */
+    var studios: List<Pair<String, String>> = emptyList()
     /** its download as the server last said: "", queued, downloading, done or failed */
     var offerState: String = ""
     var offerProgress: Double = 0.0
+    /** which release is coming in, said short: "4K WEB-DL HDR - MiON" */
+    var offerVersion: String = ""
     var offerSize: Long = 0L
     /** gigabytes free on the drive downloads go to; negative when not known */
     var offerFree: Double = -1.0
@@ -273,22 +337,41 @@ data class Media(
     /** who asked for it, and how many downloads are ahead of it while it waits */
     var offerWho: String = ""
     var offerPlace: Int = 0
+    /** in the download queue: the key it waits under, and whether this viewer may move it */
+    var offerQueueKey: String = ""
+    var offerMine: Boolean = false
     /** the pack's releases of this film when it carries more than one: key, and what to call it */
     var offerVersions: List<Pair<String, String>> = emptyList()
 
     val isFolder get() = type == "show" || type == "season"
 
+    /** An episode's own name. `title` is its programme's, so a shelf of mixed things
+     *  reads by programme; the name is the tail of the line under it, after the
+     *  number: "S3 E5  The Aluminum Monster vs. Fatty Magoo". */
+    val episodeName: String
+        get() = if (type == "episode") subtitle.substringAfter("  ", "").trim() else ""
+
     /** The same title, described by another of its files. */
+    /** The cover of the copy in hand, where it came with one of its own. */
+    val copyThumb: String
+        get() = copies.firstOrNull { it.mi == mi }?.thumb.orEmpty()
+
     fun asCopy(which: Int): Media {
         val copy = copies.getOrNull(which) ?: return this
         return copy(
             mi = copy.mi,
             container = copy.container, videoCodec = copy.videoCodec,
             audioCodec = copy.audioCodec, height = copy.height, bitrate = copy.bitrate,
-            partKey = copy.partKey, fileName = copy.fileName,
+            partKey = copy.partKey, fileName = copy.fileName, edition = copy.edition,
             audioChannels = copy.audioChannels,
             subtitleStreams = copy.subtitleStreams, audioStreams = copy.audioStreams,
             pickedSub = copy.pickedSub,
+            durationMs = if (copy.durationMs > 0) copy.durationMs else durationMs,
+            // another cut is another timeline: a place kept in a longer or shorter
+            // version is a place in the other film, so this one starts at the start
+            viewOffsetMs = if (copy.durationMs > 0 && durationMs > 0 &&
+                               kotlin.math.abs(copy.durationMs - durationMs) > 180_000L) 0L
+                           else viewOffsetMs,
         ).also { it.srv = srv }
     }
 
@@ -370,12 +453,13 @@ data class Media(
     fun openWith(prefer: String, second: String = Api.myLanguage2): SubTrack? {
         val text = textSubs()
         if (text.isEmpty()) return null
+        // the first language set to off: the film starts without one
+        if (prefer.lowercase() == "off") return null
         // The first file beside the video, not the last: the server has already put
         // them in order - one proved on this series, then the one chosen last time,
         // and anything whose last line is spoken after the film ends at the bottom.
         // Taking the last undid all of that, and on an episode with two files beside
         // it picked the one cut for another release.
-        text.firstOrNull { it.index < 0 }?.let { return it }
         fun speaking(code: String): List<SubTrack> {
             val want = code.lowercase().take(3)
             if (want.isEmpty()) return emptyList()
@@ -387,13 +471,42 @@ data class Media(
         }
         // The first language, then the second if the film carries nothing in the
         // first, and only then whatever the film does carry.
-        val mine = speaking(prefer).ifEmpty { speaking(second) }
+        val mine = speaking(prefer).ifEmpty {
+            if (second.lowercase() == "off") emptyList() else speaking(second) }
+        // a file beside the video in this viewer's language before the film's own; a
+        // Swedish file proved against the picture was listed first and opened for an
+        // English reader
+        mine.firstOrNull { it.index < 0 }?.let { return it }
+        // the second set to off: nothing in the first language is nothing at all
+        if (mine.isEmpty() && second.lowercase() == "off") return null
         return mine.firstOrNull { !it.forced && !it.sdh }
             ?: mine.firstOrNull { !it.forced }
             ?: mine.firstOrNull()
+            ?: text.firstOrNull { it.index < 0 }
             ?: text.firstOrNull { !it.forced && !it.sdh }
             ?: text.firstOrNull { !it.forced }
             ?: text.firstOrNull()
+    }
+
+    /**
+     * The subtitle to start with: the one picked last time when it is in the viewer's
+     * first language, or when nothing in that language is here - otherwise the first
+     * language wins. A Swedish file picked once, when it was all there was, kept an
+     * English reader on Swedish after the English one arrived.
+     */
+    fun startSub(prefer: String = Api.myLanguage): Int? {
+        val main = openWith(prefer)
+        val inMain = { t: SubTrack ->
+            val tag = t.language.lowercase(); val want = prefer.lowercase()
+            tag.isNotEmpty() && (tag.startsWith(want.take(2)) || want.startsWith(tag.take(2)))
+        }
+        val picked = pickedSub?.let { i -> textSubs().firstOrNull { it.index == i } }
+        if (picked != null && (inMain(picked) || main == null || !inMain(main)))
+            return picked.index
+        // never a number this copy has no track for: a pick made on another version
+        // of the film named that version's track, and loaded its subtitle timed for a
+        // different cut
+        return main?.index ?: picked?.index
     }
 
     /** Tracks the player can draw itself, once the server has turned them into WebVTT. */
@@ -414,12 +527,16 @@ data class Media(
     fun inOrder(tracks: List<SubTrack>, prefer: String): List<SubTrack> {
         val want = prefer.lowercase().take(2)
         fun mine(t: SubTrack) = t.language.lowercase().take(2) == want
+        // The files beside the film come in the server's order - cut for this
+        // release, verified, chosen last, then by downloads. Sorting them by their
+        // number put them in reverse alphabetical order instead.
+        val served = tracks.withIndex().associate { it.value to it.index }
         return tracks.sortedWith(compareBy(
             { if (it.index < 0) 0 else 1 },          // fetched, then from the film
             { if (mine(it)) 0 else 1 },              // your language first
             { if (it.forced) 1 else 0 },             // a full track before a forced one
             { if (it.sdh) 1 else 0 },                // and before one describing sounds
-            { it.index },                            // otherwise as the film has them
+            { served[it] ?: 0 },                     // otherwise as they were served
         ))
     }
 
@@ -490,16 +607,26 @@ data class Media(
                             external = s.optBoolean("external"),
                             short = s.optBoolean("short"),
                             confirmed = s.optBoolean("confirmed"),
-                            picked = s.optBoolean("picked")))
+                            picked = s.optBoolean("picked"),
+                            downloads = s.optInt("downloads", 0),
+                            match = s.optBoolean("match")))
                     }
                 }
             }
             return Copy(
                 mi = at,
+                edition = media?.optString("edition", "").orEmpty()
+                    .takeIf { it != "null" }.orEmpty(),
+                cut = media?.optString("cut", "").orEmpty().takeIf { it != "null" }.orEmpty(),
+                thumb = media?.optString("thumb", "").orEmpty().takeIf { it != "null" }.orEmpty(),
+                durationMs = media?.optLong("duration", 0L) ?: 0L,
                 container = media?.optString("container"),
                 videoCodec = media?.optString("videoCodec"),
                 audioCodec = media?.optString("audioCodec"),
-                height = media?.optInt("height")?.takeIf { it > 0 },
+                // the picture's size in lines, letterboxing accounted for: a 3840x1600
+                // film is 4K, not 1600p
+                height = media?.let { maxOf(it.optInt("height"), it.optInt("width") * 9 / 16) }
+                    ?.takeIf { it > 0 },
                 bitrate = media?.optInt("bitrate") ?: 0,
                 partKey = part?.optString("key")?.takeIf { it.isNotEmpty() },
                 gainDb = (part?.optDouble("gainDb", 0.0) ?: 0.0).toFloat(),
@@ -541,8 +668,12 @@ data class Media(
                 else -> o.optString("title")
             }
             val sub = when (type) {
-                "episode" -> "S%d E%d  %s".format(o.optInt("parentIndex"), o.optInt("index"),
-                                                  o.optString("title"))
+                // an episode still to come says when, rather than its name
+                "episode" -> if (o.optBoolean("upcoming"))
+                    "S%d E%d  ·  %s".format(o.optInt("parentIndex"), o.optInt("index"),
+                                               o.optString("airs"))
+                else "S%d E%d  %s".format(o.optInt("parentIndex"), o.optInt("index"),
+                                          o.optString("title"))
                 "season" -> {
                     val n = o.optInt("leafCount")
                     val held = o.optInt("shelfCount")
@@ -575,7 +706,9 @@ data class Media(
                 thumb = o.optString("thumb").takeIf { it.isNotEmpty() && it != "null" }
                     ?: o.optString("grandparentThumb").takeIf { it.isNotEmpty() && it != "null" },
                 durationMs = o.optLong("duration"),
-                viewOffsetMs = o.optLong("viewOffset"),
+                // past the end of the copy that will play: a place in a longer cut
+                viewOffsetMs = o.optLong("viewOffset").let { v ->
+                    if (first.durationMs > 0 && v > first.durationMs - 15_000L) 0L else v },
                 index = o.optInt("index").takeIf { o.has("index") },
                 parentIndex = o.optInt("parentIndex").takeIf { o.has("parentIndex") },
                 grandparentTitle = o.optString("grandparentTitle").takeIf { it.isNotEmpty() },
@@ -588,6 +721,7 @@ data class Media(
                 bitrate = first.bitrate,
                 partKey = first.partKey,
                 fileName = first.fileName,
+                edition = first.edition,
                 gainDb = first.gainDb,
                 lufs = first.lufs,
                 // nought means the two agree; absent means the name does not say
@@ -608,9 +742,11 @@ data class Media(
                 titleSort = o.optString("titleSort", "")
                     .let { if (it == "null") "" else it },
                 subsWanted = o.optBoolean("subsWanted", false),
+                skipStart = o.optDouble("skipStart", 0.0).let { if (it.isNaN()) 0.0 else it },
                 subsConfirmed = o.optString("subsConfirmed", ""),
                 pickedSub = first.pickedSub,
                 maxHeight = o.optInt("maxHeight"),
+                cuts = o.optInt("cuts"),
                 copies = copies,
                 mi = first.mi,
             ).also {
@@ -618,6 +754,28 @@ data class Media(
                 it.shuffle = o.optString("shuffle", "")
                 it.shelfResumeAt = o.optInt("resumeAt", 0)
                 it.shuffleId = o.optString("shuffleId", "")
+                it.popularity = o.optInt("popularity", 0)
+                it.addable = o.optBoolean("addable", false)
+                it.upcoming = o.optBoolean("upcoming", false)
+                it.missing = o.optBoolean("missing", false)
+                it.latestKey = o.optString("latestKey", "")
+                it.shelf = o.optString("shelf", "")
+                it.seasonRank = o.optInt("seasonRank", 0)
+                it.latestThumb = o.optString("latestThumb", "").let { if (it == "null") "" else it }
+                it.nextUp = o.optString("nextUp", "")
+                it.latestSeason = o.optInt("latestSeason", 0)
+                it.latestNumber = o.optInt("latestNumber", 0)
+                it.fetchable = o.optBoolean("fetchable", false)
+                it.airsToday = o.optBoolean("airsToday", false)
+                it.critics = if (o.isNull("critics")) -1 else o.optInt("critics", -1)
+                it.audience = if (o.isNull("audience")) -1 else o.optInt("audience", -1)
+                it.tagline = o.optString("tagline", "")
+                it.directors = o.optJSONArray("directors")?.let { a ->
+                    (0 until a.length()).map { a.optString(it) }.filter { it.isNotEmpty() }
+                } ?: emptyList()
+                it.fresh = o.optBoolean("fresh", false)
+                it.airs = o.optString("airs", "")
+                it.tmdb = o.optInt("tmdb", 0)
             }
         }
     }

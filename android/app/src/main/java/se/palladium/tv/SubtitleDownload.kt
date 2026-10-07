@@ -54,6 +54,10 @@ private fun rememberLanguage(ctx: android.content.Context, code: String) {
  * because finding a subtitle that actually fits often takes two or three tries; the
  * one that carries an episode to the end is the one the series keeps.
  */
+
+//: a subtitle already beside the film, as the version list marks a copy on disk
+private val OnDisk = androidx.compose.ui.graphics.Color(0xFFE0B341)
+
 @Composable
 fun SubtitleDownloadDialog(
     media: Media,
@@ -72,7 +76,8 @@ fun SubtitleDownloadDialog(
     // the device's last choice to begin with, then the server's, which is the one
     // that follows this viewer between screens
     var speaking by remember { mutableStateOf(lastLanguage(ctx)) }
-    LaunchedEffect(Unit) { speaking = Api.subtitleLanguage() }
+    // subtitles off by default is no language to search in: the device's last stands
+    LaunchedEffect(Unit) { Api.subtitleLanguage().takeIf { it != "off" }?.let { speaking = it } }
     val first = remember { FocusRequester() }
     var problem by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf("") }
@@ -177,7 +182,7 @@ fun SubtitleDownloadDialog(
                                         scope.launch {
                                             val err = Api.getSubtitle(
                                                 media, candidate.id, speaking,
-                                                candidate.name)
+                                                candidate.name, candidate.downloads)
                                             busy = ""
                                             if (err == null) {
                                                 onTaken(candidate.name); onClose()
@@ -201,14 +206,19 @@ fun SubtitleDownloadDialog(
                             // not that anybody has watched the film with it.
                             val sure = candidate.confirmed
                             Column(Modifier.weight(1f)) {
+                                // whole, over as many lines as it takes: variants
+                                // differ at the end of the name, which was cut off
                                 Text(candidate.name,
-                                     color = if (using) Skin.Accent else Skin.Fg,
-                                     fontSize = 13.5.sp,
-                                     maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                     color = if (using) Skin.Accent
+                                             // yellow: already beside the film
+                                             else if (candidate.onDisk) OnDisk
+                                             else Skin.Fg,
+                                     fontSize = 13.5.sp)
                                 Text(
                                     listOfNotNull(
                                         if (sure) "confirmed" else null,
                                         if (using) "in use" else null,
+                                        if (candidate.onDisk && !using) "on disk" else null,
                                         if (candidate.sameName) "matches this file by name"
                                         else if (candidate.hashOdd)
                                             "hash says this file, name says another"

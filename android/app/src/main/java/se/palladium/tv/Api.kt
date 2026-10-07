@@ -3,6 +3,7 @@ package se.palladium.tv
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
@@ -101,6 +102,16 @@ object Api {
     @Volatile private var onStandby: Boolean = false
 
     /**
+     * How many times the server answering has been swapped under the app's feet.
+     *
+     * A failed call falls over to the other machine and the call itself succeeds, so
+     * nothing goes wrong and nothing says anything happened - but the shelves had
+     * already been drawn empty against the machine that is off, and only a tab change
+     * asked again. Screens watch this and ask again when it moves.
+     */
+    val swapped = androidx.compose.runtime.mutableStateOf(0)
+
+    /**
      * The server we left when it stopped answering, and when it was last tried.
      *
      * Going to the machine that keeps copies is a stop-gap: it holds what the main server
@@ -109,7 +120,6 @@ object Api {
      * anyway, which is both the question and the answer.
      */
     @Volatile private var homeBase: String = ""
-    @Volatile private var triedHome: Long = 0L
 
     /**
      * Every other machine this one knows a way to, the likeliest route first.
@@ -129,21 +139,20 @@ object Api {
             .map { it.trimEnd('/') }
             .filter { it.isNotEmpty() && it != here.trimEnd('/') }
             .distinct()
+            // not a house address off the house network, nor one the check found off
+            .filter { homeHere(it) && Reach.upAt(it) != false }
     }
 
     fun use(s: Server) {
-        base = s.base.trimEnd('/')
+        // the address the background check last saw this machine answer on, else the
+        // one it is filed under until the check has said
+        base = (Reach.doorOf(s) ?: s.base).trimEnd('/')
         token = s.token
         standby = ""
         standbyOut = ""
         standbyName = ""
         onStandby = false
         homeBase = ""
-        // The machine's other address, taken from the row rather than asked for.
-        // Asking means reaching the server, and the case this exists for is the one
-        // where the server cannot be reached: a phone on mobile data opening a row
-        // filed under a house address had nothing to fall back to but the cache.
-        otherWay = s.outside.trimEnd('/')
     }
 
     /**
@@ -177,8 +186,6 @@ object Api {
      * showed a light, because a light is a knock on whichever address answers and
      * the library was still being asked of the one that does not.
      */
-    @Volatile var otherWay: String = ""
-
     /** Whether an address is this library's own machine that keeps copies. */
     private fun theCopy(where: String): Boolean {
         val it = Servers.hostOf(where)
@@ -195,50 +202,9 @@ object Api {
             runCatching {
                 val said = JSONObject(fetch(at, "/where", tok, 6000))
                 engines[at] = said.optString("engine")
-                if (at == base) {
-                    // whichever of its two addresses is not the one in hand
-                    otherWay = listOf(said.optString("lan"), said.optString("outside"))
-                        .map { it.trimEnd('/') }
-                        .firstOrNull { it.isNotEmpty() && it != at } ?: otherWay
-                }
             }
             Unit
         }
-
-    /**
-     * Open the server by whichever of its addresses answers from here.
-     *
-     * The address a machine is filed under is the one it was learned by, and that
-     * says nothing about where this screen is standing now. A phone that learned the
-     * copy from a train had it filed under the way in from outside, and on the main server
-     * network that address goes out to the router and back - when it works at all.
-     */
-    /**
-     * Every machine in the list, filed under whichever of its addresses answers.
-     *
-     * Not only the one that is open. A phone that could not reach the cache sat in
-     * front of a list saying it was on this network while nothing from it would
-     * load, because only the server being watched was ever checked.
-     */
-    suspend fun fileThemWhereTheyAnswer(ctx: Context) = withContext(Dispatchers.IO) {
-        Servers.all(ctx).forEach { srv ->
-            val other = outsideFor(ctx, srv)
-            if (other.isEmpty()) return@forEach
-            val mine = srv.base.trimEnd('/')
-            val home = Servers.athome(mine)
-            // the short way when it works, and the other when the filed one does not
-            val swap = if (!home && Servers.athome(other)) answering(other, srv.token)
-                       else !answering(mine, srv.token) && answering(other, srv.token)
-            if (swap) {
-                Servers.add(ctx, srv.copy(base = other, outside = srv.base,
-                                          name = if (srv.name ==
-                                                     Servers.hostOf(srv.base))
-                                                     Servers.hostOf(other)
-                                                 else srv.name))
-            }
-        }
-        Unit
-    }
 
     /**
      * A row's other way in: the one it learned, or failing that the one it can work out.
@@ -250,7 +216,7 @@ object Api {
      * row that never learned it otherwise kept pointing at the house network from away,
      * and posters and lists built from the row never arrived.
      */
-    private fun outsideFor(ctx: Context, srv: Server): String {
+    fun outsideFor(ctx: Context, srv: Server): String {
         val known = srv.outside.trimEnd('/')
         if (known.isNotEmpty()) return known
         val at = srv.base.trimEnd('/')
@@ -262,37 +228,29 @@ object Api {
         return if (port.isEmpty() || host.isEmpty()) "" else "http://$host:$port"
     }
 
+    /**
+     * On an opening: the background check decides where the library is - the main
+     * server by whichever address answers, home from the copy when the main server is
+     * back - and rows carrying another machine's address are put right.
+     */
     suspend fun openTheDoorThatAnswers(ctx: Context) = withContext(Dispatchers.IO) {
-        val here = Servers.current(ctx) ?: return@withContext
-        val other = outsideFor(ctx, here)
-        val mine = here.base.trimEnd('/')
-        // The one on this network, when there is one and it answers. Going out to
-        // the router and back in to reach a machine three metres away works - which
-        // is the trouble: it answers, so nothing ever looked for the short way, and
-        // a screen that once learned a machine from away kept using the long way
-        // round for good.
-        if (other.isNotEmpty() && !Servers.athome(mine) && Servers.athome(other) &&
-            answering(other, here.token)) {
-            Servers.use(ctx, swapped(here, other))
-            return@withContext
-        }
-        if (answering(mine, here.token)) return@withContext
-        if (other.isEmpty() || !answering(other, here.token)) return@withContext
-        Servers.use(ctx, swapped(here, other))
+        Reach.awaitFirst(4000)
+        Reach.route()
+        runCatching { Servers.healDoors(ctx) }
         Unit
     }
 
-    /**
-     * The same row, opened by its other address.
-     *
-     * The name goes with it when the name was only ever the old address written out:
-     * a row calling itself by one address while reaching the machine at another is
-     * how an evening gets spent looking at the wrong thing.
-     */
-    private fun swapped(s: Server, to: String): Server =
-        s.copy(base = to, outside = s.base,
-               name = if (s.name == Servers.hostOf(s.base)) Servers.hostOf(to)
-                      else s.name)
+    /** Whether this opening of the app has looked for the main server yet. */
+    @Volatile private var homeLooked = false
+
+    /** The app opened again from the background: look for the main server once more. */
+    fun openedAgain() { homeLooked = false }
+
+    /** Whether the next look still has the main server to look for. */
+    fun homeUnlooked(): Boolean = !homeLooked
+
+    /** The look for the main server has been made for this opening. */
+    fun homeLookedFor() { homeLooked = true }
 
     /** What the machine that keeps copies is fetching this minute, by key. */
     suspend fun copyingNow(): String = withContext(Dispatchers.IO) {
@@ -301,18 +259,21 @@ object Api {
 
     /** Ask this server where else it can be reached, and write it on its row. */
     suspend fun learnTheWayIn(ctx: Context) = withContext(Dispatchers.IO) {
-        val here = Servers.current(ctx)
-        if (otherWay.isEmpty() && here != null && here.outside.isNotEmpty() &&
-            here.outside.trimEnd('/') != base) {
-            otherWay = here.outside.trimEnd('/')
-        }
+        Reach.awaitFirst(4000)
         // asked of every machine in the list, not only the one that is open: the
         // list is what somebody reads when nothing is loading, and a row that shows
         // one address is a row that cannot say why
         Servers.all(ctx).forEach { srv ->
             runCatching {
-                val said = JSONObject(fetch(srv.base.trimEnd('/'), "/where",
-                                            srv.token, 6000))
+                // by the address the check reaches it on: from away, the one it is
+                // filed under is a house address that cannot be asked
+                val said = JSONObject(fetch(addressOf(srv), "/where", srv.token, 6000))
+                // another machine answering at this row's address: nothing it says
+                // is about this row
+                val who = said.optString("id")
+                if (srv.id.isNotEmpty() && who.isNotEmpty() && who != srv.id) {
+                    return@runCatching
+                }
                 engines[srv.base.trimEnd('/')] = said.optString("engine")
                 Servers.learnDoors(ctx, srv.base, said.optString("lan"),
                                    said.optString("outside"), said.optString("name"))
@@ -333,17 +294,18 @@ object Api {
                     }
                     if (!known) {
                         val at = theirs.ifEmpty { theirsOut }
+                        // with its id. Added without one, the row was only ever
+                        // matched by address, and a machine whose address this row
+                        // also carried was taken for the same machine - which put the
+                        // cache's name on the main server's row and left the screen
+                        // saying it was somewhere it was not.
                         Servers.add(ctx, Server(
                             follows?.optString("name").orEmpty()
                                 .ifEmpty { Servers.hostOf(at) },
                             at, srv.token, mine = srv.mine, on = false,
+                            id = follows?.optString("id").orEmpty(),
                             outside = if (at == theirs) theirsOut else theirs))
                     }
-                }
-                if (srv.base.trimEnd('/') == base) {
-                    otherWay = listOf(said.optString("lan"), said.optString("outside"))
-                        .map { it.trimEnd('/') }
-                        .firstOrNull { it.isNotEmpty() && it != base } ?: otherWay
                 }
             }
         }
@@ -367,64 +329,81 @@ object Api {
     /** Whether what is on screen is coming from the cache rather than the server. */
     fun standingBy(): Boolean = onStandby
 
-    /**
-     * Move the whole app to the machine that keeps copies.
-     *
-     * The player finds the server gone before anything else does - it is the only
-     * part asking for bytes every second - and when it moves house it used to move
-     * alone: the film played from the cache while the shelves behind it, the next
-     * episode and everything else still asked the machine that had just gone off. So
-     * leaving the film went back to a menu that could not answer.
-     *
-     * Nothing is written down. The way home is remembered, and the first request
-     * after the server answers again goes back to it.
-     */
-    fun onTheCopyNow(where: String) {
-        val to = where.trimEnd('/')
-        if (to.isEmpty() || to == base) return
-        homeBase = base
-        base = to
-        onStandby = true
-        triedHome = System.currentTimeMillis()
-    }
-
-    /**
-     * Go back to the main server now, if it is answering.
-     *
-     * The ordinary way home waits a minute between tries, and `onTheCopyNow` pushes
-     * that minute forward every time the player falls to the copy - so a screen that
-     * keeps re-opening there never gets home at all, and went on saying the copy's
-     * name with the main server up and already carrying half the film. This asks once,
-     * cheaply, and is meant for the moment a new episode starts: there is nothing
-     * playing to disturb, so the switch costs nothing if it works and nothing if it
-     * does not.
-     */
     /** The address this screen fell away from, or empty when it is already home. */
     fun homeBaseNow(): String = homeBase.trimEnd('/')
 
-    fun comeHomeIfUp(): Boolean {
-        val home = homeBase.trimEnd('/')
-        if (home.isEmpty()) return false
+    /**
+     * Where the library is asked from, as the background check decided: the main
+     * server by the address that answers, or the machine keeping its copies with the
+     * way home remembered. The one place [base] changes once the app is open.
+     */
+    fun routeTo(door: String, standby: Boolean, home: String = "") {
+        val to = door.trimEnd('/')
+        if (to.isEmpty()) return
+        val moved = to != base.trimEnd('/') || standby != onStandby
+        base = to
+        onStandby = standby
+        homeBase = if (standby) home.trimEnd('/').ifEmpty { homeBase } else ""
+        if (moved) swapped.value = swapped.value + 1
+    }
+
+    /**
+     * The player found the server gone before the check did: the app moves to the
+     * machine keeping copies with it, and the check is told, so its next look does
+     * not send the library straight back to a server it last saw answering.
+     */
+    fun onTheCopyNow(where: String) {
+        val to = where.trimEnd('/')
+        if (to.isEmpty() || to == base.trimEnd('/')) return
+        val left = base
+        Reach.down(left)
+        routeTo(to, standby = true, home = left)
+    }
+
+    /** Ask the check to decide again now, without anything waiting on it. */
+    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+    fun homeLater() {
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) { Reach.route() }
+    }
+
+    /**
+     * Home by an address the background check has just seen answer, once it has
+     * answered a request too: the check can be ten seconds old, and the player may
+     * have just found that same server gone.
+     */
+    fun comeHomeAt(door: String): Boolean {
         return try {
-            fetch(home, "/server", token, 3000, 3000)
-            if (base != home) otherWay = base
-            base = home
-            homeBase = ""
-            onStandby = false
-            triedHome = System.currentTimeMillis()
+            fetch(door.trimEnd('/'), "/server", token, 3000, 3000)
+            routeTo(door, standby = false)
             true
         } catch (away: java.io.IOException) {
-            false                       // still off: stay where we are
+            android.util.Log.i("Palladium", "reach: home at " + door + " refused: " + away)
+            false
         }
+    }
+
+    /** Home now if it answers - the moment a new episode starts. */
+    fun comeHomeIfUp(): Boolean {
+        if (!onStandby) return false
+        Reach.route()
+        return !onStandby
     }
 
     /** Ask the server where its cache is, and remember it for when it is off. */
     fun learnStandby(ctx: Context) {
-        val here = base
+        // filed under the chosen row's own address, which does not change with where
+        // this screen is; asked by the address the check reaches it on
+        Reach.awaitFirst(4000)
+        val row = Servers.current(ctx)
+        val here = (row?.base ?: base).trimEnd('/')
+        val door = row?.let { addressOf(it) } ?: base
         standby = prefs(ctx).getString("standby:" + here, "") ?: ""
         standbyOut = prefs(ctx).getString("standbyOut:" + here, "") ?: ""
         try {
-            val said = JSONObject(get("/standby"))
+            // asked of the machine it is filed under, not of whichever is open by the
+            // time the request goes: a reply from the cache written onto the main
+            // server's row gave that row the cache's address
+            val said = JSONObject(fetch(door, "/standby", row?.token ?: token, 30000))
             prefersTheCopy = said.optBoolean("prefer")
             val where = said.optString("where").trimEnd('/')
             val out = said.optString("outside").trimEnd('/')
@@ -474,10 +453,6 @@ object Api {
             if (mine != null) {
                 Servers.learnDoors(ctx, here, mine.optString("lan"),
                                    mine.optString("outside"), mine.optString("name"))
-                listOf(mine.optString("lan"), mine.optString("outside"))
-                    .map { it.trimEnd('/') }
-                    .firstOrNull { it.isNotEmpty() && it != here }
-                    ?.let { otherWay = it }
             }
             // and it goes in the list of servers like any other, tagged as what it
             // is: a viewer switches to it the same way, and a guest never has to be
@@ -499,7 +474,15 @@ object Api {
 
     /** The server this app opens with, and the list it came from. */
     fun loadServer(ctx: Context): String {
-        Servers.current(ctx)?.let { use(it) }
+        Servers.current(ctx)?.let { cur ->
+            use(cur)
+            // opened on the machine keeping copies: the main server is asked first,
+            // and the copy only once it is known to be off
+            val rows = Servers.all(ctx)
+            rows.firstOrNull { Reach.keepsCopiesOf(cur, it) }?.let { main ->
+                base = addressOf(Servers.withKey(rows, main))
+            }
+        }
         return base
     }
 
@@ -526,111 +509,240 @@ object Api {
         "android " + BuildConfig.VERSION_NAME +
             (if (device == "tv") " tv" else " phone")
 
-    private fun fetch(b: String, path: String, t: String, patience: Int,
-                      reach: Int = 8000): String {
-        val conn = URL(b + auth(path, t)).openConnection() as HttpURLConnection
-        conn.connectTimeout = reach
-        conn.readTimeout = patience
-        conn.setRequestProperty("Accept", "application/json")
-        if (t.isNotEmpty()) conn.setRequestProperty("X-Palladium-Token", t)
-        conn.setRequestProperty("X-Palladium-App", appName())
-        conn.inputStream.use { return it.readBytes().toString(Charsets.UTF_8) }
+    /**
+     * Machines that did not answer, and when they last failed to.
+     *
+     * A server that is off costs the whole connect timeout on every single call -
+     * every shelf, every poster, every page - and with two machines known that is
+     * eight seconds added to everything while one of them is down. A machine that
+     * has just failed is given a second to prove itself instead: on the same network
+     * a live server answers in milliseconds, so nothing that is actually there is
+     * lost, and one that is off is out of the way in a second rather than eight.
+     */
+    private val quiet = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * The address to ask a row by: the one the background check last saw answer as
+     * that machine, else the first of its addresses that can be reached from this
+     * network and was not seen off. Every request, picture and stream asks this.
+     */
+    fun addressOf(srv: Server?): String {
+        if (srv == null) return base.trimEnd('/')
+        Reach.doorOf(srv)?.let { return it }
+        val ways = (listOf(srv.base, srv.outside) + Reach.derivedDoors(srv))
+            .map { it.trimEnd('/') }.filter { it.isNotEmpty() }.distinct()
+        return ways.firstOrNull { homeHere(it) && Reach.upAt(it) != false }
+            ?: srv.base.trimEnd('/')
     }
 
-    private fun get(path: String, srv: Server? = null, patience: Int = 30000): String {
-        // Asked for quickly means reached for quickly - but not so quickly that a
-        // phone on wi-fi cannot answer at all. Three seconds timed out again and
-        // again against a server that accepts a connection in eleven milliseconds
-        // from the machine beside it: the wait is the radio waking up, not the
-        // server. Six, against a four-second read, so a poll that misses costs ten
-        // seconds of numbers that stand still rather than a freeze.
-        val reach = if (patience <= 5000) 6000 else 8000
-        val b = srv?.base ?: base
-        val t = srv?.token ?: token
-        // Away on the cache: try the server with the library on it about once a
-        // minute, with the request that was going to be made anyway. If it answers,
-        // we are home; if it does not, this costs one connection refused.
-        // Whenever there is a way back, not only when the cache is what we fell on.
-        // Falling back to this server's own outside address is not standing by - it
-        // is the same library the long way round - so that case set the flag false
-        // and the way home was never tried again. One restart while a phone was on
-        // the house network and it was out through the router for good.
-        if (srv == null && homeBase.isNotEmpty() &&
-            System.currentTimeMillis() - triedHome > 60_000L) {
-            triedHome = System.currentTimeMillis()
-            try {
-                val said = fetch(homeBase, path, t, patience, reach)
-                // and the address we were using becomes the other way in, so the
-                // next fall is as quick as this one
-                if (base != homeBase) otherWay = base
-                base = homeBase
-                homeBase = ""
-                onStandby = false
-                return said
-            } catch (away: java.io.IOException) {
-                // still off: carry on with the cache
-            }
+    /** The network the answers above were learned on, and forgetting them off it. */
+    @Volatile private var onNetwork = ""
+
+    fun networkNow(ctx: Context) {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE)
+            as? android.net.ConnectivityManager
+        val now = runCatching { cm?.activeNetwork?.toString() ?: "" }.getOrDefault("")
+        if (now != onNetwork) {
+            onNetwork = now
+            quiet.clear()
+            myNets = null
+            Reach.poke()
         }
+    }
+    private const val QUIET_FOR = 60_000L
+    private const val QUICK_REACH = 1200
+
+    private fun reachFor(base: String, want: Int): Int {
+        val went = quiet[base.trimEnd('/')] ?: return want
+        // a home address that did not connect stays quick to give up on until the
+        // network changes: away from home it will not start answering
+        if (Servers.athome(base)) return minOf(want, QUICK_REACH)
+        // from outside the wait is the phone's radio and a lost packet, not the
+        // server: 1.2 s there failed connections to a server answering in 150 ms
+        if (android.os.SystemClock.elapsedRealtime() - went > QUIET_FOR)
+            quiet.remove(base.trimEnd('/'))
+        return want
+    }
+
+    private fun answered(base: String, ok: Boolean) {
+        val key = base.trimEnd('/')
+        if (ok) quiet.remove(key)
+        else quiet[key] = android.os.SystemClock.elapsedRealtime()
+    }
+
+    /** Requests that were slow or failed, told to the server now and then: from a phone
+     *  on somebody else's wifi, where the time goes cannot be seen from the house. */
+    private val slowSeen = java.util.Collections.synchronizedList(mutableListOf<String>())
+    @Volatile private var slowSaid = 0L
+
+    private fun noteSlow(b: String, path: String, ms: Long, why: String) {
+        slowSeen.add(Servers.hostOf(b) + path.substringBefore("?").take(48) + " " + ms + "ms" +
+                     (if (why.isNotEmpty()) " " + why.take(60) else ""))
+        val now = System.currentTimeMillis()
+        if (now - slowSaid < 20_000L) return
+        slowSaid = now
+        val batch = synchronized(slowSeen) { slowSeen.toList().also { slowSeen.clear() } }
+        @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            runCatching { trace("slow: " + batch.takeLast(12).joinToString(" | ")) }
+        }
+    }
+
+    private fun fetch(b: String, path: String, t: String, patience: Int,
+                      reach: Int = 8000): String {
+        val began = System.currentTimeMillis()
         try {
-            return fetch(b, path, t, patience, reach)
-        } catch (e: java.io.IOException) {
-            // A server that refuses or complains has answered: that is its answer,
-            // and the cache would only repeat it. One that cannot be reached at
-            // all has not answered, and the machine keeping copies of its films can
-            // be asked instead.
-            val gone = e is java.net.ConnectException ||
-                       e is java.net.SocketTimeoutException ||
-                       e is java.net.UnknownHostException ||
-                       e is java.net.NoRouteToHostException ||
-                       e is java.net.PortUnreachableException
-            if (!gone) throw e
-            if (srv != null || b != base) throw e
-            // at home the cache is on the network, away from it behind the same
-            // router on its own port. Which of the two answers is which side of the
-            // door this screen is on, and asking is cheaper than knowing.
-            // Its own other door before anybody else's machine: the main server answering
-            // from outside is still the main server, with the whole library on it, and the
-            // copy holds a fraction of it.
-            // the main server by the cache's outside address and its own port, before the cache
-            // itself: a phone that never learned the main server's outside address could
-            // otherwise reach only the cache from away, and a copy that was down left it
-            // with nothing while the main server was answering
-            val houseDoor = houseBehindTheCopysDoor(b)
-            for (other in listOf(otherWay, houseDoor, standby, standbyOut)) {
-                if (other.isEmpty() || other == b) continue
-                val said = try {
-                    fetch(other, path, t, patience)
-                } catch (again: java.io.IOException) {
-                    continue
-                }
-                homeBase = b               // the one to come back to
-                base = other
-                // its own front door is not standing by for anything: it is the same
-                // library, reached the long way round
-                val theHouse = other == otherWay || other == houseDoor
-                onStandby = !theHouse
-                if (theHouse) otherWay = b
-                triedHome = System.currentTimeMillis()
-                return said
+            val said = try {
+                fetchOnce(b, path, t, patience, reach)
+            } catch (e: java.net.UnknownHostException) {
+                // the name would not resolve here: its last known address
+                fetchOnce(KnownHosts.byAddress(b) ?: throw e, path, t, patience, reach)
             }
+            if (!KnownHosts.covered(b)) KnownHosts.learn(b)
+            val ms = System.currentTimeMillis() - began
+            // the notice is held open on purpose until there is something to say
+            if (ms > 2500 && !path.startsWith("/trace") && !path.startsWith("/notice"))
+                noteSlow(b, path, ms, "")
+            return said
+        } catch (e: java.io.IOException) {
+            // a refusal is an answer, not a slow request: only a connection that could
+            // not be made, or one that took its time, is worth telling the server about
+            val ms = System.currentTimeMillis() - began
+            if (!path.startsWith("/trace") && (gone(e) || ms > 2500))
+                noteSlow(b, path, ms, e.javaClass.simpleName + ": " + (e.message ?: ""))
             throw e
         }
     }
 
+    /** The first three parts of every IPv4 address this device has now: "172.16.0". */
+    @Volatile private var myNets: Set<String>? = null
+
+    private fun netsHere(): Set<String> {
+        myNets?.let { return it }
+        val found = runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces().toList()
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { it.inetAddresses.toList() }
+                .filterIsInstance<java.net.Inet4Address>()
+                .map { it.hostAddress.orEmpty().substringBeforeLast('.') }
+                .filter { it.isNotEmpty() }.toSet()
+        }.getOrDefault(emptySet())
+        myNets = found
+        return found
+    }
+
     /**
-     * The main server's way in from outside, worked out from the cache's.
-     *
-     * Two machines behind one router share the address the internet sees, each on its
-     * own port - which is what the server itself assumes when nobody has said
-     * otherwise. Only offered for a house filed under its network address, with a copy
-     * known by an outside one.
+     * Whether a house address can be reached from the network this device is on. A
+     * phone on somebody else's wifi at 172.16.0.102 waited eight seconds for
+     * 192.168.0.181 on every shelf at once before trying the way in from outside.
+     * Only the same /24 counts; a device that cannot say is given the benefit.
      */
-    private fun houseBehindTheCopysDoor(b: String): String {
-        if (standbyOut.isEmpty() || !Servers.athome(b) || Servers.athome(standbyOut)) return ""
-        val port = Servers.hostOf(b).substringAfter(":", "")
-        val host = Servers.hostOf(standbyOut).substringBefore(":")
-        if (port.isEmpty() || host.isEmpty()) return ""
-        return "http://$host:$port"
+    /**
+     * Away from the house, for testing on a device that is at home: set with
+     * `adb shell setprop debug.palladium.away 1` before the app starts. House
+     * addresses then fail as they do on mobile data. Read once per start.
+     */
+    val pretendAway: Boolean by lazy {
+        runCatching {
+            Class.forName("android.os.SystemProperties")
+                .getMethod("get", String::class.java)
+                .invoke(null, "debug.palladium.away") as String
+        }.getOrDefault("") == "1"
+    }
+
+    fun homeHere(b: String): Boolean {
+        if (!Servers.athome(b)) return true
+        val host = Servers.hostOf(b).substringBefore(":")
+        if (host.startsWith("127.") || host == "localhost" || host.endsWith(".local")) return true
+        if (pretendAway) return false
+        val nets = netsHere()
+        return nets.isEmpty() || host.substringBeforeLast('.') in nets
+    }
+
+    private fun fetchOnce(b: String, path: String, t: String, patience: Int,
+                          reach: Int = 8000): String {
+        val conn = Net.open(b + auth(path, t), reachFor(b, reach), patience, t)
+        conn.setRequestProperty("Accept", "application/json")
+        try {
+            conn.inputStream.use {
+                val said = it.readBytes().toString(Charsets.UTF_8)
+                answered(b, true)
+                return said
+            }
+        } catch (trouble: java.io.IOException) {
+            // A refusal is an answer: the machine is there and said no, which is not
+            // the same as a machine that is off. So is a read that ran out of time:
+            // the notice is held open on purpose, and each one that timed out put
+            // every request after it on the short connect time
+            answered(b, conn.errorStream != null || !gone(trouble))
+            throw trouble
+        }
+    }
+
+    /** A connection that could not be made: the machine is not there. A read that
+     *  timed out is a machine that is there and slow, which another would not mend. */
+    private fun gone(e: java.io.IOException): Boolean {
+        val readTimedOut = e is java.net.SocketTimeoutException &&
+            !(e.message ?: "").contains("connect", ignoreCase = true)
+        return !readTimedOut && (e is java.net.ConnectException ||
+                                 e is java.net.SocketTimeoutException) ||
+            e is java.net.UnknownHostException ||
+            e is java.net.NoRouteToHostException ||
+            e is java.net.PortUnreachableException
+    }
+
+    /**
+     * Every request, one way. The address comes from the background check - the
+     * library's ([base]) or the row's ([addressOf]); a request that cannot connect
+     * tells the check and is sent once more: to where the check moved it, or to the
+     * same address while one miss has not made it down. Nothing here probes or keeps
+     * a list of addresses of its own.
+     */
+    private fun <T> routed(srv: Server?, send: (String) -> T): T {
+        Reach.awaitFirst(2500)
+        // on the copy and back in the app after a while: the main server first
+        if (onStandby) Reach.awaitFresh(1500)
+        if (srv != null) {
+            // a machine the check saw off on every address: said at once, so a shelf
+            // merged from two machines does not wait on the one that is off
+            if (Reach.upRow(srv) == false)
+                throw java.net.ConnectException("not answering at the last look")
+        } else if (Reach.upAt(base) == false) {
+            Reach.route()
+        }
+        val first = addressOf(srv)
+        val began = System.currentTimeMillis()
+        try {
+            return send(first)
+        } catch (e: java.io.IOException) {
+            // no network on this device: nothing learned about the server
+            if (!gone(e) || Reach.unreachableHere(e)) throw e
+            Reach.missed(first, began)
+            // the look that follows says which: the network, or the server
+            Reach.settled(first, 5000)
+            if (srv == null) Reach.route()
+            val next = addressOf(srv)
+            if (next == first && Reach.upAt(first) == false) throw e
+            val then = System.currentTimeMillis()
+            try {
+                return send(next)
+            } catch (again: java.io.IOException) {
+                if (gone(again) && !Reach.unreachableHere(again)) {
+                    Reach.missed(next, then)
+                    if (srv == null) Reach.route()
+                }
+                throw again
+            }
+        }
+    }
+
+    private fun get(path: String, srv: Server? = null, patience: Int = 30000): String {
+        // Asked for quickly means reached for quickly - but not so quickly that a
+        // phone on wi-fi cannot answer at all: the wait is the radio waking up, not
+        // the server. Six, against a four-second read, so a poll that misses costs
+        // ten seconds of numbers that stand still rather than a freeze.
+        val reach = if (patience <= 5000) 6000 else 8000
+        return routed(srv) { b -> fetch(b, path, srv?.token ?: token, patience, reach) }
     }
 
     private suspend fun json(path: String, srv: Server? = null,
@@ -647,13 +759,8 @@ object Api {
     suspend fun wantsPassword(url: String, tok: String = ""): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                val conn = URL(auth(url.trimEnd('/') + "/auth/state", tok))
-                    .openConnection() as HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.readTimeout = 8000
-                if (tok.isNotEmpty()) conn.setRequestProperty("X-Palladium-Token", tok)
-                val said = JSONObject(
-                    conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
+                val conn = Net.open(auth(url.trimEnd('/') + "/auth/state", tok), 5000, 8000, tok)
+                val said = JSONObject(Net.text(conn))
                 said.optBoolean("password") && !said.optBoolean("owner")
             } catch (e: Exception) {
                 false
@@ -669,20 +776,9 @@ object Api {
     suspend fun signIn(url: String, password: String): String? =
         withContext(Dispatchers.IO) {
             try {
-                val conn = URL(url.trimEnd('/') + "/login")
-                    .openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.connectTimeout = 5000
-                conn.readTimeout = 15000
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-Palladium-App", appName())
-                conn.outputStream.use {
-                    it.write(JSONObject().put("password", password).toString()
-                                 .toByteArray(Charsets.UTF_8))
-                }
-                val said = JSONObject(
-                    conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
+                val conn = Net.open(url.trimEnd('/') + "/login", 5000, 15000, method = "POST")
+                Net.send(conn, JSONObject().put("password", password).toString())
+                val said = JSONObject(Net.text(conn))
                 said.optString("token").ifEmpty { null }
             } catch (e: Exception) {
                 null
@@ -692,11 +788,7 @@ object Api {
     /** The server is reachable and has a library. */
     suspend fun ping(url: String, tok: String = ""): String? = withContext(Dispatchers.IO) {
         try {
-            val conn = URL(auth("$url/local/library/sections", tok))
-                .openConnection() as HttpURLConnection
-            conn.connectTimeout = 5000
-            conn.readTimeout = 8000
-            val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            val body = Net.text(Net.open(auth("$url/local/library/sections", tok), 5000, 8000, tok))
             val dirs = JSONObject(body).getJSONObject("MediaContainer").optJSONArray("Directory")
             if (dirs != null && dirs.length() > 0) null else "No libraries found"
         } catch (stopped: kotlinx.coroutines.CancellationException) {
@@ -730,9 +822,25 @@ object Api {
                 }
                 it.offered = o.optBoolean("offered", false)
                 it.askable = o.optBoolean("askable", false)
+                it.onTracker = o.optBoolean("onTracker", false)
+                it.unplayable = o.optBoolean("unplayable", false)
                 it.asked = o.optBoolean("asked", false)
                 it.asks = o.optInt("asks", 0)
                 it.askWhere = o.optString("where", "")
+                o.optJSONArray("studios")?.let { said ->
+                    it.studios = (0 until said.length()).mapNotNull { n ->
+                        said.optJSONObject(n)?.let { p ->
+                            Pair(p.optString("name"), p.optString("logo"))
+                        }
+                    }.filter { p -> p.first.isNotEmpty() }
+                }
+                o.optJSONArray("providers")?.let { said ->
+                    it.providers = (0 until said.length()).mapNotNull { n ->
+                        said.optJSONObject(n)?.let { p ->
+                            Triple(p.optString("name"), p.optString("logo"), p.optString("kind"))
+                        }
+                    }.filter { p -> p.second.isNotEmpty() }
+                }
                 o.optJSONObject("offer")?.let { offer ->
                     it.offerState = offer.optString("state", "")
                     it.offerProgress = offer.optDouble("progress", 0.0)
@@ -741,9 +849,13 @@ object Api {
                                    else offer.optDouble("free", -1.0)
                     it.offerRefused = offer.optString("refused", "")
                     it.offerMbit = offer.optDouble("mbit", 0.0)
+                    it.offerVersion = offer.optString("version", "")
+                        .takeIf { v -> v != "null" }.orEmpty()
                     it.offerEta = if (offer.isNull("eta")) -1L else offer.optLong("eta", -1L)
                     it.offerWho = offer.optString("who", "")
                     it.offerPlace = offer.optInt("place", 0)
+                    it.offerQueueKey = offer.optString("queueKey", "")
+                    it.offerMine = offer.optBoolean("mine", false)
                     it.offerVersions = offer.optJSONArray("versions")?.let { vs ->
                         (0 until vs.length()).map { n ->
                             val v = vs.getJSONObject(n)
@@ -783,6 +895,20 @@ object Api {
      */
     private suspend fun fromAll(ctx: Context, call: suspend (Server) -> List<Media>): List<Media> =
         heardFrom(ctx, call = call).first
+
+    /**
+     * The same, but nobody answering is a failure rather than an empty shelf.
+     *
+     * A home row asked from outside on a slow first connection came back empty with
+     * no error, so nothing asked again and Continue watching was simply not there.
+     * Thrown, the row is asked again.
+     */
+    private suspend fun fromSome(ctx: Context, patience: Long = 6000L,
+                                 call: suspend (Server) -> List<Media>): List<Media> {
+        val (got, answered) = heardFrom(ctx, patience, call)
+        if (answered == 0) throw java.io.IOException("no machine answered")
+        return got
+    }
 
     /**
      * The same, saying how many servers actually answered.
@@ -826,19 +952,26 @@ object Api {
      * plays is better than two that are the same.
      */
     private fun distinct(list: List<Media>): List<Media> {
+        // The main server's card where both have it: it holds every version, and the
+        // machine keeping copies only the ones it copied. Opened from a phone on the
+        // copy, Dune offered one version while the browser showed four. Kept in the
+        // place the first card had.
+        fun markOf(m: Media) = when (m.type) {
+            "episode" -> listOf("e", m.grandparentTitle, m.parentIndex, m.index, m.title)
+            "season" -> listOf("s", m.title.lowercase(), m.year, m.index)
+            else -> listOf(m.type, m.title.lowercase(), m.year)
+        }.joinToString("|")
+        val main = HashMap<String, Media>()
+        for (m in list) {
+            val k = markOf(m)
+            val was = main[k]
+            if (was == null || (was.srv?.copyOf?.isNotEmpty() == true &&
+                                m.srv?.copyOf.isNullOrEmpty())) main[k] = m
+        }
         val seen = HashSet<String>()
-        return list.filter { m ->
-            val mark = when (m.type) {
-                "episode" -> listOf("e", m.grandparentTitle, m.parentIndex, m.index,
-                                    m.title)
-                // A season card is named after its programme, so eighteen seasons
-                // of one series were eighteen cards with the same name and all but
-                // the first were dropped: what is on the casual shelf is the season
-                // number as much as the title.
-                "season" -> listOf("s", m.title.lowercase(), m.year, m.index)
-                else -> listOf(m.type, m.title.lowercase(), m.year)
-            }.joinToString("|")
-            seen.add(mark)
+        return list.mapNotNull { m ->
+            val k = markOf(m)
+            if (seen.add(k)) main[k] else null
         }
     }
 
@@ -967,9 +1100,60 @@ object Api {
         return ordered.sortedBy(undated)          // stable: the order above is kept
     }
 
-    suspend fun recentFilms(ctx: Context) = fromAll(ctx) { srv ->
+    suspend fun recentFilms(ctx: Context) = fromSome(ctx) { srv ->
         listFrom("/local/library/sections/1/recentlyAdded?count=30", srv)
     }.sortedByDescending { it.addedAt }.take(40)
+
+    /** The programmes being watched now that the house can put on, most watched first. */
+    suspend fun popularShows(ctx: Context) = fromSome(ctx) { srv ->
+        listFrom("/local/library/popularShows", srv)
+    }.sortedByDescending { it.popularity }   // the two machines' answers, merged, in the list's order
+
+    /** Every programme being watched now, held or not, most watched first. */
+    suspend fun popularAll(ctx: Context) = fromAll(ctx) { srv ->
+        listFrom("/local/library/popularShows?all=1", srv)
+    }.sortedByDescending { it.popularity }
+
+    /** One pack a programme could be added from, as the tracker holds it. */
+    data class ShowPack(val id: String, val name: String, val seasons: List<Int>,
+                        val complete: Boolean, val size: Long, val seeds: Int,
+                        val fits: Boolean,
+                        // the one the settings under Choosing put forward
+                        val pick: Boolean = false)
+
+    /** The packs the tracker holds for a programme, best first. */
+    suspend fun showPacks(title: String): List<ShowPack> = withContext(Dispatchers.IO) {
+        runCatching {
+            val rows = JSONObject(post("/shows/packs", JSONObject().put("show", title)
+                .put("look", true))).optJSONArray("found") ?: return@runCatching emptyList()
+            (0 until rows.length()).mapNotNull { i ->
+                rows.optJSONObject(i)?.let { o ->
+                    val runs = o.optJSONArray("seasons")
+                    ShowPack(o.optString("id"), o.optString("name"),
+                             (0 until (runs?.length() ?: 0)).map { runs!!.optInt(it) },
+                             o.optBoolean("complete"), o.optLong("size"),
+                             o.optInt("seeds"), o.optBoolean("fits"),
+                             o.optBoolean("pick"))
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** Into the library with this pack as a link; its library key, or empty. */
+    suspend fun addShowPack(m: Media, id: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/shows/addpack", JSONObject().put("show", m.title)
+                .put("tmdb", m.tmdb).put("id", id))).optString("key", "")
+        }.getOrDefault("")
+    }
+
+    /** Put a popular programme in the library; its library key, or empty. */
+    suspend fun addPopular(m: Media): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/shows/add", JSONObject().put("show", m.title)
+                .put("tmdb", m.tmdb))).optString("key", "")
+        }.getOrDefault("")
+    }
 
     suspend fun recentEpisodes(ctx: Context) = fromAll(ctx) { srv ->
         listFrom("/local/library/sections/2/recentlyAdded?count=30", srv)
@@ -1001,6 +1185,77 @@ object Api {
      * what comes into the house is theirs to decide, and a request that downloaded
      * by itself would be a download button under another name.
      */
+    /**
+     * Fetch one the tracker is carrying, rather than asking somebody for it.
+     *
+     * The shelf is the same popular list either way; this is only offered where there
+     * is something to fetch. Returns what the server said, or the reason it did not.
+     */
+    /** One release the tracker is carrying: what the file actually is. */
+    data class Carried(val id: String, val name: String, val seeds: Int,
+                       val kind: String = "", val size: Long = 0L,
+                       // empty when it can be fetched; otherwise why it cannot
+                       val why: String = "",
+                       // the one to take unless somebody wants otherwise
+                       val pick: Boolean = false,
+                       // already on the disk: the file here came from this release
+                       val have: Boolean = false,
+                       // the picture's bitrate counted as h264, and that per GB
+                       val quality: Double = 0.0, val perGb: Double = 0.0,
+                       // the picture's own bitrate, Mbit/s
+                       val mbit: Double = 0.0,
+                       // a copy in one of the house's packs, and a file here the tracker
+                       // no longer lists
+                       val pack: Boolean = false, val disk: Boolean = false)
+
+    /**
+     * Every version of one film, the most carried first.
+     *
+     * The name is the point of the list - the cut, the source and the size are all in
+     * it - so somebody picks rather than being handed whichever arrived last.
+     */
+    /** What the tracker holds for one film, and the room left where it would land. */
+    data class Carrying(val free: Double = -1.0, val rows: List<Carried> = emptyList())
+
+    suspend fun trackerVersions(m: Media): Carrying = withContext(Dispatchers.IO) {
+        runCatching {
+            val said = JSONObject(postTo(m.srv, "/tracker/list", JSONObject()
+                .put("title", m.title).put("year", m.year ?: 0)
+                .put("key", m.ratingKey)))
+            val rows = said.optJSONArray("versions") ?: return@runCatching Carrying()
+            Carrying(if (said.isNull("free")) -1.0 else said.optDouble("free", -1.0),
+                     (0 until rows.length()).mapNotNull { i ->
+                         rows.optJSONObject(i)?.let {
+                             Carried(it.optString("id"), it.optString("name"),
+                                     it.optInt("seeds", 0), it.optString("kind", ""),
+                                     it.optLong("size", 0L), it.optString("why", ""),
+                                     it.optBoolean("pick", false),
+                                     it.optBoolean("have", false),
+                                     it.optDouble("quality", 0.0).takeIf { q -> !q.isNaN() } ?: 0.0,
+                                     it.optDouble("perGb", 0.0).takeIf { q -> !q.isNaN() } ?: 0.0,
+                                     it.optDouble("mbit", 0.0).takeIf { q -> !q.isNaN() } ?: 0.0,
+                                     it.optBoolean("pack", false), it.optBoolean("disk", false))
+                         }
+                     })
+        }.getOrDefault(Carrying())
+    }
+
+    suspend fun takeFromTracker(m: Media, id: String = ""): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject()
+                .put("id", id)
+                .put("title", m.title)
+                .put("year", m.year ?: 0)
+            val said = runCatching {
+                JSONObject(postTo(m.srv, "/tracker/get", body))
+            }.getOrNull()
+            when {
+                said == null -> false to "The server did not answer"
+                said.optBoolean("taken") -> true to said.optString("name", m.title)
+                else -> false to said.optString("error", "Could not fetch that one")
+            }
+        }
+
     suspend fun askFor(m: Media): Pair<Boolean, Boolean> = withContext(Dispatchers.IO) {
         val body = JSONObject()
             .put("key", m.ratingKey)
@@ -1033,8 +1288,26 @@ object Api {
     suspend fun releasedFilms(ctx: Context) =
         page(ctx, 1, "originallyAvailableAt:desc", 0, 30)
 
-    suspend fun releasedShows(ctx: Context) =
-        page(ctx, 2, "originallyAvailableAt:desc", 0, 30)
+    /**
+     * The season's shelf, when the server has one switched on: Christmas films at
+     * Christmas. Empty from a server that has none or is too old to know of it - not
+     * a failure, so nothing is said about a row that was never there.
+     */
+    suspend fun seasonal(ctx: Context): List<Media> = runCatching {
+        fromAll(ctx) { srv -> listFrom("/local/library/seasonal", srv) }
+            .distinctBy { Pair(it.title.lowercase(), it.year) }
+            .sortedByDescending { it.seasonRank }
+    }.getOrDefault(emptyList())
+
+    suspend fun releasedShows(ctx: Context): List<Media> {
+        // the greyed next episodes of series this viewer is up to date with, first
+        // both machines may know the same one: one card per episode
+        val coming = runCatching {
+            fromAll(ctx) { srv -> listFrom("/local/library/upcoming", srv) }
+        }.getOrDefault(emptyList())
+            .distinctBy { Triple(it.grandparentTitle, it.parentIndex, it.index) }
+        return coming + page(ctx, 2, "originallyAvailableAt:desc", 0, 30)
+    }
 
     /**
      * The shelves this viewer keeps, drawn as things with posters.
@@ -1264,14 +1537,16 @@ object Api {
      * copying while somebody is running low - which is the one thing that made a
      * film stutter on a machine with plenty of everything.
      */
-    suspend fun sayBuffer(seconds: Long, srv: Server? = null, stalled: Boolean = false) {
+    /** The buffer, told to the machine sending the film; answers with what this viewing
+     *  has taken from it in MB, the same figure the panel shows, or -1. */
+    suspend fun sayBuffer(seconds: Long, srv: Server? = null, stalled: Boolean = false,
+                          key: String = ""): Double =
         withContext(Dispatchers.IO) {
             runCatching {
-                postTo(srv, "/stream/buffer", JSONObject().put("ahead", seconds)
-                    .put("stalled", stalled))
-            }
+                JSONObject(postTo(srv, "/stream/buffer", JSONObject().put("ahead", seconds)
+                    .put("stalled", stalled).put("key", key))).optDouble("mb", -1.0)
+            }.getOrDefault(-1.0)
         }
-    }
 
     suspend fun say(text: String, from: String = "", room: String = "party"): Boolean =
         withContext(Dispatchers.IO) {
@@ -1397,17 +1672,10 @@ object Api {
     suspend fun updateServerAt(where: String, tok: String = ""): String? =
         withContext(Dispatchers.IO) {
             try {
-                val conn = URL(where.trimEnd('/') + auth("/update/install", tok))
-                    .openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.connectTimeout = 8000
-                conn.readTimeout = 25000
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-Palladium-App", appName())
-                conn.outputStream.use { it.write("{}".toByteArray()) }
-                val o = JSONObject(
-                    conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
+                val conn = Net.open(where.trimEnd('/') + auth("/update/install", tok),
+                                    8000, 25000, tok, "POST")
+                Net.send(conn, "{}")
+                val o = JSONObject(Net.text(conn))
                 if (o.optBoolean("ok")) null else o.optString("why", "it did not work")
             } catch (e: Exception) { e.message ?: "could not reach that machine" }
         }
@@ -1507,6 +1775,22 @@ object Api {
      * same evening carries on from the television, the phone or the browser rather
      * than each of them holding an evening of its own.
      */
+    /**
+     * Put a draw back in the hat: looked at, not watched.
+     *
+     * The server only puts back the draw still at the end of the round, so a late
+     * call after Next has moved it on changes nothing.
+     */
+    suspend fun shuffleUndraw(shelf: String, key: String, srv: Server? = null): Boolean =
+        withContext(Dispatchers.IO) {
+            if (shelf.isEmpty() || key.isEmpty()) return@withContext false
+            runCatching {
+                JSONObject(postTo(srv, "/collections/shuffle/undraw",
+                                  JSONObject().put("id", shelf).put("key", key)))
+                    .optBoolean("putBack")
+            }.getOrDefault(false)
+        }
+
     suspend fun shelfDraw(shelf: Media, resume: Boolean = true): Draw? =
         shelfDraw(shelf.ratingKey, shelf.srv, resume)
 
@@ -1515,18 +1799,21 @@ object Api {
      * where it came from.
      */
     suspend fun shelfDraw(id: String, srv: Server? = null,
-                          resume: Boolean = true, back: Boolean = false): Draw? {
+                          resume: Boolean = true, back: Boolean = false,
+                          from: String = ""): Draw? {
         // A new episode is the moment to go home: nothing is playing, so a switch
         // costs nothing. Without this the round stayed on the copy for the rest of
         // the evening once it had fallen there, however long the main server had
         // been back.
-        withContext(Dispatchers.IO) { comeHomeIfUp() }
+        // asked beside the draw, not before it: waiting on a server that is off held
+        // up every press by as long as that server took not to answer
+        homeLater()
         // Not the machine we have already fallen away from. Asked first, every press
         // of next waited out a connection to a server known to be off before trying
         // the one answering - which is a button that takes seconds to do anything.
         val asking = if (srv != null && homeBase.isNotEmpty() &&
                          srv.base.trimEnd('/') == homeBase.trimEnd('/')) null else srv
-        drawFromOne(id, asking, resume, back)?.let { return it }
+        drawFromOne(id, asking, resume, back, from)?.let { return it }
         // The machine the shelf came from is not answering. The copy holds the round
         // as well and answers for itself while the main server is off, so it is worth
         // one more question before saying there is nothing to play - which is what a
@@ -1534,14 +1821,15 @@ object Api {
         val here = (asking?.base ?: base).trimEnd('/')
         for (where in otherWays(here)) {
             drawFromOne(id, Server(Servers.hostOf(where), where,
-                                   asking?.token ?: token), resume, back)
+                                   asking?.token ?: token), resume, back, from)
                 ?.let { return it }
         }
         return null
     }
 
     private suspend fun drawFromOne(id: String, srv: Server? = null,
-                                    resume: Boolean = true, back: Boolean = false): Draw? =
+                                    resume: Boolean = true, back: Boolean = false,
+                                    from: String = ""): Draw? =
             withContext(Dispatchers.IO) {
         try {
             // asked of the server the shelf belongs to. Shelves are gathered from
@@ -1552,7 +1840,9 @@ object Api {
                                       JSONObject().put("id",
                                           id.removePrefix("coll:"))
                                                   .put("resume", resume)
-                                                  .put("back", back)))
+                                                  .put("back", back)
+                                                  // what Next was pressed on
+                                                  .put("from", from)))
             o.optJSONObject("item")?.let {
                 Draw(Media.from(it).also { drew -> drew.srv = srv },
                      o.optLong("resumeAt", 0L))
@@ -1658,6 +1948,29 @@ object Api {
     }
 
     /** Ask for one film from a torrent pack: whether it went, and what to say. */
+    /**
+     * Put the waiting downloads in this order, on each server that holds them. The
+     * server moves only what this viewer may move, and never the one coming in now.
+     */
+    suspend fun reorderDownloads(order: List<Media>): Boolean = withContext(Dispatchers.IO) {
+        var ok = true
+        order.filter { it.offerMine && it.offerQueueKey.isNotEmpty() }
+            .groupBy { it.srv?.base ?: base }
+            .forEach { (_, mine) ->
+                try {
+                    val keys = org.json.JSONArray(mine.map { it.offerQueueKey })
+                    val o = JSONObject(postTo(mine.first().srv, "/torrents/order",
+                                              JSONObject().put("keys", keys)))
+                    ok = ok && o.optBoolean("ok")
+                } catch (stopped: kotlinx.coroutines.CancellationException) {
+                    throw stopped
+                } catch (e: Exception) {
+                    ok = false
+                }
+            }
+        ok
+    }
+
     /** Stop a download: its file off in qBittorrent, the film offered again. */
     suspend fun torrentCancel(m: Media): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         try {
@@ -1703,6 +2016,9 @@ object Api {
 
     /** a film to open, asked for from the menu's download line */
     val openWanted = androidx.compose.runtime.mutableStateOf<Media?>(null)
+
+    /** the download queue, opened from the menu's download line when more than one is coming */
+    val queueOpen = androidx.compose.runtime.mutableStateOf(false)
 
     /** Films seen almost in, so the end of a download does not read as nought per cent.
      *  The live row goes the moment the file is complete, and everything then fell back
@@ -1807,27 +2123,8 @@ object Api {
         }
     }
 
-    /**
-     * Put a title aside from Continue watching, or bring it back.
-     *
-     * Marking one episode watched hands that shelf to the next episode of the
-     * programme, so a card pressed to be rid of stays there wearing a different name.
-     * This is what takes it off.
-     */
-    suspend fun aside(m: Media, on: Boolean = true): Boolean =
-        withContext(Dispatchers.IO) {
-        try {
-            postTo(m.srv, "/ondeck/aside",
-                   JSONObject().put("key", m.ratingKey).put("on", on))
-            true
-        } catch (stopped: kotlinx.coroutines.CancellationException) {
-            throw stopped
-        } catch (e: Exception) {
-            false
-        }
-    }
 
-    suspend fun onDeck(ctx: Context) = fromAll(ctx) { srv ->
+    suspend fun onDeck(ctx: Context) = fromSome(ctx, 10_000L) { srv ->
         listFrom("/local/library/onDeck", srv)
     }.sortedByDescending { it.lastViewedAt }.take(40)
 
@@ -1904,8 +2201,8 @@ object Api {
         //
         // Asking by name was asking about the one thing that differs. The main server
         // has its titles from the catalogue and a machine keeping copies reads them off
-        // the files it was sent, so "Die Hard: With a Vengeance" is "Die Hard With A
-        // Vengence" over there - no colon, and misspelled on the disk it came from.
+        // the files it was sent, so "Long Day: With a Reckoning" is "Long Day With A
+        // Reckonning" over there - no colon, and misspelled on the disk it came from.
         // The film was on both machines, under the same key, and the search by name
         // found nothing.
         val mine = m.ratingKey
@@ -1995,15 +2292,21 @@ object Api {
     suspend fun answering(where: String, tok: String = ""): Boolean =
         withContext(Dispatchers.IO) {
             val began = System.currentTimeMillis()
+            if (!homeHere(where)) {
+                paces[where] = 9_999
+                return@withContext false
+            }
+            // Taking the connection is answering. A server busy encoding or scoring a
+            // film took longer than four seconds to say its version, was called gone,
+            // and the player moved to the copy with the main server up all along.
+            var reached = false
             val said = runCatching {
-                val conn = URL(where.trimEnd('/') + auth("/app/version", tok))
-                    .openConnection() as HttpURLConnection
-                conn.connectTimeout = 2500
-                conn.readTimeout = 4000
-                conn.setRequestProperty("X-Palladium-App", appName())
+                val conn = Net.open(where.trimEnd('/') + auth("/app/version", tok), 2500, 8000, tok)
+                conn.connect()
+                reached = true
                 conn.inputStream.use { it.readBytes() }
                 true
-            }.getOrDefault(false)
+            }.getOrDefault(reached)
             // how long it took to answer, kept: two servers holding the same film
             // are not the same offer, and the near one should be the one that plays
             paces[where] = if (said) System.currentTimeMillis() - began else 9_999
@@ -2140,10 +2443,71 @@ object Api {
             val hubs = JSONObject(get("/local/hubs/search?query=$q", srv))
                 .getJSONObject("MediaContainer").optJSONArray("Hub") ?: return@fromAll emptyList()
             val out = ArrayList<Media>()
-            for (i in 0 until hubs.length()) out.addAll(items(hubs.getJSONObject(i), srv))
+            for (i in 0 until hubs.length()) {
+                val hub = hubs.getJSONObject(i)
+                // the names are not titles: they are their own row, read by
+                // searchPeople, and passed through here they would be cards with no
+                // key at all
+                if (hub.optString("type") == "person") continue
+                out.addAll(items(hub, srv))
+            }
             out
         }, "originallyAvailableAt:desc")
     }
+
+    /** A name a search found, and the server that knows their face. */
+    data class Face(val who: Media.Player, val srv: Server?, val held: Int = 0)
+
+    /**
+     * The people a search found, their own row above the titles.
+     *
+     * A word that is nobody's film is often somebody's name. Only people with
+     * something on the shelves - the same rule the person page reads by.
+     */
+    suspend fun searchPeople(ctx: Context, term: String): List<Face> =
+        withContext(Dispatchers.IO) {
+        val q = URLEncoder.encode(term, "UTF-8")
+        val got = eachServer(ctx) { srv ->
+            val hubs = JSONObject(get("/local/hubs/search?query=$q", srv))
+                .getJSONObject("MediaContainer").optJSONArray("Hub")
+                ?: return@eachServer emptyList<Face>()
+            val out = ArrayList<Face>()
+            for (i in 0 until hubs.length()) {
+                val hub = hubs.getJSONObject(i)
+                if (hub.optString("type") != "person") continue
+                val rows = hub.optJSONArray("Metadata") ?: continue
+                for (n in 0 until rows.length()) {
+                    val one = rows.optJSONObject(n) ?: continue
+                    val name = one.optString("tag", "")
+                    if (name.isEmpty()) continue
+                    out.add(Face(Media.Player(one.optInt("id", 0), name, "",
+                                              one.optString("thumb", "")),
+                                 srv, one.optInt("held", 0)))
+                }
+            }
+            out as List<Face>
+        }
+        // two servers can both name the same person: the one that holds more of them
+        got.groupBy { it.who.name.lowercase() }
+            .map { (_, same) -> same.maxByOrNull { it.held } ?: same.first() }
+            .sortedByDescending { it.held }
+    }
+
+    /** Ask every server the same question, together, and join what they say. */
+    private suspend fun <T> eachServer(ctx: Context,
+                                       call: suspend (Server) -> List<T>): List<T> =
+        withContext(Dispatchers.IO) {
+            coroutineScope {
+                val asked = Servers.merged(ctx).map { srv ->
+                    async {
+                        withTimeoutOrNull(6000L) { runCatching { call(srv) }.getOrNull() }
+                    }
+                }
+                val out = ArrayList<T>()
+                asked.map { it.await() }.filterNotNull().forEach { out.addAll(it) }
+                out
+            }
+        }
 
     /**
      * Artwork, from whichever server holds the title.
@@ -2156,17 +2520,23 @@ object Api {
     /** A face, from whichever server named it - the same road as any other picture. */
     fun faceUrl(who: Media.Player, srv: Server?, width: Int = 96): String? {
         if (who.face.isEmpty()) return null
-        return (srv?.base ?: base) + "/local" +
+        return addressOf(srv) + "/local" +
             auth(who.face + "?w=" + width, srv?.token ?: token)
     }
 
-    fun artUrl(m: Media, width: Int = 0): String? {
-        val path = m.thumb
+    /** The poster for a title's own page: the chosen copy's cover, else the film's. */
+    fun coverUrl(m: Media, width: Int = 0): String? =
+        if (m.copyThumb.isNotEmpty()) artUrl(m.copy(thumb = m.copyThumb).also { it.srv = m.srv },
+                                              width)
+        else artUrl(m, width)
+
+    fun artUrl(m: Media, width: Int = 0, of: String? = null): String? {
+        val path = of ?: m.thumb
         if (path.isNullOrEmpty()) return null
         val srv = m.srv
         val sized = if (width > 0) path + (if (path.contains("?")) "&" else "?") +
             "w=" + width else path
-        return (srv?.base ?: base) + "/local" + auth(sized, srv?.token ?: token)
+        return addressOf(srv) + "/local" + auth(sized, srv?.token ?: token)
     }
 
     /**
@@ -2187,7 +2557,7 @@ object Api {
 
     /** Tell the server where playback got to, so Continue watching works. */
     suspend fun progress(m: Media, positionMs: Long, durationMs: Long) =
-        progressAt(m.srv?.base ?: base, m.srv?.token ?: token, m.ratingKey,
+        progressAt(addressOf(m.srv), m.srv?.token ?: token, m.ratingKey,
                    positionMs, durationMs)
 
     /**
@@ -2239,13 +2609,8 @@ object Api {
                     // looked into by asking somebody to read it out.
                     (if (info.isEmpty()) "" else
                          "&info=" + URLEncoder.encode(info.take(400), "UTF-8")), tok)
-            val conn = URL(door + path).openConnection() as HttpURLConnection
-            conn.connectTimeout = 6000
-            conn.readTimeout = 10000
-            // the watch log records which build was watching, and this is the request
-            // it records - without the header every line read "app: nothing"
-            conn.setRequestProperty("X-Palladium-App", appName())
-            val said = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            // the app's name goes with it: the watch log records which build was watching
+            val said = Net.text(Net.open(door + path, 6000, 10000, tok))
             // What the sound of this file needs now. A file measured while it was
             // playing used to stay uncorrected until it was opened again; the answer
             // to every progress report carries the number, so the player can ease
@@ -2266,8 +2631,13 @@ object Api {
         } catch (stopped: kotlinx.coroutines.CancellationException) {
             throw stopped          // the screen closed: not a failure
         } catch (e: Exception) {
-            val gone = e is java.net.ConnectException ||
-                       e is java.net.SocketTimeoutException ||
+            // A read that timed out was a connection the server took: it is there and
+            // slow, which the copy would not mend. Only a connection that could not be
+            // made says it is gone - a slow answer under load moved the app to the copy.
+            val readTimedOut = e is java.net.SocketTimeoutException &&
+                !(e.message ?: "").contains("connect", ignoreCase = true)
+            val gone = !readTimedOut && (e is java.net.ConnectException ||
+                       e is java.net.SocketTimeoutException) ||
                        e is java.net.UnknownHostException ||
                        e is java.net.NoRouteToHostException ||
                        e is java.net.PortUnreachableException
@@ -2288,7 +2658,7 @@ object Api {
      * engine, which emits fragmented MP4.
      */
     fun castUrl(m: Media, positionSec: Long = 0, burnIndex: Int? = null): Pair<String, Boolean> {
-        val b = m.srv?.base ?: base
+        val b = addressOf(m.srv)
         val t = m.srv?.token ?: token
         val container = (m.container ?: "").lowercase()
         val v = (m.videoCodec ?: "").lowercase()
@@ -2373,7 +2743,7 @@ object Api {
         // which is some other film, or nothing. Coming back to the main server after
         // it has been away has to ask it for its own key first; until it does, the
         // copy answers for what was listed from the copy.
-        val b = m.srv?.base ?: base
+        val b = addressOf(m.srv)
         val t = m.srv?.token ?: token
         // burning is only ever done on request: it forces an encode of a film that
         // would otherwise have streamed untouched. So does asking for a soundtrack
@@ -2426,7 +2796,7 @@ object Api {
      * timeline, so its cues are asked for from the beginning.
      */
     fun subsUrl(m: Media, streamIndex: Int, offsetSec: Long, shift: Float = 0f): String {
-        val b = m.srv?.base ?: base
+        val b = addressOf(m.srv)
         val t = m.srv?.token ?: token
         // a correction by hand for a subtitle cut to another release; the server moves
         // every cue by it, whether the track came out of the container or from a file
@@ -2442,11 +2812,7 @@ object Api {
      *  goes through as it is; null when the server cannot say. Blocking: asked off the
      *  main thread, with a short patience. */
     fun encodeStart(streamUrl: String): Pair<Double, Boolean>? = try {
-        val conn = java.net.URL(streamUrl.replace("/gpu/stream?", "/gpu/begins?"))
-            .openConnection() as java.net.HttpURLConnection
-        conn.connectTimeout = 1500
-        conn.readTimeout = 1500
-        conn.setRequestProperty("X-Palladium-App", appName())
+        val conn = Net.open(streamUrl.replace("/gpu/stream?", "/gpu/begins?"), 1500, 1500)
         try {
             val o = JSONObject(conn.inputStream.bufferedReader().readText())
             Pair(o.optDouble("at", -1.0), o.optBoolean("copy", false))
@@ -2520,13 +2886,10 @@ object Api {
         withContext(Dispatchers.IO) {
             val out = ArrayList<Triple<Long, Long, String>>()
             try {
-                val conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 8000
                 // The first time a track is asked for, the server reads the whole film
                 // to lift it out - minutes, on a large file being streamed off the same
                 // disk. Every later request is instant, because it is kept.
-                conn.readTimeout = 900000
-                conn.setRequestProperty("X-Palladium-App", appName())
+                val conn = Net.open(url, 8000, 900000)
                 val text = conn.inputStream.use {
                     it.readBytes().toString(Charsets.UTF_8)
                 }
@@ -2568,6 +2931,9 @@ object Api {
                        val override: Boolean = false,
                        /** "screen" counts from the panel, "picture" from the film */
                        val base: String = "picture",
+                       /** Off screen's height when it does not fit below the picture
+                        *  and goes on it instead; below nought, the same as position */
+                       val onPicture: Float = -1f,
                        /** false when kept on the device or the server could not be asked */
                        val answered: Boolean = true)
 
@@ -2581,7 +2947,8 @@ object Api {
     fun rememberLook(ctx: Context, key: String, look: SubLook) {
         prefs(ctx).edit().putString("look:" + device + ":" + key,
             listOf(look.size.toString(), look.position.toString(), look.colour,
-                   look.background, look.base).joinToString("|")).apply()
+                   look.background, look.base, look.onPicture.toString())
+                .joinToString("|")).apply()
     }
 
     fun lastLook(ctx: Context, key: String): SubLook? {
@@ -2590,7 +2957,9 @@ object Api {
         if (bits.size < 5) return null
         return try {
             SubLook(bits[0].toFloat(), bits[1].toFloat(), bits[2], bits[3],
-                    false, bits[4], answered = false)
+                    false, bits[4],
+                    onPicture = bits.getOrNull(5)?.toFloatOrNull() ?: -1f,
+                    answered = false)
         } catch (e: NumberFormatException) { null }
     }
 
@@ -2616,11 +2985,13 @@ object Api {
                     o.optString("colour", "white"),
                     o.optString("background", "shadow"),
                     all.optBoolean("override"),
-                    o.optString("base", "picture"))
+                    o.optString("base", "picture"),
+                    o.optDouble("onPicture", -1.0).toFloat())
         } catch (stopped: kotlinx.coroutines.CancellationException) {
             throw stopped          // the screen closed: not a failure
         } catch (e: Exception) {
-            SubLook(1f, 0.08f, "white", "shadow", answered = false)
+            SubLook(1f, 0f, "white", "shadow", base = "screen", onPicture = 0.08f,
+                    answered = false)
         }
     }
 
@@ -2899,7 +3270,9 @@ object Api {
         // will not have it.
         val took = runCatching { post("/trace", JSONObject().put("t", text)) }.isSuccess
         if (!took) {
-            val other = (standby.ifEmpty { standbyOut }).trimEnd('/')
+            // the copy's address that can be reached from this network
+            val other = listOf(standby, standbyOut).map { it.trimEnd('/') }
+                .firstOrNull { it.isNotEmpty() && homeHere(it) }.orEmpty()
             if (other.isNotEmpty()) {
                 runCatching {
                     postTo(Server(standbyName, other, token), "/trace",
@@ -2944,6 +3317,255 @@ object Api {
         said?.optBoolean("disk", true) ?: true,
         said?.optBoolean("download", true) ?: true,
         said?.optBoolean("request", true) ?: true)
+
+    /**
+     * Which of the two scores a new film has to have satisfied to be listed.
+     *
+     * The people who watched it, and the people paid to review it. Both unless this
+     * viewer says otherwise; a film passes every meter that is on and has a number.
+     */
+    data class Meters(val audience: Boolean = true, val critics: Boolean = true)
+
+    private fun metersOf(said: JSONObject?) = Meters(
+        said?.optBoolean("audience", true) ?: true,
+        said?.optBoolean("critics", true) ?: true)
+
+    /**
+     * What everybody other than the owner may bring into the house.
+     *
+     * "off", "packs" or "all". The owner sets it; everybody else is told so the
+     * button is only drawn where pressing it would work.
+     */
+    /**
+     * Whether this server takes us for a guest rather than its owner.
+     *
+     * The role is the server's to decide and it depends on how it was reached - the
+     * same person is the owner on the network and a guest from outside - so a client
+     * cannot work it out from whose server it is. Asked of the server, which is the
+     * only thing that knows.
+     */
+    /** One stream going out now, as the server's Now playing sees it. */
+    data class Live(val who: String, val title: String, val episode: String,
+                    val how: String, val device: String, val app: String,
+                    val quality: String, val state: String,
+                    val position: Double, val duration: Double,
+                    // seconds of picture the player holds ahead, and whether it has run dry
+                    val ahead: Double, val stalled: Boolean,
+                    // Mbit/s now, on average, at the peak
+                    val mbit: Double, val average: Double, val peak: Double,
+                    val casual: Boolean)
+
+    /** Everything playing on this server now; empty when nothing is or it cannot be read. */
+    /** Tell the server this screen's sound is going through to the receiver, or ended. */
+    suspend fun receiverPassthrough(state: String, key: String, screen: String): JSONObject? =
+        withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/receiver/passthrough", JSONObject().put("state", state)
+                .put("key", key).put("device", appName()).put("screen", screen)))
+        }.getOrNull()
+    }
+
+    /** What is playing now, or null when the server did not answer or refused. */
+    suspend fun watching(): List<Live>? = withContext(Dispatchers.IO) {
+        runCatching {
+            val rows = JSONObject(get("/watching", patience = 5000)).optJSONArray("live")
+                ?: return@runCatching emptyList()
+            (0 until rows.length()).mapNotNull { i ->
+                rows.optJSONObject(i)?.let {
+                    Live(it.optString("who"), it.optString("title"), it.optString("episode"),
+                         it.optString("how"), it.optString("device"), it.optString("app"),
+                         it.optString("quality"), it.optString("state"),
+                         it.optDouble("position", 0.0), it.optDouble("duration", 0.0),
+                         it.optDouble("ahead", -1.0).takeIf { a -> !a.isNaN() } ?: -1.0,
+                         it.optBoolean("stalled", false),
+                         // "mbit" is Mbit/s already; the average and peak come in MB/s
+                         it.optDouble("mbit", 0.0).takeIf { a -> !a.isNaN() } ?: 0.0,
+                         (it.optDouble("average", 0.0).takeIf { a -> !a.isNaN() } ?: 0.0) * 8,
+                         (it.optDouble("peak", 0.0).takeIf { a -> !a.isNaN() } ?: 0.0) * 8,
+                         it.optBoolean("casual", false))
+                }
+            }
+        }.getOrNull()
+    }
+
+    /** Whether this screen may hand out invitations here: as the owner, or with the
+     *  owner's key from away where the server has let invitations out. */
+    suspend fun mayInvite(): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = JSONObject(get("/config"))
+            if (!o.optBoolean("guest", false)) return@runCatching true
+            val open = o.optJSONArray("ownerAway") ?: return@runCatching false
+            (0 until open.length()).any { open.optString(it) == "invites" }
+        }.getOrDefault(false)
+    }
+
+    /** What the server last said of this key, kept so a screen opened again draws what
+     *  it drew before rather than a guess that is taken back a moment later. */
+    @Volatile var seenAsOwner: Boolean? = null
+
+    /** Whether this is the owner's key: at home, or away, where the server calls it a
+     *  guest's and says in the same breath that it is the owner's ("monitor"). Every
+     *  guest is sent a list of what an owner's key opens from away, an empty one - so
+     *  that list being there says nothing about whose key this is. */
+    suspend fun amOwner(ctx: Context? = null): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = JSONObject(get("/config"))
+            Route.ownersKey(o.optBoolean("guest", false), o.optBoolean("monitor", false))
+        }.getOrNull()?.also {
+            seenAsOwner = it
+            // and written down, by the key it was said of: known the moment the app
+            // opens the next time, before any server has been asked
+            ctx?.let { c -> prefs(c).edit().putBoolean("ownersKey:" + token, it).apply() }
+        } ?: ownerKept(ctx)
+    }
+
+    /** Whose key this is as it was last known: in this run, else as written down. A
+     *  row that waits for the server to answer comes up seconds after the screen. */
+    fun ownerKept(ctx: Context?): Boolean =
+        seenAsOwner ?: (ctx?.let { prefs(it).getBoolean("ownersKey:" + token, false) } ?: false)
+
+    suspend fun amGuest(): Boolean = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/config")).optBoolean("guest", false) }
+            .getOrDefault(false)
+    }
+
+    suspend fun letThemFetch(): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(get("/settings")).optString("letThemFetch", "packs")
+        }.getOrDefault("packs")
+    }
+
+    suspend fun setLetThemFetch(want: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("letThemFetch", want)))
+                .optString("letThemFetch", want)
+        }.getOrDefault(want)
+    }
+
+    /** One thing being fetched from the tracker now. */
+    data class Taking(val hash: String, val name: String, val state: String,
+                      val progress: Double, val mbit: Double, val eta: Int,
+                      // finished: the file is here, and there is nothing to cancel
+                      val done: Boolean = false,
+                      // the film it is, from the tracker's row
+                      val title: String = "", val year: Int = 0)
+
+    suspend fun trackerTaking(srv: Server? = null): List<Taking> =
+        withContext(Dispatchers.IO) {
+        runCatching {
+            val rows = JSONObject(postTo(srv, "/tracker/active", JSONObject()))
+                .optJSONArray("taking") ?: return@runCatching emptyList()
+            (0 until rows.length()).mapNotNull { i ->
+                rows.optJSONObject(i)?.let {
+                    Taking(it.optString("hash"), it.optString("name"),
+                           it.optString("state"), it.optDouble("progress", 0.0),
+                           it.optDouble("mbit", 0.0), it.optInt("eta", -1),
+                           it.optBoolean("done", false), it.optString("title"),
+                           it.optInt("year", 0))
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun trackerCancel(hash: String, srv: Server? = null): Boolean =
+        withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(postTo(srv, "/tracker/cancel",
+                              JSONObject().put("hash", hash))).optBoolean("ok")
+        }.getOrDefault(false)
+    }
+
+    /** Which release to put forward when a film is carried more than once. */
+    suspend fun preferRes(): String = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/settings")).optString("preferRes", "1080p") }
+            .getOrDefault("1080p")
+    }
+
+    suspend fun setPreferRes(want: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("preferRes", want)))
+                .optString("preferRes", want)
+        }.getOrDefault(want)
+    }
+
+    suspend fun preferBy(): String = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/settings")).optString("preferBy", "seeds") }
+            .getOrDefault("seeds")
+    }
+
+    suspend fun setPreferBy(want: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("preferBy", want)))
+                .optString("preferBy", want)
+        }.getOrDefault("seeds")
+    }
+
+    /** The rest of what decides the recommended version: one call each, like above. */
+    suspend fun preferOne(field: String, fallback: String = "any"): String =
+        withContext(Dispatchers.IO) {
+            runCatching { JSONObject(get("/settings")).optString(field, fallback) }
+                .getOrDefault(fallback)
+        }
+
+    suspend fun setPreferOne(field: String, want: String): String =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                JSONObject(post("/settings", JSONObject().put(field, want)))
+                    .optString(field, want)
+            }.getOrDefault(want)
+        }
+
+    /** What the tracker index holds, and how the asking into it is going. */
+    data class Tracker(val releases: Int = 0, val left: Int = 0, val aDay: Int = 0,
+                       val session: Boolean = false, val why: String = "",
+                       val films: Int = 0, val matched: Int = 0, val swept: Int = 0)
+
+    suspend fun tracker(): Tracker = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = JSONObject(post("/tracker/state", JSONObject()))
+            Tracker(o.optInt("releases"), o.optInt("left"), o.optInt("aDay"),
+                    o.optBoolean("session"), o.optString("why", ""),
+                    o.optInt("films"), o.optInt("matched"), o.optInt("swept"))
+        }.getOrDefault(Tracker())
+    }
+
+    /** Ask the tracker about a few films now, rather than waiting for the hour. */
+    suspend fun trackerSearch(many: Int = 5): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val o = JSONObject(post("/tracker/search", JSONObject().put("many", many)))
+                Pair(o.optBoolean("ok"),
+                     if (o.optBoolean("ok")) "Asking about " + o.optInt("asking") + " films"
+                     else o.optString("why", "Could not ask just now"))
+            }.getOrDefault(Pair(false, "The server did not answer"))
+        }
+
+    /** The biggest one download anybody but the owner may start, in GB. 0 is any. */
+    suspend fun fetchMost(): Double = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(get("/settings")).optDouble("fetchMaxGb", 10.0)
+        }.getOrDefault(10.0)
+    }
+
+    suspend fun setFetchMost(want: Double): Double = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("fetchMaxGb", want)))
+                .optDouble("fetchMaxGb", want)
+        }.getOrDefault(want)
+    }
+
+    suspend fun meters(): Meters = withContext(Dispatchers.IO) {
+        runCatching { metersOf(JSONObject(get("/settings")).optJSONObject("meters")) }
+            .getOrDefault(Meters())
+    }
+
+    suspend fun setMeters(want: Meters): Meters = withContext(Dispatchers.IO) {
+        runCatching {
+            metersOf(JSONObject(post("/settings", JSONObject().put("meters",
+                JSONObject().put("audience", want.audience)
+                    .put("critics", want.critics)))).optJSONObject("meters"))
+        }.getOrDefault(want)
+    }
 
     suspend fun filmsShow(): FilmsShow = withContext(Dispatchers.IO) {
         runCatching { filmsShowOf(JSONObject(get("/settings")).optJSONObject("filmsShow")) }
@@ -2993,20 +3615,31 @@ object Api {
      * season after it. Null at the end of the last season, which is where it should
      * stop rather than looping.
      */
+    /** The episode Play on a programme's page starts: left part-way, the next one
+     *  after the last watched, or the first. Null where the server cannot say. */
+    suspend fun nextUp(show: Media): Media? = withContext(Dispatchers.IO) {
+        runCatching {
+            items(json("/local/library/metadata/" + show.ratingKey + "/nextUp", show.srv)
+                .getJSONObject("MediaContainer"), show.srv).firstOrNull()
+        }.getOrNull()
+    }
+
     suspend fun nextEpisode(showKey: String, season: Int, number: Int): Media? =
         withContext(Dispatchers.IO) {
             try {
                 val seasons = items(json("/local/library/metadata/$showKey/children")
                     .getJSONObject("MediaContainer"), null)
                 val here = seasons.firstOrNull { it.index == season } ?: return@withContext null
+                // an upcoming episode is listed greyed but has no file: never next
                 val eps = items(json("/local/library/metadata/${here.ratingKey}/children")
-                    .getJSONObject("MediaContainer"), null)
+                    .getJSONObject("MediaContainer"), null).filter { !it.upcoming }
                 eps.firstOrNull { (it.index ?: -1) > number }
                     ?: run {
-                        val after = seasons.filter { (it.index ?: -1) > season }
+                        val after = seasons.filter { (it.index ?: -1) > season && !it.upcoming }
                             .minByOrNull { it.index ?: 0 } ?: return@withContext null
                         items(json("/local/library/metadata/${after.ratingKey}/children")
-                            .getJSONObject("MediaContainer"), null).firstOrNull()
+                            .getJSONObject("MediaContainer"), null)
+                            .firstOrNull { !it.upcoming }
                     }
             } catch (stopped: kotlinx.coroutines.CancellationException) {
                 throw stopped          // the screen closed: not a failure
@@ -3035,7 +3668,9 @@ object Api {
                         .put("position", look.position.toDouble())
                         .put("colour", look.colour)
                         .put("background", look.background)
-                        .put("base", look.base))
+                        .put("base", look.base)
+                        .apply { if (look.onPicture >= 0f)
+                                     put("onPicture", look.onPicture.toDouble()) })
                 postTo(to, "/settings", body)
             }
         }
@@ -3052,7 +3687,11 @@ object Api {
                     .put("position", look.position.toDouble())
                     .put("colour", look.colour)
                     .put("background", look.background)
-                    .put("base", look.base))
+                    .put("base", look.base)
+                    // only a height this screen actually has: "not known" replaced
+                    // the real one and put the text on the wrong row
+                    .apply { if (look.onPicture >= 0f)
+                                 put("onPicture", look.onPicture.toDouble()) })
             if (key.isNotEmpty()) body.put("key", key)
             try {
                 val o = JSONObject(post("/settings", body))
@@ -3062,7 +3701,10 @@ object Api {
                         sub.optString("colour", "white"),
                         sub.optString("background", "shadow"),
                         o.optBoolean("override"),
-                        sub.optString("base", "picture"))
+                        sub.optString("base", "picture"),
+                        // read back like the rest: left out, every save undid the
+                        // on-screen height and the menu showed Just up again
+                        sub.optDouble("onPicture", -1.0).toFloat())
             } catch (stopped: kotlinx.coroutines.CancellationException) {
                 throw stopped          // the screen closed: not a failure
             } catch (e: Exception) {
@@ -3093,7 +3735,9 @@ object Api {
                             val sameName: Boolean = false,
                             // the hash says this file and the name says another
                             // release: shown, but not believed
-                            val hashOdd: Boolean = false)
+                            val hashOdd: Boolean = false,
+                            /** already beside the film */
+                            val onDisk: Boolean = false)
 
     /**
      * What is on offer for one title.
@@ -3113,7 +3757,8 @@ object Api {
                 SubCandidate(r.optLong("id"), r.optString("name"),
                              r.optString("language"), r.optInt("downloads"),
                              r.optBoolean("fromHash"), r.optBoolean("confirmed"),
-                             r.optBoolean("sameName"), r.optBoolean("hashOdd"))
+                             r.optBoolean("sameName"), r.optBoolean("hashOdd"),
+                             onDisk = r.optBoolean("onDisk"))
             }
             Pair(out, o.optString("error"))
         } catch (stopped: kotlinx.coroutines.CancellationException) {
@@ -3178,11 +3823,13 @@ object Api {
     }
 
     /** Take one. Returns an error, or null when it worked. */
-    suspend fun getSubtitle(m: Media, id: Long, language: String, release: String):
+    suspend fun getSubtitle(m: Media, id: Long, language: String, release: String,
+                            downloads: Int = 0):
         String? = withContext(Dispatchers.IO) {
         try {
             val body = JSONObject().put("key", m.ratingKey).put("id", id)
                 .put("language", language).put("release", release)
+                .put("downloads", downloads)
             val o = JSONObject(postTo(m.srv, "/subs/get", body))
             if (o.optBoolean("ok")) null else o.optString("error", "it did not work")
         } catch (stopped: kotlinx.coroutines.CancellationException) {
@@ -3212,16 +3859,29 @@ object Api {
     }
 
     /** POST to a particular server rather than whichever one is open. */
-    private fun postOnce(door: String, path: String, body: JSONObject, t: String): String {
-        val conn = URL(door + auth(path, t)).openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.connectTimeout = 8000
-        conn.readTimeout = 90000                 // a search and a download, in one call
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("X-Palladium-App", appName())
-        conn.outputStream.use { it.write(body.toString().toByteArray()) }
-        conn.inputStream.use { return it.readBytes().toString(Charsets.UTF_8) }
+    private fun postOnce(door: String, path: String, body: JSONObject, t: String): String =
+        try {
+            postRaw(door, path, body, t)
+        } catch (e: java.net.UnknownHostException) {
+            postRaw(KnownHosts.byAddress(door) ?: throw e, path, body, t)
+        }
+
+    private fun postRaw(door: String, path: String, body: JSONObject, t: String): String {
+        // a machine that has just failed to answer gets a short reach, as reads do;
+        // ninety seconds to read, for a search and a download in one call
+        val conn = Net.open(door + auth(path, t), reachFor(door, 8000), 90000, t, "POST")
+        try {
+            Net.send(conn, body.toString())
+            conn.inputStream.use {
+                val said = it.readBytes().toString(Charsets.UTF_8)
+                answered(door, true)
+                return said
+            }
+        } catch (e: java.io.IOException) {
+            if (e is java.net.ConnectException || e is java.net.SocketTimeoutException ||
+                e is java.net.NoRouteToHostException) answered(door, false)
+            throw e
+        }
     }
 
     /**
@@ -3235,49 +3895,8 @@ object Api {
      * server that refuses has answered, and drawing again elsewhere would take two
      * titles out of the hat for one episode.
      */
-    private fun postTo(srv: Server?, path: String, body: JSONObject): String {
-        val t = srv?.token ?: token
-        // Home first, when we have fallen away from it and it may be back. The films
-        // come home on their own - the reader asks every machine holding one twenty
-        // seconds at a time - but a draw does not, so the round stayed on the machine
-        // keeping copies after the main server returned, and the next episode was
-        // drawn and encoded there while the main server sat idle with the better card.
-        if (srv == null && homeBase.isNotEmpty() &&
-            System.currentTimeMillis() - triedHome > 60_000L) {
-            triedHome = System.currentTimeMillis()
-            try {
-                val said = postOnce(homeBase, path, body, t)
-                if (base != homeBase) otherWay = base
-                base = homeBase
-                homeBase = ""
-                onStandby = false
-                return said
-            } catch (away: java.io.IOException) {
-                // still off: carry on with the machine that is answering
-            }
-        }
-        val doors = ArrayList<String>()
-        doors.add(srv?.base ?: base)
-        for (other in listOf(base, standby, standbyOut)) {
-            val one = other.trimEnd('/')
-            if (one.isNotEmpty() && doors.none { it.trimEnd('/') == one }) doors.add(one)
-        }
-        var last: java.io.IOException? = null
-        for (door in doors) {
-            try {
-                return postOnce(door, path, body, t)
-            } catch (e: java.io.IOException) {
-                val gone = e is java.net.ConnectException ||
-                           e is java.net.SocketTimeoutException ||
-                           e is java.net.UnknownHostException ||
-                           e is java.net.NoRouteToHostException ||
-                           e is java.net.PortUnreachableException
-                if (!gone) throw e
-                last = e
-            }
-        }
-        throw (last ?: java.io.IOException("no server answered " + path))
-    }
+    private fun postTo(srv: Server?, path: String, body: JSONObject): String =
+        routed(srv) { door -> postOnce(door, path, body, srv?.token ?: token) }
 
     /* ---------------- invitations ----------------
        Only the owner of a server may list or create these; from anywhere else the
@@ -3304,16 +3923,14 @@ object Api {
         }
     }
 
-    private fun post(path: String, body: JSONObject): String {
-        val conn = URL(base + auth(path, token)).openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.connectTimeout = 8000
-        conn.readTimeout = 15000
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("X-Palladium-App", appName())
-        conn.outputStream.use { it.write(body.toString().toByteArray()) }
-        conn.inputStream.use { return it.readBytes().toString(Charsets.UTF_8) }
+    /** A write to the server the library is on, routed as every request is. */
+    private fun post(path: String, body: JSONObject): String =
+        routed(null) { door -> postBase(door, path, body) }
+
+    private fun postBase(b: String, path: String, body: JSONObject): String {
+        val conn = Net.open(b + auth(path, token), reachFor(b, 8000), 15000, token, "POST")
+        Net.send(conn, body.toString())
+        return Net.text(conn)
     }
 
     suspend fun createInvite(name: String, email: String = "", days: Int = 0): Invite? =
@@ -3453,10 +4070,11 @@ object Api {
         withContext(Dispatchers.IO) {
             val home = BuildConfig.UPDATE_HOME
             val known = Servers.all(ctx).firstOrNull { it.base == home }
+            // not a house address away from home: six seconds each for nothing
             val tries = listOfNotNull(
                 if (home.isNotEmpty()) Pair(home, known?.token ?: "") else null,
                 Pair(base, token),
-            ).distinctBy { it.first }
+            ).distinctBy { it.first }.filter { homeHere(it.first) }
             val body = JSONObject()
                 .put("kind", kind).put("text", text)
                 .put("app", "android " + BuildConfig.VERSION_NAME + " \u00b7 " +
@@ -3464,15 +4082,9 @@ object Api {
                         " \u00b7 " + (if (device == "tv") "television" else "phone"))
             for ((host, tok) in tries) {
                 try {
-                    val conn = URL(host + auth("/feedback", tok))
-                        .openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.doOutput = true
-                    conn.connectTimeout = 6000
-                    conn.readTimeout = 10000
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.outputStream.use { it.write(body.toString().toByteArray()) }
-                    conn.inputStream.use { it.readBytes() }
+                    val conn = Net.open(host + auth("/feedback", tok), 6000, 10000, tok, "POST")
+                    Net.send(conn, body.toString())
+                    Net.text(conn)
                     return@withContext true
                 } catch (stopped: kotlinx.coroutines.CancellationException) {
                     throw stopped          // the screen closed: not a failure

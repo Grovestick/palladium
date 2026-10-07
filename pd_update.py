@@ -140,6 +140,11 @@ def install(path):
         # update left another dead P in the tray, and after a run of updates
         # there were ten of them. /F stays, a moment later, for one that will
         # not go on its own.
+        # the server takes its own icon down when asked over loopback
+        f.write('powershell -NoProfile -Command "foreach ($p in 8765, 8764) '
+                '{ try { Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec 3 '
+                'http://127.0.0.1:$p/app/quit | Out-Null } catch {} }"\r\n')
+        f.write("ping -n 3 127.0.0.1 >nul\r\n")
         f.write("taskkill /IM palladium.exe >nul 2>&1\r\n")
         f.write("ping -n 4 127.0.0.1 >nul\r\n")
         f.write("taskkill /F /IM palladium.exe >nul 2>&1\r\n")
@@ -147,7 +152,7 @@ def install(path):
         f.write("ping -n 3 127.0.0.1 >nul\r\n")
         f.write('"%s" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS '
                 '/FORCECLOSEAPPLICATIONS /LOG="%s"\r\n' % (path, log))
-        f.write('if exist "%s" (start "" "%s") else (start "" "%s")\r\n'
+        f.write('if exist "%s" (start "" "%s") else (start "" "%s" --no-open)\r\n'
                 % (tray, tray, program))
         f.write('exit\r\n')
     # A file rather than a line, and one shell starting another rather than one shell

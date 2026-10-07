@@ -289,7 +289,7 @@ def beside(video, language):
     return "%s.ai-gen.%s.srt" % (os.path.splitext(video)[0], language.lower()[:2])
 
 
-def ask(video, language, title="", copies=(), key=""):
+def ask(video, language, title="", copies=(), key="", names=()):
     """Put a film in the queue. Returns what to tell the caller.
 
     `copies` are the other files this library holds of the same title. A house that
@@ -312,6 +312,8 @@ def ask(video, language, title="", copies=(), key=""):
                # which title it belongs to, so a client can match it without
                # comparing file names it may not have
                "key": str(key),
+               # cast, characters and guest stars: hints for spelling their names
+               "names": [str(n) for n in names][:80],
                "title": title, "at": 0.0, "what": "waiting", "when": int(time.time())}
         STATE["queued"].append(job)
     WAITING.put(job)
@@ -436,6 +438,7 @@ def _run(job):
         pass
     if os.environ.get("PALLADIUM_DATA"):
         air["PALLADIUM_DATA"] = os.environ["PALLADIUM_DATA"]
+    air["PALLADIUM_NAMES"] = json.dumps(job.get("names") or [])
     # -P: the script's folder stays off the path, so nothing of ours is imported by
     # accident. cwd is the data folder for the same reason.
     proc = subprocess.Popen([python, "-P", script,

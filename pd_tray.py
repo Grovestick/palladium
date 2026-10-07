@@ -289,6 +289,17 @@ class Tray:
         if self.icon:
             self.icon.stop()
 
+    def bow_out_now(self):
+        """Take the icon off the tray and end the process: asked by an update over
+        loopback. taskkill's polite close never reaches pystray's hidden window, so an
+        update killed the server by force and every one left a dead P in the tray."""
+        try:
+            if self.icon:
+                self.icon._hide()
+        except Exception:
+            pass
+        os._exit(0)
+
     def run(self):
         threading.Thread(target=self.watch, daemon=True).start()
         # Asked to close - by an update replacing this program, or by Windows shutting
