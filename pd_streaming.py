@@ -896,7 +896,7 @@ def refresh(lib, force=False, months=None):
             # Kept if either meter vouches for it. Which of the two a viewer wants is
             # theirs to say and is applied where the shelf is built; throwing a film
             # away here would decide it for everybody.
-            marks = [m for m in (said, judged) if m is not None]
+            marks: list = [m for m in (said, judged) if m is not None]
             if marks:
                 if max(marks) < LIKED_PERCENT:
                     continue
@@ -1133,6 +1133,37 @@ def out_now(one):
         if not (words & set(CAMMED)):
             return True
     return not one.get("homeChecked")
+
+
+#: when the rows were last matched against the library, between readings
+HELD_AT = [0.0]
+
+
+def mark_held(lib, every=60.0):
+    """Between readings, which rows this house holds now. The list is read twice a day;
+    a film that arrived since stood on the shelf as something to ask for until the
+    next reading. The same match a reading makes, at most once in `every` seconds.
+    Returns how many rows changed."""
+    now = time.time()
+    if now - HELD_AT[0] < every:
+        return 0
+    HELD_AT[0] = now
+    from pd_library import flatten_title
+    read()
+    by_tmdb, held = _held(lib)
+    changed = 0
+    with LOCK:
+        for one in STATE["rows"]:
+            mine = (by_tmdb.get(("movie", int(one.get("tmdb") or 0)))
+                    or _by_name(held, "movie", flatten_title(one.get("title") or ""),
+                                one.get("year")))
+            if (mine or None) != (one.get("here") or None):
+                if mine:
+                    one["here"] = mine
+                else:
+                    one.pop("here", None)
+                changed += 1
+    return changed
 
 
 def shown():

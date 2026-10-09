@@ -124,6 +124,60 @@ object Route {
     fun raiseReceiver(raised: Boolean, onScreen: Boolean, tv: Boolean, passing: Boolean): Boolean =
         !raised && onScreen && tv && passing
 
+    /** How long after the first picture the sound's route is taken as known. */
+    const val SOUND_SETTLES_MS = 3000L
+
+    /** Whether the sink has had time to say how it takes the sound: this long since
+     *  the first picture of what is being read; -1 while there is none. */
+    fun soundSettled(sincePictureMs: Long): Boolean = sincePictureMs > SOUND_SETTLES_MS
+
+    /**
+     * Whether the sound goes to the amplifier as it is: not cast, never through the
+     * processor here, and settled. Direct play or encode alike. Counted from the
+     * picture, not the film's position: a resume at 222 s that took 10 s to start
+     * was past "3 s in" before any sound existed, and decoded AAC raised the receiver.
+     */
+    fun passesSound(onCast: Boolean, decodedHere: Boolean, sincePictureMs: Long): Boolean =
+        !onCast && !decodedHere && soundSettled(sincePictureMs)
+
+    /** What a poster says of its download: how far, and nothing else. The rate, the
+     *  time left and the version are on the download line and the title's page. */
+    fun posterDownload(state: String, progress: Double): String = when (state) {
+        "downloading" -> "" + (progress * 100).toInt().coerceIn(0, 100) + "%"
+        "queued" -> "Queued"
+        "done" -> "Arriving"
+        else -> ""
+    }
+
+    /** From a press of Next or an episode's end: black over the picture from here. */
+    const val COVER_MS = 400L
+    /** And the words on it only from here: a changeover of half a second showed them. */
+    const val WORDS_MS = 2000L
+
+    /** What the wait for the next title shows: 0 nothing, 1 black, 2 black with words. */
+    fun changeoverShows(waitedMs: Long): Int =
+        if (waitedMs >= WORDS_MS) 2 else if (waitedMs >= COVER_MS) 1 else 0
+
+    /** The next title's details are read ahead this close to the end, */
+    const val READ_AHEAD_BEFORE_MS = 30_000L
+    /** and used at the changeover only this fresh: a subtitle may have come since. */
+    const val READ_AHEAD_FRESH_MS = 90_000L
+
+    /** Whether details read ahead stand for the title now starting: the same title
+     *  from the same server, read no longer ago than READ_AHEAD_FRESH_MS. */
+    fun readAheadFits(heldKey: String, heldFrom: String, wantedKey: String,
+                      wantedFrom: String, ageMs: Long): Boolean =
+        heldKey.isNotEmpty() && heldKey == wantedKey && heldFrom == wantedFrom &&
+            ageMs in 0L..READ_AHEAD_FRESH_MS
+
+    /** What the information line says of a receiver that was not raised: the reason
+     *  where it is a fault of the receiver, nothing where the receiver is not this
+     *  screen's business - a viewer outside the house, another screen in it, or no
+     *  answer at all. */
+    fun receiverRefusal(answered: Boolean, why: String): String =
+        if (!answered || why == "off" || why == "not in the house" ||
+            why == "not the device set for the receiver") "" else "receiver: $why"
+
     /** How long a name that would not resolve is asked for by number without trying. */
     const val NAME_FAILED_MS = 60_000L
 

@@ -135,9 +135,14 @@ def walked(h, who, cid, presses, label):
         if pos1 in seen:
             check(label + " same title at the same place", seen[pos1] == said.get("key"))
         seen[pos1] = said.get("key")
-        check(label + " played and queue follow the order",
+        check(label + " played follows the order; the queue is the next ten still on the shelf",
               after.get("played") == order0[:pos1 + 1]
-              and after.get("queue") == order0[pos1 + 1:pos1 + 1 + H.SHUFFLE_DEEP])
+              and after.get("queue") == [k for k in order0[pos1 + 1:] if k in inside][:H.SHUFFLE_DEEP])
+        drew = str(said.get("key"))
+        # a library key: an episode, or a title's twelve hex digits; other shapes are not rows here
+        if drew.startswith("e") or (len(drew) == 12 and not drew.startswith("o")):
+            check(label + " a library title handed out has a file",
+                  bool((said.get("item") or {}).get("Media")), drew)
     return True
 
 stored = m.read_settings() or {}
@@ -328,6 +333,121 @@ ahead = [str(k) for k in h2.casual_ahead(owner)]
 check("10 the hat's next are in what is copied ahead",
       all(k in ahead for k in r["order"][r["pos"] + 1:r["pos"] + 1 + H.SHUFFLE_DEEP] if k in set(inside)) or not ahead)
 print("10. the hat read by the copy", flush=True)
+
+# ---- 11. a library row without a file is not in a hat; a pack's key for it is
+con = m.local().lib.db()
+filed = ({str(r[0]) for r in con.execute("SELECT DISTINCT episode_id FROM file WHERE episode_id IS NOT NULL")}
+         | {str(r[0]) for r in con.execute("SELECT DISTINCT item_id FROM file WHERE episode_id IS NULL")})
+con.close()
+looked = 0
+for who in people:
+    mine = stored if who == "me" else (stored.get("users") or {}).get(who) or {}
+    h11 = handler(who)
+    for c in (mine.get("collections") or []):
+        try:
+            _, pool11 = h11.shuffle_shelf(str(c.get("id")))
+        except Exception:
+            FAILS.append("11 pool of %s/%s raised: %s" % (who[:6], c.get("id"), traceback.format_exc(limit=2)))
+            continue
+        looked += 1
+        bare = [k for k in (str(k) for k in pool11)
+                if not k.startswith("o") and (k.startswith("e") or len(k) == 12) and k not in filed]
+        check("11 nothing without a file in the hat of %s/%s" % (who[:6], c.get("id")), not bare, str(bare[:4]))
+# one made up: an episode on the largest shelf loses its file. No pack carries it: it
+# leaves the hat. A pack carries it: the pack's key stands in, at the same place.
+real_offered = pd_torrents.offered_episodes
+shelf, pool = h.shuffle_shelf(cid)
+real_keys = pd_torrents.offered_keys
+victims = [str(k) for k in pool if str(k).startswith("e")][:2]
+if check("11 two episodes on the shelf", len(victims) == 2):
+    lost, packed = victims
+    fresh_round(3)
+    r = round_of(owner, cid)
+    con = m.local().lib.db()
+    row = con.execute("SELECT i.title AS t, e.season AS s, e.number AS n FROM episode e "
+                      "JOIN item i ON i.id=e.item_id WHERE e.id=?", (packed,)).fetchone()
+    con.execute("DELETE FROM file WHERE episode_id IN (?,?)", (lost, packed))
+    con.commit()
+    # what is held and what packs offer are read again, not from a minute ago
+    pd_torrents.STATE["owned"] = None
+    pd_torrents.STATE["by_show_at"] = 0.0
+    # staged: no pack carries the first (whatever a real pack lists for either is hidden),
+    # one pack carries the second
+    hide = set(h.packed_for(con, [lost, packed]).values())
+    con.close()
+    want = pd_torrents.show_key(row["t"])
+    pd_torrents.offered_episodes = lambda key, season: (
+        [e for e in real_offered(key, season) if str(e.get("ratingKey")) not in hide]
+        + ([{"ratingKey": "ofake00000001", "index": int(row["n"])}]
+           if key == want and int(season) == int(row["s"]) else []))
+    pd_torrents.offered_keys = lambda title, season=None: [
+        k for k in real_keys(title, season) if str(k) not in hide]
+    pool = [k for k in pool if str(k) not in hide]
+    _, after = h.shuffle_shelf(cid)
+    after = [str(k) for k in after]
+    check("11 an episode whose file has gone and no pack carries leaves the hat", lost not in after)
+    check("11 one a pack carries is in the hat under the pack's key, not its own",
+          packed not in after and "ofake00000001" in after)
+    check("11 and nothing else is taken", len(after) == len(pool) - 1, "%d -> %d" % (len(pool), len(after)))
+    before = list(round_of(owner, cid)["order"])
+    at = before.index(packed)
+    h.shuffle_draw(cid, peek=True)
+    h.shuffle_draw(cid)
+    h.shuffle_draw(cid, back=True)
+    now = list(round_of(owner, cid)["order"])
+    check("11 in a round's order the pack's key takes the place the episode had",
+          at < len(now) and now[at] == "ofake00000001" and packed not in now,
+          "place %d holds %s" % (at, now[at] if at < len(now) else None))
+    got = [h.shuffle_draw(cid).get("key") for _ in range(len(pool) + 5)]
+    check("11 the one with no pack is not drawn, however far Next is pressed", lost not in got)
+    check("11 the one a pack carries is drawn, as the pack's", "ofake00000001" in got and packed not in got)
+    check("11 neither is listed as next under its library key",
+          not {lost, packed} & set(round_of(owner, cid).get("queue") or []))
+    # a hand-picked shelf lists episodes by their own keys: no rule brings the pack's in
+    con = m.local().lib.db()
+    kept_one = next(str(k) for k in after if str(k).startswith("e"))
+    picked = h.shelf_pool(con, {"id": "t11", "mode": "manual", "rule": {}, "hidden": [],
+                                "pinned": [packed, lost, kept_one]})
+    con.close()
+    check("11 on a hand-picked shelf: the pack's key for the one it carries, the other left out, the rest as they were",
+          [str(k) for k in picked] == ["ofake00000001", kept_one], str(picked))
+    # the fetch ahead reads the round as it was kept, library keys and all
+    asked = []
+    real_request, real_arrived = pd_torrents.request, pd_torrents.arrived
+    pd_torrents.request = lambda key, *a, **k: asked.append(str(key)) or {"ok": True}
+    pd_torrents.arrived = lambda key: None
+    H.HAT_ASKED.clear()
+    h.fetch_the_hat(owner, [packed, lost, kept_one])
+    for _ in range(40):
+        if asked:
+            break
+        time.sleep(0.1)
+    check("11 the fetch ahead asks the pack for the one it carries, and for nothing else",
+          asked == ["ofake00000001"], str(asked))
+    pd_torrents.request, pd_torrents.arrived = real_request, real_arrived
+    # carrying on with a round that stands on it asks the pack too
+    said = {"key": None}
+    for _ in range(len(pool) + 5):
+        said = h.shuffle_draw(cid)
+        if said.get("key") == "ofake00000001":
+            break
+    seen = []
+    h.ask_the_pack = lambda keys: seen.append([str(k) for k in keys])
+    again = h.shuffle_draw(cid, resume=True)
+    check("11 carrying on with a round standing on it answers it and asks the pack for it",
+          said.get("key") == "ofake00000001" and again.get("key") == "ofake00000001"
+          and ["ofake00000001"] in seen, "%s %s %s" % (said.get("key"), again.get("key"), seen[:2]))
+    h.ask_the_pack = lambda keys: None
+    h.follows_a_main = lambda: True
+    con = m.local().lib.db()
+    check("11 on a copy nothing stands in: it fetches nothing itself", h.packed_for(con, [packed]) == {})
+    con.close()
+    h.follows_a_main = lambda: False
+    pd_torrents.offered_episodes, pd_torrents.offered_keys = real_offered, real_keys
+kept = H.held_keys(m.local().lib.db(), ["oabc", "coll:x", "e000000000000", "0123456789ab"])
+check("11 a pack's key and a key of another shape are kept, a library key with no row is not",
+      kept == {"oabc", "coll:x"}, str(kept))
+print("11. no hat holds a title without a file: %d shelves" % looked, flush=True)
 
 print()
 print("SHUFFLE FAILED: %d" % len(FAILS) if FAILS else "SHUFFLE PASSED  (%.0f s)" % (time.time() - BEGAN))

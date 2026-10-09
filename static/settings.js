@@ -2058,7 +2058,67 @@
   // rows lately seen, by viewing, and when
   const HELD = new Map();
 
-  async function drawLive(into, totals) {
+  /* What a worker's box says under its name. */
+  function workerLine(w) {
+    const secs = (n) => n >= 3600 ? Math.floor(n / 3600) + " h " + Math.round((n % 3600) / 60) + " min"
+      : n >= 90 ? Math.round(n / 60) + " min" : n + " s";
+    if (w.state === "working" || w.state === "stalled") {
+      return [w.state === "stalled" ? "stalled" : "", w.step || (w.state === "working" ? "working" : ""),
+              w.for ? secs(w.for) : "", w.left ? w.left + " to go" : ""]
+        .filter(Boolean).join(" \u00b7 ");
+    }
+    if (w.state === "off") return "not running";
+    return [w.next != null ? "next in " + secs(w.next) : "waiting",
+            w.left ? w.left + " to go" : ""].filter(Boolean).join(" \u00b7 ");
+  }
+
+  /* The worker boxes beside the drawing: one a worker a machine, lit while it works.
+     A box is made once; after that only its class and its line change. */
+  function drawWorkers(box, groups) {
+    const grids = box._grids || (box._grids = new Map());
+    const boxes = box._boxes || (box._boxes = new Map());
+    const seen = new Set();
+    groups.forEach((g) => {
+      let grid = grids.get(g.on);
+      if (!grid) {
+        const head = document.createElement("div");
+        head.className = "wgroup";
+        head.textContent = g.on;
+        grid = document.createElement("div");
+        grid.className = "wboxes";
+        grid._head = head;
+        box.append(head, grid);
+        grids.set(g.on, grid);
+      }
+      seen.add(g.on);
+      g.rows.forEach((w) => {
+        const key = g.on + "|" + w.name;
+        let el = boxes.get(key);
+        if (!el) {
+          el = document.createElement("div");
+          el.innerHTML = "<b></b><span></span>";
+          el.querySelector("b").textContent = w.name;
+          grid.appendChild(el);
+          boxes.set(key, el);
+        }
+        seen.add(key);
+        const cls = "wbox" + (w.state === "working" ? " on" : w.state === "stalled" ? " stalled" : "");
+        if (el.className !== cls) el.className = cls;
+        const line = workerLine(w);
+        const span = el.querySelector("span");
+        if (span.textContent !== line) { span.textContent = line; el.title = w.name + ": " + line; }
+      });
+    });
+    // a machine or a worker no longer reported leaves
+    boxes.forEach((el, key) => { if (!seen.has(key)) { el.remove(); boxes.delete(key); } });
+    grids.forEach((grid, on) => {
+      if (!seen.has(on)) { grid._head.remove(); grid.remove(); grids.delete(on); }
+    });
+    // one machine needs no heading
+    grids.forEach((grid) => { grid._head.hidden = grids.size < 2; });
+  }
+
+  async function drawLive(into, totals, work) {
     // One loop per list, its timer kept on the list itself. A single shared timer
     // let a list drawn twice stop both: the old loop's last pass cleared the new
     // loop's timer and then found itself off the screen, and the page froze.
@@ -2205,8 +2265,21 @@
       const working = [].concat(...answers.map((one, which) =>
         ((one && one.working) || []).map((w) => Object.assign({}, w,
           { on: whose[which] || "" }))));
+      // every worker of each machine with its state; an older server sends none,
+      // and then what it says it is doing stands in as lit boxes
+      const workers = answers.map((one, which) => ({
+        on: whose[which] || "",
+        rows: one && one.workers ? one.workers
+          : [].concat(
+              one && one.measuring ? [{ name: "Loudness", state: "working",
+                                        step: one.measuring.name }] : [],
+              one && one.analysing ? [{ name: "Credits analyser", state: "working",
+                                        step: one.analysing.name }] : [],
+              ((one && one.working) || []).map((w) => Object.assign(
+                { state: w.ok === false ? "stalled" : "working" }, w))),
+      })).filter((g) => g.rows.length);
       data = { live: merged, measuring: measuring, analysing: analysing,
-               downloading: downloading, working: working };
+               downloading: downloading, working: working, workers: workers };
     } catch (e) { /* server restarting */ }
     into.innerHTML = "";
     if (totals) {
@@ -2234,67 +2307,13 @@
           totals.appendChild(cell);
         });
     }
-    if (!data.live.length && !(data.measuring || []).length &&
-        !(data.analysing || []).length && !(data.downloading || []).length &&
-        !(data.working || []).length) {
+    if (work) drawWorkers(work, data.workers || []);
+    if (!data.live.length && !(data.downloading || []).length) {
       const none = document.createElement("div");
       none.className = "note";
       none.textContent = "Nobody is watching anything at the moment.";
       into.appendChild(none);
     }
-    // A file being listened to for its loudness: work with no viewer behind it, which
-    // is exactly why it is worth showing - a disk busy for half a minute at a time all
-    // evening should say what it is doing.
-    (data.measuring || []).forEach((m) => {
-      const el = document.createElement("div");
-      el.className = "person live";
-      el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
-        '<div class="rate"><b></b><span>measuring</span></div>';
-      el.querySelector("b").textContent = m.name || "a file";
-      const secs = m.since ? Math.max(0, Math.round(Date.now() / 1000 - m.since)) : 0;
-      el.querySelector(".pmeta .note").textContent = [
-        "loudness, on " + (m.on || "this server"),
-        secs ? secs + "s so far" : "",
-        (m.done || 0) + " measured",
-        m.left ? m.left + " to go" : ""].filter(Boolean).join(" · ");
-      el.querySelector(".rate b").textContent = "LUFS";
-      into.appendChild(el);
-    });
-    // Where a film's credits begin, read off its picture and its sound: the card
-    // and the disk busy with nobody watching, which is the thing worth saying.
-    (data.analysing || []).forEach((m) => {
-      const el = document.createElement("div");
-      el.className = "person live";
-      el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
-        '<div class="rate"><b></b><span>analysing</span></div>';
-      el.querySelector("b").textContent = m.name || "a file";
-      const secs = m.since ? Math.max(0, Math.round(Date.now() / 1000 - m.since)) : 0;
-      el.querySelector(".pmeta .note").textContent = [
-        "where the credits begin, on " + (m.on || "this server"),
-        secs ? secs + "s so far" : "",
-        (m.done || 0) + " found",
-        m.left ? m.left + " to go" : ""].filter(Boolean).join(" · ");
-      el.querySelector(".rate b").textContent = "Credits";
-      into.appendChild(el);
-    });
-    // The rest of what the machines are doing: a worker in the middle of a step, a
-    // scan, a subtitle being written from the sound
-    (data.working || []).forEach((w) => {
-      const el = document.createElement("div");
-      el.className = "person live";
-      el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
-        '<div class="rate"><b></b><span></span></div>';
-      el.querySelector("b").textContent = w.name;
-      el.querySelector(".pmeta .note").textContent = [
-        w.step, w.for ? w.for + "s on it" : "",
-        w.done != null ? w.done + " done" : "",
-        w.left ? w.left + " to go" : "",
-        w.on ? "on " + w.on : "", w.ok === false ? "stalled" : ""]
-        .filter(Boolean).join(" · ");
-      el.querySelector(".rate b").textContent = w.ok === false ? "!" : "•";
-      el.querySelector(".rate span").textContent = w.ok === false ? "stalled" : "working";
-      into.appendChild(el);
-    });
     // Downloads: everything going on in the house is on this page, and a line full of
     // a download is the answer to "why is the stream slow"
     (data.downloading || []).forEach((d) => {
@@ -2433,7 +2452,7 @@
       }
     } catch (e) { /* a server with no torrents, or not the owner's page */ }
     if (document.body.contains(into)) {
-      into._liveTimer = setTimeout(() => drawLive(into, totals), 2000);
+      into._liveTimer = setTimeout(() => drawLive(into, totals, work), 2000);
     }
   }
 
@@ -2687,7 +2706,7 @@
    * follow this server, and what this server needs to follow another. They are drawn
    * into two cards, and both are filled from the one answer.
    */
-  async function drawServers(keyBox, followBox, listBox, place) {
+  async function drawServers(keyBox, followBox, listBox, place, begin) {
     let said = {};
     try {
       said = await get("/follow");
@@ -2696,8 +2715,10 @@
     // the machine following this one, as it last announced itself: the button above
     // and the note below both read it, so it is settled before either
     const other = said.standby || {};
-    const again = () => drawServers(keyBox, followBox, listBox, place);
+    const again = () => drawServers(keyBox, followBox, listBox, place, begin);
     keyBox.innerHTML = "";
+    // whoever places the rows somewhere of its own empties that place first
+    if (begin) begin();
 
     // Every key made for a machine, with what that key allows - the way an
     // invitation for a person carries what that person may do. There was one key for
@@ -4008,14 +4029,6 @@
     ];
   }
 
-  /* What else a machine is busy with, for its box: one line, the names. */
-  function workLines(rows) {
-    if (!rows.length) return [];
-    const names = rows.map((w) => w.name).filter(Boolean);
-    const said = "working: " + names.join(", ");
-    return [said.length > 44 ? said.slice(0, 43) + "…" : said];
-  }
-
   async function drawWiring(into) {
     // One answer for the whole drawing. It used to be three, every five seconds,
     // which on a machine at the end of a slow link is three round trips for one
@@ -4250,10 +4263,8 @@
       sync.length ? sync.length + " copying - " + syncMbit.toFixed(1) + " Mbit" : "",
       // and a film coming in, with how many wait behind it
       ...downloadLines((said && said.downloads) || []),
-      // and the rest of what it is working at, by name: the box is the machine
-      ...workLines((said && said.working) || []),
-      (!live.length && !sync.length && !((said && said.downloads) || []).length &&
-       !((said && said.working) || []).length)
+      // what its workers are at is in the worker boxes beside the drawing
+      (!live.length && !sync.length && !((said && said.downloads) || []).length)
         ? "nothing going out" : "",
     ].filter(Boolean)), true);
     const copying = !!state.copying || sync.length > 0;
@@ -4722,10 +4733,14 @@
     const openWhere = cacheOn ||
       ((caches[0] && caches[0].where) || "");
     const followBox = block("");
+    // on the page before this pane returns: the page is built out of sight and swapped
+    // in when it does, and a card added to it afterwards was added to nothing
+    const cards = document.createElement("div");
+    main.appendChild(cards);
     drawServers(keyBox, followBox, listBox, (row, f) => {
       const card = block("");
       card.appendChild(row);
-      main.appendChild(card);
+      cards.appendChild(card);
       if (!f || !f.where || f.where !== openWhere) return;   // shut: the row, and no more
       const inside = document.createElement("div");
       card.appendChild(inside);
@@ -4749,7 +4764,7 @@
       note.textContent = "How it copies is set on " + called +
         ". Turn Managed from the main server on there to set it from here.";
       inside.appendChild(note);
-    });
+    }, () => { cards.innerHTML = ""; });
 
     // a cache that lets this server set how it copies has those settings here,
     // and asleep on that machine
@@ -5555,10 +5570,11 @@
     const modeNote = document.createElement("div");
     modeNote.className = "note";
     modeNote.textContent = one.mode === "loudness"
-      ? "Each film by its measured loudness: up by as many dB as it is below the " +
-        "leveling target, after what the receiver's Dolby decoder takes off for the " +
-        "track's dialnorm; down for a loud one. At most +15 and -8. A film not " +
-        "measured yet gets the steps below and is measured while it plays."
+      ? "A film of typical loudness is raised 5 dB: 45.0 to 50.0 on the display. One " +
+        "measuring within 4 dB of typical gets that much more or less, so the two sound " +
+        "alike; one further out gets the plain 5. Typical is the middle of what is " +
+        "measured, films and episodes each by their own. A film not measured yet is " +
+        "measured as it starts and raised once that is known."
       : "Every film by the same number of steps.";
     box.appendChild(modeNote);
     const stepRow = document.createElement("div");
@@ -8438,7 +8454,8 @@
       const h = (HEIGHTS.find((x) => x[0] === (caps[where].height || 0)) || [])[1];
       const m = caps[where].mbit;
       said.textContent = !caps[where].height && !m
-        ? "No ceiling: whatever the viewer asks for."
+        ? "No ceiling: whatever the viewer asks for. A film that has to be re-encoded " +
+          "is given up to the megabits the file itself carries, never more."
         : "At most " + (caps[where].height ? h : "the original size") +
           (m ? ", at most " + m + " Mbit/s" : "") +
           ". A film already smaller than this is sent as it is.";
@@ -9001,17 +9018,35 @@
 
   async function paneNow(main) {
     if (document.body.classList.contains("monitor")) main.appendChild(designBar());
-    // what is talking to what, before anything else on the page
-    wiringBlock(main);
+    // The drawing, the totals and the streams in one column, a box for each worker in
+    // a second column beside it at its own height: the workers neither push the rows
+    // down nor scroll. The monitor keeps its own arrangement - the boxes beside the
+    // drawing, compact, and the rows across the screen under both.
+    const monitor = document.body.classList.contains("monitor");
+    const work = block("Workers");
+    work.classList.add("workers");
     const sum = document.createElement("div");
     sum.className = "livetotals";
-    main.appendChild(sum);
     const live = document.createElement("div");
-    // the same column as the drawing above, so the rate on the right of a row lines
-    // up with the right edge of the box rather than running out to the window
     live.className = "liverows";
-    main.appendChild(live);
-    drawLive(live, sum);
+    if (monitor) {
+      const top = document.createElement("div");
+      top.className = "nowtop";
+      main.appendChild(top);
+      wiringBlock(top);
+      top.appendChild(work);
+      main.append(sum, live);
+    } else {
+      const page = document.createElement("div");
+      page.className = "nowpage";
+      const left = document.createElement("div");
+      left.className = "nowleft";
+      page.append(left, work);
+      main.appendChild(page);
+      wiringBlock(left);
+      left.append(sum, live);
+    }
+    drawLive(live, sum, work);
   }
 
   /* Who is following this server, and what has already gone to them. */

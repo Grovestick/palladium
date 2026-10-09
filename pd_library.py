@@ -23,6 +23,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import types
 import urllib.parse
 import urllib.request
 
@@ -603,7 +604,7 @@ class Library:
         self._init_db()
 
     # ---- config -------------------------------------------------------------
-    def config(self):
+    def config(self) -> dict:
         if not os.path.exists(self.cfgpath):
             return {"movies": [], "tv": [], "tmdb_key": "", "language": "en-US"}
         # a read that lands while the file is being replaced is asked again
@@ -615,6 +616,7 @@ class Library:
                 if attempt == 4:
                     raise
                 time.sleep(0.1)
+        return {}                         # not reached: the fifth failure raised
 
     @staticmethod
     def exclusive(cfg, changed=None):
@@ -2218,9 +2220,8 @@ class Library:
         con = self.db()
         rows = con.execute("SELECT id, path FROM file").fetchall()
         for row in rows:
-            st = type("st", (), {"st_size": 0, "st_mtime": 0})
             cur = con.execute("SELECT size, mtime FROM file WHERE id=?", (row["id"],)).fetchone()
-            st.st_size, st.st_mtime = cur["size"], cur["mtime"]
+            st = types.SimpleNamespace(st_size=cur["size"], st_mtime=cur["mtime"])
             kind = self.kind_for(row["path"], folders) or "mixed"
             self._index_file(con, kind, row["path"], st, reset_probe=False)
         con.execute("DELETE FROM episode WHERE item_id NOT IN (SELECT id FROM item)")

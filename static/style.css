@@ -675,6 +675,25 @@ h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
    the drawing, the totals under it and the rate at the end of each row all end on
    the same line down the page. */
 .liverows{max-width:940px}
+/* the drawing with a box for each worker beside it; a box is lit while it works */
+.nowpage{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;max-width:1380px}
+.nowleft{flex:3 1 560px;min-width:0}
+.nowpage>.workers{flex:1 1 320px}
+.nowtop{display:flex;gap:16px;align-items:flex-start}
+.nowtop>.setblock{flex:3 1 560px;min-width:0}
+.workers .wgroup{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.03em;
+  margin:10px 0 6px}
+.workers .wgroup:first-of-type{margin-top:0}
+.wboxes{display:grid;gap:6px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+.wbox{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--panel2);
+  opacity:.55;min-width:0}
+.wbox b{display:block;font-size:13px;font-weight:600;color:var(--dim)}
+.wbox span{display:block;font-size:11.5px;color:var(--dim);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.wbox.on{opacity:1;border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.wbox.on b{color:var(--fg)}
+.wbox.stalled{opacity:1;border-color:#f0704f}
+.wbox.stalled b{color:#f0704f}
 .livetotals{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 18px;max-width:940px}
 .livetotals .total{background:var(--panel);border:1px solid var(--line);
   border-radius:10px;padding:10px 16px;min-width:120px;flex:1 1 0}
@@ -1602,6 +1621,24 @@ body.monitor main>.setblock{margin:0 0 8px;padding:6px;flex:0 1 auto;min-height:
   display:flex;flex-direction:column}
 body.monitor main>.setblock h3,body.monitor main>.setblock>.btn{display:none}
 body.monitor .wirebox{flex:1 1 auto;min-height:0;margin:0}
+body.monitor main>.nowtop{margin:0 0 8px;flex:0 1 auto;min-height:0;flex-wrap:nowrap;gap:8px;
+  max-width:100%;align-items:stretch}
+body.monitor .nowtop>.setblock{margin:0;padding:6px;min-height:0;display:flex;
+  flex-direction:column;max-width:none}
+body.monitor .nowtop>.setblock h3,body.monitor .nowtop>.setblock>.btn{display:none}
+body.monitor .nowtop>.workers{flex:0 0 300px;overflow:auto;display:block}
+body.monitor .wboxes{grid-template-columns:1fr 1fr;gap:4px}
+body.monitor .wbox{padding:4px 8px}
+/* on the monitor a box says its line only while it works or has stalled */
+body.monitor .wbox span{display:none}
+body.monitor .wbox.on span,body.monitor .wbox.stalled span{display:block}
+body.monitor[data-design="drawing"] main>.nowtop{flex:1 1 auto}
+body.monitor[data-design="streams"] main>.nowtop,
+body.monitor[data-design="numbers"] main>.nowtop{display:none}
+@media (max-width:700px){
+  body.monitor main>.nowtop{flex-wrap:wrap}
+  body.monitor .nowtop>.workers{flex:1 1 100%}
+}
 body.monitor .wiring{width:100%;height:100%;max-height:calc(var(--vh, 1vh) * 44)}
 body.monitor .livetotals{margin:0 0 8px;gap:8px;flex:0 0 auto}
 body.monitor .livetotals .total{padding:6px 10px}

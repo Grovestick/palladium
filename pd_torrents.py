@@ -191,7 +191,7 @@ def save():
 
 # ---------------------------------------------------------------- reading a .torrent
 
-def _dec(b, i):
+def _dec(b, i) -> tuple:
     c = b[i:i + 1]
     if c == b"i":
         j = b.index(b"e", i)
@@ -857,26 +857,6 @@ def _owned():
 def latest_download(key):
     rows = [d for d in load()["downloads"] if d.get("key") == key]
     return rows[-1] if rows else None
-
-
-def unfinished(path):
-    """True for a file a download has not finished. The library leaves it out until it
-    has: indexed halfway, ffmpeg reads zeros where the missing pieces are."""
-    names = STATE.get("unfinished")
-    if names is None or time.time() - STATE.get("unfinished_at", 0) > 5:
-        names = set()
-        latest = {}
-        for d in load()["downloads"]:
-            latest[d.get("key")] = d
-        for d in latest.values():
-            # a cancelled download leaves its part-file behind, which plays no better
-            if d.get("state") in ("queued", "downloading") or (
-                    d.get("state") == "cancelled" and float(d.get("progress") or 0) < 1):
-                _, film = by_key(d.get("key"))
-                if film and film.get("path"):
-                    names.add(os.path.normcase(os.path.basename(film["path"])))
-        STATE["unfinished"], STATE["unfinished_at"] = names, time.time()
-    return os.path.normcase(os.path.basename(path)) in names
 
 
 def held_here(film, owned=None):

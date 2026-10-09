@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 
 #: how often to ask the main server what is happening. A film is two hours; a minute is
 #: often enough to catch it, and quiet enough to leave a sleeping machine alone.
@@ -45,7 +46,7 @@ ALL_AGAIN = 30 * 60
 
 #: what the main server calls its owner. Their places arrive under that name and are filed
 #: here against whoever owns this machine - which is a different person, or none.
-HOUSE = {"owner": ""}
+HOUSE: dict = {"owner": "", "at": 0.0, "lan": "", "outside": "", "name": "", "id": ""}
 
 STATE = {"on": False, "why": "", "copying": "", "at": 0.0, "kept": 0, "files": 0,
          "last": 0, "stocking": False, "whose": "",
@@ -94,7 +95,7 @@ def look():
     return said
 
 
-def settings(cfg):
+def settings(cfg) -> dict:
     """The part of the library's settings that belongs here."""
     one = dict(cfg.get("follow") or {})
     one.setdefault("on", False)
@@ -360,6 +361,47 @@ LOG_TRADE = {"sent": 0, "got": 0, "at": 0.0}
 LOG_EVERY = 120
 
 
+def loudness_for_copy(rows, files, known):
+    """The main server's loudness readings that belong to files held here: {file id: reading}.
+
+    rows are the main server's [{name, size, lufs, dialnorm, when}], files this machine's
+    [(id, path, size)], known its own readings by file id. A file is the same one when its
+    name and its length are; a reading made here from the whole file is kept.
+    """
+    by = {}
+    for r in rows or []:
+        try:
+            by[(str(r["name"]).lower(), int(r["size"]))] = r
+        except (KeyError, TypeError, ValueError):
+            continue
+    out = {}
+    for ident, path, size in files:
+        try:
+            size = int(size or 0)
+        except (TypeError, ValueError):
+            continue
+        r = by.get((os.path.basename(str(path or "")).lower(), size))
+        if not r or not size:
+            continue
+        mine = known.get(str(ident)) or {}
+        if mine.get("how") == "spread":
+            # its own reading is kept; the one with compression off is taken if lacking
+            if mine.get("flat") is None and r.get("flat") is not None:
+                out[str(ident)] = dict(mine, flat=float(r["flat"]))
+            continue
+        try:
+            lufs = float(r["lufs"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if lufs <= -60:
+            continue                  # silence: a reading of a file still being written
+        out[str(ident)] = {"lufs": lufs, "size": size, "when": int(r.get("when") or 0),
+                           "how": "spread", "dialnorm": r.get("dialnorm"), "from": "main"}
+        if r.get("flat") is not None:
+            out[str(ident)]["flat"] = float(r["flat"])
+    return out
+
+
 #: when the endings were last asked for, and the newest one taken
 ENDINGS = {"at": 0.0, "since": 0}
 
@@ -476,7 +518,6 @@ def mirror_app(one):
 #: Both ways in to the machine this one follows, as that machine names them. Asked
 #: while it can be reached, because the point of holding them is the hour it cannot:
 #: somebody who finds this machine first should be able to find the main server from here.
-HOUSE = {"at": 0.0, "lan": "", "outside": "", "name": "", "id": ""}
 HOUSE_EVERY = 900
 
 
@@ -932,7 +973,6 @@ def try_master(one):
 
 def try_standby(where, patience=10):
     """Knock on the machine that follows this one, and say whether it is there."""
-    import urllib.error
     if not where:
         return {"ok": False, "said": "No machine has said it is following this one."}
     began = time.time()

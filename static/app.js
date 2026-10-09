@@ -72,6 +72,9 @@ let suppressPop = false;   // set when we consume an entry ourselves
    than at the top of a library of a thousand films. */
 let returnTo = null;
 let returning = false;
+/* The tab a front-page row was entered from. Four rows open a tab in an order rather
+   than a list of their own; Back from that tab returns here, not to the tab itself. */
+let tabBelow = "";
 
 function restoreListPlace() {
   const want = returning ? returnTo : null;
@@ -151,7 +154,7 @@ function goBack() {
   if (prev) prev();
   else {
     $("#back").classList.remove("on");
-    go(document.querySelector(".tab.active").dataset.view);
+    go(tabBelow || document.querySelector(".tab.active").dataset.view);
   }
 }
 
@@ -2082,6 +2085,10 @@ function rowSection(cat, list, total) {
     genreWanted[toTab[0]] = "";
     decadeWanted[toTab[0]] = "";
     go(toTab[0] === "movie" ? "movies" : "shows");
+    // a step in the history like any other row: Back returns to the front page
+    tabBelow = "home";
+    pushView(() => viewSection(toTab[0]));
+    $("#back").classList.add("on");
   };
   box.appendChild(head);
   const render = () => {
@@ -6661,6 +6668,7 @@ window.openKey = async function (key) {
 };
 
 function go(view, keep) {
+  tabBelow = "";
   SCREEN = { kind: "tab", view: view };
   inSearch = false;
   collSearchOn = "";

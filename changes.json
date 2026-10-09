@@ -1,5 +1,177 @@
 [
   {
+    "version": "0.18.482",
+    "when": "2026-10-10",
+    "title": "No receiver line for a viewer outside the house",
+    "items": [
+      "Receiver: a screen outside the house, or one that is not the receiver's own, is answered as off; the reason sent before stood on its information line as a fault.",
+      "App: the information line shows a receiver reason only when the receiver itself failed; no answer, or a screen it is not for, shows nothing."
+    ]
+  },
+  {
+    "version": "0.18.481",
+    "when": "2026-10-09",
+    "title": "Cache tab shows the cache again",
+    "items": [
+      "Settings, Remote computer, Cache: the cache's card and its settings are drawn again; they were added to a page already swapped out, leaving only the introduction.",
+      "Being copied: a title that is only kept where it already is (watched lately) and is not on the cache is no longer listed as next; it was never going to be fetched."
+    ]
+  },
+  {
+    "version": "0.18.480",
+    "when": "2026-10-09",
+    "title": "Type check in the gate, route functions cut into parts",
+    "items": [
+      "Gate: a type check (pyright) over the server's 33 files, zero findings required; pd-test-types.py.",
+      "Server: background work waits for direct play too; the quiet check read a name that did not exist, so the subtitle writer read whole films while one was playing.",
+      "Server: a failed update fetch answers 502 and /subs/checkall answers when its query fails; both crashed on a name that was not set.",
+      "New releases: a film that has arrived is shown as held within a minute; it stood on the row as something to ask for until the list was next read, up to 12 hours.",
+      "Follow: one house table instead of two under one name; the owner field was missing on a copy until the main server had answered.",
+      "Server: the two route functions (2,740 and 3,841 lines) are 36 parts, statement for statement the same; release rules and subtitle text moved to pd_release.py and pd_vtt.py.",
+      "Removed code that never ran: a second end_headers and a second unfinished()."
+    ]
+  },
+  {
+    "version": "0.18.479",
+    "when": "2026-10-09",
+    "title": "Posters show only the download percentage",
+    "items": [
+      "App: a poster of a title being downloaded shows the percentage only; version, time left and rate stay on the download line and the title's page.",
+      "App: whether sound is passed through is judged 3 s after the first picture, not by the film's position; a resume that was slow to start raised the receiver for sound decoded on the box."
+    ]
+  },
+  {
+    "version": "0.18.478",
+    "when": "2026-10-09",
+    "title": "Changeover between episodes: no words on a short wait",
+    "items": [
+      "App: between two titles the screen is black from 0.4 s and \"Drawing from the shelf\" or \"Next episode\" appears only after 2 s; the words flashed on every changeover.",
+      "App: the next title's details are read in the last 30 s of the one playing and used at the changeover if under 90 s old; its file is not opened until it starts."
+    ]
+  },
+  {
+    "version": "0.18.477",
+    "when": "2026-10-09",
+    "title": "Season posters in collections",
+    "items": [
+      "Collections: a season card wears its season's poster; every season of a programme showed the programme's.",
+      "Collections: the collection's own poster is the season's where an episode or a season stands for it, and a season chosen with the star is kept when the collection holds it as episodes or as the whole programme."
+    ]
+  },
+  {
+    "version": "0.18.476",
+    "when": "2026-10-09",
+    "title": "Receiver raised for Dolby in an encoded stream",
+    "items": [
+      "App: the receiver is raised for passed-through sound in an encoded stream too, counted three seconds from the stream's own start; only direct play asked for it, so DTS made into AC-3 played about 5 dB low.",
+      "App: the information line marks such a stream \"sound passed through\" and shows what the receiver was raised by."
+    ]
+  },
+  {
+    "version": "0.18.475",
+    "when": "2026-10-09",
+    "title": "Dolby made from DTS starts on files with chapters",
+    "items": [
+      "Server: a track written as Dolby leaves the file's chapters out; with a frame rate stored as an odd fraction ffmpeg's MP4 writer refused the chapter track, nothing came out for 15 s and the file fell back to plain sound.",
+      "Files noted as giving no Dolby are asked once more under the new command: 13 of the 18 noted were this fault."
+    ]
+  },
+  {
+    "version": "0.18.474",
+    "when": "2026-10-09",
+    "title": "Player start timed step by step",
+    "items": [
+      "App: the player reports once per start how many milliseconds each step took, from opening to the first picture: each read of the file, tracks known, sound language set, the seek, buffering, ready."
+    ]
+  },
+  {
+    "version": "0.18.473",
+    "when": "2026-10-08",
+    "title": "No unlisted ceiling for outside viewers, newest download furthest left",
+    "items": [
+      "New releases: the row answered with an error whenever its list was due a refresh; a second import inside the function made an earlier line fail.",
+      "Quality: with no ceiling set, a re-encode for a viewer outside the house is held only to the file's own rate; an unlisted 8 Mbit applied while the page said no ceiling. The awayMbit key is removed.",
+      "Advanced lists that, how loudness is measured now, and the receiver's two numbers.",
+      "Recently added in films: of the films coming in, the one asked for last stands furthest left; pack downloads stood first and tracker downloads after them, whatever the order they were asked in."
+    ]
+  },
+  {
+    "version": "0.18.472",
+    "when": "2026-10-08",
+    "title": "Loudness read as a receiver plays it, and the raise centred on +5 dB",
+    "items": [
+      "Loudness: a Dolby track gets a second reading with its own compression off, as a receiver plays it passed through; the first applied it, and of 40 files 18 read quieter than they play, 6 of them by 4-9 dB.",
+      "Receiver: the raise for a passed-through Dolby track is counted from that second reading; a file without one is measured as it starts, and the rest in the background after the unmeasured.",
+      "Receiver: a track of typical loudness is raised 5 dB; one within 4 dB of typical gets that much more or less; one further out gets the plain 5. Typical is the median for films and for episodes, each by their own.",
+      "The copy takes the main server's second reading with the first."
+    ]
+  },
+  {
+    "version": "0.18.471",
+    "when": "2026-10-08",
+    "title": "Shuffle fetches the episode a round stands on",
+    "items": [
+      "Shuffle: the ten-minute fetch reads a kept round's library keys as the pack's where the file has gone; a round standing on such an episode was not fetched until Next was pressed.",
+      "Shuffle: carrying on with a round asks the pack for the title it stands on, as a draw does."
+    ]
+  },
+  {
+    "version": "0.18.470",
+    "when": "2026-10-08",
+    "title": "Shuffle fetches an episode whose file has gone",
+    "items": [
+      "Shuffle: an episode whose file has gone stays in the hat under the key of the pack that carries it, at the place it had in a round, so drawing it or coming within ten of it fetches it; 0.18.469 left it out of a hand-picked shelf.",
+      "Shuffle: one that no pack carries is left out, as in 0.18.469."
+    ]
+  },
+  {
+    "version": "0.18.469",
+    "when": "2026-10-08",
+    "title": "Shuffle draws nothing without a file",
+    "items": [
+      "Shuffle: a library episode or film whose file has gone is not in the hat; a season rule put it there, it was drawn with nothing to play and never fetched. What a pack carries of it is in the hat under the pack's key and fetched as before.",
+      "Shuffle: the next-ten list holds only titles still on the shelf; one that had left was listed as next and then stepped over.",
+      "Now playing: the Workers box stands in a column of its own at full height and does not scroll; the totals and stream rows sit under the drawing."
+    ]
+  },
+  {
+    "version": "0.18.468",
+    "when": "2026-10-08",
+    "title": "The copy's reads from the main server answered",
+    "items": [
+      "The copy's reads from the main server - skip rules, subtitle corrections, loudness readings, where credits begin - are answered by GET; they were handled under POST only and each was a 404, so none had reached the copy."
+    ]
+  },
+  {
+    "version": "0.18.467",
+    "when": "2026-10-07",
+    "title": "Back from a row, the Workers box, loudness shared with the copy",
+    "items": [
+      "Web: Back from the Films or TV tab opened by a front-page row (recently added, recently released) returns to the front page; those four rows left no history step.",
+      "Now playing: the Workers box is no taller than the drawing beside it and scrolls inside; it pushed the totals and the stream rows down.",
+      "Workers: a waiting worker is not shown stalled after the machine has slept; the hours asleep are taken off its time.",
+      "Loudness: the copy takes the main server's readings for files of the same name and size, every half hour, and measures only the rest."
+    ]
+  },
+  {
+    "version": "0.18.466",
+    "when": "2026-10-07",
+    "title": "Worker boxes on Now playing",
+    "items": [
+      "Now playing and the monitor: a box for each background worker beside the drawing, lit while it works and red when stalled, with its step, time on it and what is left.",
+      "The list under the drawing and the machine's box in it no longer carry worker lines (loudness, credits, scans); streams, copies and downloads only."
+    ]
+  },
+  {
+    "version": "0.18.465",
+    "when": "2026-10-07",
+    "title": "Receiver raise for passthrough lowered",
+    "items": [
+      "Receiver: the raise for passed-through sound is target less measured loudness, at most +6 dB; it was 12-13 dB on tracks where 5 was right (45.0 to 50.0 on the display).",
+      "Receiver: the track's dialnorm is no longer counted; a value misread from a codec without one moved the raise by up to 30 dB."
+    ]
+  },
+  {
     "version": "0.18.464",
     "when": "2026-10-07",
     "title": "Receiver volume back down on leaving the player",

@@ -52,6 +52,34 @@ def sleep(name, seconds, step="waiting"):
     time.sleep(seconds)
 
 
+def slept(gap):
+    """The machine was asleep for gap seconds: no job worked or waited through them."""
+    with _LOCK:
+        for b in BEATS.values():
+            b["at"] += gap
+
+
+#: how often the clock is looked at for a jump
+WATCH = 30
+
+
+def _watch():
+    # time.sleep does not count the hours a machine is asleep and the clock does: after a
+    # night's sleep every waiting job read as nine hours late. A jump in the clock moves
+    # each job's start forward by the jump.
+    last = time.time()
+    while True:
+        time.sleep(WATCH)
+        now = time.time()
+        gap = now - last - WATCH
+        if gap > 120:
+            slept(gap)
+        last = now
+
+
+threading.Thread(target=_watch, name="palladium-beat", daemon=True).start()
+
+
 def status():
     """name -> {step, for (seconds on it), next (seconds to waking), ok}."""
     now = time.time()

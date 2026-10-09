@@ -645,7 +645,7 @@ def media_block(rows, key_prefix="/parts/", aside="", picked="", proved="",
 #: Set by the server: how far one file's sound is from everything else's. The library
 #: knows nothing about loudness - it is measured beside the files, and the server holds
 #: what has been measured.
-GAIN_OF = [None]
+GAIN_OF: list = [None]
 
 
 def gain_of(part, path, size):
@@ -659,7 +659,7 @@ def gain_of(part, path, size):
 
 
 #: Set by the server as well: how loud a file was measured to be, in LUFS.
-LOUDNESS_OF = [None]
+LOUDNESS_OF: list = [None]
 
 
 def loudness_of(part):
@@ -1690,7 +1690,7 @@ class LocalAPI:
                          "NULLIF(year, 0) IS NULL, NULLIF(year, 0) DESC, sort_title ASC",
                      "originallyAvailableAt:asc":
                          "NULLIF(year, 0) IS NULL, NULLIF(year, 0) ASC, sort_title ASC",
-                     }.get(sort, "sort_title ASC")
+                     }.get(str(sort), "sort_title ASC")
             tall = self._tall(con) if sort.startswith("quality:") else {}
             if kind == "show" and sort.startswith("originallyAvailableAt:"):
                 # a series is as recent as its newest episode, not as its first year
@@ -1729,7 +1729,7 @@ class LocalAPI:
                 except Exception:
                     dated = {}
                 if dated:
-                    def when(r):
+                    def came_out(r):
                         got = dated.get(str(r["id"]))
                         if got:
                             return got
@@ -1738,12 +1738,12 @@ class LocalAPI:
                         # and above every film of the year before
                         return "%04d-00-00" % y if y else ""
                     back = sort.endswith(":desc")
-                    has = [r for r in rows if when(r)]
-                    none = [r for r in rows if not when(r)]
+                    has = [r for r in rows if came_out(r)]
+                    none = [r for r in rows if not came_out(r)]
                     # sorted twice, and stably: the alphabet decides between two films
                     # released on the same day
                     has.sort(key=lambda r: (r["sort_title"] or "").lower())
-                    has.sort(key=when, reverse=back)
+                    has.sort(key=came_out, reverse=back)
                     none.sort(key=lambda r: (r["sort_title"] or "").lower())
                     rows = has + none
             if tall:
@@ -1877,8 +1877,8 @@ class LocalAPI:
                                    " ORDER BY added DESC "
                                    "LIMIT 100").fetchall()
                 items = [self._movie(con, r, brief=True) for r in rows]
-                # every film coming in or queued leads the shelf, one card each, in
-                # queue order
+                # every film coming in or queued leads the shelf, one card each, the
+                # one asked for last furthest left
                 try:
                     import pd_torrents
                     have = {(str(m.get("title") or "").lower(), m.get("year"))
@@ -1896,7 +1896,8 @@ class LocalAPI:
                         if mark in have or any(c.get("ratingKey") == card.get("ratingKey")
                                                for c in coming):
                             continue
-                        coming.append(dict(card, addedAt=int(time.time())))
+                        coming.append(dict(card))
+                    coming = self._newest_asked_first(coming)
                 except Exception:
                     coming = []
                 items = coming + items
@@ -2015,6 +2016,8 @@ class LocalAPI:
             # only what can be watched at home: a film in cinemas with a pre-order
             # link has no release to download yet
             coming_in = self._coming_offers()
+            # what has arrived since the list was read is held, not something to ask for
+            pd_streaming.mark_held(self.lib)
             for row in pd_streaming.shown():
                 # judged as this viewer asks to have new films judged
                 if not self.well_thought_of(row):
@@ -2447,7 +2450,7 @@ class LocalAPI:
                     # so the next open has what has been posted since
                     title = show["title"] if show else ""
                     try:
-                        import pd_tracker, threading
+                        import pd_tracker
                         onit = pd_tracker.episodes_of(title, number)
                         if any(int(ep.get("episode_number") or 0) not in have
                                for ep in said.get("episodes") or []):
@@ -3130,7 +3133,7 @@ class LocalAPI:
                 if im.width <= width:
                     return path                  # never enlarge: it would only blur
                 height = round(im.height * width / im.width)
-                im.convert("RGB").resize((width, height), Image.LANCZOS).save(
+                im.convert("RGB").resize((width, height), getattr(Image, "LANCZOS")).save(
                     out, "JPEG", quality=88, optimize=True)
             return out
         except Exception:
@@ -3992,6 +3995,28 @@ class LocalAPI:
                      int(time.time())))
         con.commit()
         return got
+
+    @staticmethod
+    def _asked_at(card):
+        """When a download was asked for: the client's own time for one off the
+        tracker, the request's for one out of a pack, 0 where neither is known."""
+        if card.get("askedAt"):
+            return int(card["askedAt"])
+        try:
+            import pd_torrents
+            got = pd_torrents.latest_download(
+                (card.get("offer") or {}).get("queueKey") or card.get("ratingKey")) or {}
+            return int(got.get("when") or 0)
+        except Exception:
+            return 0
+
+    def _newest_asked_first(self, cards):
+        """Downloads for the front of a shelf: the one asked for last first, each dated
+        now less its place so a client ordering by arrival keeps them in this order and
+        ahead of what has arrived."""
+        ordered = sorted(cards, key=lambda c: -self._asked_at(c))
+        now = int(time.time())
+        return [dict(c, addedAt=now - i) for i, c in enumerate(ordered)]
 
     def _coming_offers(self):
         """Releases coming in straight from the tracker, by the key of the title each

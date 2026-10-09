@@ -335,6 +335,134 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
           /^function stop\(keepOpen\) \{\s+if \(!keepOpen\) LEAD_SEEN = "";/m.test(SOURCE));
   }
 
+  // ---- 8. the monitor's worker boxes: made once, lit while working, updated in place
+  {
+    const SET = fs.readFileSync(process.env.PD_SETTINGSJS || path.join(__dirname, "static", "settings.js"), "utf8")
+      .replace(/\r\n/g, "\n");
+    const inner = (name) => {            // a function inside the page's closure
+      const at = SET.indexOf("\n  function " + name + "(");
+      if (at < 0) throw new Error("no function " + name + " in settings.js");
+      return SET.slice(at + 1, SET.indexOf("\n  }\n", at) + 4);
+    };
+    const dom = new JSDOM('<!doctype html><body><div id="w"></div></body>', { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval(inner("workerLine") + "\n" + inner("drawWorkers") +
+           "\nwindow.workerLine = workerLine; window.drawWorkers = drawWorkers;");
+    const box = w.document.getElementById("w");
+    const rows = (state, extra) => [
+      Object.assign({ name: "Loudness", state: state, step: "a file", for: 99, left: 60, next: null }, extra || {}),
+      { name: "Subtitle check", state: "waiting", step: "", for: 0, next: 40, left: 12 },
+      { name: "Tracker search", state: "off", step: "", for: 0, next: null }];
+    w.drawWorkers(box, [{ on: "main", rows: rows("working") }]);
+    const first = Array.from(box.querySelectorAll(".wbox"));
+    const named = (n) => first.filter((e) => e.querySelector("b").textContent === n)[0];
+    check("8 a box a worker", first.length === 3 && !!named("Loudness") && !!named("Subtitle check"));
+    check("8 the one working is lit, the others are not",
+          named("Loudness").classList.contains("on") && !named("Subtitle check").classList.contains("on")
+          && !named("Tracker search").classList.contains("on"));
+    check("8 it says what it is on, for how long and what is left",
+          named("Loudness").querySelector("span").textContent === "a file \u00b7 2 min \u00b7 60 to go",
+          named("Loudness").querySelector("span").textContent);
+    check("8 one asleep says when it wakes, one never started says so",
+          named("Subtitle check").querySelector("span").textContent === "next in 40 s \u00b7 12 to go"
+          && named("Tracker search").querySelector("span").textContent === "not running");
+    check("8 one machine has no heading", box.querySelector(".wgroup").hidden === true);
+    w.drawWorkers(box, [{ on: "main", rows: rows("waiting", { step: "", for: 0 }) }]);
+    const second = Array.from(box.querySelectorAll(".wbox"));
+    check("8 drawn again: the same boxes, the light out",
+          second.length === 3 && second.every((e, i) => e === first[i]) && !named("Loudness").classList.contains("on")
+          && named("Loudness").querySelector("span").textContent === "waiting \u00b7 60 to go");
+    w.drawWorkers(box, [{ on: "main", rows: rows("stalled") }, { on: "copy", rows: rows("working").slice(0, 1) }]);
+    check("8 stalled is marked and said, and is not lit",
+          named("Loudness").classList.contains("stalled") && !named("Loudness").classList.contains("on")
+          && named("Loudness").querySelector("span").textContent.indexOf("stalled") === 0);
+    check("8 a second machine: its own boxes under its own heading, both headings shown",
+          box.querySelectorAll(".wbox").length === 4 && box.querySelectorAll(".wgroup").length === 2
+          && Array.from(box.querySelectorAll(".wgroup")).every((h) => !h.hidden));
+    w.drawWorkers(box, [{ on: "main", rows: rows("working").slice(0, 2) }]);
+    check("8 a machine and a worker no longer reported leave",
+          box.querySelectorAll(".wbox").length === 2 && box.querySelectorAll(".wgroup").length === 1
+          && box.querySelector(".wgroup").hidden === true);
+    check("8 the list under the drawing no longer carries worker rows",
+          SET.indexOf('<span>measuring</span>') < 0 && SET.indexOf('<span>analysing</span>') < 0);
+  }
+
+  // ---- 9. Back out of a tab that a front-page row opened returns to the front page
+  {
+    const dom = new JSDOM('<!doctype html><body><button id="back" class="on"></button>' +
+                          '<a class="tab" data-view="home"></a><a class="tab active" data-view="movies"></a></body>',
+                          { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval("const $ = (q) => document.querySelector(q);\nlet navStack = [], returning = false, tabBelow = '';\n" +
+           "const went = [], drew = [];\nconst backToFilm = () => false;\n" +
+           "const go = (v) => { went.push(v); tabBelow = ''; };\n" + take("goBack") +
+           "\nwindow.run = (stack, below) => { went.length = 0; drew.length = 0; tabBelow = below;" +
+           " navStack = stack.map((n) => () => drew.push(n)); goBack();" +
+           " return { went: went.slice(), drew: drew.slice(), left: navStack.length }; };");
+    let r = w.run(["films"], "home");
+    check("9 the tab a row opened, Back: the front page", r.went.join() === "home" && !r.drew.length, JSON.stringify(r));
+    r = w.run(["films", "a film"], "home");
+    check("9 a film opened from that tab, Back: the tab again, not the front page yet",
+          r.drew.join() === "films" && !r.went.length && r.left === 1, JSON.stringify(r));
+    r = w.run(["a list"], "");
+    check("9 any other view, Back: the tab it was on, as before", r.went.join() === "movies", JSON.stringify(r));
+    const row = take("rowSection");
+    check("9 the rows that open a tab leave a history step and say where they came from",
+          /go\(toTab\[0\] === "movie" \? "movies" : "shows"\);[\s\S]{0,160}tabBelow = "home";\s+pushView\(\(\) => viewSection\(toTab\[0\]\)\);/.test(row));
+    check("9 any other way of changing tab forgets it",
+          /^function go\(view, keep\) \{\s+tabBelow = "";/m.test(SOURCE));
+  }
+
+  // ---- 10. the Cache tab: a cache's card lands on the page, though it is drawn after
+  //          the pane has returned and the page built out of sight has been swapped in
+  {
+    const settings = fs.readFileSync(process.env.PD_SETTINGSJS || path.join(__dirname, "static", "settings.js"), "utf8")
+      .replace(/\r\n/g, "\n");
+    const at = settings.indexOf("  async function paneRemote(main) {");
+    const end = settings.indexOf("  /* A cache's own copying settings, read and written through this server. */", at);
+    const dom = new JSDOM('<!doctype html><body><div id="main"></div></body>', { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval(
+      "let remoteTab = 'server', cacheOn = '';\n" +
+      "const esc = (s) => String(s);\n" +
+      "const toast = () => {};\n" +
+      "const render = () => {};\n" +
+      "const block = (t) => { const el = document.createElement('div'); el.className = 'setblock'; return el; };\n" +
+      "const post = async () => ({});\n" +
+      "const get = async (p) => p === '/follow'\n" +
+      "  ? { followers: [{ where: 'http://c:1', name: 'C', ago: 5, managed: false }] } : {};\n" +
+      "const drawFollow = async () => {};\n" +
+      "const remoteApi = () => ({});\n" +
+      // the real one asks the server and then places a row for each machine; this one
+      // waits to be let go, so the page can be swapped in before any row is placed
+      "const drawServers = async (keyBox, followBox, listBox, place, begin) => {\n" +
+      "  await new Promise((r) => { window.letGo = r; });\n" +
+      "  if (begin) begin();\n" +
+      "  const row = document.createElement('div'); row.textContent = 'the row of machine C';\n" +
+      "  place(row, { where: 'http://c:1', name: 'C', managed: false });\n" +
+      "  window.again = () => { if (begin) begin(); const r2 = document.createElement('div');\n" +
+      "    r2.textContent = 'the row of machine C'; place(r2, { where: 'http://c:1', name: 'C' }); };\n" +
+      "};\n" +
+      settings.slice(at, end) + "\nwindow.paneRemote = paneRemote;");
+    const d = w.document;
+    const outer = d.querySelector("#main");
+    // as render() does it: a page of its own, out of sight, swapped in when the pane returns
+    const page = d.createElement("div");
+    outer.appendChild(page);
+    await w.paneRemote(page);
+    page.replaceWith(...page.childNodes);
+    check("10 the pane has returned before the machines were drawn", typeof w.letGo === "function"
+          && !outer.textContent.includes("the row of machine C"));
+    w.letGo();
+    await new Promise((r) => setTimeout(r, 20));
+    const count = () => outer.textContent.split("the row of machine C").length - 1;
+    check("10 the cache's card is on the page all the same", count() === 1, "found " + count());
+    check("10 with what this server does for it beside the row",
+          outer.textContent.includes("Share reading") && outer.textContent.includes("How it copies is set on C"));
+    w.again();
+    check("10 drawn again after a change, there is still one card", count() === 1, "found " + count());
+  }
+
   console.log(FAILS.length ? "WEB FAILED: " + FAILS.length : "WEB PASSED");
   FAILS.forEach((f) => console.log("  - " + f));
   process.exit(FAILS.length ? 1 : 0);

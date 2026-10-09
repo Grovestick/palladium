@@ -115,7 +115,7 @@ def forward(lan_ip, port, description="Palladium"):
         detail = ""
         if hasattr(e, "read"):
             try:
-                m = re.search(r"<errorDescription>([^<]+)", e.read().decode("utf-8", "replace"))
+                m = re.search(r"<errorDescription>([^<]+)", getattr(e, "read")().decode("utf-8", "replace"))
                 detail = " (" + m.group(1) + ")" if m else ""
             except Exception:
                 pass

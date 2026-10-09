@@ -122,6 +122,84 @@ def _set(ip, volume):
     return _ask(ip, "main/setVolume?volume=%d" % int(volume)).get("response_code") == 0
 
 
+#: what a passed-through track of typical loudness is raised by, in dB: 45.0 -> 50.0 on
+#: the display, judged right by ear on a film and on an episode
+CENTRE = 5.0
+#: how far from typical a track may measure and still be corrected by its measurement;
+#: further out it gets CENTRE alone
+BAND = 4.0
+
+
+#: the codecs whose decoder compresses by itself unless told not to
+DOLBY = ("ac3", "eac3")
+
+
+def reading_for(known, codec):
+    """The loudness a passed-through track is judged by, or None while it is not made:
+    for Dolby the reading with the track's own compression off, as the receiver
+    plays it; for any other codec the one reading there is."""
+    if not known or known.get("how") != "spread" or known.get("lufs") is None:
+        return None
+    if str(codec or "").lower() in DOLBY:
+        return known.get("flat")
+    return known.get("lufs")
+
+
+def wants_measuring(known, codec, size=None):
+    """Whether a file still has a reading to make: none yet, one from a single window,
+    one of the file at another size, or - a Dolby track - none with compression off."""
+    if not known or known.get("how") != "spread" or known.get("lufs") is None:
+        return True
+    if size is not None and int(known.get("size") or 0) != int(size or 0):
+        return True
+    return str(codec or "").lower() in DOLBY and known.get("flat") is None
+
+
+def measure_order(rows, known):
+    """The files left to measure, the last one first to be taken: (id, path, size).
+
+    rows are (id, path, size, codec), newest id first. Taken first: the files with no
+    reading; then those read from a single window; last the Dolby tracks that only
+    lack the reading with compression off - they already play at a level.
+    """
+    lack, window, none = [], [], []
+    for ident, path, size, codec in rows:
+        one = known.get(str(ident))
+        if one is None:
+            none.append((ident, path, size))
+        elif one.get("how") != "spread":
+            window.append((ident, path, size))
+        elif wants_measuring(one, codec):
+            lack.append((ident, path, size))
+    return lack + window + none
+
+
+def typical(readings, least=30):
+    """The median of the measured loudness of a kind of title, or None for too few."""
+    known = sorted(float(v) for v in readings if v is not None)
+    if len(known) < least:
+        return None
+    mid = len(known) // 2
+    return known[mid] if len(known) % 2 else (known[mid - 1] + known[mid]) / 2.0
+
+
+def level_for(lufs, usual, centre=CENTRE, band=BAND):
+    """dB the receiver moves for a passed-through track.
+
+    A track of typical loudness (usual: the median of its kind) gets centre. One within
+    band dB of typical gets centre plus how much quieter than typical it is, so the two
+    come out alike. One further out - a very quiet or very loud mix, or a measurement
+    that is off - gets centre alone, as does any track where typical is not known.
+    The average over a library comes to centre.
+    """
+    if lufs is None:
+        return None
+    if usual is None:
+        return round(float(centre), 1)
+    off = float(usual) - float(lufs)
+    return round(float(centre) + (off if abs(off) <= float(band) else 0.0), 1)
+
+
 def raise_for(stored, who, key, db=None):
     """Sound is going through to the receiver for this screen: up by the steps set, or
     by db when set to follow loudness and the film has been measured.

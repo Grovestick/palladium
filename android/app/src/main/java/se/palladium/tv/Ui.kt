@@ -525,17 +525,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // the mark always, and words only when there are some: a film nobody
             // has asked for yet said nothing but a character, and on a television
             // that was a smudge in the corner of the picture
-            val said = if (!coming) "" else when (state) {
-                "downloading" -> version + "${(progress * 100).toInt()}%" +
-                    (if (eta >= 0) " · " + (
-                        if (eta < 60) "$eta s"
-                        else if (eta < 3600) "${eta / 60} min"
-                        else "${eta / 3600} h ${eta % 3600 / 60} min") else "") +
-                    (if (mbit > 0) String.format(java.util.Locale.US, " · %.0f Mbit/s", mbit) else "")
-                "queued" -> "Queued"
-                "done" -> "Arriving"
-                else -> ""
-            }
+            val said = if (!coming) "" else Route.posterDownload(state, progress.toDouble())
             // The same band across the corner for the three things a poster says
             // about itself; only the word in it changes. One band, chosen: three
             // conditions each drawing their own put two words over each other in

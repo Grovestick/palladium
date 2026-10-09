@@ -166,7 +166,32 @@ FFMPEG, ENCODER = find_ffmpeg()
 SPREAD = tuple(0.05 + 0.9 * i / 19 for i in range(20))
 
 
-def loudness(path, index=None, seconds=300, length=0):
+def loudness_cmd(path, index=None, seconds=300, length=0, flat=False):
+    """ffmpeg's arguments for one loudness reading, after the program name.
+
+    flat: an AC-3 or E-AC-3 track decoded with its own dynamic range compression
+    off. ffmpeg applies that compression by default and a receiver playing the track
+    passed through does not: of 40 files, 18 read louder with it off, 6 of them by
+    4-9 dB. Only for those two codecs - the option belongs to their decoder.
+    """
+    how = ["-drc_scale", "0"] if flat else []
+    track = "%d:a:%d" % (0, int(index or 0))
+    cmd = ["-nostdin", "-hide_banner"]
+    if length and float(length) >= 600:
+        each = max(10, int(seconds) // len(SPREAD))
+        for n, at in enumerate(SPREAD):
+            cmd += how + ["-ss", "%.1f" % (float(length) * at), "-t", str(each), "-i", path]
+        cmd += ["-filter_complex",
+                "".join("[%d:a:%d]" % (n, int(index or 0)) for n in range(len(SPREAD))) +
+                "concat=n=%d:v=0:a=1,ebur128=framelog=quiet" % len(SPREAD),
+                "-f", "null", "-"]
+    else:
+        cmd += how + ["-ss", "300", "-t", "180", "-i", path, "-map", track,
+                      "-af", "ebur128=framelog=quiet", "-f", "null", "-"]
+    return cmd
+
+
+def loudness(path, index=None, seconds=300, length=0, flat=False):
     """Integrated loudness in LUFS, or None when it cannot be measured.
 
     Twenty 15 s samples spread from 5 % to 95 % of the running time, measured as one:
@@ -177,19 +202,7 @@ def loudness(path, index=None, seconds=300, length=0):
     """
     if not FFMPEG or not path or not os.path.exists(path):
         return None
-    track = "%d:a:%d" % (0, int(index or 0))
-    cmd = [FFMPEG, "-nostdin", "-hide_banner"]
-    if length and float(length) >= 600:
-        each = max(10, int(seconds) // len(SPREAD))
-        for n, at in enumerate(SPREAD):
-            cmd += ["-ss", "%.1f" % (float(length) * at), "-t", str(each), "-i", path]
-        cmd += ["-filter_complex",
-                "".join("[%d:a:%d]" % (n, int(index or 0)) for n in range(len(SPREAD))) +
-                "concat=n=%d:v=0:a=1,ebur128=framelog=quiet" % len(SPREAD),
-                "-f", "null", "-"]
-    else:
-        cmd += ["-ss", "300", "-t", "180", "-i", path, "-map", track,
-                "-af", "ebur128=framelog=quiet", "-f", "null", "-"]
+    cmd = [FFMPEG] + loudness_cmd(path, index, seconds, length, flat)
     try:
         done = subprocess.run(cmd, stdout=subprocess.DEVNULL,
                               stderr=subprocess.PIPE, timeout=180,
@@ -237,8 +250,8 @@ def dialnorm(path, index=None):
     take(16)
     bsid = (bits >> (96 - 16 - 24 - 5)) & 0x1f
     if bsid <= 10:                      # AC-3
-        take(16), take(8)
-        take(5), take(3)
+        take(16); take(8)
+        take(5); take(3)
         acmod = take(3)
         if (acmod & 1) and acmod != 1:
             take(2)
@@ -249,12 +262,12 @@ def dialnorm(path, index=None):
         take(1)
         value = take(5)
     elif bsid == 16:                    # E-AC-3
-        take(2), take(3), take(11)
+        take(2); take(3); take(11)
         if take(2) == 3:
             take(2)
         else:
             take(2)
-        take(3), take(1), take(5)
+        take(3); take(1); take(5)
         value = take(5)
     else:
         return None
@@ -313,7 +326,7 @@ def cuda_overlay():
     if _CUDA_OVERLAY is None:
         _CUDA_OVERLAY = False
         try:
-            out = subprocess.run([FFMPEG, "-hide_banner", "-filters"],
+            out = subprocess.run([FFMPEG or "ffmpeg", "-hide_banner", "-filters"],
                                  capture_output=True, text=True, timeout=20,
                                  creationflags=NO_WINDOW).stdout
             _CUDA_OVERLAY = ("overlay_cuda" in out and "hwupload_cuda" in out)
@@ -324,6 +337,20 @@ def cuda_overlay():
 
 class Stream:
     """One running ffmpeg, piping fragmented MP4 to one HTTP response."""
+
+    # set on a stream written as HLS segments, and on no other: named here, given no
+    # value, so getattr(st, "folder", None) still tells the two apart
+    folder: str
+    touched: float
+    recipe: str
+    src: dict
+    height: int
+    burn_index: "int | None"
+    sub_look: "dict | None"
+    audio_index: "int | None"
+    mbit: int
+    start_seg: int
+    restarted: float
 
     def __init__(self, proc, info, log):
         self.proc = proc
@@ -382,6 +409,11 @@ class Stream:
             self.log.close()
         except Exception:
             pass
+
+
+# Raised when the command that makes or copies a Dolby track changes: a file noted as
+# giving no Dolby under an older command is asked again under this one.
+DOLBY_MAKE = 2
 
 
 class Engine:
@@ -591,6 +623,10 @@ class Engine:
         flags = "frag_keyframe+empty_moov+default_base_moof"
         if dolby:
             flags += "+delay_moov"
+            # no chapter track: with delay_moov and a frame rate written as an odd
+            # fraction (13978/583) the writer's timescale is 335 million a second, a
+            # chapter over 6.4 s overflows it and nothing is written at all
+            cmd += ["-map_chapters", "-1"]
         cmd += ["-movflags", flags,
                 "-frag_duration", "2000000", "-f", "mp4", "pipe:1"]
         return cmd

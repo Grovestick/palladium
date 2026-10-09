@@ -164,7 +164,8 @@ def compile_one(script, name, console):
            "--include-module=pd_ai_subs", "--include-module=pd_tray",
            "--include-module=pd_torrents", "--include-module=pd_machine", "--include-module=pd_receiver",
            "--include-module=pd_credits", "--include-module=pd_apart",
-           "--include-module=pd_holidays", "--include-module=pd_leads"]
+           "--include-module=pd_holidays", "--include-module=pd_leads",
+           "--include-module=pd_release", "--include-module=pd_vtt"]
     if not console:
         cmd.append("--windows-console-mode=disable")
     cmd.append(os.path.join(HERE, script))

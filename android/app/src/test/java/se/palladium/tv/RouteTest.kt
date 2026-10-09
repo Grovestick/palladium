@@ -568,6 +568,70 @@ class RouteTest {
         assertFalse("decoded here", Route.raiseReceiver(raised = false, onScreen = true, tv = true, passing = false))
     }
 
+    @Test
+    fun `sound is passed through only once a picture has been up three seconds`() {
+        assertTrue("4 s after the first picture, not decoded here",
+                   Route.passesSound(onCast = false, decodedHere = false, sincePictureMs = 4000))
+        assertFalse("no picture yet - a resume far into the film that is slow to start",
+                    Route.passesSound(onCast = false, decodedHere = false, sincePictureMs = -1))
+        assertFalse("picture just up: the sink has not said",
+                    Route.passesSound(onCast = false, decodedHere = false, sincePictureMs = 500))
+        assertFalse("at the limit", Route.passesSound(onCast = false, decodedHere = false,
+                                                      sincePictureMs = Route.SOUND_SETTLES_MS))
+        assertFalse("decoded here",
+                    Route.passesSound(onCast = false, decodedHere = true, sincePictureMs = 60_000))
+        assertFalse("cast",
+                    Route.passesSound(onCast = true, decodedHere = false, sincePictureMs = 60_000))
+        assertFalse(Route.soundSettled(-1))
+        assertTrue(Route.soundSettled(3001))
+    }
+
+    @Test
+    fun `a poster says how far its download has got and nothing else`() {
+        assertEquals("13%", Route.posterDownload("downloading", 0.134))
+        assertEquals("0%", Route.posterDownload("downloading", 0.0))
+        assertEquals("100%", Route.posterDownload("downloading", 1.2))
+        assertEquals("Queued", Route.posterDownload("queued", 0.0))
+        assertEquals("Arriving", Route.posterDownload("done", 1.0))
+        assertEquals("", Route.posterDownload("", 0.5))
+        assertFalse("no rate, time or version on it",
+                    Regex("Mbit|min| s$|\\u00b7|·").containsMatchIn(Route.posterDownload("downloading", 0.5)))
+    }
+
+    @Test
+    fun `the wait for the next title is black from 0,4 s and worded only from 2 s`() {
+        assertEquals("a changeover of 0.3 s shows nothing", 0, Route.changeoverShows(300))
+        assertEquals("black at 0.4 s", 1, Route.changeoverShows(400))
+        assertEquals("still no words at 1.9 s", 1, Route.changeoverShows(1900))
+        assertEquals("words at 2 s", 2, Route.changeoverShows(2000))
+        assertEquals(2, Route.changeoverShows(30_000))
+    }
+
+    @Test
+    fun `details read ahead are used for the same title from the same server while fresh`() {
+        val a = "http://192.168.0.2:8765"
+        assertTrue(Route.readAheadFits("e1", a, "e1", a, 20_000))
+        assertTrue("at the limit", Route.readAheadFits("e1", a, "e1", a, Route.READ_AHEAD_FRESH_MS))
+        assertFalse("another title was drawn", Route.readAheadFits("e1", a, "e2", a, 20_000))
+        assertFalse("drawn from the other server", Route.readAheadFits("e1", a, "e1", "http://192.168.0.3:8764", 20_000))
+        assertFalse("read too long ago: a subtitle may have come since",
+                    Route.readAheadFits("e1", a, "e1", a, Route.READ_AHEAD_FRESH_MS + 1))
+        assertFalse("nothing read", Route.readAheadFits("", a, "", a, 0))
+        assertFalse("a clock that went back", Route.readAheadFits("e1", a, "e1", a, -5))
+    }
+
+    @Test
+    fun `a screen the receiver is not for says nothing of it`() {
+        assertEquals("", Route.receiverRefusal(true, "off"))
+        assertEquals("a viewer outside the house", "", Route.receiverRefusal(true, "not in the house"))
+        assertEquals("another screen in the house", "",
+                     Route.receiverRefusal(true, "not the device set for the receiver"))
+        assertEquals("no answer at all", "", Route.receiverRefusal(false, ""))
+        assertEquals("a fault of the receiver itself is still said",
+                     "receiver: the receiver is off", Route.receiverRefusal(true, "the receiver is off"))
+        assertEquals("receiver: the receiver refused", Route.receiverRefusal(true, "the receiver refused"))
+    }
+
     // ---- a name that will not resolve
 
     @Test

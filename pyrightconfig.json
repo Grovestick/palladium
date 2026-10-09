@@ -1,0 +1,14 @@
+{
+  "include": ["pd-server.py", "pd_*.py"],
+  "pythonVersion": "3.13",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportPossiblyUnbound": "error",
+  "reportUnusedExpression": "error",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalIterable": "none",
+  "reportArgumentType": "none"
+}

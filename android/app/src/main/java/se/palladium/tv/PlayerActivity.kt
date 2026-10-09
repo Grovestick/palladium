@@ -343,6 +343,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private var nextWait = 5
     private var showKey = ""
     private var prefetched = false          // the next episode's subtitles, once
+    //: the next title's full details, read in the last half minute, and when
+    @Volatile private var aheadFull: Media? = null
+    @Volatile private var aheadAt = 0L
+    private var aheadAsked = 0L
     private var retried = 0                 // recoveries from a stream that dropped
     private var encodeReopens = 0           // live encodes reopened after a cut
     //: times a stream has claimed to end while nowhere near the end of the film. An
@@ -395,11 +399,15 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     /** How much the sound of this file is lifted or held back, in decibels. */
     private val gain = Gain()
 
-    /** Whether the sound goes to the amplifier as it is: a direct play whose sound never
-     *  reached the processor once it has been playing a few seconds. */
+    /** Whether the sound goes to the amplifier as it is (Route.passesSound). */
     private fun passingThrough(): Boolean =
-        direct && !onCastNow() && !gain.working &&
-            (current()?.currentPosition ?: 0L) > 3000L
+        Route.passesSound(onCastNow(), gain.working, sincePicture())
+
+    //: when what is being read now first showed a picture; 0 until it has
+    @Volatile private var pictureAt = 0L
+
+    private fun sincePicture(): Long =
+        if (pictureAt == 0L) -1L else android.os.SystemClock.elapsedRealtime() - pictureAt
 
     /** Whether the receiver was turned up for this film's passed-through sound. */
     private var receiverRaised = false
@@ -457,6 +465,15 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     // (wall clock, bytes) samples, trimmed to ten seconds: throughput now, not on average
     private val transfer = ArrayDeque<Pair<Long, Long>>()
     private val startedAt = android.os.SystemClock.elapsedRealtime()
+    //: what happened between opening the player and the first picture, each with its
+    //: milliseconds since the player opened; sent once, as one trace line
+    private val startMarks = java.util.concurrent.CopyOnWriteArrayList<String>()
+    @Volatile private var startSaid = false
+
+    private fun mark(what: String) {
+        if (startSaid || startMarks.size >= 40) return
+        startMarks.add("" + (android.os.SystemClock.elapsedRealtime() - startedAt) + " " + what)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -1200,17 +1217,21 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     // is a flash of black, which reads worse than no card at all. A
                     // shelf takes long enough that it is over the threshold every time.
                     if (drawing.value) {
-                        val waited = androidx.compose.runtime.remember {
-                            androidx.compose.runtime.mutableStateOf(false) }
+                        // black first, the words only for a wait that is one
+                        // (Route.changeoverShows)
+                        val shows = androidx.compose.runtime.remember {
+                            androidx.compose.runtime.mutableIntStateOf(0) }
                         androidx.compose.runtime.LaunchedEffect(Unit) {
-                            kotlinx.coroutines.delay(400)
-                            waited.value = true
+                            kotlinx.coroutines.delay(Route.COVER_MS)
+                            shows.intValue = Route.changeoverShows(Route.COVER_MS)
+                            kotlinx.coroutines.delay(Route.WORDS_MS - Route.COVER_MS)
+                            shows.intValue = Route.changeoverShows(Route.WORDS_MS)
                         }
-                        if (waited.value) {
+                        if (shows.intValue >= 1) {
                             Box(Modifier.fillMaxSize()
                                     .background(androidx.compose.ui.graphics.Color.Black),
                                 contentAlignment = Alignment.Center) {
-                                androidx.compose.material3.Text(
+                                if (shows.intValue >= 2) androidx.compose.material3.Text(
                                     drawingSaid.value.ifEmpty { "Drawing from the shelf" },
                                     color = androidx.compose.ui.graphics.Color(0xFF9AA3AE),
                                     fontSize = 15.sp)
@@ -1618,7 +1639,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 source: androidx.media3.datasource.DataSource,
                 spec: androidx.media3.datasource.DataSpec,
                 isNetwork: Boolean,
-            ) = Unit
+            ) {
+                if (isNetwork) mark("open at " + (spec.position / 1_000_000) + " MB from " +
+                                    spec.uri.host + ":" + spec.uri.port)
+            }
 
             override fun onBytesTransferred(
                 source: androidx.media3.datasource.DataSource,
@@ -1697,6 +1721,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     .setPreferredAudioLanguage(want)
                     .build()
             }
+            mark("sound language set " + want)
         }
         // The button on a pair of headphones, and the one on a remote that is not
         // ours: both arrive as media keys, and nothing answers them unless there is a
@@ -1986,8 +2011,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // many frames had been dropped sat between the buffer and the subtitle.
         // the sound's format says whether it is decoded here or handed to the
         // amplifier as it is
+        // an encode's sound is not the source's: DTS arrives as AC-3
         val facts = if (passingThrough() && sourceFacts.isNotEmpty())
-            sourceFacts + " passthrough" else sourceFacts
+            sourceFacts + (if (direct) " passthrough" else "  \u00b7  sound passed through")
+        else sourceFacts
         return listOf(whichMachine(), sourceLine(), how,
                       facts, decodedSize, frameRate(),
                       decoderName, audioDecoder,
@@ -2000,11 +2027,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
 
     /** The receiver's move for this film in a few words: "receiver +5.0 dB, by loudness". */
     private fun receiverWords(said: org.json.JSONObject?): String {
-        if (said == null) return "receiver: no answer"
-        if (!said.optBoolean("ok")) {
-            val why = said.optString("why")
-            return if (why == "off") "" else "receiver: " + why
-        }
+        if (said == null) return Route.receiverRefusal(false, "")
+        if (!said.optBoolean("ok")) return Route.receiverRefusal(true, said.optString("why"))
         if (said.optBoolean("measuring")) return "receiver: measuring the film first"
         // the receiver's own units are half a decibel each
         val db = said.optInt("by", 0) / 2.0
@@ -2517,11 +2541,16 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // stream that cannot seek. Headphones ask both of those questions.
         runCatching { session?.player = view?.player ?: player }
         player.setMediaItem(if (onCastPlayer) castItem else item)
+        mark("prepare")
+        pictureAt = 0L
         player.prepare()
         // an engine stream already starts at the offset; a plain file has to be seeked
         val startsAtOffset = if (onCastPlayer) castDirect else direct
         val target = if (resumeAt > 0) resumeAt else if (startsAtOffset) streamStartMs() else 0L
-        if (target > 5000) player.seekTo(target)
+        if (target > 5000) {
+            player.seekTo(target)
+            mark("seek to " + (target / 1000) + " s")
+        }
         player.playWhenReady = true
         player.addListener(object : Player.Listener {
             /**
@@ -2538,6 +2567,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
              * manage AAC either does not sit here restarting.
              */
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                mark("tracks known")
                 drawPictureSubtitle()
                 pickTheChosenSound(tracks)
                 if (triedPlainAudio || onCastNow()) return
@@ -2568,7 +2598,22 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 }
             }
 
+            override fun onRenderedFirstFrame() {
+                if (pictureAt == 0L) pictureAt = android.os.SystemClock.elapsedRealtime()
+                mark("first picture")
+                if (!startSaid) {
+                    startSaid = true
+                    log("start: " + startMarks.joinToString(" | "))
+                }
+            }
+
             override fun onPlaybackStateChanged(state: Int) {
+                mark("state " + when (state) {
+                    Player.STATE_BUFFERING -> "buffering"
+                    Player.STATE_READY -> "ready"
+                    Player.STATE_ENDED -> "ended"
+                    else -> "idle"
+                })
                 // Once, when it first has something to say: what the player is
                 // holding and what it makes of it. A television across the room
                 // cannot be watched from here any other way.
@@ -2996,7 +3041,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val showing = subtitlesShowing()
         lifecycleScope.launch {
             var go = next
-            runCatching { Api.metadata(next) }.getOrNull()?.let { go = it }
+            (readAheadFor(next) ?: runCatching { Api.metadata(next) }.getOrNull())
+                ?.let { go = it }
             // either this episode was being watched with subtitles, or the series has
             // settled on a variant, or a subtitle file is simply sitting beside the
             // video - which only happens because somebody put it there
@@ -3468,6 +3514,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         wrapper?.baseChanged(streamStartMs())
         local?.let {
             it.setMediaItem(item)
+            pictureAt = 0L
             it.prepare()
             it.playWhenReady = true
         }
@@ -4331,6 +4378,38 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     }
 
     /**
+     * In the last half minute, read the next title's full details, so the changeover
+     * does not wait for them. Only the reading: nothing of its file is opened.
+     */
+    private fun maybeReadAhead(pos: Long) {
+        if (durationMs <= 0 || durationMs - pos > Route.READ_AHEAD_BEFORE_MS) return
+        if (!casually() && showKey.isEmpty()) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        // once, and again only when what was read has gone stale - after a rewind
+        if (aheadAsked != 0L && now - aheadAsked < Route.READ_AHEAD_FRESH_MS) return
+        aheadAsked = now
+        lifecycleScope.launch {
+            val next = if (casually()) (upNext ?: shelfPeek())
+                       else Api.nextEpisode(showKey, season, number)
+            if (next == null || next.offered) return@launch
+            runCatching { Api.metadata(next) }.getOrNull()?.let {
+                aheadFull = it
+                aheadAt = android.os.SystemClock.elapsedRealtime()
+            }
+        }
+    }
+
+    /** The details read ahead, when they are this title's and fresh; else null. */
+    private fun readAheadFor(to: Media): Media? {
+        val held = aheadFull ?: return null
+        val age = android.os.SystemClock.elapsedRealtime() - aheadAt
+        return held.takeIf {
+            Route.readAheadFits(it.ratingKey, it.srv?.base ?: "", to.ratingKey,
+                                to.srv?.base ?: "", age)
+        }?.also { log("next title's details were read " + (age / 1000) + " s ahead") }
+    }
+
+    /**
      * Five minutes from the end, fetch the next episode's subtitles.
      *
      * Early enough that the file is in place before auto-next fires, and late enough
@@ -4575,7 +4654,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             }
             // the next thing needs its own subtitle chosen: passing none turned them
             // off, verified track or not. The list comes with the full metadata only.
-            val full = runCatching { Api.metadata(to) }.getOrNull() ?: to
+            val full = readAheadFor(to)
+                ?: runCatching { Api.metadata(to) }.getOrNull() ?: to
             val pick = full.startSub()
             startActivity(playIntent(this@PlayerActivity, full, startAt, pick,
                                      height = chosenHeight(), mbit = chosenRate(),
@@ -4897,7 +4977,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     }
                 }
             }
-            if (!saidHowSound && pos > 10) {
+            if (!saidHowSound && Route.soundSettled(sincePicture())) {
                 saidHowSound = true
                 val want = Api.gainSaid ?: gain.decibels
                 log("sound is " + (if (gain.working) "decoded here" else "passed through") +
@@ -4915,6 +4995,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             }
         }
         maybePrefetchNext(pos)
+        maybeReadAhead(pos)
     }
 
     override fun onStart() {

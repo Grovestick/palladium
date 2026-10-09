@@ -345,8 +345,170 @@ rcv.raise_for(ON, "tv", "e1")
 secs, fn, args = _Recv.timers.pop()
 check("back on the same film before the retry: it stays up",
       fn(*args) is None and _Recv.vol == 100 and "tv|e1" in rcv.RAISED)
+# how far it moves for a measured track: +5 at typical, by measurement near it, +5 far out
+check("a track of typical loudness: +5", rcv.level_for(-22.2, -22.2) == 5.0)
+check("quieter than typical by 3: 3 more; louder by 3: 3 less",
+      rcv.level_for(-25.2, -22.2) == 8.0 and rcv.level_for(-19.2, -22.2) == 2.0)
+check("at the edge of the band it is still corrected",
+      rcv.level_for(-26.2, -22.2) == 9.0 and rcv.level_for(-18.2, -22.2) == 1.0)
+check("a fringe one, either side: the plain +5",
+      rcv.level_for(-29.2, -22.2) == 5.0 and rcv.level_for(-12.0, -22.2) == 5.0
+      and rcv.level_for(-26.3, -22.2) == 5.0)
+check("typical not known: the plain +5; not measured: not moved",
+      rcv.level_for(-25, None) == 5.0 and rcv.level_for(None, -22.2) is None)
+import random as _rnd
+_r = _rnd.Random(3)
+_lib = [_r.gauss(-22.2, 4.0) for _ in range(2000)]
+_usual = rcv.typical(_lib)
+_raises = [rcv.level_for(l, _usual) for l in _lib]
+check("over a library the raise averages 5, and none is outside 1 to 9: mean %.2f"
+      % (sum(_raises) / len(_raises)),
+      abs(sum(_raises) / len(_raises) - 5.0) < 0.25 and min(_raises) >= 1.0 and max(_raises) <= 9.0)
+check("typical is the middle reading, and unknown for too few",
+      rcv.typical([-30, -20, -25] * 10) == -25 and rcv.typical([-20, -24] * 15) == -22.0
+      and rcv.typical([-20] * 29) is None and rcv.typical([None, -20] * 20) is None)
+# which reading a passed-through track is judged by, and what is left to measure
+WHOLE = {"lufs": -24.0, "how": "spread", "size": 10}
+check("Dolby: the reading with compression off, and none until it is made",
+      rcv.reading_for(dict(WHOLE, flat=-20.5), "eac3") == -20.5 and rcv.reading_for(WHOLE, "AC3") is None)
+check("any other codec: the one reading", rcv.reading_for(WHOLE, "dts") == -24.0
+      and rcv.reading_for(dict(WHOLE, flat=-1.0), "truehd") == -24.0)
+check("a single window or no reading is no reading",
+      rcv.reading_for({"lufs": -24.0, "how": "window", "flat": -20}, "ac3") is None
+      and rcv.reading_for(None, "ac3") is None)
+check("left to measure: none, one window, another size, Dolby without the second reading",
+      rcv.wants_measuring(None, "aac") and rcv.wants_measuring({"lufs": -24, "how": "window"}, "aac")
+      and rcv.wants_measuring(WHOLE, "aac", size=11) and rcv.wants_measuring(WHOLE, "ac3"))
+check("not left: whole and not Dolby, or Dolby with both",
+      not rcv.wants_measuring(WHOLE, "aac") and not rcv.wants_measuring(WHOLE, "aac", size=10)
+      and not rcv.wants_measuring(dict(WHOLE, flat=-22), "eac3"))
+order = rcv.measure_order(
+    [(5, "e", 1, "ac3"), (4, "d", 1, "aac"), (3, "c", 1, "ac3"), (2, "b", 1, "eac3"), (1, "a", 1, "ac3")],
+    {"5": dict(WHOLE, flat=-20), "4": WHOLE, "3": WHOLE, "2": {"lufs": -20, "how": "window"}})
+check("taken in this order: unmeasured, single window, Dolby lacking the second; the rest not at all: %s" % order,
+      [o[0] for o in reversed(order)] == [1, 2, 3])
+import pd_gpu
+plain, flat = pd_gpu.loudness_cmd("f.mkv", length=3000), pd_gpu.loudness_cmd("f.mkv", length=3000, flat=True)
+check("compression off is asked of the decoder once for each of the twenty samples, and only when wanted",
+      "-drc_scale" not in plain and flat.count("-drc_scale") == 20 and plain.count("-i") == 20
+      and all(flat[i + 1] == "0" and flat[i + 2] == "-ss" for i, a in enumerate(flat) if a == "-drc_scale")
+      and [a for a in flat if a not in ("-drc_scale",)].count("0") + 0 >= 0)
+short = pd_gpu.loudness_cmd("f.mkv", length=0, flat=True)
+check("and for a file of unknown length, on its one window", short.count("-drc_scale") == 1
+      and short.index("-drc_scale") < short.index("-i"))
+# a track made into Dolby is written without the file's chapters
+import shutil as _sh, subprocess as _sp, tempfile as _tf
+_dir = _tf.mkdtemp(prefix="pd-rules-gpu-")
+_eng = pd_gpu.Engine(_dir)
+_src = {"file": "f.mkv", "width": 1280, "height": 720, "videoCodec": "h264", "audioCodec": "dts",
+        "audioChannels": 6, "duration": 1200, "bitrate": 6000}
+_made = _eng.command(_src, 0, 0, None, "passthrough")
+_kept = _eng.command(dict(_src, audioCodec="ac3"), 0, 0, None, "passthrough", copy_video=True)
+check("Dolby made or copied: delay_moov, and the chapters left out before the writer's flags",
+      all("-map_chapters" in c and c[c.index("-map_chapters") + 1] == "-1"
+          and c.index("-map_chapters") < c.index("-movflags")
+          and c[c.index("-movflags") + 1].endswith("+delay_moov") for c in (_made, _kept)))
+check("plain sound is written as it was", "-map_chapters" not in _eng.command(_src, 0, 0, None, "aac"))
+if pd_gpu.FFMPEG:
+    # the file that showed it, made up: a frame rate of 13978/583 and one chapter of 12 s
+    open(os.path.join(_dir, "meta.txt"), "w").write(
+        ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000000000\nSTART=0\nEND=12000000000\ntitle=one\n")
+    _odd = os.path.join(_dir, "odd.mkv")
+    _sp.run([pd_gpu.FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+             "testsrc2=size=320x240:rate=13978/583", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+             "-i", os.path.join(_dir, "meta.txt"), "-t", "12", "-map", "0:v", "-map", "1:a", "-map_metadata", "2",
+             "-map_chapters", "2", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "flac", "-ac", "6", _odd],
+            capture_output=True, timeout=120)
+    _cmd = _eng.command(dict(_src, file=_odd, width=320, height=240, audioCodec="flac", duration=12, bitrate=900),
+                        0, 0, None, "passthrough")
+    _ran = _sp.run(_cmd, capture_output=True, timeout=120)
+    check("an odd frame-rate fraction with a chapter: the writer takes it (%d bytes, exit %s)"
+          % (len(_ran.stdout), _ran.returncode),
+          _ran.returncode == 0 and b"is invalid" not in _ran.stderr and len(_ran.stdout) > 100000)
+    _cut = _cmd.index("-map_chapters") if "-map_chapters" in _cmd else len(_cmd)
+    _ran = _sp.run(_cmd[:_cut] + _cmd[_cut + 2:], capture_output=True, timeout=120)
+    check("and that file is the faulty kind: with its chapters let in the writer refuses them",
+          b"is invalid" in _ran.stderr)
+else:
+    print("     NOT RUN: no ffmpeg here, the chapter fault was not tried on a file")
+_sh.rmtree(_dir, ignore_errors=True)
+fresh()
+got = rcv.raise_for(dict(ON, receiver=dict(ON["receiver"], mode="loudness")), "tv", "e1", rcv.level_for(-23, -23))
+check("5 dB is ten of the receiver's units: 45.0 to 50.0 on its display: %s" % got,
+      got.get("from") == 90 and got.get("to") == 100)
+rcv.RAISED.clear()
 rcv._volume, rcv._set, rcv.threading.Timer = _real[:3]
 rcv.KEPT.update(_real[3]); rcv.RAISED.clear()
+
+# a copy's requests to the main server: ask() is a GET and tell() a POST, and the path
+# must be handled under that method - a GET for a POST-only path is a 404 nobody sees
+import re as _re
+_here = os.path.dirname(os.path.abspath(__file__))
+_src = open(os.path.join(_here, "pd-server.py"), encoding="utf-8").read()
+_fol = open(os.path.join(_here, "pd_follow.py"), encoding="utf-8").read()
+def _span(name, parts=""):
+    """Where a method stands in the source - and, for a route function, its parts after it."""
+    at = _src.index("    def %s(self" % name)
+    end = _src.index("\n    def ", at + 10)
+    while parts and _src.startswith("\n    def %s" % parts, end):
+        end = _src.index("\n    def ", end + 10)
+    return at, end
+_post, _get, _both = _span("_do_POST", "_post_part_"), _span("_do_GET", "_get_part_"), _span("follow_reads")
+_handled = {"POST": set(), "GET": set()}
+for _m in _re.finditer(r'path == "(/follow[^"]*)"', _src):
+    if _both[0] < _m.start() < _both[1]:
+        # answered for whichever handler calls the shared method
+        for _how, _sp in (("POST", _post), ("GET", _get)):
+            if "self.follow_reads(path)" in _src[_sp[0]:_sp[1]]:
+                _handled[_how].add(_m.group(1))
+    elif _post[0] < _m.start() < _post[1]:
+        _handled["POST"].add(_m.group(1))
+    elif _get[0] < _m.start() < _get[1]:
+        _handled["GET"].add(_m.group(1))
+_asked = {"GET": set(), "POST": set()}
+for _text in (_src, _fol):
+    for _m in _re.finditer(r'\b(ask|tell)\(\s*one,\s*"(/follow[^"?]*)', _text):
+        _asked["GET" if _m.group(1) == "ask" else "POST"].add(_m.group(2))
+check("the main server's follow paths were found under both methods: %s handled, %s asked"
+      % ({k: len(v) for k, v in _handled.items()}, {k: len(v) for k, v in _asked.items()}),
+      len(_handled["POST"]) > 10 and len(_handled["GET"]) > 5
+      and len(_asked["GET"]) > 3 and len(_asked["POST"]) > 5)
+for _how in ("GET", "POST"):
+    _lost = sorted(_asked[_how] - _handled[_how])
+    check("every follow path asked by %s is handled under %s: %s" % (_how, _how, _lost), not _lost)
+
+# a module imported at the top is not imported again inside a function that uses it
+# earlier: the second import makes the name local to the whole function, and the earlier
+# use fails the first time that branch runs (the new releases row answered 500)
+import ast as _ast
+_dir = os.path.dirname(os.path.abspath(__file__))
+_shadowed = []
+for _f in sorted(n for n in os.listdir(_dir) if n.endswith(".py") and (n.startswith("pd_") or n == "pd-server.py")):
+    _tree = _ast.parse(open(os.path.join(_dir, _f), encoding="utf-8").read())
+    _top = set()
+    for _n in _tree.body:
+        if isinstance(_n, _ast.Import):
+            _top |= {(a.asname or a.name).split(".")[0] for a in _n.names}
+    for _fn in _ast.walk(_tree):
+        if not isinstance(_fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        _local, _stack = {}, list(_fn.body)
+        while _stack:
+            _n = _stack.pop()
+            if isinstance(_n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.Lambda, _ast.ClassDef)):
+                continue
+            if isinstance(_n, _ast.Import):
+                for a in _n.names:
+                    _nm = (a.asname or a.name).split(".")[0]
+                    if _nm in _top:
+                        _local.setdefault(_nm, _n.lineno)
+            _stack.extend(_ast.iter_child_nodes(_n))
+        for _n in _ast.walk(_fn):
+            if isinstance(_n, _ast.Name) and _n.id in _local and _n.lineno < _local[_n.id]:
+                _shadowed.append("%s %s(): %s used at line %d, imported again at %d"
+                                 % (_f, _fn.name, _n.id, _n.lineno, _local[_n.id]))
+check("no top-level module is imported again inside a function after being used there: %s"
+      % sorted(set(_shadowed))[:4], not _shadowed)
 
 import datetime
 import pd_holidays as hol
@@ -389,6 +551,61 @@ got = [c["ratingKey"] for c in hol.in_order(cards, [1, 2, 3])]
 check("in the catalogue's order, held before offered, unlisted out: %s" % got,
       got == ["b", "e", "a"])
 check("no list, no shelf", hol.in_order(cards, []) == [])
+
+# a machine's own sleep is not a job's: after a night asleep a waiting job is not stalled
+import pd_beat
+import time
+pd_beat.BEATS.clear()
+pd_beat.BEATS["t"] = {"step": "nothing new", "at": time.time() - 9 * 3600, "rest": 3600, "limit": 0}
+check("nine hours into an hour's rest is stalled", not pd_beat.status()["t"]["ok"])
+pd_beat.slept(8.5 * 3600)
+check("less the eight and a half the machine slept, it is not", pd_beat.status()["t"]["ok"])
+pd_beat.BEATS.clear()
+
+# the main server's loudness readings, taken by a copy for the files it holds
+import pd_follow
+rows = [{"name": "A Film (2020).mkv", "size": 100, "lufs": -21.5, "dialnorm": -27, "when": 5},
+        {"name": "Other.mkv", "size": 7, "lufs": -19.0, "when": 6},
+        {"name": "Silent.mkv", "size": 9, "lufs": -70.0, "when": 7}]
+files = [(1, "D:/films/a film (2020).mkv", 100), (2, "D:/films/Other.mkv", 8),
+         (3, "D:/films/Silent.mkv", 9), (4, "D:/films/Own.mkv", 50), (5, "D:/x/Other.mkv", 7)]
+known = {"5": {"lufs": -18.0, "how": "spread"}, "4": {"lufs": -20.0, "how": "spread"}}
+got = pd_follow.loudness_for_copy(rows, files, known)
+check("the same name and length is the same file: %s" % sorted(got), sorted(got) == ["1"])
+check("with the reading and where it came from",
+      got.get("1", {}).get("lufs") == -21.5 and got["1"]["from"] == "main" and got["1"]["how"] == "spread")
+check("another length is another file, silence is no reading, one made here is kept",
+      "2" not in got and "3" not in got and "5" not in got)
+known = {"5": {"lufs": -18.0, "how": "window"}}
+check("a reading from one window here gives way to the main server's whole-file one",
+      "5" in pd_follow.loudness_for_copy(rows, files, known))
+rows2 = [dict(r, flat=(float(r["lufs"]) + 3.0) if r.get("lufs") is not None else None) for r in rows]
+got = pd_follow.loudness_for_copy(rows2, files, {"1": {"lufs": -30.0, "how": "spread", "size": 10}})
+check("its own whole-file reading is kept and the main server's compression-off one added to it: %s" % got.get("1"),
+      got.get("1", {}).get("lufs") == -30.0 and got["1"].get("flat") == -18.5 and "from" not in got["1"])
+check("one it has both of is left alone",
+      "1" not in pd_follow.loudness_for_copy(rows2, files, {"1": {"lufs": -30.0, "how": "spread", "flat": -29.0}}))
+check("a new one comes with both", pd_follow.loudness_for_copy(rows2, files, {}).get("1", {}).get("flat") == -18.5)
+
+# one table of what a copy knows of its house, not two under one name
+check("the follow module's house table holds the owner and the doors together: %s" % sorted(pd_follow.HOUSE),
+      pd_follow.HOUSE.get("owner") == "" and all(k in pd_follow.HOUSE for k in ("at", "lan", "outside", "name", "id")))
+_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_follow.py"), encoding="utf-8").read()
+check("and is made once", len(_re.findall(r"(?m)^HOUSE\b[^\n=]*=", _src)) == 1)
+# the route functions stay cut into parts a checker can read
+_srv = _ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read())
+_long = [(n.name, n.end_lineno - n.lineno + 1) for n in _ast.walk(_srv)
+         if isinstance(n, _ast.FunctionDef) and n.end_lineno - n.lineno + 1 > 700]
+check("no function in the server is over 700 lines: %s" % _long, not _long)
+_twice = []
+for _cls in [n for n in _srv.body if isinstance(n, _ast.ClassDef)] + [_srv]:
+    _seen = set()
+    for n in _cls.body:
+        if isinstance(n, _ast.FunctionDef):
+            if n.name in _seen:
+                _twice.append(n.name)
+            _seen.add(n.name)
+check("nothing in the server is defined twice under one name: %s" % _twice, not _twice)
 
 print("RULES FAILED: %d" % len(FAILS) if FAILS else "RULES PASSED")
 for f in FAILS:

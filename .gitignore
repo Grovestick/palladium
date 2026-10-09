@@ -113,3 +113,6 @@ site-grovestick/food/
 site-grovestick/travel/
 pd-publish-grovestick.py
 pd-travel-*.py
+
+# the type checker (pyright, installed with npm into this folder)
+.typecheck

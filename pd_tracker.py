@@ -570,7 +570,7 @@ def write():
         pass
 
 
-def _bendecode(raw, at=0):
+def _bendecode(raw, at=0) -> tuple:
     """Enough bencode to read a torrent's own file list. Returns (value, next index)."""
     ch = raw[at:at + 1]
     if ch == b"i":

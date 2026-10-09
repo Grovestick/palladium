@@ -458,6 +458,24 @@ def walk(base, token):
             bad.append("a skip rule for a programme that is not held was taken")
         if tell(base + "/skipstart", token, dict(rule, seconds=9999))[0] != 400:
             bad.append("a skip rule of 9999 seconds was taken")
+    # Now playing carries every worker with a state the monitor's boxes know
+    code, body = ask(base + "/watching", token)
+    try:
+        said = json.loads(body) if code == 200 else {}
+    except ValueError:
+        said = {}
+    workers = said.get("workers") or []
+    print("gate: %d workers reported, %d working"
+          % (len(workers), sum(1 for w in workers if w.get("state") == "working")))
+    if len(workers) < 8 or any(w.get("state") not in ("off", "waiting", "working", "stalled")
+                               or not w.get("name") for w in workers):
+        bad.append("the workers came back short or with a state the page does not know")
+    # what a copy reads by GET is routed under GET: refused without its key, never a 404
+    for path in ("/follow/leads", "/follow/fits", "/follow/loudness", "/follow/endings?since=0"):
+        code, _ = ask(base + path, token)
+        n += 1
+        if code not in (200, 403):
+            bad.append("%s asked by GET answered %s" % (path, code))
     # the season's shelf: named on every card, one card a film, in its order
     _, season = cards(base, "/local/library/seasonal", token)
     print("gate: %d films on the season's shelf" % len(season))
