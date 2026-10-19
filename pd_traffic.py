@@ -18,6 +18,7 @@ import json
 import os
 import threading
 import time
+import pd_safe
 
 LOCK = threading.RLock()
 STATE = {"path": "", "book": None, "dirty": False, "wrote": 0.0}
@@ -57,6 +58,7 @@ def _write(force=False):
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(STATE["book"], f, indent=1)
+            pd_safe.settle(f)
         os.replace(tmp, STATE["path"])
         STATE["dirty"] = False
         STATE["wrote"] = time.time()

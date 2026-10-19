@@ -467,12 +467,57 @@ def write_srt(out, times, words):
     os.replace(tmp, out)
 
 
-def into_swedish(lines, times=None, out=None):
-    """English to Swedish, a cue at a time, with NLLB."""
+#: The languages Whisper names, in NLLB's own codes. A Swedish subtitle is translated
+#: straight from the language spoken, not through English: a translation of a
+#: translation loses twice. A language missing here is one NLLB does not carry.
+NLLB = {
+    "af": "afr_Latn", "am": "amh_Ethi", "ar": "arb_Arab", "as": "asm_Beng", "az": "azj_Latn",
+    "ba": "bak_Cyrl", "be": "bel_Cyrl", "bg": "bul_Cyrl", "bn": "ben_Beng", "bo": "bod_Tibt",
+    "bs": "bos_Latn", "ca": "cat_Latn", "cs": "ces_Latn", "cy": "cym_Latn", "da": "dan_Latn",
+    "de": "deu_Latn", "el": "ell_Grek", "en": "eng_Latn", "es": "spa_Latn", "et": "est_Latn",
+    "eu": "eus_Latn", "fa": "pes_Arab", "fi": "fin_Latn", "fo": "fao_Latn", "fr": "fra_Latn",
+    "ga": "gle_Latn", "gl": "glg_Latn", "gu": "guj_Gujr", "ha": "hau_Latn", "he": "heb_Hebr",
+    "hi": "hin_Deva", "hr": "hrv_Latn", "ht": "hat_Latn", "hu": "hun_Latn", "hy": "hye_Armn",
+    "id": "ind_Latn", "is": "isl_Latn", "it": "ita_Latn", "ja": "jpn_Jpan", "jw": "jav_Latn",
+    "ka": "kat_Geor", "kk": "kaz_Cyrl", "km": "khm_Khmr", "kn": "kan_Knda", "ko": "kor_Hang",
+    "lb": "ltz_Latn", "ln": "lin_Latn", "lo": "lao_Laoo", "lt": "lit_Latn", "lv": "lvs_Latn",
+    "mg": "plt_Latn", "mi": "mri_Latn", "mk": "mkd_Cyrl", "ml": "mal_Mlym", "mn": "khk_Cyrl",
+    "mr": "mar_Deva", "ms": "zsm_Latn", "mt": "mlt_Latn", "my": "mya_Mymr", "ne": "npi_Deva",
+    "nl": "nld_Latn", "nn": "nno_Latn", "no": "nob_Latn", "oc": "oci_Latn", "pa": "pan_Guru",
+    "pl": "pol_Latn", "ps": "pbt_Arab", "pt": "por_Latn", "ro": "ron_Latn", "ru": "rus_Cyrl",
+    "sa": "san_Deva", "sd": "snd_Arab", "si": "sin_Sinh", "sk": "slk_Latn", "sl": "slv_Latn",
+    "sn": "sna_Latn", "so": "som_Latn", "sq": "als_Latn", "sr": "srp_Cyrl", "su": "sun_Latn",
+    "sv": "swe_Latn", "sw": "swh_Latn", "ta": "tam_Taml", "te": "tel_Telu", "tg": "tgk_Cyrl",
+    "th": "tha_Thai", "tk": "tuk_Latn", "tl": "tgl_Latn", "tr": "tur_Latn", "tt": "tat_Cyrl",
+    "uk": "ukr_Cyrl", "ur": "urd_Arab", "uz": "uzn_Latn", "vi": "vie_Latn", "yi": "ydd_Hebr",
+    "yo": "yor_Latn", "yue": "yue_Hant", "zh": "zho_Hans",
+}
+
+
+def route(want, spoken):
+    """How a subtitle in `want` is made from speech in `spoken`, or None when it cannot be.
+
+    ("as spoken", None) - written down as it is said
+    ("whisper", None)   - English from any language, by Whisper itself
+    ("nllb", code)      - Swedish from any other language NLLB carries, from that
+                          language directly
+    """
+    want, spoken = (want or "").lower(), (spoken or "").lower()
+    if want == spoken:
+        return ("as spoken", None)
+    if want == "en":
+        return ("whisper", None)
+    if want == "sv" and spoken in NLLB:
+        return ("nllb", NLLB[spoken])
+    return None
+
+
+def into_swedish(lines, times=None, out=None, source="eng_Latn"):
+    """Into Swedish from `source` (an NLLB code), a cue at a time, with NLLB."""
     import torch
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     name = plain_copy("facebook/nllb-200-distilled-1.3B", "tokenizer.json")
-    tok = AutoTokenizer.from_pretrained(name, src_lang="eng_Latn")
+    tok = AutoTokenizer.from_pretrained(name, src_lang=source)
     model = AutoModelForSeq2SeqLM.from_pretrained(
         name, dtype=torch.float16).to("cuda").eval()
     swedish = tok.convert_tokens_to_ids("swe_Latn")
@@ -654,11 +699,12 @@ def main():
                                                            spans))
                     spoken = "en"
             if want != spoken and fresh_words:
-                if want != "sv" or spoken != "en":
+                how = route(want, spoken)
+                if not how or how[0] != "nllb":
                     print("NO %s subtitles cannot be made from %s speech"
                           % (want, spoken), flush=True)
                     return 1
-                fresh_words = into_swedish(fresh_words)
+                fresh_words = into_swedish(fresh_words, source=how[1])
             if fresh_times:
                 # speech found in a gap only where it needs no translating
                 sung_t, sung_w = music_lines(model, sound, at, fresh_times, fresh_words,

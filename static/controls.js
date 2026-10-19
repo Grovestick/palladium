@@ -116,7 +116,54 @@
     bar.fs.click();
   });
 
+  // a still of the film over the bar, while it is moved or pointed at: asked one at a
+  // time, the newest wanted next, ten seconds apart as the server keeps them
+  const peek = document.createElement("img");
+  peek.id = "c-peek";
+  peek.alt = "";
+  bar.scrub.parentNode.appendChild(peek);
+  // the box is shown only once a still is in it: an empty box was a black square
+  let peekWant = -1, peekShown = -1, peekBusy = false, peekOn = false;
+  const peekLoad = () => {
+    if (peekBusy || peekWant < 0 || peekWant === peekShown || !window.framePreview) return;
+    const sec = peekWant;
+    const src = window.framePreview(sec, 320);
+    if (!src) return;
+    peekBusy = true;
+    const img = new Image();
+    img.onload = () => {
+      peekBusy = false;
+      if (peekOn) { peek.src = img.src; peekShown = sec; peek.classList.add("on"); }
+      peekLoad();
+    };
+    img.onerror = () => { peekBusy = false; };
+    img.src = src;
+  };
+  const peekAt = (frac) => {
+    const dur = window.__ctlDur || (v.duration && isFinite(v.duration) ? v.duration : 0);
+    if (!dur) return;
+    peek.style.left = (Math.max(0, Math.min(1, frac)) * 100) + "%";
+    peekOn = true;
+    if (peekShown >= 0) peek.classList.add("on");
+    peekWant = Math.floor((frac * dur) / 10) * 10;
+    peekLoad();
+  };
+  const peekOff = () => {
+    peekOn = false;
+    peek.classList.remove("on");
+    // the next time starts empty, not on the still of where it was last
+    peekShown = -1;
+    peek.removeAttribute("src");
+  };
+  bar.scrub.parentNode.addEventListener("mousemove", (e) => {
+    const r = bar.scrub.parentNode.getBoundingClientRect();
+    if (r.width) peekAt((e.clientX - r.left) / r.width);
+  });
+  bar.scrub.parentNode.addEventListener("mouseleave", () => { if (!scrubbing) peekOff(); });
+  bar.scrub.addEventListener("change", peekOff);
+
   bar.scrub.addEventListener("input", () => {
+    peekAt(bar.scrub.value / 1000);
     scrubbing = true;
     const dur = v.duration && isFinite(v.duration) ? v.duration : 0;
     const t = (bar.scrub.value / 1000) * (window.__ctlDur || dur);

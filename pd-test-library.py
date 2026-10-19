@@ -10,6 +10,7 @@ Run by the build before anything is installed.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -21,6 +22,17 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 root = tempfile.mkdtemp(prefix="pd-library-")
 gate.take_copy(root)
+# The new-release list as it was read, held still: once it is twelve hours old the
+# server reads it again, and with the copy cut off from the world that reading is half
+# blind - the films picked at the start had left the list by the time their pages
+# were asked for, and the checks failed on the clock rather than on the code.
+_list = os.path.join(root, "streaming.json")
+if os.path.exists(_list):
+    with open(_list, encoding="utf-8") as f:
+        _kept = json.load(f)
+    _kept["at"] = time.time()
+    with open(_list, "w", encoding="utf-8") as f:
+        json.dump(_kept, f)
 gate.cut_off(root, 0)
 
 sys.argv = ["pd-server.py", "--root", root]
@@ -182,9 +194,13 @@ if new:
                for one in new[:12])
     check("3 none chosen is all of them again", back > 0, "%d shown" % back)
     settle(watchServices=[], watchRegion="ZZ")
-    nowhere = sum(len(cards("/library/metadata/" + one["key"])[0].get("providers") or [])
-                  for one in new[:12])
-    check("3 a country with no services listed shows none", nowhere == 0, "%d shown" % nowhere)
+    # a country nothing is out in: where it is out already, and each badge names the
+    # country - never ZZ, which has nothing
+    elsewhere = [p for one in new[:12]
+                 for p in (cards("/library/metadata/" + one["key"])[0].get("providers") or [])]
+    check("3 a country with no services listed shows where it is out, and says which country",
+          elsewhere and all(p.get("country") and p.get("country") != "ZZ" for p in elsewhere),
+          "%d shown" % len(elsewhere))
     settle(watchServices=[], watchRegion="")
     print("3. the services chosen under Settings", flush=True)
 
@@ -538,6 +554,223 @@ check("16 the reason is still said, beside it, for the log",
       and "device" in str((_no(True, False) or {}).get("because")))
 check("16 the screen set for the receiver, in the house, is not turned away", _no(True, True) is None)
 print("16. the receiver's refusals", flush=True)
+
+# ---- 17. a settings write: on the disk before the swap, a spare and a dated copy beside it
+_sp = m.settings_path()
+_was = m.read_settings()
+_seen, _fs = [], os.fsync
+os.fsync = lambda fd: (_seen.append(1), _fs(fd))[1]
+try:
+    m.write_settings(dict(_was, gateProbe=17))
+finally:
+    os.fsync = _fs
+check("17 the write was forced to the disk: file, spare and dated copy", len(_seen) >= 2, str(len(_seen)))
+check("17 it reads back whole", (m.read_settings() or {}).get("gateProbe") == 17)
+check("17 a spare that reads stands beside it", m.pd_safe.readable(_sp + ".bak"))
+check("17 and one dated copy for today",
+      os.path.exists("%s.%s.bak" % (_sp, time.strftime("%Y%m%d"))))
+# the plug pulled: the file all zeros, the spare from the write before still good
+with open(_sp, "rb") as _f:
+    _n = len(_f.read())
+with open(_sp, "wb") as _f:
+    _f.write(bytes(_n))
+check("17 zeroed, the server will not write over it", m.read_settings() is not None)
+_back = m.pd_safe.recover(_sp)
+check("17 and it is put back from a copy that reads", bool(_back) and isinstance(m.read_settings(), dict)
+      and len(m.read_settings()) >= len(_was), str(_back))
+m.write_settings(_was, merge=False)
+print("17. settings and a power cut", flush=True)
+
+# ---- 18. Download and Request each hide their own: a new film the tracker carries is a download
+import pd_localapi as _pl
+_seen = _pl.LocalAPI.new_one_shown
+check("18 on the tracker: shown with Download, whatever Request says",
+      _seen(True, {"download": True, "request": False}) and not _seen(True, {"download": False, "request": True}))
+check("18 not on the tracker: shown with Request, whatever Download says",
+      _seen(False, {"download": False, "request": True}) and not _seen(False, {"download": True, "request": False}))
+import pd_streaming as _ps
+import pd_tracker as _pt
+_pt.use_data_dir(root)                 # the copy's tracker index: what decides "on the tracker"
+with _pt.LOCK:
+    _pt.STATE["rows"] = {}             # read before the copy was named: read it again
+_pt.FOUND["stamp"] = None
+_rows = [r for r in _ps.shown() if not r.get("here")]
+_tracked = [r for r in _rows if _ps.item(r).get("onTracker")]
+if not _tracked:
+    print("18. skipped on live data: no new film on the tracker in the list")
+else:
+    _real = api.films_show
+    try:
+        api.films_show = lambda: {"disk": True, "download": True, "request": False}
+        _shelf = cards("/library/sections/1/all", {"type": ["1"], "sort": ["originallyAvailableAt:desc"]})
+        _keys = {str(c.get("ratingKey")) for c in _shelf}
+        _askable = [c for c in _shelf if c.get("askable")]
+        check("18 with Request hidden, new films the tracker carries are still on the film shelf",
+              any(str(r.get("key")) in _keys for r in _tracked)
+              # and the ones not asked of the tracker yet, Checking, which may be either
+              and all(c.get("onTracker") or c.get("checking") for c in _askable), "%d of %d" % (
+                  sum(1 for r in _tracked if str(r.get("key")) in _keys), len(_tracked)))
+        api.films_show = lambda: {"disk": True, "download": False, "request": True}
+        _shelf = cards("/library/sections/1/all", {"type": ["1"], "sort": ["originallyAvailableAt:desc"]})
+        check("18 with Download hidden, none of them are, and only ones to ask for remain",
+              not [c for c in _shelf if c.get("askable") and c.get("onTracker")])
+    finally:
+        api.films_show = _real
+print("18. Download and Request each hide their own", flush=True)
+
+# ---- 19. the Popular page, which the TV tab opens on, holds every series here
+_pop19 = m.popular_everything()
+_keys19 = {str(x.get("ratingKey")) for x in _pop19}
+_con19 = api.lib.db()
+try:
+    _held19 = [str(r["id"]) for r in _con19.execute("SELECT id FROM item WHERE type='show'")]
+finally:
+    _con19.close()
+_missing19 = [k for k in _held19 if k not in _keys19]
+check("19 every series in the library is on the Popular page, after the trending ones",
+      not _missing19 and all(x.get("popularity", 0) >= 0 for x in _pop19),
+      "%d of %d missing" % (len(_missing19), len(_held19)))
+print("19. every series here on the Popular page", flush=True)
+
+# ---- 26. a name typed in full finds the person, credited only on films not here yet
+_con26 = api.lib.db()
+try:
+    _who26 = _con26.execute(
+        """SELECT MIN(name) AS name FROM credit WHERE name <> ''
+            GROUP BY LOWER(name)
+           HAVING SUM(item_id IN (SELECT id FROM item)) = 0
+            ORDER BY COUNT(*) DESC LIMIT 1""").fetchone()
+finally:
+    _con26.close()
+# their filmography is asked of the catalogue, which this copy cannot reach: the row of
+# faces is what is checked here, the films on the live server
+_pf26 = api._person_films
+api._person_films = lambda person, name: []
+try:
+    _st26, _, _b26 = (api.handle("/hubs/search", {"query": [_who26["name"]]}) if _who26
+                      else (0, "", b"{}"))
+finally:
+    api._person_films = _pf26
+_hubs26 = json.loads(_b26).get("MediaContainer", {}).get("Hub", []) if _st26 == 200 else []
+check("26 a full name of somebody credited only on films not here finds them as a person",
+      bool(_who26) and any(h.get("type") == "person" and any(
+          str(x.get("tag") or "").lower() == str(_who26["name"]).lower()
+          for x in h.get("Metadata") or []) for h in _hubs26))
+print("26. a person credited only on films not here is found by name", flush=True)
+
+# ---- 25. every film a pack carries is on the films' Popular page, trending or not
+_con25 = api.lib.db()
+try:
+    _keys25 = {str(x.get("ratingKey")) for x in api.popular_films(_con25)}
+finally:
+    _con25.close()
+_offered25 = {str(o.get("ratingKey")) for o in api._offered_quietly()}
+check("25 every film on a pack is on the films' Popular page when downloads are shown",
+      not api.films_show().get("download") or _offered25 <= _keys25,
+      "%d of %d pack films missing" % (len(_offered25 - _keys25), len(_offered25)))
+print("25. pack films on the Popular page: %d" % len(_offered25 & _keys25), flush=True)
+
+# ---- 24. a series held here carries its rating on its card, as a film does
+_con24 = api.lib.db()
+try:
+    _r24 = _con24.execute("SELECT id, rating FROM item WHERE type='show' AND rating > 0 "
+                          "ORDER BY id LIMIT 1").fetchone()
+    _c24 = api.metadata_for(_con24, str(_r24["id"]), brief=True) if _r24 else None
+finally:
+    _con24.close()
+check("24 a held series' card carries its rating, so Rating sorts it",
+      bool(_c24) and float(_c24.get("rating") or 0) == float(_r24["rating"]))
+print("24. a held series carries its rating", flush=True)
+
+# ---- 23. the front page's Popular films row: the popular films, forty at most
+_con23 = api.lib.db()
+try:
+    _row23 = api.popular_films(_con23, as_row=True)
+finally:
+    _con23.close()
+_rk23 = [int(x.get("popularity") or 0) for x in _row23]
+check("23 the Popular films row holds the popular films, most watched first, forty at most",
+      0 < len(_row23) <= 40 and all(n > 0 for n in _rk23) and _rk23 == sorted(_rk23, reverse=True))
+print("23. Popular films row: %d films" % len(_row23), flush=True)
+
+# ---- 22. the Service menu's My library: alone the library, with a service its titles there
+_st22, _, _b22 = api.handle("/library/services", {})
+_menu22 = json.loads(_b22)["MediaContainer"]["Directory"] if _st22 == 200 else []
+_con22 = api.lib.db()
+try:
+    _films22 = {str(r["id"]): int(r["tmdb_id"] or 0) for r in _con22.execute(
+        "SELECT id, tmdb_id FROM item WHERE type='movie'")}
+finally:
+    _con22.close()
+_sv22 = api.services_of
+# every film with an even catalogue number streams on service 8, the rest nowhere
+api.services_of = lambda kind, numbers: {n: ([8] if n % 2 == 0 else []) for n in numbers if n}
+try:
+    def _ask22(prov, sort="titleSort:asc"):
+        st, _, body = api.handle("/library/service", {"type": ["movie"], "provider": [prov],
+                                                      "sort": [sort]})
+        return [str(x.get("ratingKey")) for x in
+                json.loads(body)["MediaContainer"]["Metadata"]] if st == 200 else None
+    _alone22 = _ask22("-1")
+    _on8 = _ask22("-1,8")
+finally:
+    api.services_of = _sv22
+check("22 the Service menu starts with My library",
+      bool(_menu22) and _menu22[0].get("id") == -1 and _menu22[0].get("name") == "My library")
+check("22 My library alone is every film here, with a service only the ones it carries",
+      _alone22 is not None and set(_alone22) == set(_films22)
+      and _on8 is not None
+      and set(_on8) == {k for k, n in _films22.items() if n and n % 2 == 0},
+      "%s alone, %s on 8" % (len(_alone22 or []), len(_on8 or [])))
+print("22. My library in the Service menu: %d films, %d on the made-up service"
+      % (len(_alone22 or []), len(_on8 or [])), flush=True)
+
+# ---- 21. a search with an "and" the title does not carry still finds it
+_con21 = api.lib.db()
+try:
+    _two21 = next((str(r["title"]) for r in _con21.execute(
+        "SELECT title FROM item WHERE type='movie' ORDER BY id")
+        if re.fullmatch(r"[A-Za-z]{4,} [A-Za-z]{4,}", str(r["title"] or ""))
+        and "and" not in str(r["title"]).lower().split()), "")
+finally:
+    _con21.close()
+_w21 = _two21.split()
+_st21, _, _b21 = api.handle("/hubs/search", {"query": ["%s and %s" % (_w21[0], _w21[1])]})     if _w21 else (0, "", b"{}")
+_hit21 = [mm.get("title") for h in json.loads(_b21).get("MediaContainer", {}).get("Hub", [])
+          for mm in h.get("Metadata", [])] if _w21 else []
+check("21 a search with an \"and\" the title lacks still finds the title",
+      bool(_w21) and _two21 in _hit21, "%r -> %d hits" % (_two21, len(_hit21)))
+print("21. \"and\" dropped from a search that found nothing", flush=True)
+
+# ---- 20. the Films tab's Popular page: the popular ones first, then every film here
+import pd_streaming as _ps20
+_ps20.ask_tracker_about = lambda *a, **k: None
+_ps20.ask_tracker_slowly = lambda *a, **k: None
+# TMDB's score stood in for by the catalogue number, so the order can be checked
+_tp20 = api.tmdb_popularity
+api.tmdb_popularity = lambda kind, numbers: {n: float(n) for n in numbers if n}
+_con20 = api.lib.db()
+try:
+    _pop20 = api.popular_films(_con20)
+    _held20 = [str(r["id"]) for r in _con20.execute("SELECT id FROM item WHERE type='movie'")]
+finally:
+    _con20.close()
+_keys20 = [str(x.get("ratingKey")) for x in _pop20]
+_ranks20 = [int(x.get("popularity") or 0) for x in _pop20]
+_r20 = api.rank_popular([{"ratingKey": k} for k in "abcd"], 1, "movie",
+                         {"b": 5, "c": 9, "d": 0})
+api.tmdb_popularity = _tp20
+check("20b the titles not trending follow most popular on TMDB first, ranks whole numbers",
+      [x["ratingKey"] for x in _r20] == ["a", "c", "b", "d"]
+      and [x["popularity"] for x in _r20] == [4, 3, 2, 1])
+check("20 every film in the library is on the films' Popular page, the popular ones first",
+      not [k for k in _held20 if k not in set(_keys20)]
+      and len(_keys20) == len(set(_keys20))
+      and _ranks20 == sorted(_ranks20, reverse=True),
+      "%d cards, %d films held, %d ranked" % (len(_pop20), len(_held20),
+                                              sum(1 for n in _ranks20 if n)))
+print("20. every film here on the films' Popular page: %d cards, %d ranked"
+      % (len(_pop20), sum(1 for n in _ranks20 if n)), flush=True)
 
 print()
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")

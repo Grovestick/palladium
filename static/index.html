@@ -34,6 +34,7 @@
     <button data-view="settings" class="tab" title="Library settings">&#9881;</button>
   </nav>
   <input id="search" type="search" placeholder="Search&hellip;" autocomplete="off">
+  <button id="mic" class="mic hidden" title="Search by voice" aria-label="Search by voice"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-2.1A7 7 0 0 0 19 12z"/></svg></button>
   <div class="spacer"></div>
   <google-cast-launcher id="castbtn" title="Cast"></google-cast-launcher>
 </header>
@@ -107,5 +108,7 @@
 <script src="app.js?v=0.18.192"></script>
 <script src="controls.js"></script>
 <script src="settings.js?v=0.18.192"></script>
+<!-- a plugin: Live TV from your own playlist; gone with the file -->
+<script src="iptv.js"></script>
 </body>
 </html>

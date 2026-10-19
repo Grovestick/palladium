@@ -165,7 +165,12 @@ def compile_one(script, name, console):
            "--include-module=pd_torrents", "--include-module=pd_machine", "--include-module=pd_receiver",
            "--include-module=pd_credits", "--include-module=pd_apart",
            "--include-module=pd_holidays", "--include-module=pd_leads",
-           "--include-module=pd_release", "--include-module=pd_vtt"]
+           "--include-module=pd_release", "--include-module=pd_vtt",
+           "--include-module=pd_safe", "--include-module=pd_repair",
+           "--include-module=pd_plugins", "--include-module=pd_svtplay"]
+    # the plugins: carried while their file is there, and simply left out once deleted
+    cmd += ["--include-module=" + m for m in ("pd_iptv",)
+            if os.path.exists(os.path.join(HERE, m + ".py"))]
     if not console:
         cmd.append("--windows-console-mode=disable")
     cmd.append(os.path.join(HERE, script))
@@ -219,16 +224,73 @@ def let_go():
         pass
 
 
+#: the fingerprint of the Python the last compile was made from
+COMPILED_SIG = os.path.join(OUT, ".compiled-sig")
+RCEDIT = os.path.join(HERE, "buildtools", "rcedit-x64.exe")
+
+
+def python_sig():
+    """The server's Python as compiled: pd-server.py, the pd_ modules (pd_built aside -
+    the version is stamped, not compiled), this script's compile options, the Python."""
+    import glob
+    import hashlib
+    h = hashlib.sha256(sys.version.encode())
+    names = ["pd-server.py", "pd-build-installer.py"] + sorted(
+        p for p in glob.glob(os.path.join(HERE, "pd_*.py"))
+        if os.path.basename(p) != "pd_built.py")
+    for name in names:
+        with open(os.path.join(HERE, name), "rb") as f:
+            h.update(os.path.basename(name).encode() + b"\0" + f.read().replace(b"\r\n", b"\n"))
+    return h.hexdigest()
+
+
+def can_reuse(sig):
+    """The last compile stands when its Python is this Python, its server is there at
+    full size (the virus scanner takes it now and then) and the stamper is at hand."""
+    if os.environ.get("PD_FULL") == "1" or not os.path.exists(RCEDIT):
+        return False
+    exe = os.path.join(OUT, "pd-server.dist", "palladium-server.exe")
+    try:
+        with open(COMPILED_SIG, encoding="utf-8") as f:
+            was = f.read().strip()
+        return was == sig and os.path.getsize(exe) > 2_000_000
+    except OSError:
+        return False
+
+
+def stamp(exe):
+    """This build's number on the server and beside it: the exe's version resource,
+    which the install checks read, and built.txt, which the server reports."""
+    with open(os.path.join(os.path.dirname(exe), "built.txt"), "w", encoding="utf-8") as f:
+        f.write(VERSION)
+    if os.path.exists(RCEDIT):
+        # four parts, as the compiler writes it: the install checks compare "0.19.91.0"
+        four = VERSION + ".0" if VERSION.count(".") == 2 else VERSION
+        run([RCEDIT, exe, "--set-file-version", four, "--set-product-version", four])
+
+
 def compile_all():
     only_one_build()
     atexit.register(let_go)
     check()
+    sig = python_sig()
+    reuse = can_reuse(sig)
     # what is left of an earlier build, but not its cache: emptying this folder was
     # costing a full recompile every time, which is ten minutes of the same work
     for name in ("Palladium",):
         if os.path.exists(os.path.join(OUT, name)):
             shutil.rmtree(os.path.join(OUT, name))
-    compile_one("pd-server.py", "palladium-server.exe", console=False)
+    if reuse:
+        # no server code changed since the last compile: that server, restamped
+        print("server code unchanged since its compile - reusing it")
+    else:
+        try:
+            os.remove(COMPILED_SIG)
+        except OSError:
+            pass
+        compile_one("pd-server.py", "palladium-server.exe", console=False)
+        with open(COMPILED_SIG, "w", encoding="utf-8") as f:
+            f.write(sig)
     # No separate tray program: the server shows the icon. A windowless launcher that
     # starts a hidden server at sign-in is what Defender's machine learning quarantined.
     # One program now: the server, which shows the tray icon itself. A tray folder
@@ -250,6 +312,7 @@ def compile_all():
                 "Palladium-Setup*.exe"))
         else:
             shutil.copy2(source, target)
+    stamp(os.path.join(DIST, "palladium-server.exe"))
     print("compiled into", DIST)
     prove()
 

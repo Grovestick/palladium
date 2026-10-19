@@ -1,5 +1,1459 @@
 [
   {
+    "version": "0.19.130",
+    "when": "2026-10-18",
+    "title": "Search finds people by full name",
+    "items": [
+      "Search: a full name finds the person and everything they are in, also when none of their films are on disk - typing it found less than pressing it."
+    ]
+  },
+  {
+    "version": "0.19.129",
+    "when": "2026-10-18",
+    "title": "Cast on every title's page",
+    "items": [
+      "App: a title's page keeps the cast, studios and services it loads; opened from a shelf or the watchlist they were thrown away as no change from the card."
+    ]
+  },
+  {
+    "version": "0.19.128",
+    "when": "2026-10-18",
+    "title": "Cast under the plot again",
+    "items": [
+      "App: Show more has the cast under the plot again.",
+      "App: Show more tells the server's log how much cast it had, to find the phone that shows none."
+    ]
+  },
+  {
+    "version": "0.19.127",
+    "when": "2026-10-18",
+    "title": "Cast first in Show more",
+    "items": [
+      "App: Show more lists who is in it above the plot, so a phone sees the faces without scrolling."
+    ]
+  },
+  {
+    "version": "0.19.126",
+    "when": "2026-10-18",
+    "title": "Time bar first, double tap to skip",
+    "items": [
+      "App: on a television the remote lands on the time bar when a film opens, not on pause.",
+      "App: on a phone, two taps on the left of the picture go back 10 s and on the right forward 15 s, as the arrow buttons do.",
+      "Server: a film's cast that could not be asked of the catalogue is asked again next time, instead of staying empty for good.",
+      "App: Show more asks for the cast again when the page had none."
+    ]
+  },
+  {
+    "version": "0.19.125",
+    "when": "2026-10-18",
+    "title": "Pack films on Popular",
+    "items": [
+      "Web and app: Films on Popular holds every film the packs carry, among the films here by popularity; only the trending few were on it."
+    ]
+  },
+  {
+    "version": "0.19.124",
+    "when": "2026-10-18",
+    "title": "Series bitrate 2-8, search on an upright phone",
+    "items": [
+      "Settings: Series bitrate offers 2-8 Mbit/s - the films' ceiling with a lower floor, for 1080p episodes encoded at 2-4.",
+      "App: on a phone held upright the search box fills the line, so the microphone stays on screen, and Clear is a cross."
+    ]
+  },
+  {
+    "version": "0.19.123",
+    "when": "2026-10-18",
+    "title": "Google can ask Palladium",
+    "items": [
+      "App: 'Hey Google, search for ... on Palladium' opens Palladium's search with the words; 'play ... on Palladium' opens the title's page when one title here has exactly that name."
+    ]
+  },
+  {
+    "version": "0.19.122",
+    "when": "2026-10-18",
+    "title": "Microphone for voice search",
+    "items": [
+      "App: voice search is the microphone icon beside the search box, not the word Speak.",
+      "App: voice search asks Speech Recognition by Google first, whatever app was once saved as Always."
+    ]
+  },
+  {
+    "version": "0.19.121",
+    "when": "2026-10-18",
+    "title": "A series' packs in the Version picker",
+    "items": [
+      "App: a series' page has the Version picker films have - the packs its episodes come from, one pressed to drop it, and the tracker's packs from its foot, one pressed to link it."
+    ]
+  },
+  {
+    "version": "0.19.120",
+    "when": "2026-10-18",
+    "title": "Adding a series with its pack",
+    "items": [
+      "App: a series' page waits a minute for the tracker; with no answer it offers Look again instead of adding the series with no pack.",
+      "App: adding says when the pack could not be added, instead of that its episodes are on the way.",
+      "Web: a tracker that does not answer leaves the add button off instead of offering to add with no pack."
+    ]
+  },
+  {
+    "version": "0.19.119",
+    "when": "2026-10-18",
+    "title": "One Films and one TV page",
+    "items": [
+      "Web and app: Popular is an order of the Films and TV tabs, not a page over them - every way in lands on the tab, with the order and marks of the way in: the tab button and a Popular row on Popular, Recently added on Added, a genre on a title with that genre."
+    ]
+  },
+  {
+    "version": "0.19.118",
+    "when": "2026-10-18",
+    "title": "Rating order in services",
+    "items": [
+      "Web and app: Rating sorts every service's list in order - held series carried no rating, held films the score kept when they were matched."
+    ]
+  },
+  {
+    "version": "0.19.117",
+    "when": "2026-10-18",
+    "title": "Popular films row",
+    "items": [
+      "Web and app: a Popular films row on the front page under Recently released films - every popular film, requests only for those who show them; its end opens the whole Popular films page.",
+      "Settings: films only to ask for are hidden by default, as series are; turn Request on to see them.",
+      "Web and app: a series' page has one download menu - its packs first, then its single episodes - where the episodes were a second list."
+    ]
+  },
+  {
+    "version": "0.19.116",
+    "when": "2026-10-18",
+    "title": "My library in the Service menu",
+    "items": [
+      "Web and app: the Service menu starts with My library - alone it lists the library in the Service orders; with services marked, only the titles here that they carry."
+    ]
+  },
+  {
+    "version": "0.19.115",
+    "when": "2026-10-18",
+    "title": "Films opens on Popular",
+    "items": [
+      "Web and app: the Films tab opens on its Popular page, as TV does; the library's own films are under My films, or one Back away."
+    ]
+  },
+  {
+    "version": "0.19.114",
+    "when": "2026-10-18",
+    "title": "Picture subtitles remembered, popular films checked",
+    "items": [
+      "Web and app: a picture subtitle chosen by hand - a DVD's - is on again at the next play; only text subtitles were remembered.",
+      "Server: every film on the films' Popular page is asked of the tracker in the background, four a minute; twelve a visit left most on Checking.",
+      "Web and app: on the Popular pages, the series and films not trending follow most popular on TMDB first, not A to Z."
+    ]
+  },
+  {
+    "version": "0.19.113",
+    "when": "2026-10-18",
+    "title": "Popular films, every series on TV, spoken search",
+    "items": [
+      "Web and app: the Popular page the TV tab opens on holds every series here and on a pack, by name after the trending ones; a series not trending this week was nowhere on it.",
+      "Web and app: Films has a Popular page too - the films trending and popular now with recent Swedish ones, then every film here by name; reached from Popular in the Films order menu.",
+      "Web and app: search by voice - the mic beside the web search box (Chrome or Edge, on https or the server PC) and Speak beside the app's.",
+      "Search: a search with an \"and\" the title does not have, which finds nothing, is searched again without it."
+    ]
+  },
+  {
+    "version": "0.19.112",
+    "when": "2026-10-18",
+    "title": "Anime on the tracker",
+    "items": [
+      "Tracker: searches ask by category (films, TV, documentaries); without one the indexer left out TorrentLeech's Anime section - a search for Shutter Hop found 0 of its 72 releases. Films find the same as before."
+    ]
+  },
+  {
+    "version": "0.19.111",
+    "when": "2026-10-18",
+    "title": "Where a series streams",
+    "items": [
+      "Web and app: the page of a series not held shows Region and the streaming services it is on, as a film's page does."
+    ]
+  },
+  {
+    "version": "0.19.110",
+    "when": "2026-10-18",
+    "title": "Series sources in search",
+    "items": [
+      "Search: a popular series not held says where it can come from (Add, Stream, Checking, Request) as on the Popular page; it came without a band.",
+      "Web and app: a series' page lists the tracker's single episodes a season at a time, each downloaded on its own - a series out week by week had nothing to choose.",
+      "Tracker: a release with a group's tag in front ([SubsPlease] ...) and the anime episode form (S3 - 11) count as the series' episodes."
+    ]
+  },
+  {
+    "version": "0.19.109",
+    "when": "2026-10-18",
+    "title": "Cast under Show more",
+    "items": [
+      "App: the page of a series not held keeps its cast under Show more, as every other page does.",
+      "App: the SVT player tells its place as soon as the picture is up, then every 10 s; the first report's outcome is written to the server's log."
+    ]
+  },
+  {
+    "version": "0.19.108",
+    "when": "2026-10-18",
+    "title": "Series by where they come from",
+    "items": [
+      "Web and app: a series not held says where it can come from - Add (a pack or a tracker release), Stream (SVT Play), Checking (being asked of the tracker, behind) or Request (nothing carries it).",
+      "Settings: Series nobody has - Hide (as it comes) or Show; hidden ones are left off the Popular page, the service lists, search and the TV tab.",
+      "Tracker: a search that failed (tracker or indexer not answering) is not counted as asked; it marked films and series as checked and nothing found for two weeks."
+    ]
+  },
+  {
+    "version": "0.19.107",
+    "when": "2026-10-18",
+    "title": "SVT Play on Continue watching",
+    "items": [
+      "Web and app: a film or episode played from SVT Play keeps its place (told every 10 s and on closing), stands on Continue watching with SVT's poster, and carries on from there when pressed or opened again."
+    ]
+  },
+  {
+    "version": "0.19.106",
+    "when": "2026-10-18",
+    "title": "SVT seasons in order",
+    "items": [
+      "SVT Play series: seasons from 1 up and episodes by number; SVT lists some series newest season first. Unnumbered extras come last.",
+      "Web and app: an SVT series' seasons are a menu with the episode count beside each.",
+      "Web and app: on a stream's page the cast is under Show more, the page left to Play and the episodes."
+    ]
+  },
+  {
+    "version": "0.19.105",
+    "when": "2026-10-18",
+    "title": "Stream band",
+    "items": [
+      "Web and app: a poster SVT Play can stream wears a green Stream band instead of Request, Download or Add."
+    ]
+  },
+  {
+    "version": "0.19.104",
+    "when": "2026-10-18",
+    "title": "SVT Play series",
+    "items": [
+      "Web and app: a series not held here that SVT Play shows unprotected lists its seasons and episodes on its page, each played from SVT; protected series and episodes are left out."
+    ]
+  },
+  {
+    "version": "0.19.103",
+    "when": "2026-10-18",
+    "title": "SVT Play",
+    "items": [
+      "Web and app: a film not held here that SVT Play shows unprotected has a Play from SVT Play button on its page; it streams from SVT with the bar to seek and SVT's Swedish subtitles. SVT's title list is read twice a day; copy-protected titles keep Download or Request. Sweden only."
+    ]
+  },
+  {
+    "version": "0.19.102",
+    "when": "2026-10-18",
+    "title": "TV opens on Popular",
+    "items": [
+      "Web and app: the TV tab opens on the popular shows; the library's own series are one Back away in the app and under My shows in the web's sort menu. A marked streaming service still opens its catalogue."
+    ]
+  },
+  {
+    "version": "0.19.101",
+    "when": "2026-10-18",
+    "title": "Service list on the web",
+    "items": [
+      "Web: a streaming service's titles show; the page read the answer one level too deep and drew an empty list."
+    ]
+  },
+  {
+    "version": "0.19.100",
+    "when": "2026-10-18",
+    "title": "No country filter",
+    "items": [
+      "Web and app: the TV tab's Country filter is removed; the Service filter stands beside Genre and Decade. The popular shows page keeps its own.",
+      "Web and app: a streaming service's list sorts as the popular page does - Popular, Rating (100+ votes for films, 50+ for series), Released, Year, Name - either way round."
+    ]
+  },
+  {
+    "version": "0.19.99",
+    "when": "2026-10-18",
+    "title": "Streaming service filter",
+    "items": [
+      "Web and app: a Service filter on Films and TV - Netflix, HBO Max, Disney+, Viaplay, Prime Video, TV4 Play, SVT Play, Apple TV, SkyShowtime - shows that service's catalogue in Sweden: held titles play, pack titles download, the rest can be requested; genre and decade narrow it, newest-first sorts it by release."
+    ]
+  },
+  {
+    "version": "0.19.98",
+    "when": "2026-10-18",
+    "title": "One card per film in search",
+    "items": [
+      "Search: a film the catalogue dates a year from its pack (festival year against release) is shown once, matched by catalogue number or title within a year.",
+      "Web and app: a badge after the audio codec says the channels: Mono, Stereo, 5.1 or 7.1."
+    ]
+  },
+  {
+    "version": "0.19.97",
+    "when": "2026-10-18",
+    "title": "Region badge",
+    "items": [
+      "Web and app: the flag badge says Region before the flag; wider, the same height as the other badges.",
+      "Web: a title's facts are badges as in the app - edition, resolution, codecs, bitrate, seasons and episodes, then Region and the services; year, running time and rating stay the line above."
+    ]
+  },
+  {
+    "version": "0.19.96",
+    "when": "2026-10-18",
+    "title": "Notices from away",
+    "items": [
+      "App: from away the notice connection is held 20 s, not 45; a mobile network dropped it and the read timed out at 57 s, 55 times in a day.",
+      "App: a guest's screen no longer reports receiver passthrough, which the server refuses for guests."
+    ]
+  },
+  {
+    "version": "0.19.95",
+    "when": "2026-10-17",
+    "title": "Subtitle analysis",
+    "items": [
+      "App: \"Analysing the film…\" shows for 15 s at most; the measuring goes on and its answer is still shown. It stayed up 5 min on a busy drive.",
+      "App: a measurement that times out says it took too long, not that the server could not be reached."
+    ]
+  },
+  {
+    "version": "0.19.94",
+    "when": "2026-10-17",
+    "title": "Timeline preview",
+    "items": [
+      "App: the timeline preview sits 4 dp above the bar instead of 20; it touched the pause button on a phone.",
+      "App: Back while moving the timeline cancels the move and the picture plays on; it sought back to where the picture was when the move began."
+    ]
+  },
+  {
+    "version": "0.19.93",
+    "when": "2026-10-17",
+    "title": "Flags on Windows",
+    "items": [
+      "Web: the country flag shows on Windows, from a flag font carried with the page (78 KB); Windows drew only the two letters."
+    ]
+  },
+  {
+    "version": "0.19.92",
+    "when": "2026-10-17",
+    "title": "Episode numbers on the cache",
+    "items": [
+      "Library: a season numbered by choice (doubles, files) is renumbered when its files change; the cache server filed copied episodes under the wrong number and the app found no second source for them.",
+      "Build: the stamped version has four parts, as the compiler writes it; the install check read 0.19.91 as not updated.",
+      "Gate: the film count leaves out New on streaming titles, which the twelve-hour streaming read may shorten during a run."
+    ]
+  },
+  {
+    "version": "0.19.91",
+    "when": "2026-10-17",
+    "title": "Live TV on both servers",
+    "items": [
+      "Build: a server whose Python did not change is not compiled again; its version is stamped on the exe and in built.txt, which the server reports.",
+      "Servers: the cache server takes the live playlist, YouTube channels and groups from the main server, so each channel has the same key on both.",
+      "App: a live channel whose server stops answering (restart, install) or refuses it moves to the other server; up to 4 moves, reset once it plays."
+    ]
+  },
+  {
+    "version": "0.19.90",
+    "when": "2026-10-17",
+    "title": "Shelf names",
+    "items": [
+      "App on phone and tablet: tapping a shelf's name opens its Show more page; on the TV the name is not focusable."
+    ]
+  },
+  {
+    "version": "0.19.89",
+    "when": "2026-10-17",
+    "title": "Flag badge",
+    "items": [
+      "Web and app: the whole flag shows inside its badge with a small border; 0.19.88 cropped it."
+    ]
+  },
+  {
+    "version": "0.19.88",
+    "when": "2026-10-17",
+    "title": "Flag badge",
+    "items": [
+      "Web and app: the country flag fills its badge, the height of the streaming logos beside it.",
+      "Downloads: GB free on the download drive is shown to the owner only; a guest sees it when the chosen file does not fit."
+    ]
+  },
+  {
+    "version": "0.19.87",
+    "when": "2026-10-17",
+    "title": "One row of badges",
+    "items": [
+      "App: a film's badges are one row, the streaming services last in it; the year (under the title already) and the play-mode badge (it said Transcoded of films not downloaded) are gone.",
+      "Web and app: a flag badge before the streaming services says which country they are for; a title with none in Sweden shows where it is out already, the US first.",
+      "Live TV: a YouTube check that reaches no channel keeps the channels and streams known before; with the network away it emptied the list."
+    ]
+  },
+  {
+    "version": "0.19.86",
+    "when": "2026-10-17",
+    "title": "Live TV picks itself up",
+    "items": [
+      "App: a live stream that falls behind the live window goes back to the live edge, and one that loses the network tries again, instead of freezing until Back.",
+      "Live TV: the YouTube streams are remembered across a restart; a player asking straight after one was told its channel did not exist.",
+      "Live TV: a dark logo, such as SVT's, is drawn white on the card."
+    ]
+  },
+  {
+    "version": "0.19.85",
+    "when": "2026-10-17",
+    "title": "YouTube channels in English",
+    "items": [
+      "Live TV: a YouTube channel's card plays its English stream when it has several live, and not an onboard camera.",
+      "Live TV: YouTube cards show the name large, on the stream's picture darkened behind it."
+    ]
+  },
+  {
+    "version": "0.19.84",
+    "when": "2026-10-17",
+    "title": "Last watched first",
+    "items": [
+      "Live TV: the channel played last stands first on the row, then the one before it; the rest by how long they were watched this week.",
+      "Library: files qBittorrent last said were unfinished stay out of the library while it cannot be asked; with it off, a pack's half-fetched films were scanned in as if complete."
+    ]
+  },
+  {
+    "version": "0.19.83",
+    "when": "2026-10-17",
+    "title": "Up and Down inside the YouTube circle",
+    "items": [
+      "App: on a YouTube stream, Up and Down step through the YouTube channels and streams; on a playlist channel, through the playlist."
+    ]
+  },
+  {
+    "version": "0.19.82",
+    "when": "2026-10-17",
+    "title": "Stream info for YouTube",
+    "items": [
+      "App: the live player's info shows a YouTube stream's source, its show, when it went live and how many are watching; Up and Down step through the YouTube channels too.",
+      "Live TV: a watched YouTube channel stands on the row by itself; the YouTube circle stays under Show more."
+    ]
+  },
+  {
+    "version": "0.19.81",
+    "when": "2026-10-17",
+    "title": "Names on YouTube cards",
+    "items": [
+      "Live TV: a YouTube channel's or stream's card carries its name under the picture."
+    ]
+  },
+  {
+    "version": "0.19.80",
+    "when": "2026-10-17",
+    "title": "A YouTube circle",
+    "items": [
+      "Live TV: YouTube channels sit in a YouTube circle under Show more, each channel grey while it is not live and its live streams beside it; a channel watched this week stands on the row, and the circle with it."
+    ]
+  },
+  {
+    "version": "0.19.79",
+    "when": "2026-10-17",
+    "title": "YouTube kept working",
+    "items": [
+      "Live TV: yt-dlp updates itself once a day and is fetched again if it is missing; a YouTube stream that did not start reads its address afresh on the next try."
+    ]
+  },
+  {
+    "version": "0.19.78",
+    "when": "2026-10-17",
+    "title": "YouTube streams play",
+    "items": [
+      "Live TV: yt-dlp runs with a PATH of Windows' own folders; a Scoop folder link on the server's PATH stopped it before it read any stream."
+    ]
+  },
+  {
+    "version": "0.19.77",
+    "when": "2026-10-17",
+    "title": "YouTube streams start",
+    "items": [
+      "Live TV: a YouTube stream that cannot be read is said in the server's log instead of failing the request; yt-dlp is started with no input of its own."
+    ]
+  },
+  {
+    "version": "0.19.76",
+    "when": "2026-10-17",
+    "title": "YouTube live streams on the Live TV row",
+    "items": [
+      "Subtitles: an episode is searched by the catalogue's number as well as its file's, and a subtitle named after another episode of the season is never taken for it; a renumbered episode was offered the subtitle of the episode its file's number belongs to.",
+      "Live TV: YouTube channels can be set under IP-TV; every stream live on them stands first on the Live TV row and plays in Palladium's own player, read through yt-dlp."
+    ]
+  },
+  {
+    "version": "0.19.75",
+    "when": "2026-10-17",
+    "title": "Places by the episode's title",
+    "items": [
+      "Server: a place from the other server goes to the episode whose title it carries, by key or by number; the key alone put one episode's place on another.",
+      "App: on a television the remote starts on the time bar whenever the controls come up, so left and right move through the film from the first press, and centre on the bar pauses."
+    ]
+  },
+  {
+    "version": "0.19.74",
+    "when": "2026-10-17",
+    "title": "Back cancels a move on the time bar",
+    "items": [
+      "App: Back while moving the time bar leaves the film where it was playing and keeps the player open.",
+      "Cache: each season is numbered the way the main server numbers it; one numbered differently showed the same episode twice on the panel and put places on the wrong episode."
+    ]
+  },
+  {
+    "version": "0.19.73",
+    "when": "2026-10-17",
+    "title": "Streaming marks on the facts line",
+    "items": [
+      "Web: where a title streams stands at the end of the line with its year, length and format, not on a row of its own.",
+      "Web: the note about HEVC being re-encoded in software is gone from the film page.",
+      "Web and app: in Show more the studios come after the plot, above the cast."
+    ]
+  },
+  {
+    "version": "0.19.72",
+    "when": "2026-10-16",
+    "title": "Half episodes not played as whole ones",
+    "items": [
+      "Library: a version holding only part of an episode, such as the second half of a double episode, is never the one played by default, and the version list says Part 2 only."
+    ]
+  },
+  {
+    "version": "0.19.71",
+    "when": "2026-10-16",
+    "title": "Progress against the version played",
+    "items": [
+      "App: progress is measured against the length of the version playing; a shorter version of an episode never reached watched and looked behind on its poster."
+    ]
+  },
+  {
+    "version": "0.19.70",
+    "when": "2026-10-16",
+    "title": "Copies counted once",
+    "items": [
+      "Monitor: a copy to the cache that picks up where it stopped counts its bytes once; it read more than the size of the file."
+    ]
+  },
+  {
+    "version": "0.19.69",
+    "when": "2026-10-16",
+    "title": "One row per viewing",
+    "items": [
+      "App: on a television a notice over the shelves no longer shrinks the home posters and moves the row, as the update bar already did not.",
+      "Monitor and panel: one viewing read over two addresses is one row; it was a row per address, one of them reading 0 Mbit.",
+      "App: the server a film plays from is never taken as its own second source, also when it is reached through the outside address.",
+      "App: the receiver's line moves on from measuring the film first once the film is measured; it stopped asking after two minutes."
+    ]
+  },
+  {
+    "version": "0.19.68",
+    "when": "2026-10-16",
+    "title": "Season marks under the year on a television",
+    "items": [
+      "App: on a television too, a series' or season's favorite and collection marks stand under its year and episode count."
+    ]
+  },
+  {
+    "version": "0.19.67",
+    "when": "2026-10-16",
+    "title": "Season marks under the year",
+    "items": [
+      "App: on a phone or tablet a series' or season's favorite and collection marks stand under its year and episode count."
+    ]
+  },
+  {
+    "version": "0.19.66",
+    "when": "2026-10-16",
+    "title": "Marks next to Play",
+    "items": [
+      "Web and app: the favorite and collection marks stand next to Play or Resume, and first on a series' or season's row, with the other buttons after them."
+    ]
+  },
+  {
+    "version": "0.19.65",
+    "when": "2026-10-16",
+    "title": "Places kept on the right episode",
+    "items": [
+      "Server: a place passed between the two servers goes to the episode by its key; a season numbered differently on the cache put one episode's place on another, and clearing it did not hold.",
+      "App: the timeline stills load; the app asked for the second as t, which the server read as a sign-in key."
+    ]
+  },
+  {
+    "version": "0.19.64",
+    "when": "2026-10-16",
+    "title": "Studios in Show more",
+    "items": [
+      "Web and app: a film's studios are listed under Show more instead of on the page; on a phone held upright long studio names broke the line into columns."
+    ]
+  },
+  {
+    "version": "0.19.63",
+    "when": "2026-10-16",
+    "title": "Posters keep their place under an update bar",
+    "items": [
+      "App: on a television an update bar no longer shrinks the home posters and moves the row.",
+      "Web and app: the still over the timeline shows only once its picture has loaded; no empty box."
+    ]
+  },
+  {
+    "version": "0.19.62",
+    "when": "2026-10-16",
+    "title": "Subtitle list shows the auto pick",
+    "items": [
+      "Subtitles: the download list and the automatic fetch use one order, and the list marks the one the automatic fetch would take as auto pick."
+    ]
+  },
+  {
+    "version": "0.19.61",
+    "when": "2026-10-16",
+    "title": "Timeline stills made ahead",
+    "items": [
+      "Server: a Timeline stills worker makes the stills over the timeline ahead of time while nothing plays, for titles being watched, their next episode and what came in this week; on and off under Automatic runs.",
+      "Film and series pages show where the title streams, not only new releases.",
+      "App: Show more lists the studios behind the film."
+    ]
+  },
+  {
+    "version": "0.19.60",
+    "when": "2026-10-16",
+    "title": "Live TV says how it loads",
+    "items": [
+      "App: while a channel loads or stalls, the corner counts the seconds waited and the seconds buffered.",
+      "Live TV: each channel tells the server's log how long it took to start, and on leaving how long it played, its stalls and dropped frames.",
+      "Monitor: opens straight on Now playing; the front page was drawn under it and Settings redrawn every quarter second until it showed.",
+      "Web: Live TV has previous and next channel buttons, and Up and Down change channel.",
+      "Web: the download queue moves one place up or down as well as to the top.",
+      "Settings: a series under Torrents, Series can be removed: unfollowed, out of the library list, and its packs nothing came from dropped; files stay."
+    ]
+  },
+  {
+    "version": "0.19.59",
+    "when": "2026-10-16",
+    "title": "No release names on a phone",
+    "items": [
+      "App: on a phone the subtitle button says the language and kind, and the versions say their picture and rate, rather than release names; a television keeps them."
+    ]
+  },
+  {
+    "version": "0.19.58",
+    "when": "2026-10-16",
+    "title": "Double episodes counted as one",
+    "items": [
+      "Library: a season can be numbered with its double episodes counted as one, as the catalogue counts them; a release counting each as two put every file after the first double on the wrong episode, and its subtitles with it."
+    ]
+  },
+  {
+    "version": "0.19.57",
+    "when": "2026-10-16",
+    "title": "Only channels that play",
+    "items": [
+      "Live TV: the channels of the groups shown are tried behind the lists, one at a time; one that does not play is left off the row, its group and the zapping until it plays again - tried every six hours, a silent one every twelve.",
+      "Live TV: the same tries remember each channel's sharpest picture, so even its first start skips that step; and a channel is handed over at eight seconds of picture, or two after the first piece.",
+      "App: on a television a film's watchlist and shuffle marks stand on the Play row, and More like this at the foot of the screen with a margin under it.",
+      "App: on a phone the film page is one thing under another again; side by side broke across lines on a phone held upright."
+    ]
+  },
+  {
+    "version": "0.19.56",
+    "when": "2026-10-16",
+    "title": "Seven to a shelf",
+    "items": [
+      "App: on a television seven posters stand on a shelf, at the same size, with the same margin either side; a margin of 16 dp on top of the centring left room for six."
+    ]
+  },
+  {
+    "version": "0.19.55",
+    "when": "2026-10-16",
+    "title": "One channel list for every screen",
+    "items": [
+      "Live TV: the groups set in Settings are the ones every screen shows; a phone's own list from before kept the USA out after Settings had added it."
+    ]
+  },
+  {
+    "version": "0.19.54",
+    "when": "2026-10-16",
+    "title": "Centred shelves, a tidier film page",
+    "items": [
+      "App: on a television the shelves and More like this hold as many whole posters as fit, at their size, centred with the same margin either side.",
+      "App: a film's page has its studios beside the title, and its subtitles and version on the line with the watchlist and shuffle marks.",
+      "App: the player's information line no longer names the video and sound decoders.",
+      "Player: a still of the film follows the timeline while it is moved, in the app and on the web.",
+      "Player: the receiver's line no longer says by loudness or fixed steps.",
+      "App: Show more is round on the live row, like its cards.",
+      "Search: a year at the end of the words is the year: \"the orchard 2004\" finds that film only.",
+      "Search: the closest title first - the title itself, then one beginning with the words, a word of it, anywhere.",
+      "Search: asked again while the catalogue answers, the page is redrawn only when something changed, without blinking; the app keeps its hits up instead of a spinner."
+    ]
+  },
+  {
+    "version": "0.19.53",
+    "when": "2026-10-16",
+    "title": "Live TV starts sooner",
+    "items": [
+      "Live TV: a channel starts sooner - its probe remembered for six hours, its first pieces cut to a second, and the cushion counted in seconds of picture: twelve, or three seconds after the first piece, instead of five pieces or eight seconds."
+    ]
+  },
+  {
+    "version": "0.19.52",
+    "when": "2026-10-16",
+    "title": "Home shelves edge to edge",
+    "items": [
+      "App: home shelves run to the screen's edges on a television, the first poster in line with the shelf's name; the safe margin left 40 dp empty at the left and cut the row short at the right.",
+      "App: on a phone the shelves start 8 dp from the edge and their names 12 dp, instead of 16 and 21."
+    ]
+  },
+  {
+    "version": "0.19.51",
+    "when": "2026-10-16",
+    "title": "No ffmpeg left behind",
+    "items": [
+      "Server: on start, stops the ffmpeg an earlier server left running; each restart had started a loudness measurement of the same 2160p film again, seven reading one hard drive at once.",
+      "Loudness: a file with the same name and size as one already measured takes its reading instead of being measured again.",
+      "New releases: a film keeps its key when the list is read again; one the website left out came back from the catalogue under another, and its page and watchlist entry led nowhere."
+    ]
+  },
+  {
+    "version": "0.19.50",
+    "when": "2026-10-16",
+    "title": "A mirror's settings are locked",
+    "items": [
+      "Cache server: a change to a setting it mirrors is refused and names the main server it is set on; its settings page says it is a mirror. Its own - folders, jobs, address, a file's subtitle timing - stay changeable."
+    ]
+  },
+  {
+    "version": "0.19.49",
+    "when": "2026-10-16",
+    "title": "The cache server as a mirror",
+    "items": [
+      "Cache server: every viewer setting is mirrored from the main server and follows it when changed there; it was taken once, only where empty.",
+      "Cache server: also mirrors subtitle sync and look, the seasonal row, New days, streaming services, volume target, what guests may fetch and remote admin; a house setting unset on the main server is unset there."
+    ]
+  },
+  {
+    "version": "0.19.48",
+    "when": "2026-10-16",
+    "title": "Search fills in",
+    "items": [
+      "Search: what is here is answered at once; the catalogue's films and series are asked behind it and fill in a moment later, on the web and in the app.",
+      "App: the information line says what an encode is capped at, and calls the line speed what is arriving - it runs ahead while the buffer fills.",
+      "Cache server: takes each viewer's second subtitle language, subtitle sync, shelf and score choices; a Swedish series showed no subtitles there for someone who reads English first.",
+      "Web: changing picture size or Mbit while playing keeps the subtitle on; it started again with them off."
+    ]
+  },
+  {
+    "version": "0.19.47",
+    "when": "2026-10-16",
+    "title": "Search asks the catalogue every time",
+    "items": [
+      "Search: the catalogue's films by those words are added on every search, after what is here; held films matching a word hid every film not held.",
+      "Search: up to 20 of the catalogue's films and series instead of 6 - its whole first page, one request either way."
+    ]
+  },
+  {
+    "version": "0.19.46",
+    "when": "2026-10-16",
+    "title": "Downloading is the cancel button",
+    "items": [
+      "App: a film's Download button becomes Downloading, and pressing it twice cancels; the separate Cancel download button is gone.",
+      "Search: with fewer than three films found, the catalogue is asked by name as well; \"cold snap\" found a new Cold Snap and not The Cold Snap of 1990.",
+      "App: a film over the quality ceiling, refused as it is, starts again as an encode held to the ceiling; it stopped as if the network had failed."
+    ]
+  },
+  {
+    "version": "0.19.45",
+    "when": "2026-10-16",
+    "title": "One Recommended on both machines",
+    "items": [
+      "Cache server: takes the main server's rules for choosing a release - resolution, source, codec, sound, bitrate, order - so Recommended is the same release on both.",
+      "Cache server: also takes the quality ceilings, burn-in policy, even volume, the pause before the next episode, subtitle fetching, the streaming country and the accent."
+    ]
+  },
+  {
+    "version": "0.19.44",
+    "when": "2026-10-15",
+    "title": "Live TV pages without film filters",
+    "items": [
+      "Live TV: a channel just started is handed to the player with 20 s of pieces, or 8 s after its first; at the first piece it stalled a few seconds in.",
+      "App: the live row opened whole, and a group of channels, show no film sort, genre, decade or country; the groups are the cards."
+    ]
+  },
+  {
+    "version": "0.19.43",
+    "when": "2026-10-15",
+    "title": "Live TV: Show more by group",
+    "items": [
+      "Live TV: Show more opens on the groups the screen shows, each a circle opening to its channels; the first-on-the-row groups lead."
+    ]
+  },
+  {
+    "version": "0.19.42",
+    "when": "2026-10-15",
+    "title": "Settings: IP-TV",
+    "items": [
+      "Settings: an IP-TV tab with the playlist, connections, viewers, the groups first on the row and the groups each kind of screen shows.",
+      "Settings: a press on an IP-TV button saves and lights it in place; each press redrew the whole tab and took seconds."
+    ]
+  },
+  {
+    "version": "0.19.41",
+    "when": "2026-10-15",
+    "title": "Live TV on the phone, and a filter per screen",
+    "items": [
+      "App: on a phone a swipe changes channel and a tap opens the stream's information; sideways in it picks the group.",
+      "Live TV: the group filter set from the television's player is the television's own, and a phone's its own; the settings page sets the rest."
+    ]
+  },
+  {
+    "version": "0.19.40",
+    "when": "2026-10-15",
+    "title": "Live TV with a cushion",
+    "items": [
+      "Live TV: a channel starts half a minute back and plays 20 s behind the edge at normal speed; from the edge it had a few seconds in hand and stalled about half a minute in.",
+      "Live TV: a stall in the app is written to the server's log with the buffer at that moment.",
+      "Live TV: channel cards are round, the logo in the middle and the name under it.",
+      "Live TV: chosen groups stand first on the row as circles of their own - Sweden, Music, News - and open to their channels; the channels follow, most watched first."
+    ]
+  },
+  {
+    "version": "0.19.39",
+    "when": "2026-10-15",
+    "title": "Live TV: one row, zapping",
+    "items": [
+      "Live TV: one row, the playlist's; the fixed iptv-org row is gone.",
+      "Live TV: the row puts first the channels watched most in the last week.",
+      "App: Up and Down change channel in the live player; Center shows the stream's picture, sound, buffer and dropped frames, and the group filter, changed with Left and Right.",
+      "Live TV: a channel left is stopped at once, so changing channel never waits for a connection."
+    ]
+  },
+  {
+    "version": "0.19.38",
+    "when": "2026-10-15",
+    "title": "Live TV at its own frame rate",
+    "items": [
+      "Live TV: the television switches to the channel's frame rate - 50 Hz for SVT - while it plays; 50 frames on 59.94 Hz held every fifth frame twice."
+    ]
+  },
+  {
+    "version": "0.19.37",
+    "when": "2026-10-15",
+    "title": "Live TV shows its buffer",
+    "items": [
+      "App: a live channel has no timeline; the corner says how many seconds are buffered, or that it is loading."
+    ]
+  },
+  {
+    "version": "0.19.36",
+    "when": "2026-10-15",
+    "title": "Live TV on the phone away from home",
+    "items": [
+      "App: a live channel opens at the server's address that answers from where the phone is; it used the home network's address, so away from home nothing played."
+    ]
+  },
+  {
+    "version": "0.19.35",
+    "when": "2026-10-15",
+    "title": "My channels after a restart",
+    "items": [
+      "Live TV: a My channels channel plays straight after a server restart; it answered \"no such channel\" until a page had loaded the plugin."
+    ]
+  },
+  {
+    "version": "0.19.34",
+    "when": "2026-10-15",
+    "title": "SVT live without the loop",
+    "items": [
+      "Live TV: a DASH channel plays from its HLS address when the channel's server has one; ffmpeg dropped a live DASH stream after about 15 s.",
+      "Live TV: a restarted channel numbers its pieces on from the last one, so a player no longer replays the first seconds in a loop."
+    ]
+  },
+  {
+    "version": "0.19.33",
+    "when": "2026-10-15",
+    "title": "Live TV in a browser away from home",
+    "items": [
+      "Live TV: a browser away from home loads the channel player and the My channels row; both files were refused to a key from outside."
+    ]
+  },
+  {
+    "version": "0.19.32",
+    "when": "2026-10-15",
+    "title": "My channels by group",
+    "items": [
+      "Live TV: the app's channels play from outside the house; its address was not open to a key away from home, the web's was.",
+      "Live TV: My channels keeps only the groups chosen in Settings, on every screen.",
+      "Live TV: the channels played last come first on the My channels row.",
+      "Live TV: a channel that does not start is stopped at once and holds no connection; web and app say it did not start.",
+      "Live TV: YouTube pages in a playlist are left out; they are not streams."
+    ]
+  },
+  {
+    "version": "0.19.31",
+    "when": "2026-10-15",
+    "title": "Live TV in its best picture",
+    "items": [
+      "Live TV: a channel that sends several pictures plays the sharpest; ffmpeg took the first, 448x252 of a 1080p channel.",
+      "Live TV: the circled marks some playlists put after a channel's name are left off."
+    ]
+  },
+  {
+    "version": "0.19.30",
+    "when": "2026-10-15",
+    "title": "Your own channel playlist",
+    "items": [
+      "Live TV: an M3U playlist of your own, by address or file, in Settings; its channels stand in a My channels row, with a page by group and name.",
+      "Live TV: a limit on how many of its channels play at once; viewers of one channel share a connection, and a refused channel says so.",
+      "Live TV: the playlist address stays on the server and the channels are the owner's unless shared.",
+      "Live TV: the own playlist is a plugin - pd_iptv.py and static/iptv.js; deleting both removes it, and the app shows whatever rows the server's plugins announce."
+    ]
+  },
+  {
+    "version": "0.19.29",
+    "when": "2026-10-15",
+    "title": "A season with packs below the choices still gets one",
+    "items": [
+      "TV: a series added to find its packs by itself takes the best seeded pack of a season when none meets the choices; the season stood out but not here for good.",
+      "TV: an episode's download list also offers the season packs on the tracker that hold it; Download adds the pack and takes that episode. One with no release of its own had nothing to choose."
+    ]
+  },
+  {
+    "version": "0.19.28",
+    "when": "2026-10-15",
+    "title": "Readable studio logos; the TV country filter",
+    "items": [
+      "Films: a studio's logo is drawn from its letters and lines, white on nothing; one in a box became a white block, one with a filled drawing a white blob.",
+      "TV: a country chosen on the TV tab sifts the programmes from packs as well; they said no country and stood under every one."
+    ]
+  },
+  {
+    "version": "0.19.27",
+    "when": "2026-10-15",
+    "title": "Empty files leave the library",
+    "items": [
+      "Library: a file found empty - a cancelled download whose torrent is gone - is passed by at the next scan and leaves the library."
+    ]
+  },
+  {
+    "version": "0.19.26",
+    "when": "2026-10-15",
+    "title": "A search asks the tracker as the person searching",
+    "items": [
+      "Search: the tracker is asked about what a search found as the person searching, not as background work, so a film it carries turns to Download within seconds.",
+      "Search: a person's films go in the films row and their series in the TV row, once each; a held series of theirs stood in both.",
+      "Films: one the tracker has not been asked about yet says Checking instead of Request, stays shown for a viewer who hides Request, and the Films tab asks about them behind the shelf.",
+      "Library: a download cancelled before anything came leaves an empty file the size of the film; it is no longer taken for the film."
+    ]
+  },
+  {
+    "version": "0.19.25",
+    "when": "2026-10-15",
+    "title": "Search from Home: films, then TV",
+    "items": [
+      "Search: from Home, films come first and programmes after, each under its own heading in the app and in its own row on the web."
+    ]
+  },
+  {
+    "version": "0.19.24",
+    "when": "2026-10-15",
+    "title": "Search finds a collection's films",
+    "items": [
+      "Search: words that name a catalogue collection add its films that are not here or on a pack, the tracker asked about them - the first of a series of films often has another title."
+    ]
+  },
+  {
+    "version": "0.19.23",
+    "when": "2026-10-15",
+    "title": "Recently released episodes, the same in app and web",
+    "items": [
+      "Recently released: episodes of a series out on the same day are one card, the earliest not watched; other days stay separate.",
+      "App: the row is the web's episode row, Recently released episodes, from both servers; the films row is Recently released films in both."
+    ]
+  },
+  {
+    "version": "0.19.22",
+    "when": "2026-10-15",
+    "title": "A person's page from every source",
+    "items": [
+      "People: a name searched or pressed lists the rest of their films from the catalogue, the tracker asked about each, and the series they are a regular in with Add."
+    ]
+  },
+  {
+    "version": "0.19.21",
+    "when": "2026-10-15",
+    "title": "The Monitor and the Log on a phone",
+    "items": [
+      "Monitor: on a phone the streams are cards in one scrolling column whichever way it is held; sideways it got the television's fixed page.",
+      "Log: opened from the app it scrolls, the watch log first and the totals under it, each viewing on two lines; it could not be scrolled at all.",
+      "Monitor: the Watch log button is gone again; the log is the app's Log under Settings.",
+      "Downloads: the recommended version stands right after what is on disk, not at the foot when its seeders are unknown.",
+      "Downloads: a recommended version also says where it comes from - in a pack, a box set or the tracker.",
+      "Recently released: episodes out on the same day are in episode order, episode 1 the earliest."
+    ]
+  },
+  {
+    "version": "0.19.20",
+    "when": "2026-10-15",
+    "title": "Release names fit in the app's download lists",
+    "items": [
+      "App: the download lists use most of the screen, and an episode's releases show their whole name over two lines instead of one cut-off button.",
+      "App: the Version button says how many copies there are only when there is more than one."
+    ]
+  },
+  {
+    "version": "0.19.19",
+    "when": "2026-10-15",
+    "title": "Watch log from the Monitor",
+    "items": [
+      "Monitor: a Watch log button opens the Log tab's watch log, the last 7 days of both servers in one list.",
+      "Watch log: filters for how far back and for the server a viewing played on, beside the viewer.",
+      "App: the Log tab from the web under Settings, for the owner.",
+      "Library: episodes of a series made of a pack wear their season's poster, official or drawn, instead of none.",
+      "Search: every film found by name is asked of the tracker, not the first two, so one the tracker carries shows Download on the card as well as on its page.",
+      "Tracker: one budget for everything that asks it - ten searches and twelve torrent files a minute; background work waits its turn, a person is always served."
+    ]
+  },
+  {
+    "version": "0.19.18",
+    "when": "2026-10-15",
+    "title": "Other versions of an episode in the app",
+    "items": [
+      "App: Download other version on an episode opens its list of releases; the panel closed and nothing came up.",
+      "TV: the TV tab shows the popular programmes not held yet, with Add, beside your own; a setting keeps them under Popular only instead.",
+      "Library: a series pack's network logo that is dark is drawn light on its poster.",
+      "Search: series of that name from the catalogue are shown beside what matched, so every server answers the same."
+    ]
+  },
+  {
+    "version": "0.19.17",
+    "when": "2026-10-15",
+    "title": "Official posters for series packs; seeders only when known",
+    "items": [
+      "Library: a series pack on a known network wears that network's logo as its poster, and each season the official poster of its own show where there is one.",
+      "Downloads: a pack's seeders come from the tracker's list when the client has not asked yet; an unknown count is left out instead of shown as 0."
+    ]
+  },
+  {
+    "version": "0.19.16",
+    "when": "2026-10-15",
+    "title": "Programmes filed under a series are found as that series",
+    "items": [
+      "Search: a programme filed under a series pack finds that series, and is no longer offered as a new series to Add.",
+      "Library: a season wearing a programme's own poster gets a new picture address, so screens fetch it instead of the drawn one they kept."
+    ]
+  },
+  {
+    "version": "0.19.15",
+    "when": "2026-10-15",
+    "title": "Programmes a series pack carries are filed under it",
+    "items": [
+      "Library: a programme held on its own whose every episode is in a series pack is filed under that series as the pack's own episodes; what was watched goes with them.",
+      "Library: such a season wears the programme's own poster instead of a drawn one.",
+      "Search: popular programmes not held yet are found by name, with Add, even when other titles match too."
+    ]
+  },
+  {
+    "version": "0.19.14",
+    "when": "2026-10-15",
+    "title": "Search finds series that are not here yet",
+    "items": [
+      "Search: when nothing in the library matches, series of that name from the catalogue are shown with Add, as on the popular list; their episodes come from the tracker by season.",
+      "App settings: Popcornmeter and Tomatometer use the same Show/Hide button as the films rows."
+    ]
+  },
+  {
+    "version": "0.19.13",
+    "when": "2026-10-15",
+    "title": "Films inside box sets on the tracker",
+    "items": [
+      "Search: box sets on the tracker are read for the films inside them, ten a minute, and a film found inside one shows Download.",
+      "Search: a film with no release of its own has the box sets of its collection and its director looked for on the tracker.",
+      "Tracker: collections are searched for every half hour, so older box sets join the index.",
+      "Download: a film inside a box set adds the box set as a pack and fetches only that film."
+    ]
+  },
+  {
+    "version": "0.19.12",
+    "when": "2026-10-15",
+    "title": "Tracker downloads reach the library at once",
+    "items": [
+      "Library: a film or episode fetched from the tracker is added the moment it is whole, as a pack's is, instead of waiting for the folder watch or the daily scan.",
+      "Films: the On tracker label is gone again; the download list already says where each version comes from."
+    ]
+  },
+  {
+    "version": "0.19.11",
+    "when": "2026-10-15",
+    "title": "On tracker on the poster",
+    "items": [
+      "Films: a film Download fetches from the tracker says On tracker on its poster and its page, so it reads apart from one in a pack."
+    ]
+  },
+  {
+    "version": "0.19.10",
+    "when": "2026-10-15",
+    "title": "Search finds films that are not here yet",
+    "items": [
+      "Search: when nothing in the library matches, films of that name from the catalogue are shown, and the tracker is asked about the first two.",
+      "Search: asked again once the tracker has answered, so a film it carries shows Download instead of Request.",
+      "Subtitles: a subtitle fetched automatically counts as the chosen one; its remembered name lacked the language word the file is listed with."
+    ]
+  },
+  {
+    "version": "0.19.9",
+    "when": "2026-10-15",
+    "title": "The server picks the opening subtitle for web and app",
+    "items": [
+      "Subtitles: the server marks which subtitle a title opens with for each viewer; the web and the app both follow it.",
+      "Subtitles: the server fetches the next episode's subtitle two minutes into an episode, whichever client is playing."
+    ]
+  },
+  {
+    "version": "0.19.8",
+    "when": "2026-10-15",
+    "title": "Episode titles with apostrophes match their subtitles",
+    "items": [
+      "Subtitles: an episode title with an apostrophe matches a release named without one; such subtitles were listed as another episode."
+    ]
+  },
+  {
+    "version": "0.19.7",
+    "when": "2026-10-14",
+    "title": "Subtitles fetched ahead after a verified episode",
+    "items": [
+      "Subtitles: verifying an episode's subtitle fetches the same group for the next two episodes, so one opened directly starts in step.",
+      "Subtitles: a group verified in a series counts only for videos of the same source; a Blu-ray group is not fetched for a WEB-DL season.",
+      "Subtitles: each downloaded release gets its own file; releases whose names began alike overwrote one another.",
+      "Web: a downloaded subtitle that replaced the one in use is shown at once, without turning subtitles off and on."
+    ]
+  },
+  {
+    "version": "0.19.6",
+    "when": "2026-10-14",
+    "title": "Guests come back from the cache server",
+    "items": [
+      "Failover: a guest's app moved to the cache server returns to the main server once it answers; its check was refused to guests."
+    ]
+  },
+  {
+    "version": "0.19.5",
+    "when": "2026-10-14",
+    "title": "Subtitles follow the group verified on earlier episodes",
+    "items": [
+      "Subtitles: the download list keeps its ranked order inside each tier; sorting by downloads put the series' verified group 4th.",
+      "Subtitles: an episode whose only subtitle is of another group fetches the one from the group verified on earlier episodes.",
+      "Subtitles: placing a subtitle no longer fails with an error when the film's sound gives a confidence but no correction."
+    ]
+  },
+  {
+    "version": "0.19.4",
+    "when": "2026-10-14",
+    "title": "A new film found under the name its releases carry",
+    "items": [
+      "New releases: a film listed under one name and released under another - Battle Cabin, released as Northspur - is searched and matched by the catalogue's names as well.",
+      "Tracker: a search with a year that finds nothing is asked once more without it; releases dated a year off the catalogue were missed."
+    ]
+  },
+  {
+    "version": "0.19.3",
+    "when": "2026-10-13",
+    "title": "Live TV on the web: half volume, remembered",
+    "items": [
+      "Web: a live channel starts at half volume, then at whatever volume was last set in that browser; one the browser will not start with sound starts muted rather than paused."
+    ]
+  },
+  {
+    "version": "0.19.2",
+    "when": "2026-10-13",
+    "title": "Live TV plays on the web",
+    "items": [
+      "Web: a live channel plays; the page asked for it at /local/live/, which the server did not answer."
+    ]
+  },
+  {
+    "version": "0.19.1",
+    "when": "2026-10-13",
+    "title": "Live TV: channels worth watching, each one played before it is shown",
+    "items": [
+      "Live TV: Expressen TV, Di TV, Kunskapskanalen, ATG Live, Euronews, Al Jazeera English, France 24, Red Bull TV, PGA Tour and FIFA+, with spares that stand in for one that stops; the religious and single-show channels are gone.",
+      "Live TV: each channel is played for five seconds before it goes on the row, every hour; an address that answers but plays nothing is left off."
+    ]
+  },
+  {
+    "version": "0.19.0",
+    "when": "2026-10-13",
+    "title": "0.19: Sports and Live TV",
+    "items": [
+      "Sports and Live TV, new since 0.18.505: a Sports row of Formula 1 races and NFL games from the tracker, one card a sport, and a Live TV row of free Swedish channels played through this server.",
+      "TV: grids and shelves stop short of the screen's edges, so the ring around a poster in a corner is not trimmed off by the television.",
+      "Posters drawn by the server - sports, live channels, a series from a pack - were sent 64 pixels wide when no width was asked for; now 400."
+    ]
+  },
+  {
+    "version": "0.18.512",
+    "when": "2026-10-13",
+    "title": "A Live TV row: free Swedish channels from iptv-org",
+    "items": [
+      "Live TV: a row of ten free Swedish channels from iptv-org's list - on around the clock, answering, the sharpest picture first - with a card drawn from each channel's logo.",
+      "Live TV: a channel plays through this server, copied into HLS pieces with its sound made AAC, and stops a minute after nobody is watching; full screen in the app and on the web."
+    ]
+  },
+  {
+    "version": "0.18.511",
+    "when": "2026-10-13",
+    "title": "Practice sessions are not races",
+    "items": [
+      "Sports: a release named after the Grand Prix and then its session - Practice Two, Weekend Warm-Up - is not taken for the race."
+    ]
+  },
+  {
+    "version": "0.18.510",
+    "when": "2026-10-13",
+    "title": "The Sports row: one card a sport",
+    "items": [
+      "Sports: one card a sport on the row; pressed, its races or games, the newest event first - a race by its round, a game by its day, not by when it was posted.",
+      "App: a page opened from the TV tab, Popular among them, has its own sort and filters; it showed the TV tab's, so a country marked there narrowed the library and not the page."
+    ]
+  },
+  {
+    "version": "0.18.509",
+    "when": "2026-10-13",
+    "title": "A series made of a pack: seasons by name, and posters",
+    "items": [
+      "Series from a pack: each season is called by its folder's name instead of Season N, on the pack's page and once episodes are here.",
+      "Series from a pack: a poster for the series and one for each season, drawn by the server, where no catalogue has one."
+    ]
+  },
+  {
+    "version": "0.18.508",
+    "when": "2026-10-13",
+    "title": "A country filter on the TV tab",
+    "items": [
+      "TV: a country menu beside genre and decade, in the app and on the web; where each series was made is read from TMDB and kept with the library, the ones already here filled in a few at a time."
+    ]
+  },
+  {
+    "version": "0.18.507",
+    "when": "2026-10-13",
+    "title": "Posters on the Sports row",
+    "items": [
+      "Sports: each race and game has a poster drawn by the server - Formula 1 with its venue and round, an NFL game in its two teams' colours, the rest in their sport's colour."
+    ]
+  },
+  {
+    "version": "0.18.506",
+    "when": "2026-10-13",
+    "title": "A Sports row: Formula 1 races and NFL games from the tracker",
+    "items": [
+      "Sports: a row of the races and games the tracker has, newest first - Formula 1 races and every NFL game, golf, cycling and Dakar when they are posted; pressed, its versions, 1080p put forward and 4K to choose.",
+      "Library: a downloaded race or game is filed under its sport - Formula 1 by year and round, NFL by year and day - rather than as a film."
+    ]
+  },
+  {
+    "version": "0.18.505",
+    "when": "2026-10-13",
+    "title": "Popular in the TV page's order menu",
+    "items": [
+      "TV: Popular at the end of the order menu opens the popular shows page, with its own orders and filters, in the app and on the web."
+    ]
+  },
+  {
+    "version": "0.18.504",
+    "when": "2026-10-13",
+    "title": "Swedish series on the popular list, found by their Swedish names",
+    "items": [
+      "Popular shows: the Swedish series airing in the last three months, one in every three places among the world's, so they are not lost at the end.",
+      "Series: a Swedish one is named by its Swedish name, which is what its releases carry; the English name matched none.",
+      "Tracker: names compared and asked in plain letters, so Över Bergen finds Over Bergen."
+    ]
+  },
+  {
+    "version": "0.18.503",
+    "when": "2026-10-13",
+    "title": "A season says what the tracker has of it",
+    "items": [
+      "Series page: a season nothing here holds says how many of its episodes are on the tracker and wears the Download ribbon; it said out, not here yet over an episode list offering one."
+    ]
+  },
+  {
+    "version": "0.18.502",
+    "when": "2026-10-13",
+    "title": "An episode from the tracker is not a film",
+    "items": [
+      "Downloads: an episode or season fetched from the tracker is named as one, under its series where the library has it; it was matched to a film of the same name and stood on the Films shelf.",
+      "Web: a download's corner says how far it has got, with the version on a line of its own under it."
+    ]
+  },
+  {
+    "version": "0.18.501",
+    "when": "2026-10-13",
+    "title": "Popular shows sorted and filtered by country, its controls where the shelves have them",
+    "items": [
+      "Popular shows: sort by popular, released, year, name or rating, in the app and on the web.",
+      "Web: the popular page's sort, genre and decade sit beside its title as on the Films and TV pages.",
+      "Popular shows: a country filter - the list is the whole world's, and each show carries where it was made."
+    ]
+  },
+  {
+    "version": "0.18.500",
+    "when": "2026-10-13",
+    "title": "Pack episodes open the release list, and Popular shows has filters",
+    "items": [
+      "Season page: an episode a pack offers opens the release list every missing episode opens, the pack's copy one of its rows; its page only for somebody who may not fetch.",
+      "Popular shows: genre and decade filters on the whole list, in the app and on the web."
+    ]
+  },
+  {
+    "version": "0.18.499",
+    "when": "2026-10-12",
+    "title": "The web opens subtitles the way the app does",
+    "items": [
+      "Web: the subtitle a title opens with follows the app's rule; one chosen last time no longer wins over the reader's first language, and a file beside the video comes before the film's own.",
+      "Web: the next episode starts with subtitles only when they were on, the series has settled on some, or a file sits beside it; before, every next episode had them.",
+      "App and web: a subtitle tagged swe, ger or fre matches the reader's sv, de or fr; only English matched before."
+    ]
+  },
+  {
+    "version": "0.18.498",
+    "when": "2026-10-12",
+    "title": "A pack can be added as one series",
+    "items": [
+      "Packs: a pack can be added as one series - each folder a season in the pack's own order, its files the episodes in name order - for a site rip whose shows are on no catalogue.",
+      "Library: a file from such a pack is filed under the series with the pack's season, number and name, and the series is not looked up on TMDB."
+    ]
+  },
+  {
+    "version": "0.18.497",
+    "when": "2026-10-12",
+    "title": "Loudness measured for what is about to be watched first",
+    "items": [
+      "Loudness: titles left part-way, the next three episodes of each series being watched and each shuffle's next draws are measured before the backlog."
+    ]
+  },
+  {
+    "version": "0.18.496",
+    "when": "2026-10-12",
+    "title": "Monitor on a phone, a Workers tab, and loudness for what is playing",
+    "items": [
+      "Monitor: on a phone the streams come first as large cards, with the totals under them; the drawing keeps to its own tab.",
+      "Monitor: the workers have a tab of their own and are no longer in the overview.",
+      "Loudness: the file being watched is measured next when another measurement holds the slot; it was turned away until the backlog was done."
+    ]
+  },
+  {
+    "version": "0.18.495",
+    "when": "2026-10-12",
+    "title": "A double episode file counts as both, and subtitles keep to one source",
+    "items": [
+      "Season page: the second half of a double episode file (E12E13) is no longer listed as out, not here yet.",
+      "Subtitles: a fetched subtitle keeps to the source the previous episode's subtitle was cut from (Blu-ray, WEB, HDTV, DVD), ranked after the verified release group."
+    ]
+  },
+  {
+    "version": "0.18.494",
+    "when": "2026-10-12",
+    "title": "Next does not step over an episode a pack has",
+    "items": [
+      "Next episode: the first episode a pack has before the next one held is offered, not only the very next number; a double episode file asked for its own second half and skipped to the next season."
+    ]
+  },
+  {
+    "version": "0.18.493",
+    "when": "2026-10-12",
+    "title": "The film's own language first, and the soundtrack you chose remembered",
+    "items": [
+      "Soundtrack: a film or series plays in the language it was made in, from TMDB; English only when that is not known.",
+      "Soundtrack: the one chosen in the player is remembered per viewer for the film or the whole series, on every screen.",
+      "App and web: that soundtrack plays when the file is played directly too; before, the player took the file's own pick."
+    ]
+  },
+  {
+    "version": "0.18.492",
+    "when": "2026-10-12",
+    "title": "A new release stays on its row when its download finishes",
+    "items": [
+      "Recently released: a film fetched from the tracker shows 100% until the library has read it; it fell back to Download for the two minutes before the scan.",
+      "Recently released: a film that just arrived keeps its release date; it was sorted by year alone and dropped off the row."
+    ]
+  },
+  {
+    "version": "0.18.491",
+    "when": "2026-10-12",
+    "title": "Five new skins beside House, worn in full by the app",
+    "items": [
+      "Skins: Crimson, Harbour, Graphite, Violet and Archive replace Paper and Phosphor; House stays the standard.",
+      "App: a skin's glow, corner roundness, title face and the text colour on its accent are worn; before, the app took the colours alone.",
+      "Web: text on the accent and the top bar follow the skin; Archive sets titles in a serif."
+    ]
+  },
+  {
+    "version": "0.18.490",
+    "when": "2026-10-11",
+    "title": "Swedish subtitles made from any language, verified subtitles recognised by name",
+    "items": [
+      "Made subtitles: Swedish from any of about 95 spoken languages, translated by NLLB straight from the language spoken; it was made from Swedish and English speech only.",
+      "Subtitles: a verified subtitle is recognised with or without the language word the subtitle site puts in front of its name; 44 verified episode subtitles here read as not verified."
+    ]
+  },
+  {
+    "version": "0.18.489",
+    "when": "2026-10-11",
+    "title": "A verified subtitle opens first",
+    "items": [
+      "Subtitles: files beside a film open in this order - verified, chosen last time, named for the release, most downloaded; a file only named for the release stood above a verified one and was the one that opened."
+    ]
+  },
+  {
+    "version": "0.18.488",
+    "when": "2026-10-10",
+    "title": "Monitor opens on the machine that answers",
+    "items": [
+      "App: Monitor tries the main server, its last known number, then the machine keeping copies, skipping any seen down; with the main server away it showed the web view's error picture."
+    ]
+  },
+  {
+    "version": "0.18.487",
+    "when": "2026-10-10",
+    "title": "Download speed on posters, no second machine name on the information line",
+    "items": [
+      "App: a poster of a title being downloaded shows its speed beside the percentage.",
+      "App: the information line names the machine a film comes from once, first; \"on the other machine\" after the sources was the same fact again."
+    ]
+  },
+  {
+    "version": "0.18.486",
+    "when": "2026-10-10",
+    "title": "Downloads one at a time",
+    "items": [
+      "Downloads: an At once setting, one unless changed; qBittorrent's queue holds the rest, from a pack, the tracker or added by hand. Tracker releases started at once beside the pack queue.",
+      "Seeding is not limited by it; the setting is put back to qBittorrent every ten minutes if it was changed there."
+    ]
+  },
+  {
+    "version": "0.18.485",
+    "when": "2026-10-10",
+    "title": "Hiding requests no longer hides downloadable films",
+    "items": [
+      "Films: a new film the tracker carries is shown or hidden with Download, the band it wears; it went with Request, so hiding requests hid it.",
+      "App: the Download and Request notes under Settings say which films each covers."
+    ]
+  },
+  {
+    "version": "0.18.484",
+    "when": "2026-10-10",
+    "title": "Check and repair, and a server picker that says what it knows",
+    "items": [
+      "Settings, Library: Check and repair checks the index and the state files; a damaged index is copied and its indexes rebuilt, an unreadable file is put back from its newest readable copy, nothing is deleted.",
+      "Web: the server picker's light has no colour until the server has been asked, and shows the machine that is answering; it stayed green on the main server's name while the copy carried the page."
+    ]
+  },
+  {
+    "version": "0.18.483",
+    "when": "2026-10-10",
+    "title": "State files survive a power cut",
+    "items": [
+      "Settings, invitations, the library's configuration, the download list, requests and traffic are forced to the disk before they are swapped in; a power cut in that second left the settings and their spare all zeros.",
+      "The settings' spare is refreshed only from a file that reads, and one dated copy a day is kept for seven days, for settings, invitations and configuration.",
+      "At start an unreadable settings, invitations or configuration file is put back from its newest readable copy, the damaged one kept beside it; the server came up on its default port with every client on the other."
+    ]
+  },
+  {
     "version": "0.18.482",
     "when": "2026-10-10",
     "title": "No receiver line for a viewer outside the house",

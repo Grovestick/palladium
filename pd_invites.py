@@ -20,6 +20,7 @@ import os
 import secrets
 import threading
 import time
+import pd_safe
 
 # What anybody at all may reach, invitation or not. The app is a client with no
 # credentials in it: until somebody is given a token it shows an empty screen, so
@@ -61,6 +62,7 @@ GUEST_PREFIXES = (
     "/shows/",
     "/copy/pick",       # which of two machines to read a film from, the screen's own choice
     "/gpu/hls",         # the same, in segments, for Safari
+    "/live/",           # a live channel as the app asks for it; the web asks /local/live/
     "/gpu/subs",
     "/app",             # the install page and the version check
     "/palladium.apk",
@@ -110,6 +112,8 @@ GUEST_PREFIXES = (
     "/notice",          # and a line from the server addressed to them
     "/app.js", "/chat.js", "/controls.js", "/settings.js", "/style.css", "/index.html",
     "/dash.all.min.js", "/favicon.ico", "/palladium.ico",
+    "/hls.min.js",      # the live channel player, loaded when one is opened
+    "/iptv.js",         # the IPTV plugin's part of the page
 )
 
 
@@ -164,9 +168,11 @@ class Invites:
 
     def _write(self, rows):
         """Whole or not at all: written beside the file and moved over it."""
+        pd_safe.daily(self.path)
         tmp = "%s.%d.tmp" % (self.path, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(rows, f, indent=2)
+            pd_safe.settle(f)
         # Windows refuses the swap while anybody holds the file open; the lock is
         # gone in a moment, so it is tried again rather than thrown away
         for again in range(6):

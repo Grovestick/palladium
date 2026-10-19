@@ -174,12 +174,20 @@ object Servers {
     }
 
     /** Whether two rows are two ways of writing down the same machine. */
-    fun sameMachine(a: Server, b: Server): Boolean {
-        if (a.id.isNotEmpty() && a.id == b.id) return true
-        val ways = { s: Server ->
-            listOf(s.base, s.outside).map { it.trimEnd('/') }.filter { it.isNotEmpty() }
+    fun sameMachine(a: Server, b: Server): Boolean = Route.sameMachine(a, b)
+
+    //: which machine answers at an address, by its id, asked once in ten minutes
+    private val idsAt = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+
+    /** The id of the machine answering at `base`, or "" when it does not answer. */
+    suspend fun idAt(base: String, token: String): String {
+        val at = base.trimEnd('/')
+        idsAt[at]?.let { (when_, id) ->
+            if (System.currentTimeMillis() - when_ < 600_000L) return id
         }
-        return ways(a).any { it in ways(b) }
+        val id = hello(at, token)?.optString("serverId").orEmpty()
+        if (id.isNotEmpty()) idsAt[at] = Pair(System.currentTimeMillis(), id)
+        return id
     }
 
     fun current(ctx: Context): Server? {

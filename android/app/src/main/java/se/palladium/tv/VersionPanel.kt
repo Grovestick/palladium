@@ -37,6 +37,8 @@ fun VersionPanel(
     onClose: () -> Unit,
     /** the versions the tracker carries, to download another; null where there are none */
     onOther: (() -> Unit)? = null,
+    /** a series: the packs its episodes come from, (name, facts) - pressed, dropped */
+    inUse: List<Pair<String, String>>? = null,
 ) {
     AlertDialog(
         onDismissRequest = onClose,
@@ -50,18 +52,44 @@ fun VersionPanel(
         },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("Here - the one to play", color = Skin.Dim, fontSize = 12.sp,
+                Text(if (inUse == null) "Here - the one to play"
+                     else if (inUse.isEmpty()) "No pack - its episodes come from none yet"
+                     else "In use - press one to stop taking episodes from it",
+                     color = Skin.Dim, fontSize = 12.sp,
                      modifier = Modifier.padding(bottom = 2.dp))
-                media.copies.forEachIndexed { at, copy ->
+                inUse?.forEachIndexed { at, (name, facts) ->
+                    var onIt by remember { mutableStateOf(false) }
+                    Column(
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(Skin.round(8.dp)))
+                            .background(Skin.Panel2)
+                            .border(if (onIt) 2.dp else 1.dp,
+                                    if (onIt) Color.White else Skin.Line,
+                                    RoundedCornerShape(Skin.round(8.dp)))
+                            .onFocusChanged { onIt = it.isFocused }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null) { onPick(at) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(name, color = Skin.Fg, fontSize = 13.5.sp,
+                             fontFamily = FontFamily.Monospace,
+                             maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        if (facts.isNotEmpty()) {
+                            Text(facts, color = Skin.Dim, fontSize = 12.sp,
+                                 modifier = Modifier.padding(top = 3.dp))
+                        }
+                    }
+                }
+                if (inUse == null) media.copies.forEachIndexed { at, copy ->
                     val here = copy.mi == media.mi
                     var onIt by remember { mutableStateOf(false) }
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Skin.round(8.dp)))
                             .background(if (here) Skin.Panel2 else Color.Transparent)
                             .border(if (onIt) 2.dp else 1.dp,
                                     if (onIt) Color.White else Skin.Line,
-                                    RoundedCornerShape(8.dp))
+                                    RoundedCornerShape(Skin.round(8.dp)))
                             .onFocusChanged { onIt = it.isFocused }
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
@@ -98,7 +126,8 @@ fun VersionPanel(
                 onOther?.let { ask ->
                     Text("Another version", color = Skin.Dim, fontSize = 12.sp,
                          modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
-                    Pill("⤓ Download other version…", small = true) { ask() }
+                    Pill(if (inUse == null) "⤓ Download other version…"
+                         else "⤓ Take it from another pack…", small = true) { ask() }
                 }
             }
         },

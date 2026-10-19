@@ -716,7 +716,11 @@ async function reachCheck() {
   const there = doors.length ? !!copyAt : null;
   const was = REACH.home;
   REACH.home = home; REACH.copy = there; REACH.copyAt = copyAt; REACH.at = Date.now();
+  const wasCopy = REACH.copyWas;
+  REACH.copyWas = there;
   if (home !== was) dbg("reach", { home: home, copy: there });
+  // the picker's light follows every look that changed something
+  if ((home !== was || there !== wasCopy) && typeof drawServerPick === "function") drawServerPick();
   // the copy's address is learned from this server whenever it answers and the page
   // does not have it yet - a server just restarted has not heard from its copy
   if (home && !copy) learnStandby();
@@ -1658,6 +1662,8 @@ function card(it, onDeck, coll) {
   // Nothing in the house can be played from this card - it can only be asked for -
   // and a band across the corner says so at a glance on a shelf of things that can.
   if (it.askable) el.classList.add("askable");
+  // a live channel, or a group of them: a round card
+  if (it.live || it.liveGroup) el.classList.add("live");
   el.dataset.key = String(it.ratingKey || "");
   const srv = srvOf(it);
   const isEp = it.type === "episode";
@@ -1724,11 +1730,16 @@ function card(it, onDeck, coll) {
     // badge: the band holds one word, the numbers are the point while it comes in.
     // coming in already: the badge with the numbers, and no band asking to fetch it
     (it.askable && offerWord(it) ? ""
+      // on SVT Play: it streams from there, which beats asking or downloading
+      : (it.askable || it.addable) && it.svt ? '<div class="ribbon stream"><span>Stream</span></div>'
       : it.askable
       // something on the tracker for it: the band says what pressing it will do,
       // and asking is not what it does any more
       ? (it.onTracker
          ? '<div class="ribbon"><span>Download</span></div>'
+         // not asked of the tracker yet: neither word is known
+         : it.checking && !it.asked
+         ? '<div class="ribbon checking"><span>Checking…</span></div>'
          : '<div class="ribbon' + (it.asked ? " asked" : "") + '"><span>' +
            (it.asked ? "Asked" : "Request") + "</span></div>")
       : it.upcoming && it.fetchable ? '<div class="ribbon"><span>Download</span></div>'
@@ -1741,11 +1752,17 @@ function card(it, onDeck, coll) {
       // an episode here that aired this past week, or a season holding one
       : it.fresh ? '<div class="ribbon new"><span>New</span></div>'
       // a popular programme not held yet: pressing it puts it in the library
+      // a series nobody has: Add where it can be downloaded, Checking while the tracker
+      // is asked, Request where nothing carries it
+      : it.addable && it.checking ? '<div class="ribbon checking"><span>Checking…</span></div>'
+      : it.addable && it.onTracker === false ? '<div class="ribbon"><span>Request</span></div>'
       : it.addable ? '<div class="ribbon"><span>Add</span></div>'
       : it.offered && !offerWord(it)
         ? '<div class="ribbon"><span>Download</span></div>' : "") +
     ((it.offered || it.askable) && offerWord(it) ? '<div class="offerbadge">' + DOWNLOAD_MARK +
-      "<span>" + esc(offerWord(it)) + "</span></div>" : "") +
+      "<span>" + esc(offerWord(it)) +
+      (offerVersion(it) ? '<small class="ver">' + esc(offerVersion(it)) + "</small>" : "") +
+      "</span></div>" : "") +
     // not under a band: both want the same corner, and a shuffled row is the shelf
     // rather than the episode it happens to be showing
     (it.shuffle ? ""
@@ -2020,7 +2037,7 @@ async function moreLikeThis(m) {
     listFilter.decade = "";
     const box = document.getElementById("search");
     if (box) box.value = "";
-    go(kind === "show" ? "tv" : "movies");
+    go(kind === "show" ? "shows" : "movies");
   };
   const end = document.createElement("span");
   end.className = "endbits";
@@ -2069,7 +2086,8 @@ function rowSection(cat, list, total) {
   box.className = "cat";
   const head = document.createElement("h2");
   head.innerHTML = '<span class="ct">' + esc(cat.title) + "</span>" +
-    '<span class="seeall">' + (cat.id === "popularshows" ? "See all popular"
+    '<span class="seeall">' + (cat.id === "popularshows" || cat.id === "popularfilms"
+      ? "See all popular"
       : "See all " + (total || list.length)) + " &rsaquo;</span>";
   // Added and released are a shelf off the front of a tab, not lists of their own:
   // opening one goes to that tab in that order, where the ordinary sort, genre and
@@ -2079,9 +2097,14 @@ function rowSection(cat, list, total) {
                     newtv: ["show", "added"], releasedtv: ["show", "released"] }[cat.id];
     // the popular row opens onto the whole list, in the order it is watched in
     if (cat.id === "popularshows") return viewPopularShows();
+    if (cat.id === "popularfilms") return viewPopularShows(false, "movie");
+    // a row a plugin added opens the plugin's own page
+    if (cat.open) return cat.open();
     if (!toTab) return openCategory(cat);
-    sortState.key = toTab[1];
-    sortState.dir = "desc";
+    const tabState = SORT_BY_TAB[toTab[0] === "movie" ? "movies" : "shows"];
+    tabState.key = toTab[1];
+    tabState.dir = "desc";
+    serviceWanted[toTab[0]] = "";
     genreWanted[toTab[0]] = "";
     decadeWanted[toTab[0]] = "";
     go(toTab[0] === "movie" ? "movies" : "shows");
@@ -2108,26 +2131,190 @@ function rowSection(cat, list, total) {
   return box;
 }
 
-/* Every programme being watched now, most watched first. The ones this house can
-   put on open as usual; the rest carry an Add band, and pressing one puts it in the
-   library and opens it there. */
-async function viewPopularShows() {
-  pushView(() => viewPopularShows());
+/* Films or TV on its Popular order - the tab itself, with no narrowing: what a Popular
+   row's See all opens. Every way into a tab lands on the tab; only the order and the
+   marks differ with the door. */
+function viewPopularShows(asTab, kind) {
+  const type = kind === "movie" ? "movie" : "show";
+  const view = type === "movie" ? "movies" : "shows";
+  SORT_BY_TAB[view].key = "popular";
+  SORT_BY_TAB[view].dir = "desc";
+  if (asTab) return viewSection(type);
+  genreWanted[type] = "";
+  decadeWanted[type] = "";
+  serviceWanted[type] = "";
+  go(view);
+  // a step in the history like any other row: Back returns to the front page
+  tabBelow = "home";
+  pushView(() => viewSection(type));
+  $("#back").classList.add("on");
+}
+
+/* "KR" as "South Korea", in English; the code itself where the browser cannot say. */
+function countryName(code) {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(String(code).toUpperCase()) || code;
+  } catch (e) {
+    return code;
+  }
+}
+/* The popular shows carrying every marked genre, from any marked decade and made in
+   any marked country. */
+function popularFilter(list, genre, decade, country) {
+  const want = String(genre || "").split(",").map((g) => g.trim().toLowerCase()).filter(Boolean);
+  const eras = String(decade || "").split(",").map((d) => parseInt(d, 10)).filter((d) => d > 0);
+  const lands = String(country || "").split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+  return list.filter((x) => {
+    const has = (x.genres || []).map((g) => String(g).toLowerCase());
+    if (want.some((g) => has.indexOf(g) < 0)) return false;
+    if (eras.length && !eras.some((d) => x.year >= d && x.year <= d + 9)) return false;
+    if (lands.length && !(x.countries || []).some((c) => lands.indexOf(String(c).toUpperCase()) >= 0)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/* A still of the film playing at `sec`, for the box over the bar: the server's frame
+   of the part being played, "" when there is none. */
+window.framePreview = (sec, w) => {
+  if (!S || !S.meta) return "";
+  const media = (S.meta.Media || [])[S.mi || 0];
+  const part = media && media.Part && media.Part[0];
+  const id = part && String(part.key || "").match(/\/parts\/(\d+)/);
+  return id ? url("/art/frame/" + id[1], { s: sec, w: w }, srvOf(S.meta)) : "";
+};
+
+/* The volume a live channel starts at: the last one set in this browser, else half. */
+function liveVolume() {
+  let said = NaN;
+  try { said = parseFloat(localStorage.getItem("liveVolume")); } catch (e) { said = NaN; }
+  return Number.isFinite(said) && said >= 0 && said <= 1 ? said : 0.5;
+}
+
+/* A live channel, full screen, until Close or Escape. The server copies it into HLS
+   pieces of its own; this page plays them with hls.js, loaded the first time. */
+/* The channel `step` away from `key` in the playlist's order, round at the ends; from
+   one not in the list, the first or the last. */
+function liveStep(list, key, step) {
+  if (!list || !list.length) return null;
+  const n = list.length;
+  const at = list.findIndex((c) => c.ratingKey === key);
+  return list[at < 0 ? (step > 0 ? 0 : n - 1) : ((at + step) % n + n) % n];
+}
+
+async function playLive(it) {
+  if (!window.Hls) {
+    await new Promise((done) => {
+      const s = document.createElement("script");
+      s.src = "hls.min.js";
+      s.onload = done;
+      s.onerror = done;
+      document.head.appendChild(s);
+    });
+  }
+  const box = document.createElement("div");
+  box.className = "liveplayer";
+  box.innerHTML = '<video autoplay playsinline controls></video>' +
+    '<div class="livebar"><span class="livemark">LIVE</span><b></b>' +
+    '<button class="btn ghost liveprev" title="Previous channel (Down)">\u2193 Previous</button>' +
+    '<button class="btn ghost livenext" title="Next channel (Up)">\u2191 Next</button>' +
+    '<button class="btn ghost liveclose">Close</button></div>';
+  document.body.appendChild(box);
+  const label = box.querySelector("b");
+  const srv = srvOf(it);
+  const video = box.querySelector("video");
+  // half volume to begin with, and after that whatever was last set, in this browser
+  video.volume = liveVolume();
+  video.addEventListener("volumechange", () => {
+    try { localStorage.setItem("liveVolume", String(video.volume)); } catch (e) { /* kept for now */ }
+  });
+  let hls = null;
+  let now = null;
+  // the server's reader for a channel left goes now, not when it times out
+  const leave = (ch) => { fetch(url("/live/" + ch.ratingKey + "/stop", {}, srv)).catch(() => {}); };
+  const tune = (ch) => {
+    if (hls) { hls.destroy(); hls = null; }
+    if (now && now.ratingKey !== ch.ratingKey) leave(now);
+    now = ch;
+    label.textContent = ch.title;
+    // a browser that will not start it with sound starts it muted, rather than paused
+    video.addEventListener("canplay", () => {
+      video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
+    }, { once: true });
+    const src = url("/live/" + ch.ratingKey + "/index.m3u8", {}, srv);
+    if (window.Hls && window.Hls.isSupported()) {
+      const made = new window.Hls({ liveSyncDurationCount: 3 });
+      hls = made;
+      made.loadSource(src);
+      made.attachMedia(video);
+      // the own playlist's connections all in use: said, rather than a black screen
+      made.on(window.Hls.Events.ERROR, (ev, data) => {
+        const code = data && data.response && data.response.code;
+        if (code !== 429 && code !== 504 && code !== 404) return;
+        if (hls !== made) return;
+        label.textContent = ch.title + (code === 429
+          ? " \u2013 every connection of the playlist is in use; stop another channel first"
+          : " \u2013 did not start: off the air, or blocked here");
+        made.destroy();
+        hls = null;
+      });
+    } else {
+      video.src = src;                       // Safari plays HLS itself
+    }
+  };
+  tune(it);
+  // the playlist's channels in its order, as the app zaps through them
+  let list = [];
+  api("/library/live/own", { order: "list", start: 0, count: 5000 }, srv)
+    .then((c) => { list = items(c); }).catch(() => { list = []; });
+  const zap = (step) => {
+    const ch = liveStep(list, now.ratingKey, step);
+    if (ch) tune(ch);
+  };
+  const close = () => {
+    if (hls) hls.destroy();
+    video.pause();
+    leave(now);
+    box.remove();
+    document.removeEventListener("keydown", key, true);
+  };
+  // Up the next channel and Down the one before, as on the remote
+  const key = (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); close(); return; }
+    const step = e.key === "ArrowUp" || e.key === "PageUp" ? 1
+      : e.key === "ArrowDown" || e.key === "PageDown" ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    e.stopPropagation();
+    zap(step);
+  };
+  box.querySelector(".liveprev").onclick = () => zap(-1);
+  box.querySelector(".livenext").onclick = () => zap(1);
+  box.querySelector(".liveclose").onclick = close;
+  document.addEventListener("keydown", key, true);
+}
+
+/* One sport's races or games, the newest event first: what its card on the Sports row
+   opens. Each opens its versions, 1080p put forward. */
+async function viewSport(it) {
+  pushView(() => viewSport(it));
   $("#back").classList.add("on");
   CTX = null;
   main.innerHTML = '<div class="empty">Loading&hellip;</div>';
   let list = [];
   try {
-    list = items(await api("/library/popularShows", { all: 1 }, null));
+    list = items(await api("/library/sports", { sport: it.sport }, null));
   } catch (e) { list = []; }
-  list.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
   main.innerHTML = "";
   const h = document.createElement("h2");
-  const have = list.filter((x) => !x.addable).length;
-  h.innerHTML = '<span class="ct">Popular shows</span><span class="count">' +
-    list.length + " watched now · " + have + " in the library</span>";
+  h.innerHTML = '<span class="ct"></span><span class="count"></span>';
+  h.querySelector(".ct").textContent = it.title;
+  h.querySelector(".count").textContent = list.length + " on the tracker";
   main.appendChild(h);
-  main.appendChild(grid(list, 0));
+  main.appendChild(list.length ? grid(list, 0)
+    : Object.assign(document.createElement("div"),
+                    { className: "empty", textContent: "Nothing on the tracker this month" }));
 }
 
 /* A popular programme not held yet: its own page - poster, what it is, who is in it -
@@ -2156,18 +2343,26 @@ async function addPopularShow(it) {
     '<div class="ribbon"><span>Add</span></div></div>' +
     '<div class="meta"><h1>' + esc(m.title) + "</h1>" +
     '<div class="sub">' + facts + "</div>" +
+    // where it streams: Region and the services, as on a film's page
+    badgesRow([], m) +
     '<div class="actions"><select class="pick" id="addpick"><option value="">' +
     "Looking on the tracker\u2026</option></select>" +
     '<button class="btn" id="addgo" disabled>\u2913 Add as pack</button>' +
     '<span class="note" id="addsaid"></span></div>' +
-    '<p class="summary">' + esc(m.summary || "") + "</p>" +
+    '<p class="summary' + (it.svt ? " tellme" : "") + '">' + esc(m.summary || "") + "</p>" +
+    // on SVT Play, unprotected: its episodes play from there
+    (it.svt ? '<div class="svtseries"><div class="note">On SVT Play - an episode plays ' +
+      'from there</div><div class="svtseasons"></div><div class="svteps"></div></div>' : "") +
     '<div class="cast"></div>' +
     '<div class="note">Not in the library. Adding puts it there with the pack chosen ' +
     "above as a link: every episode gets a download button, and nothing is " +
     "downloaded until one is played.</div></div>";
   main.innerHTML = "";
   main.appendChild(wrap);
-  castRow(wrap.querySelector(".cast"), m);
+  if (it.svt) svtSeriesInto(wrap.querySelector(".svtseries"), it.svt, m.title);
+  // streamed: who is in it under Show more, the page left to the episodes
+  if (it.svt) { pressableText(wrap, m); wrap.querySelector(".cast").remove(); }
+  else castRow(wrap.querySelector(".cast"), m);
   const pick = wrap.querySelector("#addpick");
   const go = wrap.querySelector("#addgo");
   const said = wrap.querySelector("#addsaid");
@@ -2176,13 +2371,21 @@ async function addPopularShow(it) {
     : list.length === 1 ? "S" + String(list[0]).padStart(2, "0")
     : "S" + String(list[0]).padStart(2, "0") + "\u2013S" +
       String(list[list.length - 1]).padStart(2, "0");
-  let found = [];
+  let found = [], episodes = [], unanswered = false;
   try {
-    found = (await (await fetch("/shows/packs", {
+    const packsSaid = await (await fetch("/shows/packs", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ show: m.title, look: true }) })).json()).found || [];
-  } catch (e) { found = []; }
+      body: JSON.stringify({ show: m.title, look: true }) })).json();
+    found = packsSaid.found || [];
+    episodes = packsSaid.episodes || [];
+  } catch (e) { found = []; unanswered = true; }
   pick.innerHTML = "";
+  // no answer is not "nothing there": adding now would add it with no pack
+  if (unanswered) {
+    pick.add(new Option("The tracker did not answer", ""));
+    said.textContent = "Nothing has been added - open the page again to look again.";
+    return;
+  }
   found.forEach((p) => {
     pick.add(new Option([p.name, p.complete ? "complete" : seasons(p.seasons), gb(p.size),
       p.seeds ? p.seeds + " seeding" : "",
@@ -2193,18 +2396,46 @@ async function addPopularShow(it) {
   });
   // and the choice of not choosing: the packs are looked for a season at a time
   pick.add(new Option("Let it find packs by itself, a season at a time", ""));
+  // then the tracker's single episodes, in the same menu: one download choice, packs first
+  const singles = episodes.slice().sort((a, b) => a.season - b.season || a.episode - b.episode);
+  if (singles.length) {
+    const group = document.createElement("optgroup");
+    group.label = "Single episodes";
+    singles.forEach((e) => group.appendChild(new Option(["S" + String(e.season).padStart(2, "0") +
+      "E" + String(e.episode).padStart(2, "0"), e.name, gb(e.size),
+      e.seeds ? e.seeds + " seeding" : ""].filter(Boolean).join("  \u00b7  "), "ep:" + e.id)));
+    pick.appendChild(group);
+  }
   pick.value = (found.find((p) => p.pick) || found[0] || { id: "" }).id;
   tint(pick);
+  const single = () => singles.filter((e) => "ep:" + e.id === pick.value)[0];
   const label = () => {
     const one = found.filter((p) => p.id === pick.value)[0];
-    go.textContent = one ? "\u2913 Add as pack  " + gb(one.size) : "\u2913 Add to the library";
+    const ep = single();
+    go.textContent = ep ? "\u2913 Download episode  " + gb(ep.size)
+      : one ? "\u2913 Add as pack  " + gb(one.size) : "\u2913 Add to the library";
   };
   label();
   pick.onchange = label;
   go.disabled = false;
-  if (!found.length) said.textContent = "Nothing packed on the tracker for this one yet.";
+  if (!found.length) said.textContent = episodes.length
+    ? "No season packs - its single episodes are in the menu."
+    : "Nothing on the tracker for this one yet.";
   go.onclick = async () => {
     go.disabled = true;
+    // a single episode: fetched on its own, the page stays
+    const ep = single();
+    if (ep) {
+      let r = {};
+      try {
+        r = await (await fetch("/tracker/get", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: ep.id, title: m.title, year: m.year || 0 }) })).json();
+      } catch (err) { r = {}; }
+      toast(r.taken ? "Downloading " + (r.name || ep.name) : (r.error || "Could not fetch that one"));
+      go.disabled = false;
+      return;
+    }
     go.textContent = "Adding\u2026";
     let out = {};
     try {
@@ -2238,9 +2469,12 @@ const CATS = [
   // Everything that has just come out, in one shelf: what this house holds, what a
   // pack can fetch and what can only be asked for, newest first. They were two rows
   // saying the same thing in two halves.
-  { id: "released", title: "Recently released movies", by: "originallyAvailableAt",
+  { id: "released", title: "Recently released films", by: "originallyAvailableAt",
     path: (sec) => ["/library/sections/" + sec.movie + "/all",
                     { type: 1, sort: "originallyAvailableAt:desc" }] },
+  // the films being watched now: held, on a pack, or to ask for where this viewer shows those
+  { id: "popularfilms", title: "Popular films", by: "popularity",
+    path: (sec) => ["/library/popularFilms", { row: 1 }] },
   // for a series "released" is the date of its newest episode, not the year it began:
   // a show from 2008 airing this week is more recent than one from 2024 that ended
   { id: "releasedtv", title: "Recently released episodes", by: "originallyAvailableAt",
@@ -2248,6 +2482,9 @@ const CATS = [
   // what is being watched now, of what this house can put on: held, or on a pack
   { id: "popularshows", title: "Popular shows", by: "popularity",
     path: (sec) => ["/library/popularShows", {}] },
+  // races and games on the tracker, newest first: pressed, the versions to fetch
+  { id: "sports", title: "Sports", by: "addedAt",
+    path: (sec) => ["/library/sports", {}] },
 ];
 
 /* The shelves this viewer keeps on the front page, in their order. Held by the
@@ -2288,7 +2525,13 @@ function homeShelves(kept) {
       // the season's shelf goes under the first row rather than at the foot of the
       // page: it is there for a fortnight and is the news while it is
       if (c.id === "seasonal") out.splice(Math.min(1, out.length), 0, c);
-      else out.push(c);
+      else {
+        // a new shelf under the one it follows in the program's own order, where that
+        // is on the page: Popular films under Recently released films, not at the foot
+        const before = out.findIndex((o) => i > 0 && o.id === CATS[i - 1].id);
+        if (before >= 0) out.splice(before + 1, 0, c);
+        else out.push(c);
+      }
     }
   });
   return out;
@@ -2521,19 +2764,21 @@ async function openCategory(cat, push = true) {
    Picking the key that is already active flips the direction. */
 
 const SORT_KEYS = { added: "addedAt", name: "titleSort", year: "year",
-                    released: "originallyAvailableAt", quality: "quality" };
+                    released: "originallyAvailableAt", quality: "quality",
+                    popular: "popularity" };
 /* Films and series open on what arrived last: the shelf answers "what is new?" before
    it answers anything else. Each order has a natural direction of its own - newest
    first, A first, oldest first - and pressing the one already chosen reverses it. */
 const SORT_DEFAULT_DIR = { added: "desc", name: "asc", year: "asc",
-                           released: "desc", quality: "desc" };
+                           released: "desc", quality: "desc", popular: "desc" };
 // the shelves open on what came out last: "what is new in the world", which is a
 // better first question than "what did this server notice last"
 // Each shelf keeps its own order. Films open on what came out last; programmes
 // open by name, because a series is looked for by what it is called far more often
 // than by when its latest episode aired.
-const SORT_BY_TAB = { movies: { key: "released", dir: "desc" },
-                      shows: { key: "name", dir: "asc" } };
+// Both open on Popular: what is being watched now, then the rest of the library.
+const SORT_BY_TAB = { movies: { key: "popular", dir: "desc" },
+                      shows: { key: "popular", dir: "desc" } };
 let sortState = SORT_BY_TAB.movies;
 
 /* The one order every list of titles is put in - the shelves, the watchlist, a
@@ -2549,6 +2794,7 @@ function sortLike(list, state) {
       return dir * ((a.year || 0) - (b.year || 0));
     }
     if (on.key === "added") return dir * ((a.addedAt || 0) - (b.addedAt || 0));
+    if (on.key === "popular") return dir * ((a.popularity || 0) - (b.popularity || 0));
     if (on.key === "quality") {
       // nothing measured is unknown rather than small, so it goes last either way
       const A = a.maxHeight || 0, B = b.maxHeight || 0;
@@ -2616,6 +2862,17 @@ function sortBar(rerender, state, dirs) {
   return bar;
 }
 
+/* The TV and Films pages' order menu with Popular first: an order of the tab like the
+   rest - the titles being watched now, then the library - not a page of its own. */
+function withPopular(bar, type) {
+  if (type !== "show" && type !== "movie") return bar;
+  const sel = bar.querySelector("select");
+  if (!sel) return bar;
+  sel.insertBefore(new Option("Popular", "popular"), sel.firstChild);
+  sel.value = sortState.key;
+  return bar;
+}
+
 /* Which shelf is being looked at, per kind, and the genres each library holds. */
 const genreWanted = { movie: "", show: "" };
 /* Set while a genre press redraws the page: the redraw keeps the old page up until
@@ -2626,6 +2883,45 @@ let sectionSeq = 0;
 const genreCache = {};
 //: which decade the shelf is narrowed to, per kind. Empty is all of them.
 const decadeWanted = { movie: "", show: "" };
+//: and where its titles were made: the TV tab's country filter. Empty is everywhere.
+const countryWanted = { movie: "", show: "" };
+//: the streaming services marked, catalogue numbers comma-joined: the shelf is then
+//: their catalogue in this country rather than the library. And how many pages shown.
+const serviceWanted = { movie: "", show: "" };
+const servicePages = { movie: 1, show: 1 };
+//: a service's catalogue in the popular page's orders: how popular, how well rated,
+//: released, year, name - one for both tabs
+const serviceSort = { key: "popular", dir: "desc" };
+const SERVICE_SORTS = [["popular", "Popular", "popularity"], ["rating", "Rating", "rating"],
+  ["released", "Released", "originallyAvailableAt"], ["year", "Year", "year"],
+  ["name", "Name", "titleSort"]];
+
+function serviceSortBar(rerender) {
+  const bar = document.createElement("div");
+  bar.className = "sortbar";
+  bar.innerHTML = '<span class="lbl">Sort:</span>';
+  const sel = document.createElement("select");
+  sel.className = "sortpick";
+  SERVICE_SORTS.forEach(([key, label]) => sel.add(new Option(label, key)));
+  sel.value = serviceSort.key;
+  const flip = document.createElement("button");
+  flip.className = "sortbtn flip";
+  flip.textContent = serviceSort.dir === "asc" ? "\u2191" : "\u2193";
+  sel.onchange = () => {
+    serviceSort.key = sel.value;
+    serviceSort.dir = sel.value === "name" ? "asc" : "desc";
+    servicePages.movie = servicePages.show = 1;
+    rerender();
+  };
+  flip.onclick = () => {
+    serviceSort.dir = serviceSort.dir === "asc" ? "desc" : "asc";
+    servicePages.movie = servicePages.show = 1;
+    rerender();
+  };
+  bar.append(sel, flip);
+  return bar;
+}
+let serviceList = null;
 const decadeCache = {};
 
 /*
@@ -2667,6 +2963,141 @@ async function genresFor(type, srv) {
   return genreCache[at];
 }
 
+/* A film from SVT Play, over the page until closed: SVT's own HLS, played straight
+   from SVT through hls.js (loaded the first time) - from Sweden only. */
+async function playSvt(m) {
+  let said;
+  try {
+    said = await api("/library/svt/" + encodeURIComponent(m.svt), {}, null);
+  } catch (e) {
+    said = { error: "SVT Play did not answer" };
+  }
+  if (!said || !said.hls) { toast(said && said.error || "SVT Play has no stream of this"); return; }
+  if (!window.Hls) {
+    await new Promise((done, fail) => {
+      const s = document.createElement("script");
+      s.src = "hls.min.js"; s.onload = done; s.onerror = fail;
+      document.head.appendChild(s);
+    }).catch(() => null);
+  }
+  const box = document.createElement("div");
+  box.className = "svtplayer";
+  box.innerHTML = '<button class="btn ghost svtclose">Close</button>';
+  const v = document.createElement("video");
+  v.controls = true; v.autoplay = true; v.setAttribute("playsinline", "");
+  box.appendChild(v);
+  document.body.appendChild(box);
+  let hls = null;
+  // where it is, told to the server every ten seconds: Continue watching and the next
+  // opening carry on from there
+  const key = "sv" + m.svt;
+  const tell = (state) => {
+    if (!v.duration || !isFinite(v.duration)) return;
+    fetch(url("/:/timeline", { ratingKey: key, state: state, time: Math.floor(v.currentTime * 1000),
+                                duration: Math.floor(v.duration * 1000), device: myDeviceName(),
+                                client: "web" }), { method: "GET" }).catch(() => null);
+  };
+  const ticking = setInterval(() => tell(v.paused ? "paused" : "playing"), 10000);
+  if (said.at) v.addEventListener("loadedmetadata", () => { v.currentTime = said.at / 1000; }, { once: true });
+  const close = () => {
+    clearInterval(ticking);
+    tell("stopped");
+    if (hls) hls.destroy(); v.pause(); box.remove(); document.removeEventListener("keydown", esc2);
+  };
+  const esc2 = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", esc2);
+  box.querySelector(".svtclose").onclick = close;
+  if (window.Hls && window.Hls.isSupported()) {
+    hls = new window.Hls({ subtitleDisplay: true });
+    hls.loadSource(said.hls);
+    hls.attachMedia(v);
+    // SVT's subtitles come inside the stream, Swedish: on unless turned off
+    hls.on(window.Hls.Events.SUBTITLE_TRACKS_UPDATED, () => { if (hls.subtitleTracks.length) hls.subtitleTrack = 0; });
+    hls.on(window.Hls.Events.ERROR, (_, d) => {
+      if (d.fatal) toast(d.response && d.response.code === 403
+        ? "SVT Play refused the stream - it plays in Sweden only" : "SVT Play's stream would not play here");
+    });
+  } else {
+    v.src = said.hls;           // Safari plays HLS itself
+  }
+}
+
+/* A series' seasons on SVT Play, a button each, and the chosen season's episodes,
+   each played from SVT. */
+async function svtSeriesInto(box, id, title) {
+  let seasons = [];
+  try {
+    seasons = (await api("/library/svt/series/" + encodeURIComponent(id), {}, null)).Seasons || [];
+  } catch (e) { seasons = []; }
+  if (!box || !seasons.length) { if (box) box.remove(); return; }
+  const tabs = box.querySelector(".svtseasons");
+  const eps = box.querySelector(".svteps");
+  const show = (n) => {
+    eps.innerHTML = "";
+    seasons[n].episodes.forEach((e) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost svtep";
+      b.textContent = "\u25b6 " + e.name + (e.seconds ? "  \u00b7  " + Math.round(e.seconds / 60) + " min" : "");
+      b.onclick = () => playSvt({ svt: e.id, title: title + " \u00b7 " + e.name });
+      eps.appendChild(b);
+    });
+  };
+  // the seasons in a menu: a long-running series has twenty
+  const pick = document.createElement("select");
+  pick.className = "pick";
+  seasons.forEach((se, n) => pick.add(new Option(se.name + "  (" + se.episodes.length + ")", String(n))));
+  pick.onchange = () => show(+pick.value);
+  tabs.appendChild(pick);
+  show(0);
+}
+
+/* The services of this house's country, the catalogue's own order: [id, name]. */
+async function servicesFor() {
+  if (serviceList) return serviceList;
+  try {
+    serviceList = items(await api("/library/services", {})).map((s) => [String(s.id), s.name]);
+  } catch (e) {
+    serviceList = [];
+  }
+  return serviceList;
+}
+
+function serviceBar(type, rerender) {
+  return genreMenu(serviceWanted[type] || "", servicesFor().then((pairs) => {
+    // the menu shows names; what is marked is a number, named again on the button
+    const marked = String(serviceWanted[type] || "").split(",").filter(Boolean);
+    return pairs.filter(([v]) => true).concat(
+      marked.filter((m) => !pairs.some(([v]) => v === m)).map((m) => [m, m]));
+  }), (v) => {
+    serviceWanted[type] = v;
+    servicePages[type] = 1;
+    (rerender || (() => viewSection(type)))();
+  }, -1, { label: "Service:", joins: "Titles on any marked", names: serviceList });
+}
+
+/* A service's catalogue, every page shown so far: what is here plays, a pack downloads,
+   the rest is asked for. */
+async function serviceCatalogue(type) {
+  const out = [];
+  let more = false, total = 0;
+  for (let p = 1; p <= servicePages[type]; p++) {
+    const d = await api("/library/service", {
+      type: type, provider: serviceWanted[type], page: p,
+      sort: SERVICE_SORTS.find(([k]) => k === serviceSort.key)[2] + ":" + serviceSort.dir,
+      ...(genreWanted[type] ? { genre: genreWanted[type] } : {}),
+      ...(decadeWanted[type] ? { decade: decadeWanted[type] } : {}) });
+    // api() hands back the MediaContainer itself: read as d.MediaContainer it was
+    // always empty, and a service showed no titles at all
+    const mc = d || {};
+    const had = new Set(out.map((x) => x.ratingKey));
+    (mc.Metadata || []).forEach((x) => { if (!had.has(x.ratingKey)) out.push(x); });
+    more = !!mc.more;
+    total = mc.totalSize || 0;
+    if (!more) break;
+  }
+  return { list: out, more: more, total: total };
+}
+
 async function viewSection(type) {
   const seq = ++sectionSeq;
   await refreshMarks();
@@ -2676,6 +3107,67 @@ async function viewSection(type) {
   if (!genreKeep) main.innerHTML = '<div class="empty">Loading&hellip;</div>';
   const genre = genreWanted[type] || "";
   const decade = decadeWanted[type] || "";
+  if (serviceWanted[type]) {
+    await servicesFor();
+    let got;
+    try {
+      got = await serviceCatalogue(type);
+    } catch (e) {
+      got = { list: [], more: false, total: 0 };
+    }
+    if (seq !== sectionSeq) return;
+    main.innerHTML = "";
+    const h = document.createElement("h2");
+    h.innerHTML = '<span class="ct">' + (type === "movie" ? "Films" : "TV shows") + "</span>";
+    h.appendChild(serviceSortBar(() => viewSection(type)));
+    h.appendChild(serviceBar(type));
+    h.appendChild(genreBar(type, null, got.list.length));
+    h.appendChild(decadeBar(type));
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = got.list.length + " of " + got.total + " on " +
+      String(serviceWanted[type]).split(",").map((v) =>
+        ((serviceList || []).find(([id]) => id === v) || [v, v])[1]).join(" + ");
+    h.appendChild(count);
+    main.append(h, grid(got.list, 0));
+    if (got.more) {
+      const more = document.createElement("button");
+      more.className = "btn ghost servicemore";
+      more.textContent = "Show more";
+      more.onclick = () => { servicePages[type]++; viewSection(type); };
+      main.appendChild(more);
+    }
+    restoreListPlace();
+    return;
+  }
+  if (sortState.key === "popular") {
+    // the titles being watched now, then the rest of the library, narrowed by the
+    // tab's own genre and decade marks
+    let all = [];
+    try {
+      all = items(await api(type === "movie" ? "/library/popularFilms" : "/library/popularShows",
+                            { all: 1 }, null));
+    } catch (e) { all = []; }
+    if (seq !== sectionSeq) return;
+    const list = sortLike(popularFilter(all, genre, decade, ""));
+    main.innerHTML = "";
+    const h = document.createElement("h2");
+    h.innerHTML = '<span class="ct">' + (type === "movie" ? "Films" : "TV shows") + "</span>";
+    h.appendChild(withPopular(sortBar(() => viewSection(type)), type));
+    h.appendChild(serviceBar(type));
+    h.appendChild(genreBar(type, null, list.length));
+    h.appendChild(decadeBar(type));
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = list.length + " items \u00b7 " +
+      list.filter((x) => !x.addable && !x.askable).length + " in the library";
+    h.appendChild(count);
+    main.append(h, list.length ? grid(list, 0)
+      : Object.assign(document.createElement("div"),
+                      { className: "empty", textContent: "Nothing matches that" }));
+    restoreListPlace();
+    return;
+  }
   const list = await fromAll(async (srv) => {
     const sec = await sectionsOf(srv);
     if (!sec[type]) return [];
@@ -2683,6 +3175,7 @@ async function viewSection(type) {
       sort: sortParam(), type: type === "movie" ? 1 : 2,
       ...(genre ? { genre: genre } : {}),
       ...(decade ? { decade: decade } : {}),
+      ...(type === "show" && countryWanted.show ? { country: countryWanted.show } : {}),
     }, srv);
   });
   if (seq !== sectionSeq) return;
@@ -2691,7 +3184,8 @@ async function viewSection(type) {
   main.innerHTML = "";
   const h = document.createElement("h2");
   h.innerHTML = '<span class="ct">' + (type === "movie" ? "Films" : "TV shows") + "</span>";
-  h.appendChild(sortBar(() => viewSection(type)));       // sort next to the title
+  h.appendChild(withPopular(sortBar(() => viewSection(type)), type));   // sort next to the title
+  h.appendChild(serviceBar(type));                       // a streaming service's catalogue
   h.appendChild(genreBar(type, null, list.length));       // and which shelves
   h.appendChild(decadeBar(type));                        // and from when
   const count = document.createElement("span");          // count stays on the right
@@ -4240,16 +4734,26 @@ async function collectionRows(shelf, preview) {
 const FACET_ROWS = ["genre", "year"];
 const SEARCH_ROWS = ["movie", "show", "episode", "person"].concat(FACET_ROWS);
 
-async function viewSearch(q) {
+//: how soon a search asks again while the catalogue is answering behind it
+const FILL_IN_MS = 1500;
+//: what the last search drew, so asking again redraws only what changed
+const SEARCH_SIG = { q: "", sig: "" };
+
+async function viewSearch(q, again = 0) {
   SCREEN = { kind: "search", q: q };
+  let asking = false;              // the tracker is still being asked about what was found
+  let filling = false;             // the catalogue is still being asked: back in a moment
   onResize = null;
   CTX = null;
   setBackdrop(null);
-  if (!genreKeep) main.innerHTML = '<div class="empty">Searching&hellip;</div>';
+  // a search asked again keeps what is on the page until the answer is in
+  if (!genreKeep && !again) main.innerHTML = '<div class="empty">Searching&hellip;</div>';
   // one hub per kind, gathered from every server that answers
   const hubs = {};
   await fromAll(async (srv) => {
     const c = await api("/hubs/search", { query: q, limit: 40 }, srv);
+    if (c.askingTracker) asking = true;
+    if (c.fillingIn) filling = true;
     const all = [];
     for (const hub of c.Hub || []) {
       if (SEARCH_ROWS.indexOf(hub.type) < 0) continue;
@@ -4263,8 +4767,10 @@ async function viewSearch(q) {
   // Which tab the search was typed on beats that: somebody looking through TV who
   // searches is looking for a programme, not for the film of the same name.
   const on = (document.querySelector(".tab.active") || {}).dataset;
+  // and from Home: films, then programmes, then episodes
   const first = { shows: ["show", "episode", "movie"],
-                  movies: ["movie", "show", "episode"] }[(on && on.view) || ""];
+                  movies: ["movie", "show", "episode"] }[(on && on.view) || ""]
+                || ["movie", "show", "episode"];
   const found = Object.keys(hubs).map((t) => hubs[t]);
   // films and programmes as the Films and TV tabs have them: that genre, that decade and
   // that order, with the greyed films to download among the rest
@@ -4276,7 +4782,8 @@ async function viewSearch(q) {
     h.Metadata = h.Metadata.filter((x) =>
       g.every((w) => (x.genres || []).some((n) => String(n).toLowerCase() === w)) &&
       inDecades(eras, x.year));
-    sortLike(h.Metadata);
+    // the closest title first, as the server ranks them; its order within each
+    h.Metadata.sort((a, b) => (a.match ?? 9) - (b.match ?? 9));
   });
   // What the word spells comes before what it means: a title carrying the word is a
   // closer answer than a shelf the word names. So the category and the year stay at
@@ -4287,6 +4794,16 @@ async function viewSearch(q) {
   found.sort((a, b) => rank(a) - rank(b));
   const c = { Hub: found };
   inSearch = true;
+  // Asked again while the catalogue or the tracker answers: drawn again only when
+  // something on it changed, and where the page was. Redrawn every time, every card
+  // blinked as the same pictures were put back.
+  const sig = found.map((h) => h.type + ":" + items(h).map((x) =>
+    x.ratingKey + (x.onTracker ? "+" : "") + (x.checking ? "?" : "")).join(",")).join("|");
+  const same = again > 0 && SEARCH_SIG.q === q && SEARCH_SIG.sig === sig;
+  SEARCH_SIG.q = q;
+  SEARCH_SIG.sig = sig;
+  const scrolled = window.scrollY;
+  if (!same) {
   main.innerHTML = "";
   let shown = 0;
   (found || []).forEach((h) => { shown += items(h).length; });
@@ -4316,7 +4833,29 @@ async function viewSearch(q) {
     any = true;
   }
   if (!any) main.innerHTML = '<div class="empty">No results for "' + esc(q) + '".</div>';
+  if (again > 0) window.scrollTo(0, scrolled);
+  }
+  if (filling && !asking && again < SEARCH_AGAIN_TIMES) {
+    // the library first, the catalogue's films filled in as soon as it answers
+    setTimeout(() => {
+      if (SCREEN && SCREEN.kind === "search" && SCREEN.q === q) viewSearch(q, again + 1);
+    }, FILL_IN_MS);
+  } else if (asking && again < SEARCH_AGAIN_TIMES) {
+    // once more when the tracker has answered, so Request turns to Download
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "Asking the tracker\u2026";
+    main.appendChild(note);
+    setTimeout(() => {
+      if (SCREEN && SCREEN.kind === "search" && SCREEN.q === q) viewSearch(q, again + 1);
+    }, SEARCH_AGAIN_MS);
+  }
 }
+
+/* how long a search waits for the tracker before it is asked again, and how many times:
+   a box set found for a film is read a few seconds after the search that found it */
+const SEARCH_AGAIN_MS = 8000;
+const SEARCH_AGAIN_TIMES = 3;
 
 /* ---------------- detail ---------------- */
 
@@ -4442,6 +4981,7 @@ function subOptions(m, mi) {
     codec: (s.codec || "").toLowerCase(),
     forced: !!s.forced,
     sdh: !!s.sdh,                           // describes sounds as well as speech
+    start: !!s.start,                       // the server's choice to open with
     // a downloaded file is named for the release it came from, which is the only
     // thing that tells two English subtitles apart
     label: s.title || [s.language || s.languageTag || "Unknown",
@@ -4483,34 +5023,72 @@ function subsInOrder(list) {
   }).map((p) => p[1]);
 }
 
+/* Whether a track's language tag and a reader's language are one language: "swe" and
+   "sv", "ger" and "de". The app's Route.sameLanguage, the same table. Compared by the
+   first two letters alone, Swedish, German and French tracks never matched. */
+const LANG_SAME = { en: "en", eng: "en", sv: "sv", swe: "sv", da: "da", dan: "da",
+  no: "no", nor: "no", nob: "no", nb: "no", fi: "fi", fin: "fi", de: "de", ger: "de",
+  deu: "de", fr: "fr", fre: "fr", fra: "fr", es: "es", spa: "es", it: "it", ita: "it",
+  nl: "nl", dut: "nl", nld: "nl", pt: "pt", por: "pt" };
+function sameLang(tag, want) {
+  const t = String(tag || "").toLowerCase(), w = String(want || "").toLowerCase();
+  if (!t || !w) return false;
+  const canon = (x) => LANG_SAME[x] || LANG_SAME[x.slice(0, 3)] || LANG_SAME[x.slice(0, 2)] || x;
+  return t.indexOf(w.slice(0, 2)) === 0 || w.indexOf(t.slice(0, 2)) === 0 ||
+    canon(t) === canon(w);
+}
+
+/* The subtitle a title opens with: the app's rule (Media.startSub and openWith), so a
+   film starts with the same subtitle in the browser as on the television. The one
+   chosen last time when it is in the first language, or when nothing in that language
+   is here; otherwise the first language - a file beside the video before the film's
+   own, a full track before a forced one or one describing sounds. Then the second
+   language, then whatever the film carries. A Swedish file chosen once, when it was
+   all there was, kept an English reader on Swedish after the English one arrived. */
 function preferredSub(m, mi) {
   const list = subOptions(m, mi);
-  // what was chosen for this title last time beats any rule about languages
-  const chosen = list.filter((t) => t.picked)[0];
-  if (chosen) return chosen;
+  if (!list.length) return null;
+  // the server decides for the web and the app alike; the rule below is for an older one
+  const md = mediaOf(m, mi);
+  if (md && md.subsDecided) return list.filter((t) => t.start)[0] || null;
+  const mine = prefs();
   // "" is a choice - off - and no key at all is no choice, so the answer given on the
   // other screens stands
-  const mine = prefs();
-  const want = "subLang" in mine ? mine.subLang : (SERVERLANG || "");
-  if (!want) return null;
-  const THREE = { en: "eng", sv: "swe", da: "dan", no: "nor", fi: "fin", de: "ger",
-                  fr: "fre", es: "spa", it: "ita", nl: "dut", pt: "por" };
-  const hits = (code) => (t) => t.code === code || t.code.indexOf(code + "-") === 0 ||
-                                t.code.slice(0, 3) === THREE[code];
-  // the first language, then the second if the film carries nothing in the first
-  const pick = (code) => {
-    if (!code) return null;
-    const hit = hits(code);
-    return list.filter((t) => hit(t) && !t.forced)[0] || list.filter(hit)[0] || null;
+  const want = String("subLang" in mine ? mine.subLang : (SERVERLANG || "")).toLowerCase();
+  const second = String("subLang2" in mine ? mine.subLang2 : (SERVERLANG2 || "")).toLowerCase();
+  const tagOf = (t) => (t.code || "").toLowerCase();
+  const speaking = (code) => {
+    const w = String(code || "").slice(0, 3);
+    if (!w || w === "off") return [];
+    // a track with no language counts, as in the app: a file somebody put there
+    return list.filter((t) => !tagOf(t) || sameLang(tagOf(t), w));
   };
-  const second = "subLang2" in mine ? mine.subLang2 : (SERVERLANG2 || "");
-  const first = pick(want);
-  if (first) return first;
-  // off: nothing when the first language is missing; empty: whatever the film has
-  if (second === "off") return null;
-  if (second) return pick(second);
-  return list.filter((t) => !t.forced && !t.sdh)[0] || list.filter((t) => !t.forced)[0] ||
-         null;
+  const opening = () => {
+    if (!want || want === "off") return null;
+    let ours = speaking(want);
+    if (!ours.length && second !== "off") ours = speaking(second);
+    const beside = ours.filter((t) => t.external)[0];
+    if (beside) return beside;
+    if (!ours.length && second === "off") return null;
+    return ours.filter((t) => !t.forced && !t.sdh)[0] || ours.filter((t) => !t.forced)[0] ||
+      ours[0] || list.filter((t) => t.external)[0] ||
+      list.filter((t) => !t.forced && !t.sdh)[0] || list.filter((t) => !t.forced)[0] ||
+      list[0] || null;
+  };
+  const main = opening();
+  const inMain = (t) => !!tagOf(t) && !!want && sameLang(tagOf(t), want);
+  const picked = list.filter((t) => t.picked)[0];
+  if (picked && (inMain(picked) || !main || !inMain(main))) return picked;
+  return main || picked || null;
+}
+
+/* Whether the next episode starts with subtitles, as the app decides it: this one was
+   being watched with them, the series has settled on some, or a file sits beside the
+   video - which only happens because somebody put it there. The browser turned them on
+   for every next episode in the reader's language, wanted or not. */
+function nextWantsSubs(showing, next) {
+  return !!showing || !!(next && next.subsWanted) ||
+    subOptions(next, 0).some((t) => t.external);
 }
 
 function subLabel(t, casting) {
@@ -5016,6 +5594,44 @@ const DOWNLOAD_MARK =
 
 /* The studios behind a film: each one's mark, drawn in white, or its name where the
    catalogue has no mark for it. */
+/* Where a title streams: each service's mark, subscriptions first. */
+/* A country's flag from its two-letter code: the emoji the letters make. */
+function flagOf(code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(c)) return c;
+  return String.fromCodePoint(...[...c].map((ch) => 0x1F1E6 + ch.charCodeAt(0) - 65));
+}
+
+/* A sound's channels as a person says them: Mono, Stereo, 5.1, 7.1; "" unknown. */
+function channelsWord(n) {
+  n = +n || 0;
+  return n >= 8 ? "7.1" : n >= 6 ? "5.1" : n === 2 ? "Stereo" : n === 1 ? "Mono" : "";
+}
+
+/* The badges under a title, as the app has them: each word in a box of its own, then
+   the Region badge and the streaming services. Empty when there is nothing to show. */
+function badgesRow(words, m) {
+  const boxes = (words || []).filter(Boolean)
+    .map((w) => '<span class="badge">' + esc(String(w)) + "</span>").join("");
+  const more = providersLine(m);
+  return boxes || more ? '<div class="badges">' + boxes + more + "</div>" : "";
+}
+
+function providersLine(m) {
+  // on the line of facts under the title, at its end: the country's flag, then the
+  // services there
+  const country = ((m.providers || [])[0] || {}).country || "";
+  return (m.providers || []).length
+    ? '<span class="providers">' +
+      (country ? '<span class="flag" title="' + esc(country) + '"><span class="word">Region</span>' +
+        '<span class="mark">' + flagOf(country) + "</span></span>" : "") +
+      m.providers.map((p) =>
+        '<img src="' + img(p.logo) + '" alt="' + esc(p.name) + '" title="' +
+        esc(p.name + (p.kind === "store" ? " - rent or buy" : "")) +
+        '" onerror="this.remove()">').join("") + "</span>"
+    : "";
+}
+
 function studiosLine(m) {
   const list = m.studios || [];
   if (!list.length) return "";
@@ -5028,12 +5644,19 @@ function studiosLine(m) {
 
 function offerWord(it) {
   const o = it.offer || {};
-  // which version, said short, before how far it has got
+  // how far it has got, then which version: the percentage is what is read at a
+  // glance, and put after the version it wrapped onto a line of its own mid-sentence
   return o.state === "downloading"
-    ? (o.version ? o.version + " · " : "") + Math.round((o.progress || 0) * 100) + "%" +
+    ? Math.round((o.progress || 0) * 100) + "%" +
       (o.eta != null && o.eta >= 0 ? " \u00b7 " + etaShort(o.eta) : "")
     : o.state === "done" ? "Arriving" : o.state === "queued" ? "Queued"
     : o.state === "failed" ? "Failed" : "";
+}
+
+/* The version coming in, on its own line under how far it has got. */
+function offerVersion(it) {
+  const o = it.offer || {};
+  return o.state === "downloading" && o.version ? String(o.version) : "";
 }
 
 /* A film on offer from a torrent pack: its page, and the one thing to do about it. */
@@ -5077,20 +5700,17 @@ async function viewOffer(m) {
       o.free != null ? o.free + " GB free on the download drive" : ""]
       .filter(Boolean).map(esc)
       .join(" &middot; ") + "</div>" +
-    // where it has come out to be watched: each service's mark, subscriptions first
-    ((m.providers || []).length
-      ? '<div class="providers">' + m.providers.map((p) =>
-          '<img src="' + img(p.logo) + '" alt="' + esc(p.name) + '" title="' +
-          esc(p.name + (p.kind === "store" ? " - rent or buy" : "")) +
-          '" onerror="this.remove()">').join("") + "</div>"
-      : "") +
-    studiosLine(m) +
+    // where it has come out to be watched, as badges under the line
+    badgesRow([], m) +
     // Download instead of Request, where there is something to fetch. Not beside
     // it: asking somebody for a film this house can fetch in one press is not a
     // second choice, it is the wrong one. And nothing is guessed here about
     // whether this viewer may - the server decides that and says so in the line
     // below, which is one fewer thing to be wrong about.
-    '<div class="actions"><button class="btn" id="offerget"></button>' +
+    '<div class="actions">' +
+    // on SVT Play, unprotected: played from there, first of the buttons
+    (m.svt ? '<button class="btn" id="svtplay">▶ Play from SVT Play</button>' : "") +
+    '<button class="btn" id="offerget"></button>' +
     // The same button as the one above it, for the other place a film comes from:
     // the word, the arrow and the size beside it, in the same spot. It read as a
     // lesser thing tucked behind a dropdown, and fetching from the tracker is the
@@ -5120,6 +5740,10 @@ async function viewOffer(m) {
   // Show more, as a film here has: what it is rated, how long, and everybody in it -
   // what decides whether it is worth downloading
   pressableText(wrap, m);
+  const svt = document.getElementById("svtplay");
+  if (svt) svt.onclick = () => playSvt(m);
+  // a stream's page is its Play button and its plot: who is in it is under Show more
+  if (m.svt) wrap.querySelector(".cast").remove();
   const grab = document.getElementById("offertracker");
   const pick = document.getElementById("offerpick");
   if (pick && grab) {
@@ -5152,7 +5776,7 @@ async function viewOffer(m) {
         // the figures first, seeders leading as the list is sorted, then the name
         o.textContent = [
           versionTag(v),
-          v.disk ? "" : (v.seeds || 0) + " seeding",
+          v.disk || v.seeds == null ? "" : v.seeds + " seeding",
           v.mbit ? v.mbit + " Mbit/s" : "",
           v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
         ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
@@ -5492,6 +6116,8 @@ function tellMe(title, text, m) {
       (m.directors || []).length ? "Directed by " + m.directors.join(", ") : "",
     ].filter(Boolean).join("   ·   ");
     back.querySelector(".rated").textContent = rated;
+    // the studios behind it: here, not on the page - under the plot, over the cast
+    if ((m.studios || []).length) back.querySelector("p").insertAdjacentHTML("afterend", studiosLine(m));
     if (m.tagline) {
       const line = document.createElement("div");
       line.className = "note";
@@ -5746,9 +6372,10 @@ async function fillDownloads(m, sel) {
     o.value = "dl:" + v.id;
     // what each colour means, in words on the line: green recommended, blue in a
     // pack here, yellow already on disk, red cannot be downloaded
-    o.textContent = [v.have ? "On disk already" : v.pick ? "Recommended"
-                     : v.pack ? "In a pack here" : "Tracker",
-      (v.seeds || 0) + " seeding",
+    // recommended and where it comes from, both: "Recommended" alone hid that it was a pack's
+    o.textContent = [v.have ? "On disk already" : v.pick ? "Recommended" : "",
+                     v.pack ? "In a pack here" : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker",
+      v.seeds == null ? "" : v.seeds + " seeding",
       v.mbit ? v.mbit + " Mbit/s" : "",
       v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
       .join("  \u00b7  ") + "   \u2014   " +
@@ -5853,7 +6480,9 @@ async function episodeDownloads(row, ep) {
     const line = document.createElement("div");
     line.className = "epdlrow";
     const words = document.createElement("span");
-    words.textContent = [v.pick ? "Recommended" : "Tracker", (v.seeds || 0) + " seeding",
+    words.textContent = [v.pick ? "Recommended" : "",
+      v.pack ? "In a pack" : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker",
+      v.seeds == null ? "" : v.seeds + " seeding",
       v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
       .join("  ·  ") + "   —   " + releaseName(v.name) +
       (v.why ? "   ·   " + v.why : "");
@@ -5881,7 +6510,8 @@ async function episodeDownloads(row, ep) {
 }
 
 function versionTag(v) {
-  return v.disk ? "On disk" : v.pack ? "In a pack here" : "Tracker";
+  return v.disk ? "On disk" : v.pack ? "In a pack here"
+    : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker";
 }
 
 /* A release as a person reads it: a pack's file carries its extension, a torrent's
@@ -5925,7 +6555,7 @@ function switchVersion(m, label) {
       // the figures first, seeders leading as the list is sorted, then the name
       o.textContent = [
         versionTag(v),
-        v.disk ? "" : (v.seeds || 0) + " seeding",
+        v.disk || v.seeds == null ? "" : v.seeds + " seeding",
         v.mbit ? v.mbit + " Mbit/s" : "",
         v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
       ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
@@ -6028,8 +6658,9 @@ async function viewMovie(key) {
       // same row: that button is put right, and nothing else on the page is touched.
       // The whole page was drawn again for it - emptied, fetched and built, backdrop
       // and all - which is a blink of everything for the sake of one word.
-      slot.appendChild(watchedButton(m, () => playFromStartOnly(m)));
+      // the favorite and collection marks next to Play, then the rest
       slot.appendChild(markControl(m));
+      slot.appendChild(watchedButton(m, () => playFromStartOnly(m)));
       // the library's own idea of what this is, when it has it wrong
       if (!CFG.guest && isLocal()) {
         slot.appendChild(fixMatchButton(m, () => viewMovie(m.ratingKey)));
@@ -6043,10 +6674,11 @@ async function viewMovie(key) {
   }, 0);
   const md = m.Media && m.Media[0];
   const specs = md
-    ? [md.videoResolution === "4k" ? "4K" : (md.videoResolution || "") + "p",
+    ? [md.videoResolution ? (md.videoResolution === "4k" ? "4K" : md.videoResolution + "p") : "",
        (md.videoCodec || "").toUpperCase(), (md.audioCodec || "").toUpperCase(),
-       Math.round((md.bitrate || 0) / 100) / 10 + " Mbps"].join(" ")
-    : "";
+       channelsWord(md.audioChannels),
+       md.bitrate ? Math.round(md.bitrate / 100) / 10 + " Mbit/s" : ""]
+    : [];
   const resume = m.viewOffset ? Math.floor(m.viewOffset / 1000) : 0;
   main.innerHTML = "";
   const wrap = document.createElement("div");
@@ -6060,12 +6692,10 @@ async function viewMovie(key) {
         '" alt="" onerror="this.remove()">' : "") +
     "</div>" +
     '<div class="meta"><h1>' + esc(m.title) + "</h1>" +
-    '<div class="sub">' + [m.year, (md && (md.cut || md.edition)) || "", mins(m.duration),
-      m.contentRating, specs].filter(Boolean).map(esc).join(" &middot; ") + "</div>" +
-    studiosLine(m) +
+    '<div class="sub">' + [m.year, mins(m.duration), m.contentRating]
+      .filter(Boolean).map(esc).join(" &middot; ") + "</div>" +
+    badgesRow([(md && (md.cut || md.edition)) || ""].concat(specs), m) +
     playerBar(m, resume) +
-    (md && md.videoCodec === "hevc"
-      ? '<div class="warn">HEVC source - the transcoder re-encodes this one in software.</div>' : "") +
     '<p class="summary tellme">' + esc(m.summary) + "</p></div>";
   wrap.querySelectorAll("[data-off]").forEach((b) => {
     b.onclick = () => play(m, +b.dataset.off, opts());
@@ -6233,8 +6863,9 @@ async function viewShow(key, wantSeason, wantEpisode) {
     (s.thumb ? '<img src="' + img(s.thumb, 400, 600) + '" alt="" onerror="this.remove()">' : "") +
     "</div>" +
     '<div class="meta"><h1>' + esc(s.title) + "</h1>" +
-    '<div class="sub">' + [s.year, (s.childCount || seasons.length) + " seasons",
-      s.leafCount ? s.leafCount + " episodes" : ""].filter(Boolean).map(esc).join(" &middot; ") + "</div>" +
+    '<div class="sub">' + [s.year].filter(Boolean).map(esc).join(" &middot; ") + "</div>" +
+    badgesRow([(s.childCount || seasons.length) + " seasons",
+               s.leafCount ? s.leafCount + " episodes" : ""], s) +
     '<p class="summary">' + esc(s.summary) + "</p>" +
     '<div class="actions"><span id="showmark"></span>' +
     '<select id="season"></select>' +
@@ -6488,7 +7119,12 @@ async function loadEpisodes(seasonKey, findKey) {
       e.preventDefault();
       pickCollection(ep, row);
     };
-    row.onclick = () => (ep.offered ? viewOffer(ep) : play(ep, off(), {}));
+    // not downloaded: the release list under the row, as an episode only the tracker
+    // has - the pack's copy is one of its rows. Its page only for somebody who may
+    // not fetch, where asking is the one thing to do.
+    row.onclick = () => (ep.offered
+      ? ((!CFG.guest || CFG.mayFetch) ? episodeDownloads(row, ep) : viewOffer(ep))
+      : play(ep, off(), {}));
     list.appendChild(row);
     // the episode just watched: put it in the middle of the screen and mark it, so a
     // long season does not have to be scrolled through to find where you were
@@ -6598,8 +7234,16 @@ function watchedButton(item, after) {
 }
 
 function open(it, push) {
+  // played from SVT Play before (Continue watching): on again at once, where it was left
+  if (it && it.svt && String(it.ratingKey || "").startsWith("sv")) return playSvt(it);
   // a popular programme not held yet has no page to open: pressing it adds it
   if (it && it.addable) return addPopularShow(it);
+  // a sport on the Sports row: its races or games
+  if (it && it.sportRow) return viewSport(it);
+  // a group of live channels: the plugin's page of it
+  if (it && it.liveGroup && window.PD_OPEN_GROUP) return window.PD_OPEN_GROUP(it);
+  // a live channel: straight on, full screen
+  if (it && it.live) return playLive(it);
   // choosing a title by hand is the opposite of putting something on
   casualOn = false;
   shuffleOn = "";
@@ -6751,7 +7395,8 @@ function genreMenu(chosen, options, apply, matching, named) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "genrepick";
-  const shown = marked.length ? marked.join(" + ") : "All";
+  const say = (v) => ((name.names || []).find(([id]) => id === v) || [v, v])[1];
+  const shown = marked.length ? marked.map(say).join(" + ") : "All";
   btn.textContent = shown + (marked.length > 1 && matching >= 0 ? " \u00b7 " + matching : "") +
     " \u25be";
   const menu = document.createElement("div");
@@ -6826,6 +7471,24 @@ function genreMenu(chosen, options, apply, matching, named) {
  * Built from the shelves like the genre beside it, so it never offers a decade with
  * nothing in it, and it says how many are there before you choose.
  */
+/* Where the shelf's titles were made, any of those marked: the TV tab's country menu,
+   counted among the genres and decades marked. */
+function countryBar(type, rerender) {
+  const options = (async () => {
+    let got = [];
+    try {
+      got = items(await api("/library/countries", {
+        type: type, ...(genreWanted[type] ? { genre: genreWanted[type] } : {}),
+        ...(decadeWanted[type] ? { decade: decadeWanted[type] } : {}) }));
+    } catch (e) { got = []; }
+    return got.map((c) => [c.country, countryName(c.country) + " (" + c.count + ")"]);
+  })();
+  return genreMenu(countryWanted[type] || "", options, (v) => {
+    countryWanted[type] = v;
+    (rerender || (() => viewSection(type)))();
+  }, -1, { label: "Country:", joins: "Shows from any marked" });
+}
+
 function decadeBar(type, rerender) {
   // Several at once, the same control the genres use. A title need only be from one
   // of them: it has a single year, so wanting all the marked decades at once would
@@ -6893,6 +7556,15 @@ function mime(container, v, a) {
   return box + '; codecs="' + [DP_VIDEO[v], DP_AUDIO[a]].filter(Boolean).join(",") + '"';
 }
 
+/* The soundtrack the server marks to play, when it is not the file's first: a
+   browser plays the first and cannot be told otherwise, so ffmpeg picks it out.
+   null when the first is the one. */
+function soundNeedsPicking(part) {
+  const tracks = ((part && part.Stream) || []).filter((s) => s.streamType === 2);
+  const at = tracks.findIndex((s) => s.selected);
+  return at > 0 && tracks[at].index !== undefined ? tracks[at].index : null;
+}
+
 /* the file's own URL, playable as-is, or null to use the transcoder */
 function directPlay(meta, casting, o, mi) {
   if (o.maxBitrate) return null;                  // a bitrate cap means re-encode by definition
@@ -6903,6 +7575,8 @@ function directPlay(meta, casting, o, mi) {
   const md = mediaOf(meta, mi);
   const part = md && md.Part && md.Part[0];
   if (!md || !part || !part.key) return null;
+  // the film's own language, or the one chosen last time, is not the first track
+  if (soundNeedsPicking(part) !== null) return null;
   const container = (md.container || "").toLowerCase();
   const v = (md.videoCodec || "").toLowerCase();
   const a = (md.audioCodec || "").toLowerCase();
@@ -7500,6 +8174,8 @@ let askedAhead = "";           // the episode we have already fetched ahead for
  * the episode already has subtitles of its own.
  */
 async function askAheadForSubtitles() {
+  // the next episode's is fetched by the server; a shuffle's next draw is known here
+  if (!(casualOn && shuffleOn)) return;
   if (!S || !S.meta || S.meta.type !== "episode") return;
   if (askedAhead === S.meta.ratingKey) return;
   const dur = (S.meta.duration || 0) / 1000;
@@ -7591,7 +8267,8 @@ async function rollOn() {
     card.querySelector("#nx-no").onclick = off;
   };
   // in case the five-minute mark went by unseen - joined late, or skipped through
-  const fetching = fetchNextSubtitle(was.ratingKey);
+  const fetching = (casualOn && shuffleOn) ? fetchNextSubtitle(was.ratingKey)
+                                           : Promise.resolve(null);
   const tick = setInterval(() => {
     left--;
     if (left <= 0) go(); else draw();
@@ -7604,6 +8281,8 @@ async function rollOn() {
   function off() { done(); closePlayer(); }
   async function go() {
     done();
+    // with subtitles only where the app would have them (nextWantsSubs)
+    const showing = !!(S && S.subId);
     // give a subtitle still arriving a moment to land, but never more than that
     await Promise.race([fetching, new Promise((r) => setTimeout(r, 4000))]);
     let meta = next;
@@ -7611,7 +8290,7 @@ async function rollOn() {
       meta = items(await api("/library/metadata/" + next.ratingKey))[0] || next;
     } catch (e) { /* the cache in hand will do */ }
     stop(true);
-    play(meta, 0, {});
+    play(meta, 0, nextWantsSubs(showing, meta) ? {} : { subId: 0 });
   }
   document.addEventListener("keydown", off, true);
   $("#player").appendChild(card);
@@ -7854,7 +8533,7 @@ async function dressUp() {
   const root = document.documentElement.style;
   [["bg", said.bg], ["panel", said.panel], ["panel2", said.panel2],
    ["line", said.line], ["fg", said.fg], ["dim", said.dim],
-   ["accent", said.accent]].forEach(([name, hex]) => {
+   ["accent", said.accent], ["on-accent", said.onAccent]].forEach(([name, hex]) => {
     if (hex) root.setProperty("--" + name, hex);
     else root.removeProperty("--" + name);
   });
@@ -8061,11 +8740,27 @@ function goToServer(where, token) {
   location.href = to + "/" + (token ? "?t=" + encodeURIComponent(token) : "");
 }
 
+/* The light on the picker: the machine this page is talking to, as the last look
+   found it - and no colour at all until there has been a look. It was green by its
+   stylesheet, whatever was answering. */
+function pickLight(onCopy, home, copy) {
+  const said = onCopy ? copy : home;
+  return said === true ? "up" : said === false ? "down" : "waiting";
+}
+
+/* And its name: the copy's while the page is carried by the copy. It went on
+   showing the main server, in green, with the main server off. */
+function pickName(onCopy, copyName, ownName) {
+  return onCopy ? (copyName || "The other server") : (ownName || "This server");
+}
+
 function drawServerPick() {
   const chip = document.getElementById("srvpick");
   if (!chip) return;
-  chip.innerHTML = "<i class='dot'></i>" +
-    esc((CFG && CFG.serverName) || "This server") + "<u>▾</u>";
+  const onCopy = !!(CTX && CTX.id === "__copy");
+  chip.innerHTML = "<i class='dot " + pickLight(onCopy, homeAnswers(), copyAnswers()) +
+    "'></i>" + esc(pickName(onCopy, (CTX && CTX.name) || standbyName,
+                            CFG && CFG.serverName)) + "<u>▾</u>";
 }
 
 async function openServerPick() {
@@ -8654,6 +9349,12 @@ document.querySelectorAll(".tab").forEach((t) => {
     // to that film is what they want next, so it is kept. The library tabs are
     // destinations and start afresh.
     const aside = t.dataset.view === "settings" || t.dataset.view === "reports";
+    // Films and TV open on Popular from their button; a marked service shows its own
+    const kind = { movies: "movie", shows: "show" }[t.dataset.view];
+    if (kind && !serviceWanted[kind]) {
+      SORT_BY_TAB[t.dataset.view].key = "popular";
+      SORT_BY_TAB[t.dataset.view].dir = "desc";
+    }
     go(t.dataset.view, aside && navStack.length > 0);
   };
 });
@@ -8675,6 +9376,33 @@ document.querySelectorAll(".tab").forEach((t) => {
     }
   } catch (e) { /* the name alone will do */ }
 })();
+/* A search spoken rather than typed, where the browser can hear: Chrome and Edge, on
+   https or this PC (speech needs a secure page). What was said goes in the box as typing. */
+(() => {
+  const Hear = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = $("#mic");
+  if (!Hear || !window.isSecureContext || !mic) return;
+  mic.classList.remove("hidden");
+  let ear = null;
+  mic.onclick = () => {
+    if (ear) { ear.stop(); return; }
+    ear = new Hear();
+    ear.interimResults = false;
+    ear.maxAlternatives = 1;
+    ear.onresult = (e) => {
+      const said = String(((e.results[0] || [])[0] || {}).transcript || "").trim();
+      if (!said) return;
+      const box = $("#search");
+      box.value = said;
+      box.dispatchEvent(new Event("input"));
+    };
+    ear.onend = () => { ear = null; mic.classList.remove("on"); };
+    ear.onerror = ear.onend;
+    mic.classList.add("on");
+    try { ear.start(); } catch (e) { ear.onend(); }
+  };
+})();
+
 let searchTimer;
 $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
@@ -9681,7 +10409,8 @@ async function downloadSubtitles(box, redraw, lang, about) {
       // yellow: already beside the film
       (r.onDisk && !using ? " ondisk" : "");
     b.innerHTML = (sure ? "<span class='tick'>\u2713</span> " : "") +
-      esc(r.name) + "<small>" + (sure ? "confirmed \u00b7 " : "") +
+      esc(r.name) + "<small>" + (r.autoPick ? "auto pick \u00b7 " : "") +
+      (sure ? "confirmed \u00b7 " : "") +
       (using ? "in use \u00b7 " : "") + (r.onDisk && !using ? "on disk \u00b7 " : "") +
       (r.sameName ? "matches this file by name \u00b7 "
         : r.hashOdd ? "hash says this file, name says another \u00b7 "
@@ -9725,6 +10454,10 @@ async function downloadSubtitles(box, redraw, lang, about) {
       const picker = $("#pl-subs");
       if (added && picker) {
         picker.value = String(added.id);
+        picker.dispatchEvent(new Event("change"));
+      } else if (picker && S && S.subId) {
+        // written over the file in use: the same track, read again
+        picker.value = String(S.subId);
         picker.dispatchEvent(new Event("change"));
       }
       list.remove();
@@ -10414,6 +11147,11 @@ function audioPanel() {
       const meta = S.meta, mi = S.mi || 0;
       const o = opts();
       o.atrack = t.index;
+      // remembered for the film or the series, on every screen
+      fetch("/sound/pick", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: meta.ratingKey, index: t.index, mi: mi }),
+      }).catch(() => { /* a preference, not a requirement */ });
       // the sound is chosen while ffmpeg reads the file, so this is a new stream -
       // started where the old one had got to
       play(meta, at, o, false, mi);
@@ -10485,6 +11223,9 @@ async function qualityPanel() {
     box.remove();
     const at = Math.floor($("#video").currentTime || 0) + (S.timeBase || 0);
     const o = opts();
+    // the subtitle showing, not the film page's menu: that one says off, and a new
+    // size started the film again without them
+    o.subId = S.subId || 0;
     o.height = what.height !== undefined ? what.height : (S.height || 0);
     o.mbit = what.mbit !== undefined ? what.mbit : (S.mbit || 0);
     play(S.meta, at, o, false, S.mi || 0);
@@ -10933,7 +11674,9 @@ async function init2(stay) {
     // like any other link. Drawn instead of home rather than on top of it - home is
     // rendered without waiting, so anything opened after it was drawn over.
     const [where, which] = (location.hash || "").replace(/^#/, "").split("/");
-    go("home");
+    // the monitor is Now playing alone: home drawn under it, then Settings asked for
+    // every 250 ms until it showed, drew the page over and over
+    if (where !== "monitor") go("home");
     // and then the screen the address asked for, on top. Not instead of home: the
     // front page draws itself without waiting to be asked, so a screen opened before
     // it was simply drawn over. Twice, because the first draw finishes when it
@@ -10942,6 +11685,12 @@ async function init2(stay) {
     // tablet on a stand
     if (where === "monitor") {
       document.body.classList.add("monitor");
+      // a phone, held either way: the app says so, a browser by its touch screen.
+      // Sideways a phone is wider than the narrow rules and got the television's page
+      document.body.classList.toggle("phonelike",
+        /[?&]phone=1/.test(location.search) ||
+        (!/[?&]phone=0/.test(location.search) && matchMedia("(pointer: coarse)").matches
+         && Math.min(screen.width, screen.height) < 600));
       // the height as the page measures it now. An app's WebView fixes 100vh at the
       // size it had when it was first laid out - 56 px on the television - and the
       // whole page was squeezed into that strip.
@@ -10975,7 +11724,8 @@ async function init2(stay) {
     }
     const open = () => {
       if (where === "monitor" && window.viewSettings) {
-        if (window.settingsTab) settingsTab("now");
+        // #monitor/log opens on the watch log
+        if (window.settingsTab) settingsTab(which === "log" ? "log" : "now");
         go("settings");
       } else if (where === "settings" && window.viewSettings) {
         if (window.settingsTab) settingsTab(which || "library");
@@ -10990,10 +11740,14 @@ async function init2(stay) {
     // address says: the address keeps a Settings tab long after it was left.
     let saved = false;
     try { saved = !!sessionStorage.getItem("pd-screen"); } catch (e) { saved = false; }
-    if (saved) {
+    if (where === "monitor") {
+      // nothing drawn under it, so once is enough
+      try { sessionStorage.removeItem("pd-screen"); } catch (e) { /* nothing kept */ }
+      open();
+    } else if (saved) {
       // after Home has drawn, or it draws over what is opened
       setTimeout(() => { restoreScreen(); }, 400);
-    } else if (where === "settings" || where === "reports" || where === "monitor") {
+    } else if (where === "settings" || where === "reports") {
       let tries = 0;
       const nag = setInterval(() => {
         open();

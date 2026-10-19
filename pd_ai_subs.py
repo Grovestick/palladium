@@ -83,8 +83,8 @@ ADDONS = [
              "This is what makes a subtitle out of the sound.",
      "folder": "faster-whisper-large-v3", "mark": "model.bin", "size": "3.1 GB"},
     {"id": "translate", "name": "Translation",
-     "what": "Turns English into Swedish, a line at a time. Only needed for Swedish "
-             "subtitles of a film spoken in English.",
+     "what": "Turns what is said into Swedish, a line at a time, from the language "
+             "spoken. Only needed for Swedish subtitles of a film not spoken in Swedish.",
      "folder": "nllb-200-distilled-1.3B", "mark": "tokenizer.json", "size": "5.2 GB"},
 ]
 

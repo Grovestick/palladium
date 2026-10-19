@@ -230,6 +230,10 @@ def sidecar_path(video, language, release=""):
     lang = (language or "en").lower()[:5]
     tag = release_tag(release)
     if tag:
+        # 34 characters of a name were show and episode only, so every release overwrote one file
+        import hashlib
+        tag = "%s-%s" % (tag[:27].strip("-"), hashlib.sha1(
+            release.strip().lower().encode("utf-8")).hexdigest()[:6])
         named = "%s.%s.%s.srt" % (stem, tag, lang)
         if len(named) <= 250:
             return named

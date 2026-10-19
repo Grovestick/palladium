@@ -119,7 +119,7 @@ fun NowPlayingScreen(onBack: () -> Unit) {
 @Composable
 private fun LiveCard(one: Api.Live, rates: List<Double>, big: Boolean = false) {
     Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)
-               .clip(RoundedCornerShape(8.dp)).background(Skin.Panel2)
+               .clip(RoundedCornerShape(Skin.round(8.dp))).background(Skin.Panel2)
                .padding(horizontal = 12.dp, vertical = 10.dp),
            verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Text(one.title + (if (one.episode.isNotEmpty()) "  ·  " + one.episode else ""),
@@ -157,7 +157,7 @@ private fun LiveCard(one: Api.Live, rates: List<Double>, big: Boolean = false) {
 private fun Bar(label: String, share: Double, colour: Color) {
     Row {
         Box(Modifier.weight(1f).height(8.dp).padding(top = 4.dp)
-                .clip(RoundedCornerShape(3.dp)).background(Color(0x33FFFFFF))) {
+                .clip(RoundedCornerShape(Skin.round(3.dp))).background(Color(0x33FFFFFF))) {
             Box(Modifier.fillMaxWidth(share.toFloat()).height(8.dp).background(colour))
         }
         Text(label, color = Skin.Dim, fontSize = 11.5.sp,
@@ -202,12 +202,14 @@ private fun clock(seconds: Double): String {
  * Signed in with this app's key, and the screen kept on while it is open.
  */
 @Composable
-fun MonitorScreen(onBack: () -> Unit) {
+fun MonitorScreen(onBack: () -> Unit, page: String = "monitor") {
     val view = LocalView.current
     DisposableEffect(Unit) {
         view.keepScreenOn = true
         onDispose { view.keepScreenOn = false }
     }
+    // read here: the page is opened from a plain function inside the view's factory
+    val phone = !onTv()
     Box(Modifier.fillMaxSize().background(Skin.Bg)) {
         androidx.compose.ui.viewinterop.AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -220,33 +222,38 @@ fun MonitorScreen(onBack: () -> Unit) {
                     isFocusable = true
                     isFocusableInTouchMode = true
                     val base = Api.base.trimEnd('/')
+                    // every address it may answer at, the likely one first (Route.monitorOrder)
+                    val ways = Route.monitorOrder(base, KnownHosts.byAddress(base),
+                                                  Api.standby, Api.standbyOut) {
+                        Reach.upAt(it) == false
+                    }
+                    var next = 0
                     // the page signed in at whichever address it is opened on
                     fun open(at: String) {
                         if (Api.token.isNotEmpty()) {
                             android.webkit.CookieManager.getInstance()
                                 .setCookie(at, "pal=" + Api.token)
                         }
-                        loadUrl("$at/#monitor")
+                        // a phone says so: held sideways it is wider than the narrow rules
+                        loadUrl("$at/?phone=" + (if (phone) "1" else "0") + "#$page")
                     }
-                    var triedOther = false
                     webViewClient = object : android.webkit.WebViewClient() {
                         override fun onPageFinished(view: android.webkit.WebView, url: String?) {
                             view.requestFocus()
                         }
-                        // A network that could not resolve the server's name showed the
-                        // web view's own error page - an upside-down robot - and nothing
-                        // else: opened again by the address the name last resolved to.
+                        // An address that does not answer showed the web view's own
+                        // error page - an upside-down robot - and nothing else: the next
+                        // address is tried instead, until one answers or none is left.
                         override fun onReceivedError(
                             view: android.webkit.WebView,
                             request: android.webkit.WebResourceRequest,
                             error: android.webkit.WebResourceError) {
-                            if (!request.isForMainFrame || triedOther) return
-                            val other = KnownHosts.byAddress(base) ?: return
-                            triedOther = true
-                            view.post { open(other.trimEnd('/')) }
+                            if (!request.isForMainFrame || next >= ways.size) return
+                            val at = ways[next++]
+                            view.post { open(at) }
                         }
                     }
-                    open(base)
+                    if (ways.isNotEmpty()) open(ways[next++]) else open(base)
                 }
             })
         Box(Modifier.align(Alignment.TopEnd).padding(10.dp)) {

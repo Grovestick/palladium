@@ -7,6 +7,58 @@ package se.palladium.tv
  * that drops connections (RouteTest) rather than tried on a phone.
  */
 object Route {
+    /** How wide a list of releases is drawn: most of the screen, so a release name fits
+     *  on a phone held sideways; the platform's dialog stopped at a third of it. */
+    const val PICKER_WIDTH = 0.94f
+    val PICKER_MAX = 1000
+
+    /** A search typed on Home that found films and programmes: shown in two parts. */
+    fun splitSearch(query: String, tab: String, films: Int, tv: Int): Boolean =
+        query.isNotBlank() && tab == "home" && films > 0 && tv > 0
+
+    /** "(3)" after the Version button when there are several copies, nothing for one. */
+    fun copiesSaid(copies: Int): String = if (copies > 1) "  ($copies)" else ""
+
+    /** Whether a title's page can list other releases to download: films and episodes. */
+    fun hasOtherVersions(type: String?): Boolean = type == "movie" || type == "episode"
+
+    /** Which title "play <words>" names: the one held title spelt exactly as said,
+     *  letters and digits only; null for none, or for two - that is a choice to show. */
+    fun spokenMatch(words: String, titles: List<Pair<String, Boolean>>): Int? {
+        val bare = { t: String -> t.lowercase().filter { it.isLetterOrDigit() } }
+        val said = bare(words)
+        if (said.isEmpty()) return null
+        val hits = titles.withIndex().filter { (_, t) -> t.second && bare(t.first) == said }
+        return hits.singleOrNull()?.index
+    }
+
+    /** Whether the search box fills what is left of the top line rather than standing
+     *  at its fixed width: a phone held upright, where 190 points pushed the
+     *  microphone off the screen. */
+    fun searchFills(tv: Boolean, widthDp: Int): Boolean = !tv && widthDp < 600
+
+    /** The seasons a pack carries, as a pack is named: "S02", "S01–S22", or "". */
+    fun seasonSpan(seasons: List<Int>): String = when {
+        seasons.isEmpty() -> ""
+        seasons.size == 1 -> "S%02d".format(seasons[0])
+        else -> "S%02d–S%02d".format(seasons.first(), seasons.last())
+    }
+
+    /** How soon a search is asked again while the catalogue answers behind it. */
+    const val FILL_IN_MS = 1_500L
+
+    /** How long a search waits for the tracker before it is asked again. */
+    const val SEARCH_AGAIN_MS = 8_000L
+    /** And how many times: a box set found for a film is read seconds after the search. */
+    const val SEARCH_AGAIN_TIMES = 3
+
+    /** The server's choice of subtitle to open with; [index] null is none. */
+    class SubChoice(val index: Int?)
+
+    /** What the server decided among these tracks, or null from a server that does not. */
+    fun serverSub(text: List<SubTrack>): SubChoice? =
+        if (text.none { it.decided }) null else SubChoice(text.firstOrNull { it.start }?.index)
+
     /** How many looks in a row must miss before an address is called down. */
     const val MISSES = 2
 
@@ -140,10 +192,12 @@ object Route {
     fun passesSound(onCast: Boolean, decodedHere: Boolean, sincePictureMs: Long): Boolean =
         !onCast && !decodedHere && soundSettled(sincePictureMs)
 
-    /** What a poster says of its download: how far, and nothing else. The rate, the
-     *  time left and the version are on the download line and the title's page. */
-    fun posterDownload(state: String, progress: Double): String = when (state) {
-        "downloading" -> "" + (progress * 100).toInt().coerceIn(0, 100) + "%"
+    /** What a poster says of its download: how far, and how fast while anything is
+     *  arriving. The time left and the version are on the download line and the
+     *  title's page. */
+    fun posterDownload(state: String, progress: Double, mbit: Double = 0.0): String = when (state) {
+        "downloading" -> "" + (progress * 100).toInt().coerceIn(0, 100) + "%" +
+            (if (mbit >= 0.5) " · " + Math.round(mbit) + " Mbit/s" else "")
         "queued" -> "Queued"
         "done" -> "Arriving"
         else -> ""
@@ -177,6 +231,444 @@ object Route {
     fun receiverRefusal(answered: Boolean, why: String): String =
         if (!answered || why == "off" || why == "not in the house" ||
             why == "not the device set for the receiver") "" else "receiver: $why"
+
+    /**
+     * Where the Monitor page is opened, in the order tried: the server the app is on,
+     * the same by the address its name last had, then the machine keeping copies - near
+     * address first. Any the background check has seen down go last rather than first.
+     * The page was opened on the main server alone, and with that machine away the app
+     * showed the web view's own error picture while the copy was answering.
+     */
+    fun monitorOrder(base: String, byAddress: String?, standby: String, standbyOut: String,
+                     down: (String) -> Boolean): List<String> {
+        val all = listOf(base, byAddress.orEmpty(), standby, standbyOut)
+            .map { it.trimEnd('/') }.filter { it.isNotEmpty() }.distinct()
+        return all.filter { !down(it) } + all.filter { down(it) }
+    }
+
+    /** Whether a title was made in any of the marked countries, comma-joined; nothing
+     *  marked is every country. */
+    fun madeIn(countries: List<String>, marked: String): Boolean {
+        val want = marked.split(",").map { it.trim().uppercase() }.filter { it.isNotEmpty() }
+        return want.isEmpty() || countries.any { it.uppercase() in want }
+    }
+
+    /** "KR" as "South Korea", in English. */
+    fun countryName(code: String): String =
+        java.util.Locale("", code.uppercase()).getDisplayCountry(java.util.Locale.ENGLISH)
+            .ifEmpty { code }
+
+    /** Orders that start with the highest: newest added, best picture, most popular,
+     *  best rated. The rest start at the bottom - A first, oldest first. */
+    val SORT_HIGH_FIRST = setOf("addedAt", "quality", "popularity", "rating")
+
+    /** The band on a series not held here: ADD where it can be downloaded, CHECKING while
+     *  the tracker is asked, REQUEST where nothing carries it; "" for a held one. */
+    fun seriesBand(addable: Boolean, onTracker: Boolean, checking: Boolean): String = when {
+        !addable -> ""
+        checking -> "CHECKING"
+        !onTracker -> "REQUEST"
+        else -> "ADD"
+    }
+
+    /** The key something played from SVT Play keeps its place under: "sv" + its video id. */
+    fun svtKey(id: String): String = "sv" + id
+
+    /** Whether pressing a card plays it from SVT Play at once: a card of something played
+     *  from there (Continue watching), not a catalogue film whose page offers it. */
+    fun svtPlaysAtOnce(key: String, svtId: String): Boolean =
+        key.startsWith("sv") && svtId.isNotEmpty()
+
+    /** Whether a poster wears the Stream band: not held here, and SVT Play has it. */
+    fun streamBand(askable: Boolean, addable: Boolean, svtId: String): Boolean =
+        (askable || addable) && svtId.isNotEmpty()
+
+    /** What an SVT Play stream that will not play says: away from Sweden SVT refuses
+     *  it, which reaches the player as a bad answer to the first piece. */
+    fun svtFailure(code: Int): String = when (code) {
+        2004 -> "SVT Play refused the stream - it plays in Sweden only"
+        in 2000..2999 -> "SVT Play could not be reached"
+        else -> "SVT Play's stream would not play here"
+    }
+
+    /** Whether pressing a tab opens its popular page: TV and Films do, unless a
+     *  streaming service is marked - then it is that service's catalogue. */
+    fun tvOpensPopular(tab: String, service: String): Boolean =
+        (tab == "tv" || tab == "films") && service.isEmpty()
+
+    /** A streaming service's catalogue in the popular page's orders. */
+    val SERVICE_ORDERS = listOf("popularity" to "Popular", "rating" to "Rating",
+                                "originallyAvailableAt" to "Released", "year" to "Year",
+                                "titleSort" to "Name")
+
+    /** The orders a shelf opened whole offers instead of the library's own: the
+     *  popular shows sort by how popular and how well rated as well; empty for the rest. */
+    fun extraOrders(row: String?): List<Pair<String, String>> =
+        if (popularPage(row))
+            listOf("popularity" to "Popular", "originallyAvailableAt" to "Released",
+                   "year" to "Year", "titleSort" to "Name", "rating" to "Rating")
+        else emptyList()
+
+    /** How far grids and shelves stop short of a television's edges, in dp: the sides
+     *  and the bottom. A TV trims its edges, and a ring at the very edge was cut off.
+     *  Nothing on a phone, where the screen shows all of itself. */
+    fun tvSafe(tv: Boolean): Pair<Int, Int> = if (tv) 24 to 20 else 0 to 0
+
+    /** The air above a film page's shelf so that it ends `margin` above the foot of a
+     *  `screen` tall screen: from where the air begins and how tall the shelf is, all in
+     *  dp; never less than ten. */
+    fun footGap(screen: Float, from: Float, shelf: Float, margin: Float): Float =
+        (screen - from - shelf - margin).coerceAtLeast(10f)
+
+    /** A television's home poster width in dp: two whole shelves in the `tall` dp under
+     *  the tabs - per shelf its name (18), the poster at 1.5 its width and 8 of air - with
+     *  the `passing` bars over the shelves counted back in, so a bar does not shrink them. */
+    fun homePoster(tall: Float, passing: Float): Int =
+        ((((tall + passing) / 2f) - 18f - 8f) / 1.5f).toInt().coerceIn(96, 124)
+
+    /** The second a still is asked for at: ten-second steps, as the server keeps them. */
+    fun frameSecond(filmMs: Long): Long = (filmMs.coerceAtLeast(0) / 10_000) * 10
+
+    /** The margin either side of a row of cards `card` wide in `width`: as many whole
+     *  cards as fit, and the rest shared out, so the row stands centred and its edges
+     *  are the same on both sides. A margin of its own on top kept seven 134 dp cards
+     *  off a 960 dp screen they fit on with 11 dp to spare either side. */
+    fun centredInset(width: Float, card: Int, least: Float = 0f): Float {
+        if (card <= 0 || width <= 0f) return least
+        val fit = maxOf(1, ((width - 2 * least) / card).toInt())
+        return ((width - fit * card) / 2f).coerceAtLeast(0f)
+    }
+
+    /** How far in a home shelf's first poster stands: in line with the shelf's name
+     *  on a television, a little in on a phone. The row itself runs edge to edge. */
+    fun shelfInset(tv: Boolean): Int = if (tv) 21 else 8
+
+    /** And the shelf's name above it: on a phone just right of the poster's edge, where
+     *  21 dp of a 400 dp wide screen was a margin nobody needed. */
+    fun shelfNameInset(tv: Boolean): Int = if (tv) 21 else 12
+
+    /** The address a live channel plays from on its server, signed in as the app is:
+     *  the token in the address, which the server copies onto each piece. */
+    fun liveAddress(base: String, key: String, token: String): String =
+        base.trimEnd('/') + "/live/" + key + "/index.m3u8" +
+            (if (token.isNotEmpty()) "?t=" + java.net.URLEncoder.encode(token, "UTF-8") else "")
+
+    /** The display mode to show `fps` frames a second in: the current size at that
+     *  rate, or at a whole multiple of it (25 on a 50 Hz mode), the plainest first. Null
+     *  when the current mode already fits or none does. Modes are (id, width, height, hz). */
+    fun modeFor(modes: List<Mode>, current: Mode, fps: Float): Int? {
+        if (fps <= 0f) return null
+        fun fits(hz: Float): Int? {
+            val times = hz / fps
+            val whole = Math.round(times)
+            return if (whole >= 1 && kotlin.math.abs(times - whole) < 0.01f * whole) whole else null
+        }
+        if (fits(current.hz) != null) return null
+        return modes.filter { it.width == current.width && it.height == current.height }
+            .mapNotNull { m -> fits(m.hz)?.let { m to it } }
+            .minByOrNull { it.second }?.first?.id
+    }
+
+    data class Mode(val id: Int, val width: Int, val height: Int, val hz: Float)
+
+    /** A sound's channels as a person says them: Mono, Stereo, 5.1, 7.1; "" unknown. */
+    fun channelsWord(n: Int): String = when {
+        n >= 8 -> "7.1"
+        n >= 6 -> "5.1"
+        n == 2 -> "Stereo"
+        n == 1 -> "Mono"
+        else -> ""
+    }
+
+    /** How long the server is asked to hold the notice connection open: as asked at
+     *  home; from away 20 s at most - a mobile network drops a connection idle for 45 s
+     *  without a word, and the read then ran into its 57 s timeout every few minutes. */
+    fun noticeHold(asked: Int, home: Boolean): Int = if (home) asked else minOf(asked, 20)
+
+    /** How long "Analysing the film…" stays over the picture; the measuring goes on
+     *  behind it and its answer is still said when it comes. */
+    const val SYNC_SAY_MS = 15_000L
+
+    /** What a subtitle measurement that failed says: a timeout is the measuring taking
+     *  too long (a busy drive), not a server out of reach - which it answered 6 ms later. */
+    fun syncFailure(e: Throwable): String {
+        var c: Throwable? = e
+        while (c != null) {
+            if (c is java.net.SocketTimeoutException) return "Analysing the film took too long"
+            c = c.cause
+        }
+        return "could not reach the server"
+    }
+
+    /** How far behind the live edge a channel plays: the cushion the server makes by
+     *  starting each channel half a minute back. */
+    const val LIVE_BEHIND_MS = 20_000L
+
+    /** Where the picture is sent when the time bar stops being moved; -1 for nowhere.
+     *  A move cancelled by Back never reached the player, which played on: nowhere,
+     *  seamless. Back on a move that did reach it: where it was when the move began.
+     *  Otherwise the controls have already gone to the spot. */
+    fun afterScrub(back: Boolean, canceled: Boolean, from: Long): Long =
+        if (!canceled && back && from >= 0) from else -1L
+
+    /** The length a progress report carries: the file's own, read off the player, when
+     *  it plays as it lies; else the title's. An encode's player length grows as it is
+     *  made, so it is not used. */
+    fun reportedLength(direct: Boolean, playerMs: Long, titleMs: Long): Long =
+        if (direct && playerMs > 0 && playerMs < 86_400_000L) playerMs
+        else titleMs.coerceAtLeast(0L)
+
+    /** A country's flag from its two-letter code, as the emoji the letters make; the
+     *  code itself where it is not two letters. */
+    fun flagOf(code: String): String {
+        val c = code.trim().uppercase()
+        if (c.length != 2 || !c.all { it in 'A'..'Z' }) return c
+        return c.map { String(Character.toChars(0x1F1E6 + (it - 'A'))) }.joinToString("")
+    }
+
+    /** What a live player does about an error: "edge" - fallen behind the live window,
+     *  back to the live edge; "retry" - the stream or network failed, ask again; null -
+     *  give up (the server refused it, or it has been picked up too often in a row). */
+    fun liveRecover(errorCode: Int, httpCode: Int, tries: Int,
+                    moves: Int = 0, twin: Boolean = false): String? {
+        // "move" - to the house's other machine, which has the same channels: its server
+        // gone (a restart, an install) after one try, or the channel refused here once
+        val canMove = twin && moves < 4
+        return when {
+            errorCode == 1002 && tries < 6 -> "edge"
+            liveRefused(httpCode) != null ->
+                if (canMove && moves == 0 && httpCode != 429) "move" else null
+            canMove && errorCode in 2000..2999 && tries >= 1 -> "move"
+            tries >= 6 -> if (canMove) "move" else null
+            errorCode in 2000..2999 || errorCode in 3000..3999 -> "retry"
+            else -> null
+        }
+    }
+
+    /** The house's other machine for a live channel played from `here`: the copy of
+     *  this server, or the server this one is a copy of. Not a friend's server - its
+     *  channels are not these. */
+    fun liveTwin(rows: List<Server>, here: String): Server? {
+        val at = Server("", here.trimEnd('/'), "")
+        val mine = rows.firstOrNull { sameMachine(it, at) }
+        fun isHere(s: Server) = sameMachine(s, at) || (mine != null && sameMachine(s, mine))
+        return rows.firstOrNull { other ->
+            other.base.isNotEmpty() && !isHere(other) &&
+                ((other.copyOf.isNotEmpty() && isHere(Server("", other.copyOf, ""))) ||
+                 (mine != null && mine.copyOf.isNotEmpty() &&
+                  sameMachine(Server("", mine.copyOf, ""), other)))
+        }
+    }
+
+    /** How often, and how many times, the player asks again while the server measures
+     *  a film for the receiver: every 15 s for ten minutes. */
+    const val RECEIVER_ASK_EVERY_MS = 15_000L
+    const val RECEIVER_ASKS = 40
+
+    /** Whether two rows are two ways of writing down one machine: the id it answers
+     *  with, or an address in common. */
+    fun sameMachine(a: Server, b: Server): Boolean {
+        if (a.id.isNotEmpty() && a.id == b.id) return true
+        val ways = { s: Server ->
+            listOf(s.base, s.outside).map { it.trimEnd('/') }.filter { it.isNotEmpty() }
+        }
+        return ways(a).any { it in ways(b) }
+    }
+
+    /** The rows asked for a second copy of a film playing from `here`: never the
+     *  machine playing it, by any address on its row or by the id it answered with.
+     *  Played from its outside address, which is on no row, the main server was taken
+     *  for a second machine - one film over two connections to one server. */
+    fun othersThan(rows: List<Server>, here: String, hereId: String): List<Server> {
+        val self = Server("", here.trimEnd('/'), "")
+        val mine = rows.firstOrNull { sameMachine(it, self) || (hereId.isNotEmpty() && it.id == hereId) }
+        return rows.filter {
+            it.base.isNotEmpty() && !sameMachine(it, self) &&
+                (mine == null || !sameMachine(it, mine)) &&
+                (hereId.isEmpty() || it.id != hereId)
+        }
+    }
+
+    /** The corner while a channel loads: how long it has waited, and what is in hand. */
+    fun liveLoadingLine(waitedMs: Long, bufferedMs: Long): String =
+        "Loading %.1f s \u00b7 %d s buffered".format(java.util.Locale.ROOT,
+            waitedMs.coerceAtLeast(0) / 1000f, (bufferedMs / 1000).coerceAtLeast(0))
+
+    /** The server's log line for a channel's start: from the press to the picture. */
+    fun liveStartLine(title: String, tookMs: Long): String =
+        "live start: %s ready after %.1f s".format(java.util.Locale.ROOT, title, tookMs / 1000f)
+
+    /** And for leaving it: how long it was on, and what went wrong while it was. */
+    fun liveLeftLine(title: String, onMs: Long, played: Boolean, stalls: Int, dropped: Int): String =
+        if (!played) "live left: %s after %.1f s, before it played".format(
+            java.util.Locale.ROOT, title, onMs / 1000f)
+        else "live left: %s after %d s, %d stall%s, %d frames dropped".format(
+            java.util.Locale.ROOT, title, onMs / 1000, stalls, if (stalls == 1) "" else "s", dropped)
+
+    /** The server's log line for a stall: which channel, how long in, what was in hand. */
+    fun liveStallLine(title: String, playedMs: Long, bufferedMs: Long, behindMs: Long,
+                      count: Int): String =
+        "live stall #$count: $title after ${playedMs / 1000} s, buffer ${bufferedMs / 1000} s" +
+            (if (behindMs >= 0) ", ${behindMs / 1000} s behind live" else "")
+
+    /** What a swipe over a live channel does: up or left the next channel, down or right
+     *  the one before; with the panel open, sideways steps its group. A short one is
+     *  nothing. */
+    fun liveSwipe(dx: Float, dy: Float, panel: Boolean): String {
+        val ax = kotlin.math.abs(dx); val ay = kotlin.math.abs(dy)
+        if (maxOf(ax, ay) < 80f) return ""
+        return if (ay >= ax) (if (dy < 0) "next" else "prev")
+               else if (panel) (if (dx < 0) "groupNext" else "groupPrev")
+               else (if (dx < 0) "next" else "prev")
+    }
+
+    /** The sound asked for when a film must be encoded rather than sent as it is:
+     *  anything but passthrough makes the address an encode, held to the ceiling. */
+    const val ENCODE_AUDIO = "aac"
+
+    /** An encode's ceiling for the info line: the lower of what was chosen for this
+     *  playing and the one in force here, "" for none or a direct play. */
+    fun encodeCap(direct: Boolean, chosenMbit: Int, ceilingMbit: Int): String {
+        if (direct) return ""
+        val cap = listOf(chosenMbit, ceilingMbit).filter { it > 0 }.minOrNull() ?: return ""
+        return "capped at $cap Mbit/s"
+    }
+
+    /** What a press on a film's download button does while it is coming in: the first
+     *  press asks ("arm"), a second within a few seconds cancels; otherwise "" - it is
+     *  the Download button and opens the versions. */
+    fun offerPress(state: String, armed: Boolean): String =
+        if (state != "queued" && state != "downloading") ""
+        else if (armed) "cancel" else "arm"
+
+    /** The channel `step` away from `at` in a list of `size`, round the ends. */
+    fun zap(at: Int, size: Int, step: Int): Int =
+        if (size <= 0) 0 else ((at + step) % size + size) % size
+
+    /** The next channel up or down among those of the same kind as the one on: a
+     *  YouTube stream steps through the YouTube circle, a playlist channel through the
+     *  playlist - never from one into the other. `groups` is each channel's group. */
+    fun zapIn(groups: List<String>, at: Int, step: Int): Int {
+        if (groups.isEmpty()) return 0
+        val tube = groups.getOrNull(at) == "YouTube"
+        val same = groups.indices.filter { (groups[it] == "YouTube") == tube }
+        if (same.isEmpty()) return at.coerceIn(0, groups.size - 1)
+        val here = same.indexOf(at).coerceAtLeast(0)
+        return same[zap(here, same.size, step)]
+    }
+
+    /** What Center shows over a live channel: the stream's picture, sound and buffer,
+     *  where it is in the playlist, and the group the playlist is narrowed to. */
+    fun liveFacts(title: String, group: String, width: Int, height: Int, fps: Float,
+                  videoCodec: String, bitrate: Int, audioCodec: String, sampleRate: Int,
+                  channels: Int, bufferedMs: Long, waiting: Boolean, dropped: Int,
+                  screenHz: Float, place: Int, of: Int, filter: String,
+                  filterChanged: Boolean, more: List<String> = emptyList()): String {
+        fun rate(x: Float) = if (x <= 0f) "" else
+            (if (x == Math.round(x).toFloat()) Math.round(x).toString() else "%.2f".format(java.util.Locale.ROOT, x))
+        val picture = listOf(
+            if (width > 0) "${width}\u00d7$height" else "",
+            rate(fps).let { if (it.isEmpty()) "" else "$it fps" },
+            videoCodec,
+            if (bitrate > 0) "%.1f Mbit/s".format(java.util.Locale.ROOT, bitrate / 1e6) else "")
+            .filter { it.isNotEmpty() }.joinToString(" \u00b7 ")
+        val sound = listOf(audioCodec,
+            if (sampleRate > 0) "${sampleRate / 1000} kHz" else "",
+            if (channels > 0) "$channels ch" else "")
+            .filter { it.isNotEmpty() }.joinToString(" \u00b7 ")
+        return (listOf(title + (if (group.isNotEmpty()) " \u00b7 $group" else "")) + more +
+                listOfNotNull(
+            if (picture.isNotEmpty()) "Picture: $picture" else null,
+            if (sound.isNotEmpty()) "Sound: $sound" else null,
+            (if (waiting) "Buffer: loading\u2026" else "Buffer: ${(bufferedMs / 1000).coerceAtLeast(0)} s") +
+                " \u00b7 dropped $dropped" + rate(screenHz).let { if (it.isEmpty()) "" else " \u00b7 screen $it Hz" },
+            if (of > 0) "Channel $place of $of \u00b7 Up/Down to change" else null,
+            "Group: \u2039 " + filter.ifEmpty { "All" } + " \u203a" +
+                (if (filterChanged) "  \u2013 Center to keep" else "  (Left/Right)"),
+        )).joinToString("\n")
+    }
+
+    /** The corner of a live channel: LIVE and the whole seconds in hand, or that it is
+     *  waiting for more - which is what a stall looks like from the sofa. */
+    fun liveBufferLabel(bufferedMs: Long, waiting: Boolean): String =
+        if (waiting) "LIVE \u00b7 loading\u2026" else "LIVE \u00b7 " + (bufferedMs / 1000).coerceAtLeast(0) + " s buffered"
+
+    /** What a live channel the server refused says: 429 is every connection of the own
+     *  playlist in use. Null for anything else, which the player shows as it is. */
+    fun liveRefused(code: Int): String? = when (code) {
+        429 -> "Every connection of the playlist is in use - stop another channel first"
+        504, 404 -> "The channel did not start - it may be off the air, or blocked here"
+        else -> null
+    }
+
+    /** Whether the Films or TV tab's own sort and filters stand above the grid: not while
+     *  a shelf opened whole is on screen, which has its own - Popular opened off TV
+     *  showed TV's, and its country narrowed the library instead of the page. */
+    fun tabControls(moreRow: String?, tab: String): Boolean =
+        moreRow == null && (tab == "films" || tab == "tv")
+
+    /** What a tab's order menu offers after the library's own orders: on TV and
+     *  Films, the popular titles, which open as a page of their own. */
+    fun tabExtraOrders(tab: String): List<Pair<String, String>> =
+        if (tab == "tv" || tab == "films") listOf("popular" to "Popular") else emptyList()
+
+    /** The tab's Popular order: the list as it came, most watched first (or turned
+     *  round), narrowed by every marked genre and any marked decade. */
+    fun <T> narrowPopular(list: List<T>, genres: (T) -> List<String>, year: (T) -> Int,
+                          rank: (T) -> Int, genre: String, decade: String,
+                          asc: Boolean): List<T> {
+        val want = genre.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        val eras = decade.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it > 0 }
+        val kept = list.filter { x ->
+            val has = genres(x).map { it.lowercase() }
+            want.all { it in has } &&
+                (eras.isEmpty() || eras.any { d -> year(x) in d..(d + 9) })
+        }
+        return if (asc) kept.sortedBy(rank) else kept.sortedByDescending(rank)
+    }
+
+    /** The name the popular page of a tab is opened under. */
+    fun popularRow(tab: String): String = if (tab == "films") "Popular films" else "Popular shows"
+
+    /** Whether a shelf opened whole is one of the popular pages. */
+    fun popularPage(row: String?): Boolean = row == "Popular shows" || row == "Popular films"
+
+    /** How many titles carry each value - a genre, a decade - for a page's filter menus. */
+    fun countOf(each: List<List<String>>): List<Pair<String, Int>> =
+        each.flatten().groupingBy { it }.eachCount().toList()
+
+    /** An episode a pack offers, pressed on its season: the release list every missing
+     *  episode opens, rather than its own page with one button. */
+    fun episodeOpensReleases(type: String, offered: Boolean): Boolean =
+        type == "episode" && offered
+
+    private val LANG_SAME = mapOf(
+        "en" to "en", "eng" to "en", "sv" to "sv", "swe" to "sv", "da" to "da", "dan" to "da",
+        "no" to "no", "nor" to "no", "nob" to "no", "nb" to "no", "fi" to "fi", "fin" to "fi",
+        "de" to "de", "ger" to "de", "deu" to "de", "fr" to "fr", "fre" to "fr", "fra" to "fr",
+        "es" to "es", "spa" to "es", "it" to "it", "ita" to "it", "nl" to "nl", "dut" to "nl",
+        "nld" to "nl", "pt" to "pt", "por" to "pt")
+
+    /** Whether a track's language tag and a reader's language are one language: "swe"
+     *  and "sv", "ger" and "de". The web's sameLang, the same table. Compared by the
+     *  first two letters alone, Swedish, German and French tracks never matched. */
+    fun sameLanguage(tag: String, want: String): Boolean {
+        val t = tag.lowercase(); val w = want.lowercase()
+        if (t.isEmpty() || w.isEmpty()) return false
+        fun canon(x: String) = LANG_SAME[x] ?: LANG_SAME[x.take(3)] ?: LANG_SAME[x.take(2)] ?: x
+        return t.startsWith(w.take(2)) || w.startsWith(t.take(2)) || canon(t) == canon(w)
+    }
+
+    /** Which soundtrack to pick out of a file played directly: the one chosen this
+     *  time, else the one the server marks, and nothing when that is the first - the
+     *  player takes the first by itself. A Korean film played its English dub because
+     *  only a choice made this time was ever picked. */
+    fun soundToPick(chosen: Int?, standard: Int?, first: Int?): Int? =
+        chosen ?: standard?.takeIf { it != first }
+
+    /** A skin's corner scale, held to what still draws a corner and a card: 0.2 to 2. */
+    fun cornerScale(said: Float): Float =
+        if (said.isNaN() || said <= 0f) 1f else said.coerceIn(0.2f, 2f)
 
     /** How long a name that would not resolve is asked for by number without trying. */
     const val NAME_FAILED_MS = 60_000L

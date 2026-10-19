@@ -587,15 +587,19 @@ class RouteTest {
     }
 
     @Test
-    fun `a poster says how far its download has got and nothing else`() {
+    fun `a poster says how far its download has got, and how fast`() {
         assertEquals("13%", Route.posterDownload("downloading", 0.134))
         assertEquals("0%", Route.posterDownload("downloading", 0.0))
         assertEquals("100%", Route.posterDownload("downloading", 1.2))
         assertEquals("Queued", Route.posterDownload("queued", 0.0))
         assertEquals("Arriving", Route.posterDownload("done", 1.0))
         assertEquals("", Route.posterDownload("", 0.5))
-        assertFalse("no rate, time or version on it",
-                    Regex("Mbit|min| s$|\\u00b7|·").containsMatchIn(Route.posterDownload("downloading", 0.5)))
+        assertEquals("42% \u00b7 46 Mbit/s", Route.posterDownload("downloading", 0.42, 46.3))
+        assertEquals("a rate under half a megabit is no rate", "42%",
+                     Route.posterDownload("downloading", 0.42, 0.2))
+        assertEquals("queued says no rate", "Queued", Route.posterDownload("queued", 0.0, 40.0))
+        assertFalse("no time left or version on it",
+                    Regex("min| s$|1080p").containsMatchIn(Route.posterDownload("downloading", 0.5, 30.0)))
     }
 
     @Test
@@ -630,6 +634,24 @@ class RouteTest {
         assertEquals("a fault of the receiver itself is still said",
                      "receiver: the receiver is off", Route.receiverRefusal(true, "the receiver is off"))
         assertEquals("receiver: the receiver refused", Route.receiverRefusal(true, "the receiver refused"))
+    }
+
+    @Test
+    fun `the monitor is opened where something answers`() {
+        val main = "http://house.example:8765"
+        val copyNear = "http://192.168.0.25:8764"
+        val copyOut = "http://house.example:8764"
+        assertEquals("the main server first, then its number, then the copy",
+                     listOf(main, "http://82.1.2.3:8765", copyNear, copyOut),
+                     Route.monitorOrder(main, "http://82.1.2.3:8765", copyNear, copyOut) { false })
+        assertEquals("the main server away: the copy first, the main server still last",
+                     listOf(copyNear, copyOut, main),
+                     Route.monitorOrder(main, null, copyNear, copyOut) { it == main })
+        assertEquals("no copy known: the main server alone",
+                     listOf(main), Route.monitorOrder(main, null, "", "") { false })
+        assertEquals("the app already on the copy: each address once",
+                     listOf(copyNear, copyOut),
+                     Route.monitorOrder("$copyNear/", null, copyNear, copyOut) { false })
     }
 
     // ---- a name that will not resolve
@@ -736,5 +758,477 @@ class RouteTest {
                 if (!before && w.standingBy) assertTrue(at, m is Move.Standby)
             }
         }
+    }
+
+    @Test
+    fun skinCornerScale() {
+        assertEquals(0.4f, Route.cornerScale(0.4f), 0.0001f)
+        assertEquals(1.6f, Route.cornerScale(1.6f), 0.0001f)
+        // nothing said, or nonsense: the app's own corners
+        assertEquals(1f, Route.cornerScale(0f), 0.0001f)
+        assertEquals(1f, Route.cornerScale(-3f), 0.0001f)
+        assertEquals(1f, Route.cornerScale(Float.NaN), 0.0001f)
+        // held to what still draws a card
+        assertEquals(0.2f, Route.cornerScale(0.01f), 0.0001f)
+        assertEquals(2f, Route.cornerScale(40f), 0.0001f)
+    }
+
+    @Test
+    fun directPlaySoundtrack() {
+        // the server marks the Korean track, second in the file: picked out
+        assertEquals(2, Route.soundToPick(null, 2, 1))
+        // marked and first: the player takes it by itself
+        assertNull(Route.soundToPick(null, 1, 1))
+        // chosen this time wins over the mark
+        assertEquals(3, Route.soundToPick(3, 2, 1))
+        // nothing known: nothing picked
+        assertNull(Route.soundToPick(null, null, 1))
+    }
+
+    @Test
+    fun subtitleLanguages() {
+        // a file's three letters and a reader's two: Swedish and German never matched
+        assertTrue(Route.sameLanguage("swe", "sv"))
+        assertTrue(Route.sameLanguage("ger", "de"))
+        assertTrue(Route.sameLanguage("deu", "de"))
+        assertTrue(Route.sameLanguage("fre", "fr"))
+        assertTrue(Route.sameLanguage("eng", "en"))
+        assertTrue(Route.sameLanguage("en-US", "en"))
+        assertFalse(Route.sameLanguage("swe", "en"))
+        assertFalse(Route.sameLanguage("", "en"))
+        assertFalse(Route.sameLanguage("dan", "sv"))
+    }
+
+    @Test
+    fun packEpisodeAndPopularFilters() {
+        // a pack's episode on its season: the release list, as a missing one opens
+        assertTrue(Route.episodeOpensReleases("episode", true))
+        assertFalse(Route.episodeOpensReleases("episode", false))
+        assertFalse(Route.episodeOpensReleases("show", true))
+        // the popular page's menus counted from the whole list
+        val got = Route.countOf(listOf(listOf("Drama", "Crime"), listOf("Drama"), emptyList())).toMap()
+        assertEquals(2, got["Drama"])
+        assertEquals(1, got["Crime"])
+        assertEquals(2, got.size)
+    }
+
+    @Test
+    fun popularOrders() {
+        val orders = Route.extraOrders("Popular shows").map { it.first }
+        assertEquals(listOf("popularity", "originallyAvailableAt", "year", "titleSort", "rating"), orders)
+        assertTrue(Route.extraOrders("Recently added").isEmpty())
+        assertTrue(Route.extraOrders(null).isEmpty())
+        // the highest first for popular and rating, A first for the name
+        assertTrue("popularity" in Route.SORT_HIGH_FIRST && "rating" in Route.SORT_HIGH_FIRST)
+        assertFalse("titleSort" in Route.SORT_HIGH_FIRST)
+    }
+
+    @Test
+    fun popularByCountry() {
+        assertTrue(Route.madeIn(listOf("US"), ""))
+        assertTrue(Route.madeIn(listOf("GB", "US"), "US"))
+        assertTrue(Route.madeIn(listOf("KR"), "jp,kr"))
+        assertFalse(Route.madeIn(listOf("US"), "KR"))
+        assertFalse(Route.madeIn(emptyList(), "US"))
+        assertEquals("South Korea", Route.countryName("KR"))
+    }
+
+    @Test
+    fun popularOnTheTvTab() {
+        assertEquals(listOf("popular"), Route.tabExtraOrders("tv").map { it.first })
+        assertEquals(listOf("popular"), Route.tabExtraOrders("films").map { it.first })
+        assertTrue(Route.tabExtraOrders("home").isEmpty())
+        assertEquals("Popular films", Route.popularRow("films"))
+        assertEquals("Popular shows", Route.popularRow("tv"))
+        assertTrue(Route.popularPage("Popular films") && Route.popularPage("Popular shows"))
+        assertFalse(Route.popularPage("Recently added") || Route.popularPage(null))
+        assertEquals(Route.extraOrders("Popular shows"), Route.extraOrders("Popular films"))
+    }
+
+    @Test
+    fun aShelfOpenedWholeHasItsOwnControls() {
+        assertTrue(Route.tabControls(null, "tv"))
+        assertTrue(Route.tabControls(null, "films"))
+        assertFalse(Route.tabControls("Popular shows", "tv"))
+        assertFalse(Route.tabControls(null, "home"))
+    }
+
+    @Test
+    fun liveChannelAddress() {
+        assertEquals("http://h:8765/live/lvabc/index.m3u8",
+                     Route.liveAddress("http://h:8765/", "lvabc", ""))
+        assertEquals("http://h:8765/live/lvabc/index.m3u8?t=a%2Bb",
+                     Route.liveAddress("http://h:8765", "lvabc", "a+b"))
+    }
+
+    @Test
+    fun theShelfStandsAtTheFootWithAMargin() {
+        assertEquals(176f, Route.footGap(540f, 100f, 240f, 24f), 0.01f)
+        assertEquals(10f, Route.footGap(540f, 400f, 240f, 24f), 0.01f)
+    }
+
+    @Test
+    fun aSeriesNobodyHasSaysWhereItCanComeFrom() {
+        assertEquals("ADD", Route.seriesBand(true, true, false))
+        assertEquals("CHECKING", Route.seriesBand(true, false, true))
+        assertEquals("REQUEST", Route.seriesBand(true, false, false))
+        assertEquals("", Route.seriesBand(false, false, false))
+    }
+
+    @Test
+    fun svtPlaysKeepTheirPlace() {
+        assertEquals("svabc1", Route.svtKey("abc1"))
+        assertEquals(true, Route.svtPlaysAtOnce("svabc1", "abc1"))
+        assertEquals(false, Route.svtPlaysAtOnce("rt0123456789", "abc1"))   // a page first
+        assertEquals(false, Route.svtPlaysAtOnce("svabc1", ""))
+    }
+
+    @Test
+    fun streamableWearsTheStreamBand() {
+        assertEquals(true, Route.streamBand(true, false, "abc1"))
+        assertEquals(true, Route.streamBand(false, true, "s1"))
+        assertEquals(false, Route.streamBand(true, false, ""))
+        assertEquals(false, Route.streamBand(false, false, "abc1"))   // held: it plays here
+    }
+
+    @Test
+    fun svtPlayFailuresSaySo() {
+        assertEquals("SVT Play refused the stream - it plays in Sweden only", Route.svtFailure(2004))
+        assertEquals("SVT Play could not be reached", Route.svtFailure(2001))
+        assertEquals("SVT Play's stream would not play here", Route.svtFailure(4001))
+    }
+
+    @Test
+    fun spokenPlayOpensOnlyAnExactHeldTitle() {
+        val found = listOf("Star Courier 2049" to true, "Star Courier" to true,
+                           "Star Courier" to false, "The Parcel Run" to true)
+        assertEquals(1, Route.spokenMatch("star courier", found))
+        assertEquals(0, Route.spokenMatch("Star Courier 2049", found))
+        assertEquals(null, Route.spokenMatch("courier", found))
+        assertEquals(null, Route.spokenMatch("alien", found))
+        // two held with the same name: a choice, shown as the list
+        assertEquals(null, Route.spokenMatch("star courier", found + ("Star Courier" to true)))
+    }
+
+    @Test
+    fun searchFillsAnUprightPhone() {
+        assertTrue(Route.searchFills(false, 411))
+        assertTrue(Route.searchFills(false, 360))
+        assertFalse(Route.searchFills(false, 800))
+        assertFalse(Route.searchFills(true, 360))
+    }
+
+    @Test
+    fun aPacksSeasons() {
+        assertEquals("", Route.seasonSpan(emptyList()))
+        assertEquals("S02", Route.seasonSpan(listOf(2)))
+        assertEquals("S01–S22", Route.seasonSpan((1..22).toList()))
+    }
+
+    @Test
+    fun popularIsAnOrderOfTheTab() {
+        // (title, genres, year, rank)
+        data class T(val t: String, val g: List<String>, val y: Int, val r: Int)
+        val list = listOf(T("A", listOf("Drama", "Crime"), 2019, 5), T("B", listOf("Drama"), 2024, 9),
+                          T("C", listOf("Comedy"), 1998, 7), T("D", emptyList(), 0, 0))
+        val say = { g: String, d: String, asc: Boolean ->
+            Route.narrowPopular(list, { it.g }, { it.y }, { it.r }, g, d, asc).joinToString("") { it.t } }
+        assertEquals("BCAD", say("", "", false))
+        assertEquals("DACB", say("", "", true))
+        assertEquals("BA", say("drama", "", false))
+        assertEquals("A", say("Drama,Crime", "", false))
+        assertEquals("CA", say("", "2010,1990", false))
+    }
+
+    @Test
+    fun tvOpensOnPopular() {
+        assertEquals(true, Route.tvOpensPopular("tv", ""))
+        assertEquals(false, Route.tvOpensPopular("tv", "1899"))
+        assertEquals(true, Route.tvOpensPopular("films", ""))
+        assertEquals(false, Route.tvOpensPopular("films", "8"))
+        assertEquals(false, Route.tvOpensPopular("home", ""))
+    }
+
+    @Test
+    fun channelsAsSaid() {
+        assertEquals("Stereo", Route.channelsWord(2))
+        assertEquals("5.1", Route.channelsWord(6))
+        assertEquals("7.1", Route.channelsWord(8))
+        assertEquals("Mono", Route.channelsWord(1))
+        assertEquals("", Route.channelsWord(0))
+    }
+
+    @Test
+    fun theNoticeIsHeldShortFromAway() {
+        assertEquals(45, Route.noticeHold(45, home = true))
+        assertEquals(20, Route.noticeHold(45, home = false))
+        assertEquals(0, Route.noticeHold(0, home = false))
+    }
+
+    @Test
+    fun aSubtitleMeasurementThatTimesOutSaysSo() {
+        assertEquals("Analysing the film took too long",
+                     Route.syncFailure(java.net.SocketTimeoutException("timeout")))
+        assertEquals("Analysing the film took too long",
+                     Route.syncFailure(java.io.IOException("x", java.net.SocketTimeoutException())))
+        assertEquals("could not reach the server",
+                     Route.syncFailure(java.net.ConnectException("refused")))
+        assertEquals(15_000L, Route.SYNC_SAY_MS)
+    }
+
+    @Test
+    fun backDuringAMoveLeavesThePictureWhereItWas() {
+        // cancelled by Back: the player was never moved and plays on, no seek
+        assertEquals(-1L, Route.afterScrub(true, true, 600_000L))
+        // a move that reached the player before Back: put back
+        assertEquals(600_000L, Route.afterScrub(true, false, 600_000L))
+        // an ordinary move, or nothing known of where it was: the move stands
+        assertEquals(-1L, Route.afterScrub(false, false, 600_000L))
+        assertEquals(-1L, Route.afterScrub(true, false, -1L))
+    }
+
+    @Test
+    fun progressCarriesTheLengthOfTheVersionPlaying() {
+        // a 29.5 min version of an episode whose first version is 42 min
+        assertEquals(1_772_438L, Route.reportedLength(true, 1_772_438L, 2_523_157L))
+        // an encode: the player's length is what has been made so far
+        assertEquals(2_523_157L, Route.reportedLength(false, 600_000L, 2_523_157L))
+        // nothing from the player yet; ExoPlayer's unset time is a huge negative
+        assertEquals(2_523_157L, Route.reportedLength(true, Long.MIN_VALUE + 1, 2_523_157L))
+    }
+
+    @Test
+    fun theReceiverLineWaitsOutALongMeasurement() {
+        // a film took 2.5 min to measure; the asks must outlast that by a margin
+        assertTrue(Route.RECEIVER_ASKS * Route.RECEIVER_ASK_EVERY_MS >= 10 * 60_000L)
+        assertTrue(Route.RECEIVER_ASK_EVERY_MS <= 15_000L)
+    }
+
+    @Test
+    fun theMachinePlayingIsNoSecondSource() {
+        val lan = Server("Main", "http://192.168.0.181:8765", "", id = "m1")
+        val copy = Server("Copy", "http://192.168.0.25:8764", "", id = "c1")
+        // played through the outside address, which is on no row: known by its id
+        assertEquals(listOf(copy), Route.othersThan(listOf(lan, copy), "http://203.0.113.58:8765", "m1"))
+        // by its own row's address, as before
+        assertEquals(listOf(copy), Route.othersThan(listOf(lan, copy), "http://192.168.0.181:8765", ""))
+        // the copy playing: the main server is the other machine
+        assertEquals(listOf(lan), Route.othersThan(listOf(lan, copy), "http://192.168.0.25:8764", "c1"))
+    }
+
+    @Test
+    fun aPassingBarDoesNotShrinkThePosters() {
+        assertEquals(124, Route.homePoster(450f, 0f))
+        assertEquals(109, Route.homePoster(380f, 0f))
+        // a 50 dp update bar takes height, and is counted back in
+        assertEquals(109, Route.homePoster(330f, 50f))
+        assertEquals(96, Route.homePoster(100f, 0f))
+    }
+
+    @Test
+    fun stillsAreAskedForInTenSecondSteps() {
+        assertEquals(0L, Route.frameSecond(9_999))
+        assertEquals(1230L, Route.frameSecond(1_234_567))
+        assertEquals(0L, Route.frameSecond(-5))
+    }
+
+    @Test
+    fun rowsOfPostersStandCentred() {
+        // 960 dp wide, cards 134 dp: seven fit, 11 dp either side
+        assertEquals(11f, Route.centredInset(960f, 134), 0.01f)
+        // too narrow for even one with the margin: one, centred
+        assertEquals(10f, Route.centredInset(150f, 130), 0.01f)
+        assertEquals(0f, Route.centredInset(960f, 0), 0.01f)
+    }
+
+    @Test
+    fun homeShelvesStartInLineWithTheirNames() {
+        assertEquals(21, Route.shelfInset(true))
+        assertEquals(8, Route.shelfInset(false))
+        assertEquals(Route.shelfInset(true), Route.shelfNameInset(true))
+        assertTrue(Route.shelfNameInset(false) < 21)
+    }
+
+    @Test
+    fun encodeCapIsTheLowerOfChosenAndCeiling() {
+        assertEquals("capped at 2 Mbit/s", Route.encodeCap(false, 2, 0))
+        assertEquals("capped at 4 Mbit/s", Route.encodeCap(false, 8, 4))
+        assertEquals("", Route.encodeCap(false, 0, 0))
+        assertEquals("", Route.encodeCap(true, 2, 4))
+    }
+
+    @Test
+    fun downloadingButtonCancelsOnTheSecondPress() {
+        assertEquals("arm", Route.offerPress("downloading", false))
+        assertEquals("cancel", Route.offerPress("downloading", true))
+        assertEquals("arm", Route.offerPress("queued", false))
+        assertEquals("", Route.offerPress("", false))
+        assertEquals("", Route.offerPress("done", true))
+    }
+
+    @Test
+    fun liveLoadingStartAndLeavingAreSaid() {
+        assertEquals("Loading 2.4 s \u00b7 3 s buffered", Route.liveLoadingLine(2_400, 3_900))
+        assertEquals("live start: SVT 1 ready after 3.2 s", Route.liveStartLine("SVT 1", 3_210))
+        assertEquals("live left: SVT 1 after 95 s, 1 stall, 4 frames dropped",
+                     Route.liveLeftLine("SVT 1", 95_400, true, 1, 4))
+        assertEquals("live left: X after 6.0 s, before it played", Route.liveLeftLine("X", 6_000, false, 0, 0))
+    }
+
+    @Test
+    fun liveStallSaysWhereAndWhatWasInHand() {
+        assertEquals("live stall #2: SVT 1 after 31 s, buffer 0 s, 18 s behind live",
+                     Route.liveStallLine("SVT 1", 31_400, 300, 18_200, 2))
+        assertEquals("live stall #1: X after 5 s, buffer 1 s", Route.liveStallLine("X", 5_000, 1_000, -9, 1))
+    }
+
+    @Test
+    fun liveSwipesChangeChannelOrGroup() {
+        assertEquals("next", Route.liveSwipe(10f, -300f, false))
+        assertEquals("prev", Route.liveSwipe(-10f, 300f, true))
+        assertEquals("next", Route.liveSwipe(-300f, 20f, false))
+        assertEquals("prev", Route.liveSwipe(300f, 20f, false))
+        assertEquals("groupNext", Route.liveSwipe(-300f, 20f, true))
+        assertEquals("groupPrev", Route.liveSwipe(300f, 20f, true))
+        assertEquals("", Route.liveSwipe(30f, 20f, false))
+    }
+
+    @Test
+    fun liveChannelStepsRoundTheEnds() {
+        assertEquals(1, Route.zap(0, 5, 1))
+        assertEquals(0, Route.zap(4, 5, 1))
+        assertEquals(4, Route.zap(0, 5, -1))
+        assertEquals(0, Route.zap(0, 0, 1))
+    }
+
+    @Test
+    fun aCountrysFlagFromItsCode() {
+        assertEquals("\uD83C\uDDF8\uD83C\uDDEA", Route.flagOf("SE"))
+        assertEquals("\uD83C\uDDFA\uD83C\uDDF8", Route.flagOf("us"))
+        assertEquals("", Route.flagOf(""))
+    }
+
+    @Test
+    fun aLiveStreamThatErrsPicksItselfUp() {
+        assertEquals("edge", Route.liveRecover(1002, 0, 0))       // behind the live window
+        assertEquals("retry", Route.liveRecover(2001, 0, 0))      // network
+        assertEquals(null, Route.liveRecover(2004, 429, 0))       // the playlist's connections: refused
+        assertEquals(null, Route.liveRecover(1002, 0, 6))         // too often in a row
+    }
+
+    @Test
+    fun aLiveChannelMovesToTheOtherMachineWhenItsServerGoes() {
+        val main = Server("Main", "http://10.0.0.1:8765", id = "a")
+        val copy = Server("Copy", "http://10.0.0.2:8764", id = "b", copyOf = "http://10.0.0.1:8765")
+        val friend = Server("Friend", "http://9.9.9.9:8765", id = "c")
+        assertEquals(copy, Route.liveTwin(listOf(main, friend, copy), "http://10.0.0.1:8765/"))
+        assertEquals(main, Route.liveTwin(listOf(main, friend, copy), "http://10.0.0.2:8764"))
+        assertEquals(null, Route.liveTwin(listOf(main, friend), "http://10.0.0.1:8765"))
+        // the server gone: one try, then the other machine; with none, tries as before
+        assertEquals("retry", Route.liveRecover(2001, 0, 0, 0, twin = true))
+        assertEquals("move", Route.liveRecover(2001, 0, 1, 0, twin = true))
+        assertEquals("retry", Route.liveRecover(2001, 0, 1, 0, twin = false))
+        // refused here: once to the other, never for the playlist's connections
+        assertEquals("move", Route.liveRecover(2004, 504, 0, 0, twin = true))
+        assertEquals(null, Route.liveRecover(2004, 504, 0, 1, twin = true))
+        assertEquals(null, Route.liveRecover(2004, 429, 0, 0, twin = true))
+        // and not back and forth for ever
+        assertEquals(null, Route.liveRecover(2001, 0, 6, 4, twin = true))
+    }
+
+    @Test
+    fun upAndDownStayInsideTheYouTubeCircle() {
+        val g = listOf("YouTube", "YouTube", "YouTube", "Sweden", "News", "Sweden")
+        assertEquals(1, Route.zapIn(g, 0, 1))
+        assertEquals(0, Route.zapIn(g, 2, 1))       // round, inside the circle
+        assertEquals(2, Route.zapIn(g, 0, -1))
+        assertEquals(4, Route.zapIn(g, 3, 1))       // a playlist channel steps the playlist
+        assertEquals(3, Route.zapIn(g, 5, 1))       // and round again, past YouTube
+    }
+
+    @Test
+    fun liveFactsSayPictureSoundBufferAndGroup() {
+        val said = Route.liveFacts("SVT 1", "Sweden", 1920, 1080, 50f, "avc1.64002A", 6_000_000,
+                                   "mp4a.40.2", 48000, 2, 12_400, false, 3, 50f, 3, 14,
+                                   "Sweden", false)
+        assertTrue(said.contains("SVT 1 \u00b7 Sweden"))
+        assertTrue(said.contains("Picture: 1920\u00d71080 \u00b7 50 fps \u00b7 avc1.64002A \u00b7 6.0 Mbit/s"))
+        assertTrue(said.contains("Sound: mp4a.40.2 \u00b7 48 kHz \u00b7 2 ch"))
+        assertTrue(said.contains("Buffer: 12 s \u00b7 dropped 3 \u00b7 screen 50 Hz"))
+        assertTrue(said.contains("Channel 3 of 14"))
+        assertTrue(Route.liveFacts("X", "", 0, 0, 0f, "", 0, "", 0, 0, 0, true, 0, 59.94f, 1, 2,
+                                   "", true).contains("Group: \u2039 All \u203a  \u2013 Center to keep"))
+        // a YouTube stream's source and show, straight under its title
+        val tube = Route.liveFacts("Race", "YouTube", 0, 0, 0f, "", 0, "", 0, 0, 0, true, 0, 50f,
+                                   1, 9, "", false,
+                                   listOf("Source: YouTube \u00b7 GTWorld", "Show: Race"))
+        assertTrue(tube.startsWith("Race \u00b7 YouTube\nSource: YouTube \u00b7 GTWorld\nShow: Race"))
+    }
+
+    @Test
+    fun liveSwitchesTheScreenToTheChannelsRate() {
+        val modes = listOf(Route.Mode(503, 3840, 2160, 59.94f), Route.Mode(504, 3840, 2160, 60f),
+                           Route.Mode(505, 3840, 2160, 50f), Route.Mode(511, 1920, 1080, 50f),
+                           Route.Mode(507, 3840, 2160, 23.976f))
+        val now = modes[0]
+        assertEquals(505, Route.modeFor(modes, now, 50f))
+        assertEquals(505, Route.modeFor(modes, now, 25f))
+        assertEquals(null, Route.modeFor(modes, now, 29.97f))
+        assertEquals(507, Route.modeFor(modes, now, 23.976f))
+        assertEquals(null, Route.modeFor(modes, modes[2], 50f))
+        assertEquals(null, Route.modeFor(modes, now, 0f))
+    }
+
+    @Test
+    fun liveCornerSaysSecondsInHand() {
+        assertEquals("LIVE \u00b7 12 s buffered", Route.liveBufferLabel(12_900, false))
+        assertEquals("LIVE \u00b7 loading\u2026", Route.liveBufferLabel(3_000, true))
+    }
+
+    @Test
+    fun liveRefusedOnlyWhenEveryConnectionIsInUse() {
+        assertTrue(Route.liveRefused(429)!!.contains("in use"))
+        assertTrue(Route.liveRefused(504)!!.contains("did not start"))
+        assertEquals(null, Route.liveRefused(500))
+        assertEquals(null, Route.liveRefused(0))
+    }
+
+    @Test
+    fun searchFromHomeSplitsFilmsAndTv() {
+        assertTrue(Route.splitSearch("batman", "home", 3, 2))
+        assertFalse(Route.splitSearch("batman", "films", 3, 2))
+        assertFalse(Route.splitSearch("batman", "home", 3, 0))
+        assertFalse(Route.splitSearch("", "home", 3, 2))
+    }
+
+    @Test
+    fun versionCountOnlyWhenThereAreSeveral() {
+        assertEquals("", Route.copiesSaid(1))
+        assertEquals("", Route.copiesSaid(0))
+        assertEquals("  (3)", Route.copiesSaid(3))
+    }
+
+    @Test
+    fun episodesListOtherVersionsToo() {
+        assertTrue(Route.hasOtherVersions("movie") && Route.hasOtherVersions("episode"))
+        assertFalse(Route.hasOtherVersions("show") || Route.hasOtherVersions(null))
+    }
+
+    @Test
+    fun serverChoosesTheSubtitle() {
+        val eng = SubTrack(-1, "srt", "eng", "eng", decided = true)
+        val swe = SubTrack(-2, "srt", "swe", "swe", start = true, decided = true)
+        assertEquals(-2, Route.serverSub(listOf(eng, swe))?.index)
+        // decided, none marked: none, not the app's own guess
+        assertNull(Route.serverSub(listOf(eng.copy(), swe.copy(start = false)))!!.index)
+        // an older server: no answer, and the app's rule decides
+        assertNull(Route.serverSub(listOf(eng.copy(decided = false), swe.copy(decided = false))))
+    }
+
+    @Test
+    fun tvKeepsTheRingOffTheEdge() {
+        // with the cell's own padding, a ring stays about 5% in from a TV's sides
+        assertTrue(Route.tvSafe(true).first >= 20 && Route.tvSafe(true).second >= 16)
+        assertEquals(0 to 0, Route.tvSafe(false))
     }
 }

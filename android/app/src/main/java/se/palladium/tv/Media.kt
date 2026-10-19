@@ -72,16 +72,20 @@ data class SubTrack(
     val downloads: Int = 0,
     //: named for this very release: the one whose timing fits
     val match: Boolean = false,
+    //: the server's choice to open with, and whether the server chose at all
+    val start: Boolean = false,
+    val decided: Boolean = false,
 ) {
-    /** What to call it on screen: the language first, then what kind it is. */
-    fun shown(): String {
+    /** What to call it on screen: the language first, then what kind it is - and on a
+     *  television the release it came from; a phone has no room for release names. */
+    fun shown(release: Boolean = Api.device == "tv"): String {
         val name = languageName(language)
         val kind = listOfNotNull(if (forced) "forced" else null,
                                  if (sdh) "SDH" else null).joinToString(" \u00b7 ")
         // What the release called it, minus the words already said: "European
         // (Forced)" keeps European, which tells one Spanish track from another;
         // "Forced" on its own adds nothing.
-        val own = label
+        val own = label.takeIf { release || !external }.orEmpty()
             .replace(Regex("""(?i)\b(forced|sdh|cc|hearing impaired)\b"""), "")
             .replace(Regex("""[()\[\]]"""), "")
             .trim(' ', '-', '·', ',')
@@ -153,14 +157,16 @@ data class Copy(
     /** the one this viewer settled on, if they have settled on one */
     val picked: Boolean = false,
 ) {
-    /** What to call it in a list: the release if the library knows it, else the facts. */
-    fun shown(): String {
+    /** What to call it in a list: the release if the library knows it, else the facts -
+     *  always the facts on a phone, where a release name runs off the screen. */
+    fun shown(release: Boolean = Api.device == "tv"): String {
         val facts = listOfNotNull(
             height?.let { if (it >= 1700) "4K" else it.toString() + "p" },
             videoCodec?.uppercase(),
             (bitrate / 1000f).takeIf { it >= 0.1f }?.let { "%.1f Mbit/s".format(it) },
         ).joinToString("  ·  ")
-        val named = fileName?.removeSuffix(".mkv")?.removeSuffix(".mp4") ?: facts
+        val named = (if (release) fileName?.removeSuffix(".mkv")?.removeSuffix(".mp4") else null)
+            ?: facts
         val which = cut.ifEmpty { edition }
         return if (which.isNotEmpty()) "$which  ·  $named" else named
     }
@@ -291,6 +297,22 @@ data class Media(
     /** The library's genres for this title, for narrowing a list it is on. */
     var genres: List<String> = emptyList()
 
+    /** A live channel on the Live TV row: pressed, it plays. */
+    var live: Boolean = false
+
+    /** How close a search hit is to the words: 0 the title itself, up to 4. */
+    var match: Int = 9
+
+    /** A group of live channels on that row: pressed, its channels. */
+    var liveGroup: String = ""
+
+    /** A sport's card on the Sports row: pressed, its races or games. */
+    var sportRow: Boolean = false
+    var sport: String = ""
+
+    /** Where it was made, "US" or "KR": the popular list's, for its country filter. */
+    var countries: List<String> = emptyList()
+
     /** A collection's saved sort and filters, as the server keeps them (JSON). */
     var shelfView: String = ""
 
@@ -307,8 +329,13 @@ data class Media(
 
     /** New on streaming and nowhere in this house: it can only be asked for. */
     var askable: Boolean = false
+    /** the SVT Play video id of a film not held here that SVT Play shows unprotected:
+     *  its page plays it from there. "" for none. */
+    var svtId: String = ""
     /** Something on the tracker to fetch for it, so asking can be skipped. */
     var onTracker: Boolean = false
+    //: not asked of the tracker yet: neither Download nor Request is known
+    var checking: Boolean = false
     /** A place written on this machine for something it holds no file for. */
     var unplayable: Boolean = false
     /** Somebody has asked for it already. */
@@ -319,6 +346,8 @@ data class Media(
     var askWhere: String = ""
     /** where a new release can be watched: each service's name, mark and kind */
     var providers: List<Triple<String, String, String>> = emptyList()
+    /** the country the streaming services are for, as a two-letter code; "" for none */
+    var providersCountry: String = ""
     /** the studios behind a film: each one's name, and its mark or "" */
     var studios: List<Pair<String, String>> = emptyList()
     /** its download as the server last said: "", queued, downloading, done or failed */
@@ -405,13 +434,7 @@ data class Media(
             "" -> ""
             else -> (audioCodec ?: "").uppercase()
         }
-        val layout = when {
-            audioChannels >= 8 -> "7.1"
-            audioChannels >= 6 -> "5.1"
-            audioChannels == 2 -> "Stereo"
-            audioChannels == 1 -> "Mono"
-            else -> ""
-        }
+        val layout = Route.channelsWord(audioChannels)
         return listOf(codec, layout).filter { it.isNotEmpty() }.joinToString(" ")
     }
 
@@ -463,10 +486,9 @@ data class Media(
         fun speaking(code: String): List<SubTrack> {
             val want = code.lowercase().take(3)
             if (want.isEmpty()) return emptyList()
+            // a track with no language counts: a file somebody put there
             return text.filter {
-                val tag = it.language.lowercase()
-                tag.startsWith(want.take(2)) || want.startsWith(tag.take(2)) ||
-                    (tag == "ger" && want == "deu") || (tag == "deu" && want == "ger")
+                it.language.isEmpty() || Route.sameLanguage(it.language, want)
             }
         }
         // The first language, then the second if the film carries nothing in the
@@ -495,10 +517,12 @@ data class Media(
      * English reader on Swedish after the English one arrived.
      */
     fun startSub(prefer: String = Api.myLanguage): Int? {
+        // the server decides for the app and the web alike; the rule below is for an older one
+        // every track: a picture one chosen by hand is the server's answer too
+        Route.serverSub(subtitleStreams)?.let { return it.index }
         val main = openWith(prefer)
         val inMain = { t: SubTrack ->
-            val tag = t.language.lowercase(); val want = prefer.lowercase()
-            tag.isNotEmpty() && (tag.startsWith(want.take(2)) || want.startsWith(tag.take(2)))
+            t.language.isNotEmpty() && Route.sameLanguage(t.language, prefer)
         }
         val picked = pickedSub?.let { i -> textSubs().firstOrNull { it.index == i } }
         if (picked != null && (inMain(picked) || main == null || !inMain(main)))
@@ -609,7 +633,9 @@ data class Media(
                             confirmed = s.optBoolean("confirmed"),
                             picked = s.optBoolean("picked"),
                             downloads = s.optInt("downloads", 0),
-                            match = s.optBoolean("match")))
+                            match = s.optBoolean("match"),
+                            start = s.optBoolean("start"),
+                            decided = media?.optBoolean("subsDecided") == true))
                     }
                 }
             }

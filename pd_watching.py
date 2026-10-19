@@ -32,6 +32,15 @@ SITTING_KEEP = 4 * 3600.0
 _next_id = itertools.count(1)
 
 
+def _private(address):
+    """Whether an address is one in the house rather than the outside one."""
+    import ipaddress
+    try:
+        return ipaddress.ip_address(str(address or "")).is_private
+    except ValueError:
+        return False
+
+
 class Watching:
     def __init__(self):
         self.lock = threading.Lock()
@@ -117,7 +126,10 @@ class Watching:
                     del self.sitting[old]
             had = self.spent.get(mark)
             if had:
-                row["bytes"] = int(had[1] or 0)
+                # a copy picks up at its offset, which already counts what was sent
+                # before: carrying the bytes as well read 2.4 GB of a 2.1 GB file
+                if not row["size"]:
+                    row["bytes"] = int(had[1] or 0)
                 row["started"] = min(row["started"], float(had[2] or row["started"]))
                 row["peak"] = max(row["peak"], float(had[3] or 0.0))
                 row["marks"] = [(now, row["bytes"])]
@@ -149,6 +161,10 @@ class Watching:
         out = dict(first)
         out["bytes"] = sum(p["bytes"] for p in parts)
         out["peak"] = max(p["peak"] for p in parts)
+        # the address in the house over the outside one: it says which screen it is
+        inside = [p for p in parts if _private(p.get("address"))]
+        if inside:
+            out["address"] = min(inside, key=lambda p: p["started"])["address"]
         # the window is measured from the oldest mark any of them holds, and the bytes
         # counted against it are all of them
         oldest = min(p["marks"][0][0] for p in parts)
@@ -204,9 +220,10 @@ class Watching:
 
     @staticmethod
     def _same(s):
-        """What makes two sessions one viewing: a person, a title, a screen."""
-        return (s.get("who") or "", str(s.get("key") or ""),
-                s.get("kind") or "", s.get("address") or "")
+        """What makes two sessions one viewing: a person, a title, a screen - not the
+        address. A player reading one film over the house network and through the
+        router's outside address at once was two rows on the monitor and the panel."""
+        return (s.get("who") or "", str(s.get("key") or ""), s.get("kind") or "")
 
     #: Told what was sent and how, when a stream closes: (bytes, how). Set by the
     #: server, which is the half that knows where to write it down.
@@ -279,7 +296,11 @@ class Watching:
                     # people arrived rather than shuffled by name
                     "started": int(s["started"]),
                     # the sitting's total, kept across reconnects, seeks and doors
-                    "mb": round(((s.get("offset", 0) + s["bytes"]) if s.get("size")
+                    # a copy: how far into the file it has got, from where each of
+                    # its connections began - the sitting's running total counts a
+                    # resumed copy's first part again
+                    "mb": round((min(max(p.get("offset", 0) + p["bytes"] for p in parts),
+                                     s["size"]) if s.get("size")
                                  else max(s["bytes"], (self.sitting.get(self._seat(s))
                                                        or (0, 0))[1])) / 1048576.0, 1),
                     # a copy: how big the whole file is, so "of" can be said

@@ -42,7 +42,8 @@
   // the house - Now playing and the logs
   const tabs = () => (CFG && CFG.guest
     ? (CFG.monitor ? GUEST_TABS.concat([["now", "Now playing"], ["log", "Log"]]) : GUEST_TABS)
-    : OWNER_TABS);
+    // and the tabs a plugin brings: static/iptv.js's IP-TV
+    : OWNER_TABS.concat((window.PD_TABS || []).map((t) => [t[0], t[1]])));
 
   /* Two kinds of setting, and only one of them belongs to a machine.
    *
@@ -74,10 +75,15 @@
     return u.toString();
   };
 
-  const post = async (path, body) =>
-    (await fetch(where(path),
+  // a setting a mirror takes from its main server is refused there: said, rather
+  // than a button that lights and quietly goes back
+  const post = async (path, body) => {
+    const back = await (await fetch(where(path),
                  { method: "POST", headers: { "Content-Type": "application/json" },
                    body: JSON.stringify(body || {}) })).json();
+    if (back && back.mirrored && back.error) toast(back.error);
+    return back;
+  };
   const get = async (path) => (await fetch(where(path))).json();
 
   const block = (title) => {
@@ -538,7 +544,9 @@
         " of " + s.total + "</span>";
       const pick = document.createElement("select");
       // two answers, because there are two: the titles decide, or the filenames do
-      [["auto", "Auto (by title)"], ["files", "Follow the files"]].forEach(([v, t]) => {
+      // doubles: the files count a double episode as two where the catalogue has one
+      [["auto", "Auto (by title)"], ["files", "Follow the files"],
+       ["doubles", "Doubles count as one"]].forEach(([v, t]) => {
         const o = document.createElement("option");
         o.value = v;
         o.textContent = t;
@@ -729,6 +737,30 @@
       nextRow.appendChild(b);
     });
     box.appendChild(nextRow);
+    // how many come in at once: qBittorrent's own queue holds the rest
+    const onceRow = document.createElement("div");
+    onceRow.className = "addrow subrow";
+    onceRow.innerHTML = "<span class='sublabel'>At once</span>";
+    const atOnce = cfg.atOnce === undefined ? 1 : Number(cfg.atOnce);
+    [[1, "One"], [2, "Two"], [3, "Three"], [0, "No limit"]].forEach(([value, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (atOnce === value ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/torrents/config", { atOnce: value });
+        render();
+      };
+      onceRow.appendChild(b);
+    });
+    box.appendChild(onceRow);
+    const onceNote = document.createElement("div");
+    onceNote.className = "note";
+    onceNote.textContent = atOnce
+      ? (atOnce === 1 ? "One download at a time" : atOnce + " downloads at a time") +
+        ", from a pack, the tracker or added by hand; the rest wait in qBittorrent's " +
+        "queue. Seeding is not limited."
+      : "Every download runs at once.";
+    box.appendChild(onceNote);
     const why = document.createElement("div");
     why.className = "note";
     why.textContent = cfg.nextEpisode
@@ -1253,11 +1285,59 @@
     if (data.listening && data.listening.busy) timer = setTimeout(poll, 1500);
   }
 
+  /* Check and repair: the index and the state files, looked at and put right where
+     they can be. One press; a copy is taken first and nothing is deleted. */
+  function repairBlock() {
+    const box = block("Check and repair");
+    const row = document.createElement("div");
+    row.className = "addrow";
+    const go = document.createElement("button");
+    go.className = "btn ghost";
+    go.textContent = "Check and repair";
+    row.appendChild(go);
+    box.appendChild(row);
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "Checks the library index and the settings, invitations and " +
+      "download list. A damaged index has its indexes rebuilt; a file that cannot be " +
+      "read is put back from its newest copy that can. A copy is taken first and " +
+      "nothing is deleted.";
+    box.appendChild(note);
+    const said = document.createElement("div");
+    box.appendChild(said);
+    go.onclick = async () => {
+      go.disabled = true;
+      said.innerHTML = "";
+      note.textContent = "Checking\u2026";
+      let back = {};
+      try {
+        back = await post("/library/repair", {});
+      } catch (e) {
+        back = { ok: false, rows: [{ what: "The check", state: "did not run", note: String(e && e.message || e) }] };
+      }
+      go.disabled = false;
+      note.textContent = back.ok ? "Everything reads and the index is sound."
+                                 : "Something could not be put right - see below.";
+      note.className = "note " + (back.ok ? "good" : "bad");
+      (back.rows || []).forEach((r) => {
+        const line = document.createElement("div");
+        line.className = "note";
+        line.textContent = r.what + ": " + r.state + (r.note ? " - " + r.note : "");
+        said.appendChild(line);
+      });
+    };
+    return box;
+  }
+
   async function paneLibrary(main) {
     await panePlayback(main);
     await numberingBlock(main);
     await newDaysBlock(main);
     await seasonalBlock(main);
+    // a plugin's own settings: static/iptv.js and the like register theirs here
+    for (const add of (window.PD_SETTINGS || [])) {
+      try { await add(main, { get, post, block, render }); } catch (e) { /* a plugin's own */ }
+    }
     await watchBlock(main);
     await skipStartBlock(main);
     accentBlock(main, await get("/settings"));
@@ -1290,6 +1370,7 @@
       bar.appendChild(row);
     });
     main.appendChild(bar);
+    main.appendChild(repairBlock());
 
     /* What a folder is in decides what its files are: a film folder yields films, a
        series folder yields episodes. Mixed is for a folder that genuinely holds both -
@@ -6513,8 +6594,22 @@
     h.innerHTML = '<span class="ct">Settings</span>' +
       '<span class="onwhich">' + esc(on) + '</span>';
     main.appendChild(h);
+    // a copy that mirrors the main server: its settings are changed there
+    try {
+      const said = await get("/settings");
+      if (said && said.mirrorOf) {
+        const n = document.createElement("div");
+        n.className = "note mirrornote";
+        n.textContent = "This server mirrors " + said.mirrorOf + ": its playing, choosing, " +
+          "subtitle and shelf settings are changed there and copied here every few " +
+          "minutes. Only this machine's own - folders, jobs, its address - are set here.";
+        main.appendChild(n);
+      }
+    } catch (e) { /* an older server: no mirror to speak of */ }
     main.appendChild(tabBar());
-    if (tab === "library") await paneLibrary(main);
+    const plugged = (window.PD_TABS || []).filter((t) => t[0] === tab)[0];
+    if (plugged) await plugged[2](main, { get, post, block, render });
+    else if (tab === "library") await paneLibrary(main);
     else if (tab === "extras") await extrasBlock(main);
     else if (tab === "torrents") {
       // Four subjects, a row of tabs of their own: the client and its folders, what
@@ -6616,7 +6711,10 @@
      ["episodes", "New episodes",
       "Adds new episodes of followed series as they come out."],
      ["search", "Tracker search",
-      "Searches the tracker once a day for films on the new-release list."]
+      "Searches the tracker once a day for films on the new-release list."],
+     ["stills", "Timeline stills",
+      "Makes the stills over the timeline ahead of time, while nothing plays: titles " +
+      "being watched and their next episode first, then what came in the last two weeks."]
     ].forEach(([name, label, note]) => {
       const row = document.createElement("div");
       row.className = "addrow subrow";
@@ -6921,14 +7019,14 @@
       ? data.filmsShow : {};
     // the same defaults the server answers with, so a page read before anything was
     // ever chosen lights the same buttons the shelf is actually standing
-    const fallback = { disk: true, download: true, request: true };
+    const fallback = { disk: true, download: true, request: false };
     [["disk", "On disk",
       "Films this house holds a file for. These play."],
      ["download", "Download",
-      "Films one of the packs carries. Not here yet, but downloading one is a button."],
+      "Films a pack or the tracker carries. Not here yet, but downloading one is a button."],
      ["request", "Request",
-      "Films nowhere in the house and on no pack: new on streaming, and all anybody " +
-      "can do is ask."]]
+      "Films nowhere in the house, on no pack and not on the tracker: new on streaming, " +
+      "and all anybody can do is ask."]]
       .forEach(([name, label, note]) => {
         const on = said[name] === undefined ? fallback[name] : !!said[name];
         const row = document.createElement("div");
@@ -6957,6 +7055,56 @@
      the people who watched it and the people paid to review it. A film is listed
      when every meter that is on, and has a number, reaches sixty per cent - a film
      out this week often has neither yet, and those are not held back. */
+  /* Whether the TV tab stands the popular programmes this house has none of, with Add,
+     or keeps them under its Popular choice. Theirs, on every screen. */
+  function tvShelf(main, data) {
+    const box = block("What TV shows");
+    const on = data.tvPopular === "popular" ? "popular" : "always";
+    const row = document.createElement("div");
+    row.className = "addrow subrow";
+    row.innerHTML = "<span class='sublabel'>Popular shows</span>";
+    [["always", "Always"], ["popular", "Only under Popular"]].forEach(([val, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (on === val ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/settings", { tvPopular: val });
+        render();
+      };
+      row.appendChild(b);
+    });
+    box.appendChild(row);
+    const n = document.createElement("div");
+    n.className = "note";
+    n.textContent = on === "always"
+      ? "The TV tab stands the popular programmes you do not have yet beside your own, each with Add."
+      : "The TV tab stands your own programmes; the popular ones are under its Popular choice.";
+    box.appendChild(n);
+    // and the series nobody can download or stream: hidden as it comes
+    const ask = data.tvRequest === "show" ? "show" : "hide";
+    const row2 = document.createElement("div");
+    row2.className = "addrow subrow";
+    row2.innerHTML = "<span class='sublabel'>Series nobody has</span>";
+    [["hide", "Hide"], ["show", "Show"]].forEach(([val, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (ask === val ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/settings", { tvRequest: val });
+        render();
+      };
+      row2.appendChild(b);
+    });
+    box.appendChild(row2);
+    const n2 = document.createElement("div");
+    n2.className = "note";
+    n2.textContent = ask === "hide"
+      ? "Series that no pack, no tracker release and no streaming service carries are left out."
+      : "Series that nothing carries are shown with Request, beside those you can add or stream.";
+    box.appendChild(n2);
+    main.appendChild(box);
+  }
+
   function meterShelf(main, data) {
     const box = block("Which scores a new film must pass");
     const said = (data.meters && typeof data.meters === "object") ? data.meters : {};
@@ -7852,7 +8000,7 @@
     // two rules after the rows: episodes' own bitrate window, and when two releases
     // are close enough that the better-seeded one wins
     [["Series bitrate", "seriesRate", "same",
-      [["same", "Same as films"], ["2-4", "2-4"], ["3-6", "3-6"], ["4-8", "4-8"],
+      [["same", "Same as films"], ["2-8", "2-8"], ["2-4", "2-4"], ["3-6", "3-6"], ["4-8", "4-8"],
        ["5-8", "5-8"], ["any", "Any"]],
       (v) => v === "same"
         ? "Episodes are held to the films' bitrate window."
@@ -8116,6 +8264,24 @@
             modes.append(document.createTextNode(" S"), from,
                          document.createTextNode(" to "), to);
           }
+          // out of both lists, and the packs chosen for it that nothing came from
+          const rm = document.createElement("button");
+          rm.className = "btn ghost kind tiny bad";
+          rm.textContent = "Remove";
+          rm.title = "Stop following it and drop its unused packs; files on the disk stay";
+          rm.onclick = async () => {
+            if (!confirm("Remove " + name + "? It is no longer followed, and the packs " +
+                         "nothing was downloaded from are dropped. Files on the disk stay.")) return;
+            rm.disabled = true;
+            let out = {};
+            try {
+              out = await post("/shows/remove", { show: name });
+            } catch (e) { out = { error: "The server did not answer" }; }
+            toast(out.error || ("Removed" + (out.packs ? ", " + out.packs + " pack" +
+                                             (out.packs === 1 ? "" : "s") + " dropped" : "")));
+            render();
+          };
+          modes.appendChild(rm);
         };
         b.onclick = () => {
           const one = find(name);
@@ -8396,6 +8562,7 @@
     yourQuality(main, s);
     howFetched(main, s);
     filmsShelf(main, s);
+    tvShelf(main, s);
     meterShelf(main, s);
     fetchShelf(main, s);
     if (CFG && CFG.guest) return;      // the ceilings below are the owner's business
@@ -8613,6 +8780,10 @@
   let logAll = false;
   //: showing only what the machine that keeps copies is holding
   let logCopy = false;
+  //: the last week, or every viewing kept
+  let logWeek = true;
+  //: the machine a viewing played on, "" for either
+  let logOn = "";
 
   /* Every download from a torrent pack: who asked for which film, and when. */
   /* What is coming in and what waits, in the order it will come: the download line's
@@ -8657,15 +8828,36 @@
             // a stalled one's guess runs to weeks and says nothing
             (o.eta != null && o.eta >= 0 && o.eta < 86400 ? " · " + eta(o.eta) : "");
         el.append(name, who, st);
-        if (o.queueKey) {
+        if (o.queueKey && o.mine) {
+          // one place up or down among the waiting ones this viewer may move
+          const waiting = rows.filter((r) => (r.offer || {}).queueKey && (r.offer || {}).mine)
+            .map((r) => r.offer.queueKey);
+          const at = waiting.indexOf(o.queueKey);
+          const send = async (keys, b) => {
+            b.disabled = true;
+            try { await post("/torrents/order", { keys: keys }); } catch (e) {}
+            draw();
+          };
+          [["\u2191", -1, "Up one"], ["\u2193", 1, "Down one"]].forEach(([t, step, title]) => {
+            const b = document.createElement("button");
+            b.className = "btn ghost kind";
+            b.textContent = t;
+            b.title = title;
+            const to = at + step;
+            b.disabled = to < 0 || to >= waiting.length;
+            b.onclick = () => {
+              const keys = waiting.slice();
+              keys[at] = keys[to];
+              keys[to] = o.queueKey;
+              send(keys, b);
+            };
+            el.appendChild(b);
+          });
           const up = document.createElement("button");
           up.className = "btn ghost kind";
           up.textContent = "Move to top";
-          up.onclick = async () => {
-            up.disabled = true;
-            try { await post("/torrents/order", { keys: [o.queueKey] }); } catch (e) {}
-            draw();
-          };
+          up.disabled = at === 0;
+          up.onclick = () => send([o.queueKey], up);
           el.appendChild(up);
         }
         list.appendChild(el);
@@ -8781,6 +8973,8 @@
   }
 
   async function paneLog(main) {
+    // opened on its own, as the app's Log: a page that scrolls, the list first
+    if (document.body.classList.contains("monitor")) document.body.dataset.design = "log";
     // What has been watched, what has been copied, and what did the watching.
     // Three screens of one question, none of them a tab's worth on its own.
     const tabs = document.createElement("div");
@@ -8808,13 +9002,14 @@
     }
     await statsBlock(main);
     const box = block("Watch log");
+    box.classList.add("logbox");
     box.innerHTML += "<div class='note'>Every viewing, newest first. Downloads are under Downloads. " +
       "Viewings are written from the "
       + "progress each client reports, so it covers the browser, the phone and the "
       + "television alike.</div>";
     let data = { watched: [] };
     try {
-      data = await get("/watchlog" + (logAll ? "?limit=20000" : ""));
+      data = await get("/watchlog" + (logWeek ? "?days=7" : logAll ? "?limit=20000" : ""));
     } catch (e) {
       box.innerHTML += "<div class='note'>Could not read it.</div>";
       main.appendChild(box);
@@ -8824,8 +9019,8 @@
     const fetched = [];
     const all = (data.watched || []).concat(fetched)
       .sort((a, b) => (b.started || 0) - (a.started || 0));
-    // the newest few hundred, unless the whole book has been asked for
-    if ((data.held || 0) > (data.watched || []).length) {
+    // the last week, or the newest few hundred - unless the whole book has been asked for
+    if (!logWeek && (data.held || 0) > (data.watched || []).length) {
       const more = document.createElement("div");
       more.className = "addrow";
       const b = document.createElement("button");
@@ -8855,6 +9050,31 @@
     pick.value = logWho;
     pick.onchange = () => { logWho = pick.value; render(); };
     who.appendChild(pick);
+    // how far back: the last week by default, both servers in one list
+    const span = document.createElement("select");
+    span.className = "genrepick";
+    [["week", "Last 7 days"], ["all", "Everything"]].forEach(([id, label]) => {
+      const o = new Option(label, id);
+      if ((logWeek ? "week" : "all") === id) o.selected = true;
+      span.add(o);
+    });
+    span.onchange = () => { logWeek = span.value === "week"; render(); };
+    who.appendChild(span);
+    // which server it played on: a play that moved, or ran on both, is on each
+    const machinesOf = (w) => {
+      const parts = (w.parts || []).map((p) => p.machine).filter(Boolean);
+      return parts.length ? parts : [w.machine].filter(Boolean);
+    };
+    const servers = [...new Set(all.flatMap(machinesOf))].sort();
+    if (servers.length > 1 || logOn) {
+      const on = document.createElement("select");
+      on.className = "genrepick";
+      on.add(new Option("Both servers", ""));
+      servers.forEach((name) => on.add(new Option("Played on " + name, name)));
+      on.value = logOn;
+      on.onchange = () => { logOn = on.value; render(); };
+      who.appendChild(on);
+    }
     // and what of it the other machine is holding. "Which of these could I still
     // watch tonight" is the question this page is opened with once the main server server
     // is off, and until now it could only be answered by going through the shelves.
@@ -8895,6 +9115,7 @@
         .join(w.failover ? " → " : ", ");
     };
     let rows = logWho ? all.filter((w) => w.who === logWho) : all;
+    if (logOn) rows = rows.filter((w) => machinesOf(w).includes(logOn));
     if (logCopy && copies) rows = rows.filter((w) => copies.has(String(w.key)));
     const table = document.createElement("div");
     table.className = "watchlog";
@@ -8990,7 +9211,7 @@
   /* The monitor's looks, switched from the corner: everything, the drawing alone, the
      streams alone, or the totals large enough to read across a room. Kept per screen. */
   const DESIGNS = [["overview", "Overview"], ["drawing", "Drawing"],
-                   ["streams", "Streams"], ["numbers", "Numbers"]];
+                   ["streams", "Streams"], ["numbers", "Numbers"], ["workers", "Workers"]];
 
   function designBar() {
     let now = "overview";

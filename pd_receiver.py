@@ -9,6 +9,7 @@ The steps are counted as the receiver's display counts: +5 is 5.0 more on it, te
 presses of its volume button (each press is 0.5).
 """
 import json
+import os
 import threading
 import time
 import urllib.request
@@ -172,6 +173,47 @@ def measure_order(rows, known):
         elif wants_measuring(one, codec):
             lack.append((ident, path, size))
     return lack + window + none
+
+
+def first_soon(soon, known, codecs, busy=()):
+    """Of the files about to be watched, in the order they will be, the first still
+    wanting a reading and not on a drive somebody is watching from: (id, path, size),
+    or None. Taken before the backlog: a reading matters to the next episode, not to a
+    film nobody has opened in a year."""
+    for ident, path, size in soon:
+        if not wants_measuring(known.get(str(ident)), codecs.get(str(ident), "")):
+            continue
+        if os.path.splitdrive(path or "")[0].upper() in busy:
+            continue
+        return (ident, path, size)
+    return None
+
+
+def soon_keys(progress, next_of, finished, many=3):
+    """The titles about to be watched, nearest first, from (key, position, duration)
+    rows newest first: a film or episode left part-way, and the episodes after one -
+    `many` of them - in the order the series runs. `next_of(key)` is the episode after,
+    or None; `finished(position, duration)` says whether it was watched to the end."""
+    out = []
+
+    def add(key):
+        if key and key not in out:
+            out.append(key)
+
+    for key, position, duration in progress:
+        key = str(key)
+        done = finished(position, duration)
+        if not done:
+            add(key)
+        if not key.startswith("e"):
+            continue
+        step, ahead = key, many - (0 if done else 1)
+        for _ in range(max(0, ahead)):
+            step = next_of(step)
+            if not step:
+                break
+            add(str(step))
+    return out
 
 
 def typical(readings, least=30):

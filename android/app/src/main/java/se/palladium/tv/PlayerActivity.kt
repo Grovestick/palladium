@@ -321,6 +321,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private val qualityCap = androidx.compose.runtime.mutableStateOf("")
     //: and the same thing as numbers, for marking what cannot be chosen
     private val capNow = androidx.compose.runtime.mutableStateOf(Pair(0, 0))
+    /** whether the ceiling in force has been asked for the info line */
+    private var capAsked = false
     private val gettingSubs = androidx.compose.runtime.mutableStateOf(false)
     //: whether the next episode's subtitle is fetched before it starts: the server's
     //: setting, shown beside Download because that is where somebody thinks about it
@@ -710,6 +712,31 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             it.setShowPreviousButton(false)
         }
         view = player
+        // a still of the film over the timeline while it is moved, by finger or remote
+        player.findViewById<androidx.media3.ui.DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)
+            ?.addListener(object : androidx.media3.ui.TimeBar.OnScrubListener {
+                override fun onScrubStart(timeBar: androidx.media3.ui.TimeBar, position: Long) {
+                    // where the picture is, so Back can put it there again
+                    if (!scrubbing) {
+                        scrubbing = true
+                        scrubBack = false
+                        scrubFrom = view?.player?.currentPosition ?: -1L
+                    }
+                    previewAt(position)
+                }
+                override fun onScrubMove(timeBar: androidx.media3.ui.TimeBar, position: Long) =
+                    previewAt(position)
+                override fun onScrubStop(timeBar: androidx.media3.ui.TimeBar, position: Long,
+                                         canceled: Boolean) {
+                    hidePreview()
+                    // Back while moving it cancels the move: the player was never sent
+                    // anywhere and plays on where it is
+                    val back = Route.afterScrub(scrubBack, canceled, scrubFrom)
+                    scrubbing = false
+                    scrubBack = false
+                    if (back >= 0) view?.player?.seekTo(back)
+                }
+            })
         // Media3 keeps its subtitle view inside the picture, which is where a subtitle
         // belongs - until somebody asks for it in the black below the film, and there
         // is no black inside the picture to put it in. Ours covers the whole player,
@@ -1261,7 +1288,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                                 roomSaid.takeLast(5).forEach { line ->
                                     Row(verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(10.dp))
+                                            .clip(RoundedCornerShape(Skin.round(10.dp)))
                                             .background(androidx.compose.ui.graphics
                                                             .Color(0xCC0B0D10))
                                             .padding(horizontal = 12.dp, vertical = 7.dp)) {
@@ -1286,7 +1313,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                             Row(verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .padding(bottom = 64.dp)
-                                    .clip(RoundedCornerShape(999.dp))
+                                    .clip(RoundedCornerShape(Skin.round(999.dp)))
                                     .background(androidx.compose.ui.graphics
                                                     .Color(0xCC0B0D10))
                                     .padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -1482,6 +1509,28 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
 
         setContentView(frame)
 
+        // A phone: two taps on the left third of the picture go back as the back arrow
+        // does, on the right third forward as the forward arrow does; one tap still
+        // brings the controls up, and the middle is left to that
+        if (!onTelevision()) {
+            val taps = android.view.GestureDetector(this,
+                object : android.view.GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+                        val v = view ?: return false
+                        val p = v.player ?: return false
+                        val third = v.width / 3f
+                        when {
+                            e.x < third -> p.seekBack()
+                            e.x > v.width - third -> p.seekForward()
+                            else -> return false
+                        }
+                        v.showController()
+                        return true
+                    }
+                })
+            player.setOnTouchListener { _, ev -> taps.onTouchEvent(ev); false }
+        }
+
         // The icon and the info line belong to the controls, not to the film: when the
         // transport bar times out they go with it, and a tap brings all three back.
         player.setControllerVisibilityListener(
@@ -1491,6 +1540,13 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 infoBar?.visibility = visibility
                 nameBar?.visibility = visibility
                 cornerRow?.visibility = visibility
+                // on a television the remote lands on the time bar, not the pause
+                // button: left and right move through the film from the first press,
+                // and centre on the bar pauses. The controls come up by themselves as
+                // a film starts, with the pause button chosen.
+                if (visibility == android.view.View.VISIBLE && onTelevision()) {
+                    player.post { barTakesTheRemote() }
+                }
             })
 
         // and when they go: pause, rather than play on to the room
@@ -1969,9 +2025,18 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         }
         // a rate is a line speed, so megabits; only the amount that has gone by is
         // in bytes
+        // what is arriving, which runs ahead of the film while the buffer fills - not
+        // the rate it was encoded at, which is the cap beside it
         val rate = throughput()?.let {
-            String.format(java.util.Locale.US, "%.1f Mbit/s", it * 8)
+            String.format(java.util.Locale.US, "arriving %.1f Mbit/s", it * 8)
         }
+        if (!capAsked) {
+            capAsked = true
+            lifecycleScope.launch {
+                capNow.value = runCatching { Api.effectiveCeiling() }.getOrDefault(Pair(0, 0))
+            }
+        }
+        val cap = Route.encodeCap(direct, chosenRate(), capNow.value.second)
         // the server's count for this viewing where it has one - the same number the
         // panel shows - and this player's own otherwise; the two began at different
         // moments and never agreed
@@ -2015,9 +2080,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val facts = if (passingThrough() && sourceFacts.isNotEmpty())
             sourceFacts + (if (direct) " passthrough" else "  \u00b7  sound passed through")
         else sourceFacts
-        return listOf(whichMachine(), sourceLine(), how,
+        return listOf(whichMachine(), sourceLine(), how, cap,
                       facts, decodedSize, frameRate(),
-                      decoderName, audioDecoder,
+                      // not the decoders' names: c2.amlogic.avc.decoder says nothing
+                      // anybody watching acts on
                       rate, used, buffered,
                       loud, receiverSaid.takeIf { passingThrough() }, dropped,
                       subtitleName())
@@ -2032,8 +2098,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         if (said.optBoolean("measuring")) return "receiver: measuring the film first"
         // the receiver's own units are half a decibel each
         val db = said.optInt("by", 0) / 2.0
-        val how = if (said.optString("mode") == "loudness") "by loudness" else "fixed steps"
-        return String.format(java.util.Locale.US, "receiver %+.1f dB, %s", db, how)
+        return String.format(java.util.Locale.US, "receiver %+.1f dB", db)
     }
 
     /**
@@ -2311,8 +2376,89 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     //: the case of it being made again after a restart in the middle of an episode
     private var saidVerified = false
 
+    //: the box over the timeline: the still it shows, the second wanted, the one shown
+    private var preview: android.widget.ImageView? = null
+    private var previewWant = -1L
+    private var previewShown = -1L
+    private var previewBusy = false
+    //: the bar is being moved; the box is shown only once a still is in it
+    private var previewOn = false
+
+    /** Show the box above the bar at `barMs`, with the still of that moment. */
+    private fun previewAt(barMs: Long) {
+        val bar = timeBar() ?: return
+        val v = view ?: return
+        val p = current() ?: return
+        val dur = p.duration.takeIf { it > 0 } ?: return
+        val dp = resources.displayMetrics.density
+        val img = preview ?: android.widget.ImageView(this).also {
+            it.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            it.setBackgroundColor(0xFF000000.toInt())
+            val w = ((if (onTelevision()) 240 else 160) * dp).toInt()
+            (v.overlayFrameLayout ?: v).addView(it, android.widget.FrameLayout.LayoutParams(w, w * 9 / 16))
+            preview = it
+        }
+        val at = IntArray(2); bar.getLocationInWindow(at)
+        val home = IntArray(2); v.getLocationInWindow(home)
+        val frac = (barMs.toFloat() / dur).coerceIn(0f, 1f)
+        val w = img.layoutParams.width
+        img.translationX = (at[0] - home[0] + bar.width * frac - w / 2f)
+            .coerceIn(0f, (v.width - w).coerceAtLeast(0).toFloat())
+        // just above the bar: 20 dp up, it touched the pause button on a phone
+        img.translationY = at[1] - home[1] - img.layoutParams.height - 4 * dp
+        previewOn = true
+        if (previewShown >= 0) img.visibility = android.view.View.VISIBLE
+        val filmMs = if (p is OffsetPlayer || direct) barMs else streamStartMs() + barMs
+        previewWant = Route.frameSecond(filmMs)
+        fetchPreview()
+    }
+
+    /** One still at a time, the newest wanted next. */
+    private fun fetchPreview() {
+        val want = previewWant
+        if (previewBusy || want < 0 || want == previewShown) return
+        val film = title.value ?: return
+        val part = film.partKey?.substringBefore("?")?.substringAfterLast("/parts/")
+            ?.substringBefore("/")?.takeIf { it.isNotEmpty() } ?: return
+        previewBusy = true
+        val w = if (onTelevision()) 320 else 240
+        lifecycleScope.launch {
+            val got = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                Api.bitmapAt(Api.frameUrl(film, part, want, w))
+            }
+            previewBusy = false
+            if (got != null && previewOn) {
+                preview?.setImageBitmap(got)
+                previewShown = want
+                preview?.visibility = android.view.View.VISIBLE
+            }
+            if (previewWant != want) fetchPreview()
+        }
+    }
+
+    private fun hidePreview() {
+        previewOn = false
+        preview?.visibility = android.view.View.GONE
+        // the next time starts empty, not on the still of where it was last
+        preview?.setImageDrawable(null)
+        previewShown = -1L
+    }
+
     private fun timeBar(): androidx.media3.ui.DefaultTimeBar? =
         view?.findViewById(androidx.media3.ui.R.id.exo_progress)
+
+    /** The time bar takes the remote when the controls come up - unless something of
+     *  ours already has it: a panel, or a button somebody moved to. */
+    private fun barTakesTheRemote() {
+        val v = view ?: return
+        val bar = timeBar() ?: return
+        if (nextUp.value != null) return
+        val focus = currentFocus
+        val transport = setOf(androidx.media3.ui.R.id.exo_play_pause,
+                              androidx.media3.ui.R.id.exo_rew_with_amount,
+                              androidx.media3.ui.R.id.exo_ffwd_with_amount)
+        if (focus == null || focus === v || focus.id in transport) bar.requestFocus()
+    }
 
     //: when left or right last moved the bar: a centre press soon after ends the
     //: scrub, which the bar itself does, rather than pausing
@@ -2351,8 +2497,18 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         if (focus != null && focus !== v && !isInside(v, focus)) return false
         if (!v.isControllerFullyVisible) {
             v.showController()
-            // after the controller's own request for the pause button
-            bar.post { bar.requestFocus() }
+            val sideways = code == android.view.KeyEvent.KEYCODE_DPAD_LEFT ||
+                           code == android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+            // after the controller's own request for the pause button; and left or
+            // right moves the film at once rather than only bringing the bar up
+            bar.post {
+                bar.requestFocus()
+                if (sideways) {
+                    bar.setKeyTimeIncrement(keyStepMs(0))
+                    lastScrubKey = android.os.SystemClock.uptimeMillis()
+                    bar.onKeyDown(code, event)
+                }
+            }
             centreTook = centre
             return true
         }
@@ -2375,7 +2531,29 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         return false
     }
 
+    //: the time bar being moved, where the picture was when it began, and whether
+    //: Back asked for it to stay there
+    private var scrubbing = false
+    private var scrubFrom = -1L
+    private var scrubBack = false
+
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        // Back while the bar is being moved cancels the move; the player stays open.
+        // A time bar switched off mid-move stops it as cancelled, and a cancelled stop
+        // is never sent to the player - the picture plays on without a jump. Stopping
+        // it with a press instead committed the move and then sought back to where the
+        // picture had been when the move began.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK && scrubbing) {
+            if (event.action == android.view.KeyEvent.ACTION_UP) {
+                scrubBack = true
+                timeBar()?.let { bar ->
+                    val was = bar.isEnabled
+                    bar.isEnabled = false
+                    bar.isEnabled = was
+                }
+            }
+            return true
+        }
         // The button on a pair of headphones, and the play key on any remote. The
         // media session answers these when the app is in the background; in the
         // foreground they arrive here first, and something has to act on them.
@@ -2608,6 +2786,13 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             }
 
             override fun onPlaybackStateChanged(state: Int) {
+                // The controls that came up as the film opened chose the pause button
+                // again once it could play, after the time bar had been given the
+                // remote - so the first press of the film paused it. Given back here.
+                if (state == Player.STATE_READY && onTelevision() &&
+                    view?.isControllerFullyVisible == true) {
+                    view?.post { barTakesTheRemote() }
+                }
                 mark("state " + when (state) {
                     Player.STATE_BUFFERING -> "buffering"
                     Player.STATE_READY -> "ready"
@@ -2730,6 +2915,38 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     val at = whereItIs()
                     log("encode cut: opened again at " + (at / 1000) + "s")
                     restartAt(at)
+                    return
+                }
+                // The file refused as it is (403): over the quality ceiling for this
+                // viewer or this side of the front door. The app chooses a direct play
+                // by the codecs alone and took the refusal for a network fault, so a
+                // ceiling stopped the film. Started again as an encode, which the
+                // server holds to the ceiling.
+                val overCeiling = direct && !onCastNow() &&
+                    generateSequence(error.cause) { it.cause }
+                        .filterIsInstance<
+                            androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()
+                        .any { it.responseCode == 403 }
+                if (overCeiling && retried < 2) {
+                    retried++
+                    val at = whereItIs() / 1000
+                    log("direct play refused (403): encoding under the ceiling from " + at + "s")
+                    val film = title.value
+                    lifecycleScope.launch {
+                        val whole = film ?: runCatching { Api.item(ratingKey, playingOn()) }
+                            .getOrNull()
+                        if (whole == null) {
+                            finish()
+                            return@launch
+                        }
+                        val (url, _) = Api.playbackUrl(whole, at, burnIndex = null,
+                                                       audio = Route.ENCODE_AUDIO)
+                        startActivity(playIntent(this@PlayerActivity, whole, at)
+                                          .putExtra("url", url)
+                                          .putExtra("direct", false)
+                                          .putExtra("casual", casually()).putExtra("shelf", offTheShelf()))
+                        finish()
+                    }
                     return
                 }
                 // A stream that stops arriving mid-block looks to the extractor like a
@@ -3105,16 +3322,12 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // a share only for a film coming off two machines now: the counts are kept
         // across films, and a stream with no second source showed the last one's 50/50
         val share = if (on >= 2) TwoWays.split() else null
-        // and which machine is answering, when it is not the one this screen calls
-        // home. A film served by the copy looked exactly like one served by the main
-        // server, so there was no way to tell from the screen that anything had
-        // fallen over - or that it had not come back.
-        val standing = if (Api.standingBy())
-            "  ·  on " + Api.standbyName.ifBlank { "the other machine" } else ""
+        // which machine is answering is the first thing on the line (whichMachine);
+        // said here again it read "Cache · sources 1/1 · on the other machine"
         return when {
-            share != null -> head + "  " + share + standing
-            whyNotSplit != null -> head + "  " + whyNotSplit + standing
-            else -> head + standing
+            share != null -> head + "  " + share
+            whyNotSplit != null -> head + "  " + whyNotSplit
+            else -> head
         }
     }
 
@@ -3143,8 +3356,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         reader.main = streamUrl
         val other = ready
         // The film on the screen by its own key - the details held can still be the
-        // last title's for a moment, and Fallout's file name was compared with Deep
-        // Blue Sea on the copy - and the file being played, not the film's first:
+        // last title's for a moment, and one series' file name was compared with a
+        // film's on the copy - and the file being played, not the film's first:
         // a film held in several versions plays one of them.
         val film = title.value?.takeIf { it.ratingKey == ratingKey }
         val playingName = film?.copies?.firstOrNull { c ->
@@ -3712,6 +3925,12 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // because a file was just fetched - draws nothing over the picture and says
         // nothing when it lands. Only what somebody pressed for reports back.
         syncAsked.value = loud
+        // and for fifteen seconds at most: a film on a busy drive took five minutes,
+        // with the line over the picture all that time. The answer is still said.
+        if (loud) lifecycleScope.launch {
+            kotlinx.coroutines.delay(Route.SYNC_SAY_MS)
+            syncAsked.value = false
+        }
         // the overlay says it now, in the library's own colours
         syncJob = lifecycleScope.launch {
             val said = Api.syncSubtitle(ratingKey, n, shiftSub(), mi = mi)
@@ -4419,7 +4638,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // a shuffle always has a next thing, even when this is a film and there is no
         // series behind it
         if (prefetched || durationMs <= 0) return
-        if (!casually() && showKey.isEmpty()) return
+        // the next episode's is fetched by the server; a shuffle's next draw is known here
+        if (!casually()) return
         if (durationMs - pos > 5 * 60_000) return
         prefetched = true
         lifecycleScope.launch {
@@ -4683,8 +4903,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
      */
     private fun pickTheChosenSound(tracks: androidx.media3.common.Tracks) {
         if (pickedSound || !direct || onCastNow()) return
-        val want = chosenAudio() ?: return
         val film = title.value ?: return
+        val want = Route.soundToPick(chosenAudio(),
+                                     film.audioStreams.firstOrNull { it.standard }?.index,
+                                     film.audioStreams.firstOrNull()?.index) ?: return
         val nth = film.audioStreams.indexOfFirst { it.index == want }
         if (nth < 0) return
         var seen = 0
@@ -4822,6 +5044,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
      */
     private fun playSound(film: Media, audio: Int) {
         soundOpen.value = false
+        // remembered for the film or the series, on every screen
+        val which = film
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            Api.pickSound(which, audio)
+        }
         val at = position() / 1000
         val sub = chosenSub()
         startActivity(playIntent(this, film, at, sub, audio,
@@ -4918,7 +5145,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             else intent.getStringExtra("subsName")?.takeIf { it.isNotEmpty() } ?: "on"
         } ?: "on"
         // a closing report outlives the player; everything else stops with it
-        val dur = if (durationMs > 0) durationMs else 0
+        // the length of the file playing, where it plays as it lies: the title's own
+        // is its first version's, and a 29-minute version measured against 42 never
+        // reached watched
+        val dur = Route.reportedLength(direct,
+            runCatching { current()?.duration ?: 0L }.getOrDefault(0L), durationMs)
         val who = deviceName()
         val mine = casually()
         val shelf = offTheShelf()
@@ -4965,10 +5196,12 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     }.getOrNull()
                     receiverSaid = receiverWords(said)
                     // not measured yet: the server measures it now and raises after;
-                    // asked again so the line says what was done
-                    repeat(4) {
+                    // asked again until it has, so the line says what was done. Four
+                    // asks half a minute apart gave up before a film that took two and
+                    // a half minutes to measure, and the line said "measuring" for good.
+                    repeat(Route.RECEIVER_ASKS) {
                         if (said?.optBoolean("measuring") != true || !receiverRaised) return@launch
-                        kotlinx.coroutines.delay(30_000)
+                        kotlinx.coroutines.delay(Route.RECEIVER_ASK_EVERY_MS)
                         if (!receiverRaised) return@launch
                         said = runCatching {
                             Api.receiverPassthrough("start", ratingKey, screen)

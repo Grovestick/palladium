@@ -337,6 +337,27 @@ _STREAMS = ("flatrate", "free", "ads")
 _STORES = ("rent", "buy")
 
 
+def providers_country(results, chosen, region, only=()):
+    """(country, services) for a title's streaming badges: the chosen country's; where it
+    has none yet - a new release out in the US weeks before Sweden - the first other
+    country that has some, the US first, then the one with the most. With no country
+    chosen, everywhere, and no single country to name."""
+    if not chosen:
+        return "", providers_of(results, region, only=only, strict=False)
+    here = providers_of(results, chosen, only=only, strict=True)
+    if here:
+        return chosen, here
+    def offered(c):
+        said = (results or {}).get(c) or {}
+        return sum(len(v) for v in said.values() if isinstance(v, list)) if isinstance(said, dict) else 0
+    for c in sorted((c for c in (results or {}) if c != chosen),
+                    key=lambda c: (c != "US", -offered(c), c)):
+        got = providers_of(results, c, only=only, strict=True)
+        if got:
+            return c, got
+    return chosen, []
+
+
 def providers_of(results, region="", most=5, only=(), strict=False):
     """Where a film can be watched, from the catalogue's answer by country: each
     service once, as {"name", "logo", "kind"} with kind "stream" or "store".
@@ -508,7 +529,9 @@ def services_in_order(listed, region=""):
         name = str(p.get("provider_name") or "").strip()
         if name and name.lower() not in seen:
             seen.add(name.lower())
-            out.append({"name": name, "logo": str(p.get("logo_path") or "")})
+            out.append({"name": name, "logo": str(p.get("logo_path") or ""),
+                        # the catalogue's number, which its service lists are asked by
+                        "id": int(p.get("provider_id") or 0)})
     return out
 
 
@@ -617,6 +640,135 @@ def _held(lib):
 
 #: TMDB's numbers for categories, read once so a title can carry the words.
 GENRES = {}
+#: and the television ones, which are numbered apart: Drama is 18 in both, Talk is not
+TV_GENRES = {}
+
+#: (kind, the asking) -> (when, (results, pages, titles)): a service's catalogue, page
+#: by page, asked once in half an hour
+_DISCOVER = {}
+
+
+#: the big services of a country, most subscribed first, by the names the catalogue
+#: gives them - the only ones offered there. Its own order for Sweden put JustWatch TV,
+#: a shop and Blockbuster ahead of HBO Max, which came forty-second.
+TOP_SERVICES = {
+    "SE": ["Netflix", "HBO Max", "Disney Plus", "Viaplay", "Amazon Prime Video", "TV4 Play",
+           "SVT Play", "Apple TV", "SkyShowtime"],
+}
+#: and what is not a service to subscribe to: shops, add-ons sold inside another, a
+#: children's corner of one already listed, guides
+NOT_A_SERVICE = re.compile(r"(?i)store|channel|kids|justwatch|guidedoc|blockbuster|rakuten"
+                           r"|youtube|amazon video|sf anytime|with ads|plex|pluto|google play")
+
+
+def menu_services(lib, region, most=14):
+    """The services for the Service filter: a country's subscriptions, films' and
+    television's together, the ones people there have first: [{"id", "name", "logo"}]."""
+    region = str(region or "").upper()
+    seen, every = set(), []
+    for kind in ("movie", "tv"):
+        had = _WATCH.get("menu:%s:%s" % (kind, region))
+        if not had or time.time() - had[0] > 86400:
+            try:
+                said = (lib.tmdb("/watch/providers/" + kind, watch_region=region)
+                        if region else lib.tmdb("/watch/providers/" + kind)).get("results") or []
+            except Exception:
+                said = []
+            if said:
+                had = (time.time(), services_in_order(said, region))
+                _WATCH["menu:%s:%s" % (kind, region)] = had
+        for s in (had[1] if had else []):
+            if s.get("id") and s["id"] not in seen and not NOT_A_SERVICE.search(s["name"]):
+                seen.add(s["id"])
+                every.append(s)
+    top = [t.lower() for t in TOP_SERVICES.get(region, [])]
+    if top:
+        every = sorted((s for s in every if s["name"].lower() in top),
+                       key=lambda s: top.index(s["name"].lower()))
+    return every[:most]
+
+
+def genre_numbers(lib, kind, names):
+    """The catalogue's numbers for genre names, for a film or a series; names it does not
+    know are left out."""
+    known = GENRES if kind == "movie" else TV_GENRES
+    if not known:
+        try:
+            for one in (lib.tmdb("/genre/%s/list" % ("movie" if kind == "movie" else "tv"))
+                        or {}).get("genres") or []:
+                known[one.get("id")] = one.get("name")
+        except Exception:
+            pass
+    by_name = {str(v).lower(): k for k, v in known.items() if v}
+    return [by_name[n.strip().lower()] for n in names if n.strip().lower() in by_name]
+
+
+def service_page(lib, kind, providers, region, page, genres=(), years=(0, 0),
+                 order="popularity:desc", language=""):
+    """One page of what streaming services carry in a country, the catalogue's answer:
+    (results, pages, titles). Any of the services; every one of the genres; between
+    the years; in the order asked - popular, rating, released, year or name, either way."""
+    what = "tv" if kind == "tv" else "movie"
+    dated = "first_air_date" if what == "tv" else "primary_release_date"
+    key, _, way = str(order or "popularity:desc").partition(":")
+    way = "asc" if way == "asc" else "desc"
+    params = {"with_watch_providers": "|".join(str(int(p)) for p in providers),
+              "watch_region": str(region or "").upper(), "page": int(page),
+              "include_adult": "false"}
+    if language:
+        # the same page in another language: what the titles are called there
+        params["language"] = language
+    if key in ("originallyAvailableAt", "year", "addedAt"):
+        by = dated
+    elif key == "rating":
+        # rated by enough people to mean it: a 10 from two votes headed the list
+        by = "vote_average"
+        params["vote_count.gte"] = 100 if what == "movie" else 50
+    elif key == "titleSort":
+        by = "title" if what == "movie" else "name"
+    else:
+        by = "popularity"
+    params["sort_by"] = by + "." + way
+    if genres:
+        params["with_genres"] = ",".join(str(int(g)) for g in genres)
+    if years and years[0]:
+        params[dated + ".gte"] = "%d-01-01" % int(years[0])
+        params[dated + ".lte"] = "%d-12-31" % int(years[1])
+    if by == dated:
+        # by date is by date out: a date next year is not on the service yet
+        params[dated + ".lte"] = min(params.get(dated + ".lte", "9999"),
+                                     time.strftime("%Y-%m-%d"))
+    mark = json.dumps([what, params], sort_keys=True)
+    hit = _DISCOVER.get(mark)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    said = lib.tmdb("/discover/" + what, timeout=15, **params) or {}
+    got = (list(said.get("results") or []), int(said.get("total_pages") or 0),
+           int(said.get("total_results") or 0))
+    if len(_DISCOVER) > 300:
+        _DISCOVER.clear()
+    _DISCOVER[mark] = (time.time(), got)
+    return got
+
+
+def film_row(one):
+    """A catalogue film as a row of this list, whether held here or not."""
+    when = str(one.get("release_date") or "")[:10]
+    return {"title": one.get("title") or "", "key": key_for("tmdb:%s" % one.get("id")),
+            "tmdb": one.get("id"), "votes": int(one.get("vote_count") or 0),
+            "genres": [GENRES.get(g) for g in (one.get("genre_ids") or []) if GENRES.get(g)],
+            "poster": one.get("poster_path"), "backdrop": one.get("backdrop_path"),
+            "overview": one.get("overview") or "", "rating": one.get("vote_average"),
+            "released": when, "year": int(when[:4]) if when[:4].isdigit() else 0, "imdb": ""}
+
+
+def show_row(one):
+    """A catalogue series as a row of this list, shaped as the popular list's are."""
+    first = str(one.get("first_air_date") or "")[:10]
+    return {"kind": "show", "key": "tv%d" % int(one["id"]), "tmdb": int(one["id"]),
+            "show": one.get("name") or "", "year": int(first[:4]) if first[:4].isdigit() else 0,
+            "overview": one.get("overview") or "", "poster": one.get("poster_path"),
+            "rating": one.get("vote_average")}
 
 
 def _genres(lib):
@@ -703,7 +855,7 @@ def pick_match(title, year, listed, results):
 
 #: what the catalogue said of a film, as a row keeps it
 _FROM_CATALOGUE = ("tmdb", "votes", "known", "genres", "poster", "backdrop", "overview",
-                   "rating", "year", "imdb")
+                   "rating", "year", "imdb", "aka")
 
 
 def as_known(was):
@@ -715,6 +867,17 @@ def as_known(was):
         return None
     out = {k: was[k] for k in _FROM_CATALOGUE if k in was}
     out["released"] = str(was.get("premiered") or was.get("released") or "")
+    return out
+
+
+def also_named(title, found):
+    """The catalogue's title and original title for a film, where they are not the
+    name the list gave it."""
+    mine = _plain(title)
+    out = []
+    for name in (found.get("title"), found.get("original_title")):
+        if name and _plain(name) != mine and name not in out:
+            out.append(str(name))
     return out
 
 
@@ -744,6 +907,9 @@ def _looked_up(lib, one, was=None):
                 "backdrop": found.get("backdrop_path"),
                 "overview": found.get("overview") or "",
                 "rating": found.get("vote_average"),
+                # the names the catalogue files it under that the list does not use:
+                # releases carry those
+                "aka": also_named(one.get("title"), found),
                 "released": found.get("release_date") or "",
                 "year": (int(str(found.get("release_date"))[:4])
                          if str(found.get("release_date") or "")[:4].isdigit()
@@ -981,6 +1147,7 @@ def refresh(lib, force=False, months=None):
             for one in rows:
                 if not one.get("imdb") and known.get(int(one.get("tmdb") or 0)):
                     one["imdb"] = known[int(one.get("tmdb") or 0)]
+            keep_keys(rows, STATE["rows"])
             STATE["rows"] = rows
             STATE["at"] = time.time()
             # and how far back this reading went. Left unwritten, the file kept saying
@@ -1045,8 +1212,15 @@ def fetchable(one):
     """
     try:
         import pd_tracker
-        return pd_tracker.find(one.get("title") or "", one.get("year") or 0,
-                               one.get("imdb") or "")
+        got = pd_tracker.find(one.get("title") or "", one.get("year") or 0,
+                              one.get("imdb") or "")
+        # and under the names the catalogue knows it by: releases of "Battle Cabin"
+        # are all named "Northspur"
+        for name in one.get("aka") or []:
+            if got:
+                break
+            got = pd_tracker.find(name, one.get("year") or 0)
+        return got
     except Exception:
         return []
 
@@ -1185,7 +1359,9 @@ def item(one):
         # and whether there is something to fetch for it. The shelf is the popular
         # list either way; this only decides whether the button asks somebody or
         # fetches it.
-        "onTracker": bool(fetchable(one)),
+        "onTracker": bool(fetchable(one)) or boxed(one),
+        # not asked of the tracker yet: neither Download nor Request is known
+        "checking": unchecked(one),
         # Rotten Tomatoes: the critics' share and the audience's, percent
         "critics": one.get("judged"), "audience": one.get("liked"),
         "duration": 0, "viewCount": 0, "addedAt": 0,
@@ -1193,8 +1369,19 @@ def item(one):
         "art": ("/art/%s/backdrop" % key) if one.get("backdrop") else None,
         #: not here, not on a pack: the only thing to do with it is ask
         "askable": True,
+        # unless SVT Play has it, unprotected: then it plays from there
+        "svt": svt_of(one),
         "where": _where(one),
     }
+
+
+def svt_of(one):
+    """The SVT Play video id of a catalogue film, or ""."""
+    try:
+        import pd_svtplay
+        return pd_svtplay.film_for(one.get("title") or "", one.get("year") or 0)
+    except Exception:
+        return ""
 
 
 def rows():
@@ -1202,9 +1389,472 @@ def rows():
     return [item(one) for one in read()]
 
 
+def keep_keys(rows, before):
+    """Each film keeps the key it had, matched by its catalogue number. The list is
+    read from two places - the website, keyed by its address, and the catalogue,
+    keyed by its number - and a film the website left out one morning came back from
+    the catalogue under another key: its page, and a watchlist holding it, led nowhere."""
+    had = {int(r.get("tmdb") or 0): r.get("key") for r in before or []
+           if r.get("tmdb") and r.get("key")}
+    for one in rows:
+        old = had.get(int(one.get("tmdb") or 0))
+        if old and one.get("key") != old:
+            one["key"] = old
+    return rows
+
+
 def one_of(key):
-    """The title behind one of these keys, as it was read."""
-    return next((one for one in read() if one.get("key") == str(key)), None)
+    """The title behind one of these keys, as it was read - or as a search found it."""
+    return (next((one for one in read() if one.get("key") == str(key)), None)
+            or next((one for one in searched() if one.get("key") == str(key)), None))
+
+
+#: films a search found in the catalogue by name, kept so their keys still open a page
+SEARCHED = {"rows": None}
+SEARCHED_MOST = 500
+#: words -> (when, rows): the catalogue asked once an hour per search
+FOUND_BY_NAME = {}
+#: one thread asking the tracker about searched films at a time
+ASKING = {"busy": False}
+
+
+def _searched_path():
+    return os.path.join(STATE["root"] or ".", "searched.json")
+
+
+def searched():
+    """The films searches have found, oldest first."""
+    with LOCK:
+        if SEARCHED["rows"] is None:
+            try:
+                with io.open(_searched_path(), encoding="utf-8") as f:
+                    SEARCHED["rows"] = json.load(f) or []
+            except (OSError, ValueError):
+                SEARCHED["rows"] = []
+        return SEARCHED["rows"]
+
+
+def _keep_searched(rows):
+    have = searched()
+    with LOCK:
+        known = {r.get("key") for r in have}
+        fresh = [r for r in rows if r.get("key") not in known]
+        if not fresh:
+            return
+        have.extend(fresh)
+        del have[:-SEARCHED_MOST]
+        if not STATE["root"]:
+            return
+        tmp = _searched_path() + ".tmp"
+        try:
+            with io.open(tmp, "w", encoding="utf-8") as f:
+                json.dump(have, f)
+            os.replace(tmp, _searched_path())
+        except OSError:
+            pass
+
+
+#: the catalogue's first page: one request whatever is kept of it, and six hid films
+#: a search was looking for
+BY_NAME_MOST = 20
+
+
+def by_name(lib, words, most=BY_NAME_MOST, patience=6):
+    """Films out already that the catalogue knows by these words and this library does
+    not hold, as rows of this list: what a search offers beside what is here.
+    `patience` is how long the catalogue is waited for."""
+    low = " ".join(str(words or "").lower().split())
+    if len(low) < 3:
+        return []
+    hit = FOUND_BY_NAME.get(low)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    try:
+        said = lib.tmdb("/search/movie", timeout=patience, query=low, include_adult="false")
+    except Exception:
+        return []
+    by_tmdb, _ = _held(lib)
+    today = time.strftime("%Y-%m-%d")
+    out = []
+    for one in said.get("results") or []:
+        when = str(one.get("release_date") or "")[:10]
+        if (len(when) != 10 or when > today or not one.get("poster_path")
+                or int(one.get("vote_count") or 0) < 20
+                or by_tmdb.get(("movie", int(one.get("id") or 0)))):
+            continue
+        out.append({
+            "title": one.get("title") or "",
+            "key": key_for("tmdb:%s" % one.get("id")),
+            "tmdb": one.get("id"),
+            "votes": int(one.get("vote_count") or 0),
+            "genres": [GENRES.get(g) for g in (one.get("genre_ids") or []) if GENRES.get(g)],
+            "poster": one.get("poster_path"),
+            "backdrop": one.get("backdrop_path"),
+            "overview": one.get("overview") or "",
+            "rating": one.get("vote_average"),
+            "released": when,
+            "year": int(when[:4]),
+            "imdb": "",
+        })
+        if len(out) >= most:
+            break
+    if len(FOUND_BY_NAME) > 200:
+        FOUND_BY_NAME.clear()
+    FOUND_BY_NAME[low] = (time.time(), out)
+    _keep_searched(out)
+    return out
+
+
+#: how long an answer from the tracker counts before a film is checked again
+CHECKED_FOR = 14 * 86400
+
+
+#: a release name's series part: the words before the season mark
+SERIES_MARK = re.compile(r"(?i)^(.*?)[ ._-]+(?:s\d{1,2}(?:[ ._-]?e\d{1,3})?|season[ ._-]?\d{1,2}"
+                         r"|complete)(?:[ ._-]|$)")
+#: (which index, how long) -> the flattened series names its releases carry
+_SERIES_NAMES = {"stamp": None, "names": set()}
+#: one thread asking the tracker about series at a time
+ASKING_SHOWS = {"busy": False}
+
+
+#: a release group's tag in front of the name: "[SubsPlease] Shutter Hop S3 - 11"
+GROUP_TAG = re.compile(r"^\s*\[[^\]]*\]\s*")
+#: one episode, as releases write it: S04E11, or the anime way, "S3 - 11"
+EPISODE_MARK = re.compile(r"(?i)\bs(\d{1,2})(?:[ ._-]?e(\d{1,3})|\s+-\s+(\d{1,3}))\b")
+
+
+def episode_of_release(name):
+    """(season, episode) a release of one episode is, or None for a pack or a film."""
+    m = EPISODE_MARK.search(GROUP_TAG.sub("", str(name or "")))
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2) or m.group(3))
+
+
+def series_names(rows):
+    """Every series a list of releases carries a season or an episode of, flattened, with
+    and without a year at the end of its name."""
+    names = set()
+    for r in rows:
+        m = SERIES_MARK.match(GROUP_TAG.sub("", str((r or {}).get("name") or "")))
+        if not m:
+            continue
+        flat = re.sub(r"[^a-z0-9]+", "", m.group(1).lower())
+        if flat:
+            names.add(flat)
+            names.add(re.sub(r"(19|20)\d\d$", "", flat))
+    return names
+
+
+def _series_on_tracker():
+    import pd_tracker
+    rows = pd_tracker.read()
+    stamp = (id(rows), len(rows))
+    if _SERIES_NAMES["stamp"] != stamp:
+        _SERIES_NAMES["names"] = series_names(list(rows.values()))
+        _SERIES_NAMES["stamp"] = stamp
+    return _SERIES_NAMES["names"]
+
+
+def show_fetchable(title, year=0, names=None):
+    """Whether a series can be had: a pack here carries it, or the tracker's list holds a
+    season or an episode of it."""
+    flat = re.sub(r"[^a-z0-9]+", "", str(title or "").lower())
+    if not flat:
+        return False
+    if names is None:
+        try:
+            import pd_torrents
+            if pd_torrents.packs_for_show(title):
+                return True
+            names = _series_on_tracker()
+        except Exception:
+            return False
+    return any(v in names for v in (flat, flat + str(int(year or 0)), flat + "us", flat + "uk"))
+
+
+def show_unchecked(title):
+    """Whether the tracker has not been asked about this series lately - Checking, rather
+    than a Request that may be wrong. Never on a machine that asks nothing itself."""
+    try:
+        import pd_tracker
+        return bool(pd_tracker.state().get("asks")) and not pd_tracker.asked_within(
+            title, 0, CHECKED_FOR)
+    except Exception:
+        return False
+
+
+def ask_tracker_about_shows(titles):
+    """The tracker asked, behind, about series it has not been asked about lately: what
+    comes back joins its list, and the next look says Add or Request."""
+    todo = [t for t in titles if t and show_unchecked(t)]
+    if not todo:
+        return
+    with LOCK:
+        if ASKING_SHOWS["busy"]:
+            return
+        ASKING_SHOWS["busy"] = True
+
+    def work():
+        import pd_tracker
+        try:
+            for t in todo:
+                pd_tracker.ask_for(t, 0, again_after=CHECKED_FOR)
+        finally:
+            ASKING_SHOWS["busy"] = False
+    import pd_tracker
+    threading.Thread(target=pd_tracker.quietly(work), daemon=True).start()
+
+
+def unchecked(one):
+    """Whether the tracker has not been asked about this film lately, and does not carry it
+    by what is known: Checking, rather than a Request that may be wrong. Never on a
+    machine that reads another's list and asks nothing itself."""
+    try:
+        import pd_tracker
+        if not pd_tracker.state().get("asks") or fetchable(one) or boxed(one):
+            return False
+        title, year = one.get("title") or "", int(one.get("year") or 0)
+        return not (pd_tracker.asked_within(title, year, CHECKED_FOR)
+                    or pd_tracker.asked_within(title, 0, CHECKED_FOR))
+    except Exception:
+        return False
+
+
+def boxed(one):
+    """Whether a box set on the tracker holds this film."""
+    try:
+        import pd_boxsets
+        return bool(pd_boxsets.find(one.get("title") or "", one.get("year") or 0))
+    except Exception:
+        return False
+
+
+#: name searches being asked of the catalogue now, so one search starts one
+_NAMING = set()
+
+
+def by_name_soon(lib, words, shows=False):
+    """The catalogue's films (or with `shows` series) by these words if it has already
+    answered, else None - and it is asked behind the search, whose next asking has
+    them. A search waited for the catalogue, or gave up on it after a few seconds."""
+    low = " ".join(str(words or "").lower().split())
+    if len(low) < 3:
+        return []
+    key = ("tv|" if shows else "") + low
+    hit = FOUND_BY_NAME.get(key)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    if key not in _NAMING:
+        _NAMING.add(key)
+
+        def ask():
+            try:
+                (shows_by_name if shows else by_name)(lib, low)
+                # a catalogue that did not answer is nothing, for an hour: the search
+                # stops asking again
+                FOUND_BY_NAME.setdefault(key, (time.time(), []))
+            finally:
+                _NAMING.discard(key)
+        threading.Thread(target=ask, name="palladium-by-name", daemon=True).start()
+    return None
+
+
+def shows_by_name(lib, words, most=BY_NAME_MOST):
+    """Series the catalogue knows by these words and this library does not hold, shaped
+    as the popular list's are: a search with nothing here offers them to Add."""
+    low = " ".join(str(words or "").lower().split())
+    if len(low) < 3:
+        return []
+    hit = FOUND_BY_NAME.get("tv|" + low)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    try:
+        said = lib.tmdb("/search/tv", timeout=6, query=low, include_adult="false")
+    except Exception:
+        return []
+    by_tmdb, _ = _held(lib)
+    try:
+        import pd_torrents
+        filed = pd_torrents.folded_shows()
+    except Exception:
+        filed = {}
+    out = []
+    for one in said.get("results") or []:
+        first_aired = str(one.get("first_air_date") or "")[:10]
+        if (len(first_aired) != 10 or not one.get("poster_path")
+                or int(one.get("vote_count") or 0) < 5
+                or by_tmdb.get(("show", int(one.get("id") or 0)))
+                or str(int(one.get("id") or 0)) in filed):
+            continue
+        out.append({"kind": "show", "key": "tv%d" % int(one["id"]), "tmdb": int(one["id"]),
+                    "show": one.get("name") or "", "year": int(first_aired[:4]),
+                    "overview": one.get("overview") or "", "poster": one.get("poster_path"),
+                    "rating": one.get("vote_average")})
+        if len(out) >= most:
+            break
+    if len(FOUND_BY_NAME) > 200:
+        FOUND_BY_NAME.clear()
+    FOUND_BY_NAME["tv|" + low] = (time.time(), out)
+    _keep_searched(out)
+    return out
+
+
+def credit_rows(lib, credits, most=30):
+    """Films out already from a person's catalogue credits that this library does not
+    hold, as rows of this list, the best known first: their page lists them all."""
+    by_tmdb, _ = _held(lib)
+    today = time.strftime("%Y-%m-%d")
+    out = []
+    for one in sorted(credits or [], key=lambda c: -float(c.get("popularity") or 0)):
+        when = str(one.get("release_date") or "")[:10]
+        if (len(when) != 10 or when > today or not one.get("poster_path")
+                or int(one.get("vote_count") or 0) < 20
+                or by_tmdb.get(("movie", int(one.get("id") or 0)))):
+            continue
+        out.append({"title": one.get("title") or "", "key": key_for("tmdb:%s" % one.get("id")),
+                    "tmdb": one.get("id"), "votes": int(one.get("vote_count") or 0),
+                    "genres": [GENRES.get(g) for g in (one.get("genre_ids") or []) if GENRES.get(g)],
+                    "poster": one.get("poster_path"), "backdrop": one.get("backdrop_path"),
+                    "overview": one.get("overview") or "", "rating": one.get("vote_average"),
+                    "released": when, "year": int(when[:4]), "imdb": ""})
+        if len(out) >= most:
+            break
+    _keep_searched(out)
+    return out
+
+
+def collection_rows(lib, words, most=12):
+    """The films of the catalogue's collection these words name, out already and not held
+    here, oldest first: "indiana jones" is a collection whose first film's title does
+    not say so. Asked once an hour per words."""
+    low = " ".join(str(words or "").lower().split())
+    if len(low) < 3:
+        return []
+    hit = FOUND_BY_NAME.get("coll|" + low)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
+    out = []
+    try:
+        found = (lib.tmdb("/search/collection", timeout=6, query=low) or {}).get("results") or []
+        named = next((c for c in found if flat(low) in flat(re.sub(
+            r"(?i)\s*collection$", "", str(c.get("name") or "")))), None)
+        if named:
+            parts = (lib.tmdb("/collection/%d" % int(named["id"]), timeout=6) or {}).get("parts") or []
+            out = sorted(credit_rows(lib, parts, most), key=lambda r: r.get("released") or "")
+    except Exception:
+        return []
+    FOUND_BY_NAME["coll|" + low] = (time.time(), out)
+    return out
+
+
+def show_credit_rows(lib, credits, most=12):
+    """Series a person is a regular in - three episodes or more, not as themselves - that
+    this library does not hold, shaped as the popular list's."""
+    by_tmdb, _ = _held(lib)
+    try:
+        import pd_torrents
+        filed = pd_torrents.folded_shows()
+    except Exception:
+        filed = {}
+    out = []
+    for one in sorted(credits or [], key=lambda c: -float(c.get("popularity") or 0)):
+        first_aired = str(one.get("first_air_date") or "")[:10]
+        role = str(one.get("character") or "").lower()
+        if (len(first_aired) != 10 or not one.get("poster_path")
+                or int(one.get("episode_count") or 0) < 3
+                or "self" in role or "host" in role or "narrator" in role
+                or by_tmdb.get(("show", int(one.get("id") or 0)))
+                or str(int(one.get("id") or 0)) in filed):
+            continue
+        out.append({"kind": "show", "key": "tv%d" % int(one["id"]), "tmdb": int(one["id"]),
+                    "show": one.get("name") or "", "year": int(first_aired[:4]),
+                    "overview": one.get("overview") or "", "poster": one.get("poster_path"),
+                    "rating": one.get("vote_average")})
+        if len(out) >= most:
+            break
+    _keep_searched(out)
+    return out
+
+
+def searched_show(number):
+    """A series a search found, by its catalogue number."""
+    return next((r for r in searched() if r.get("kind") == "show"
+                 and int(r.get("tmdb") or 0) == int(number)), None)
+
+
+def ask_tracker_about(rows, lib=None, mine=False):
+    """The tracker asked, in the background, about searched films it has not been asked
+    about today - by name, then for the box sets of their collection and director. True
+    while an answer is still coming, so the search is asked again."""
+    import pd_tracker
+    if not pd_tracker.state().get("asks"):
+        return False                     # a machine that reads another's list asks nothing
+    todo = [r for r in rows if not fetchable(r)
+            and not pd_tracker.asked_within(r.get("title"), r.get("year") or 0, 6 * 3600)]
+    if not todo:
+        return False
+    with LOCK:
+        if ASKING["busy"]:
+            return True
+        ASKING["busy"] = True
+
+    def work():
+        try:
+            for r in todo:
+                pd_tracker.ask_for(r.get("title"), r.get("year") or 0, again_after=6 * 3600)
+            if lib is not None:
+                import pd_boxsets
+                # box sets are two more searches a film: the first two only
+                for r in todo[:2]:
+                    if not fetchable(r) and not boxed(r) and r.get("tmdb"):
+                        pd_boxsets.ask_about(lib, r.get("title"), r.get("year") or 0,
+                                             r.get("tmdb"))
+        finally:
+            ASKING["busy"] = False
+
+    # background work: it gives way to people when the tracker's minute is spent
+    # a search somebody is waiting on asks as them; anything else gives way to people
+    threading.Thread(target=work if mine else pd_tracker.quietly(work), daemon=True).start()
+    return True
+
+
+#: the long lists' slow asking: one run at a time
+ASKING_SLOWLY = {"busy": False}
+#: seconds between two of its searches: four a minute, leaving the rest of the
+#: tracker's ten for whoever is searching
+SLOW_GAP = 15.0
+
+
+def ask_tracker_slowly(rows, gap=SLOW_GAP):
+    """Every film of a long list the tracker has not been asked about today, asked in
+    the background one at a time, giving way to people: the films' Popular page has a
+    hundred Checking bands, and twelve a visit never got through them."""
+    import pd_tracker
+    if not pd_tracker.state().get("asks"):
+        return False
+    todo = [r for r in rows if not fetchable(r)
+            and not pd_tracker.asked_within(r.get("title"), r.get("year") or 0, 6 * 3600)]
+    if not todo:
+        return False
+    with LOCK:
+        if ASKING_SLOWLY["busy"]:
+            return True
+        ASKING_SLOWLY["busy"] = True
+
+    def work():
+        try:
+            for n, r in enumerate(todo):
+                if n:
+                    time.sleep(gap)
+                pd_tracker.ask_for(r.get("title"), r.get("year") or 0, again_after=6 * 3600)
+        finally:
+            ASKING_SLOWLY["busy"] = False
+
+    threading.Thread(target=pd_tracker.quietly(work), daemon=True).start()
+    return True
 
 
 def art_of(key, kind):

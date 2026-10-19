@@ -373,7 +373,8 @@ object Api {
      */
     fun comeHomeAt(door: String): Boolean {
         return try {
-            fetch(door.trimEnd('/'), "/server", token, 3000, 3000)
+            // /where answers any key; /server is the installer and refused to guests
+            fetch(door.trimEnd('/'), "/where", token, 3000, 3000)
             routeTo(door, standby = false)
             true
         } catch (away: java.io.IOException) {
@@ -807,6 +808,15 @@ object Api {
             out.add(Media.from(o).also {
                 it.srv = srv
                 it.genres = genresOf(o)
+                it.sportRow = o.optBoolean("sportRow", false)
+                it.live = o.optBoolean("live", false)
+                it.liveGroup = o.optString("liveGroup", "")
+                it.match = o.optInt("match", 9)
+                it.sport = o.optString("sport", "")
+                // where it was made, for a popular page's country filter
+                it.countries = o.optJSONArray("countries")?.let { a ->
+                    (0 until a.length()).map { a.optString(it) }.filter { it.isNotEmpty() }
+                } ?: emptyList()
                 it.shelfView = o.optJSONObject("view")?.toString() ?: ""
                 it.rating = o.optDouble("rating", 0.0).toFloat()
                 // who is in it: sent with a title's own page, never with a shelf
@@ -822,7 +832,9 @@ object Api {
                 }
                 it.offered = o.optBoolean("offered", false)
                 it.askable = o.optBoolean("askable", false)
+                it.svtId = o.optString("svt", "")
                 it.onTracker = o.optBoolean("onTracker", false)
+                it.checking = o.optBoolean("checking", false)
                 it.unplayable = o.optBoolean("unplayable", false)
                 it.asked = o.optBoolean("asked", false)
                 it.asks = o.optInt("asks", 0)
@@ -835,6 +847,7 @@ object Api {
                     }.filter { p -> p.first.isNotEmpty() }
                 }
                 o.optJSONArray("providers")?.let { said ->
+                    it.providersCountry = said.optJSONObject(0)?.optString("country").orEmpty()
                     it.providers = (0 until said.length()).mapNotNull { n ->
                         said.optJSONObject(n)?.let { p ->
                             Triple(p.optString("name"), p.optString("logo"), p.optString("kind"))
@@ -1011,13 +1024,16 @@ object Api {
                              decade: String = "",
                              // only what this house holds a file for: the shelf opened
                              // off recently added, which is about what has arrived
-                             diskOnly: Boolean = false): List<Media> {
+                             diskOnly: Boolean = false,
+                             // where it was made, any of these: the TV tab's country menu
+                             country: String = ""): List<Media> {
         // the genres and decades marked, asked of each server: the shelf is the
         // question, the order is how it is answered
         val shelf = (if (genre.isEmpty()) ""
                      else "&genre=" + URLEncoder.encode(genre, "UTF-8")) +
                     (if (decade.isEmpty()) "" else "&decade=" + decade) +
-                    (if (diskOnly) "&disk=1" else "")
+                    (if (diskOnly) "&disk=1" else "") +
+                    (if (country.isEmpty()) "" else "&country=" + URLEncoder.encode(country, "UTF-8"))
         // Longer than the six seconds a shelf is usually given: this machine is also
         // copying films to the other one and fetching what was asked for, and under
         // both it answers in seconds rather than tenths.
@@ -1057,8 +1073,8 @@ object Api {
 
     suspend fun shows(ctx: Context, sort: String = "titleSort:asc",
                       start: Int = 0, size: Int = 120, genre: String = "",
-                      decade: String = "", diskOnly: Boolean = false) =
-        page(ctx, 2, sort, start, size, genre, decade, diskOnly)
+                      decade: String = "", diskOnly: Boolean = false, country: String = "") =
+        page(ctx, 2, sort, start, size, genre, decade, diskOnly, country)
 
     /** Each server sorted its own share; the join needs one more pass. */
     private fun sortMerged(list: List<Media>, sort: String): List<Media> {
@@ -1109,9 +1125,125 @@ object Api {
         listFrom("/local/library/popularShows", srv)
     }.sortedByDescending { it.popularity }   // the two machines' answers, merged, in the list's order
 
+    /** The front page's Popular films, as this viewer's film settings show them. */
+    suspend fun popularFilmsRow(ctx: Context) = fromSome(ctx) { srv ->
+        listFrom("/local/library/popularFilms?row=1", srv)
+    }.distinctBy { it.ratingKey }.sortedByDescending { it.popularity }
+
+    /** Races and games on the tracker, newest first: the Sports row. The main server's
+     *  index, which is the one the tracker is asked from. */
+    suspend fun sports(ctx: Context) = fromSome(ctx) { srv ->
+        listFrom("/local/library/sports", srv)
+    }.distinctBy { it.ratingKey }
+
+    /** Free Swedish channels, the ten that answer: the Live TV row. The main server's. */
+    suspend fun live(ctx: Context) = fromSome(ctx) { srv ->
+        listFrom("/local/library/live", srv)
+    }.distinctBy { it.ratingKey }.sortedByDescending { it.popularity }
+
+    /** The rows the server's plugins add to the front page, title -> path: asked each
+     *  time Home loads, and the last answer used while it is on its way. */
+    @Volatile var pluginRows: List<Pair<String, String>> = emptyList()
+
+    suspend fun pluginRowsNow(ctx: Context): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+        val got = mutableListOf<Pair<String, String>>()
+        for (srv in Servers.merged(ctx)) {
+            val rows = withTimeoutOrNull(4000L) {
+                runCatching { json("/local/library/plugins", srv) }.getOrNull()
+            }?.optJSONObject("MediaContainer")?.optJSONArray("Metadata") ?: continue
+            for (i in 0 until rows.length()) {
+                val o = rows.getJSONObject(i)
+                val one = o.optString("title") to o.optString("path")
+                if (one.first.isNotEmpty() && one.second.isNotEmpty() && one !in got) got.add(one)
+            }
+        }
+        pluginRows = got
+        got
+    }
+
+    /** One group of the own playlist's channels, in its order: a group circle opened. */
+    suspend fun liveGroup(ctx: Context, group: String) = fromSome(ctx) { srv ->
+        listFrom("/local/library/live/own?order=list&start=0&count=5000&group=" +
+                 java.net.URLEncoder.encode(group, "UTF-8"), srv)
+    }.distinctBy { it.ratingKey }.sortedByDescending { it.popularity }
+
+    /** A plugin's row: the first forty, or with `all` what its Show more opens on -
+     *  the plugin's own answer to more=1, for the live row its groups. */
+    suspend fun pluginRow(ctx: Context, path: String, all: Boolean = false) = fromSome(ctx) { srv ->
+        listFrom("/local" + path + "?start=0&count=" + (if (all) "5000&more=1" else "40"), srv)
+    }.distinctBy { it.ratingKey }.sortedByDescending { it.popularity }
+
+    /** One sport's races or games, the newest event first. */
+    suspend fun sportEvents(ctx: Context, sport: String) = fromSome(ctx) { srv ->
+        listFrom("/local/library/sports?sport=" + sport, srv)
+    }.distinctBy { it.ratingKey }.sortedByDescending { it.popularity }
+
     /** Every programme being watched now, held or not, most watched first. */
+    /** An SVT Play film's stream, asked of the server as it is played: (HLS address, or
+     *  "" with why not). */
+    suspend fun svtStream(id: String): Triple<String, String, Long> = withContext(Dispatchers.IO) {
+        val mc = json("/local/library/svt/" + URLEncoder.encode(id, "UTF-8"))
+            .getJSONObject("MediaContainer")
+        // the address, why not, and where this viewer left it in ms
+        Triple(mc.optString("hls"), mc.optString("error"), mc.optLong("at"))
+    }
+
+    /** A series on SVT Play: its seasons, each (name, episodes as (id, name, seconds)). */
+    data class SvtSeason(val name: String, val episodes: List<Triple<String, String, Int>>)
+
+    suspend fun svtSeries(id: String): List<SvtSeason> = withContext(Dispatchers.IO) {
+        runCatching {
+            val arr = json("/local/library/svt/series/" + URLEncoder.encode(id, "UTF-8"))
+                .getJSONObject("MediaContainer").optJSONArray("Seasons") ?: JSONArray()
+            (0 until arr.length()).map { n ->
+                val se = arr.getJSONObject(n)
+                val eps = se.optJSONArray("episodes") ?: JSONArray()
+                SvtSeason(se.optString("name"), (0 until eps.length()).map { i ->
+                    val e = eps.getJSONObject(i)
+                    Triple(e.optString("id"), e.optString("name"), e.optInt("seconds"))
+                })
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** The streaming services of the house's country, the catalogue's order: (id, name). */
+    suspend fun services(): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+        try {
+            val arr = json("/local/library/services").getJSONObject("MediaContainer")
+                .optJSONArray("Directory") ?: JSONArray()
+            (0 until arr.length()).map {
+                val s = arr.getJSONObject(it)
+                // -1 is My library: this house's own, alone or within the marked services
+                Pair(s.optInt("id").toString(), s.optString("name"))
+            }.filter { it.first != "0" && it.second.isNotEmpty() }
+        } catch (stopped: kotlinx.coroutines.CancellationException) {
+            throw stopped
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** One page of what the marked services carry in this country: held titles play,
+     *  the rest download or are asked for. The titles, and whether there is a next page. */
+    suspend fun serviceList(kind: String, providers: String, page: Int, sort: String,
+                            genre: String = "", decade: String = ""): Pair<List<Media>, Boolean> =
+        withContext(Dispatchers.IO) {
+            val mc = json("/local/library/service?type=" + kind +
+                "&provider=" + URLEncoder.encode(providers, "UTF-8") + "&page=" + page +
+                "&sort=" + URLEncoder.encode(sort, "UTF-8") +
+                (if (genre.isEmpty()) "" else "&genre=" + URLEncoder.encode(genre, "UTF-8")) +
+                (if (decade.isEmpty()) "" else "&decade=" + decade))
+                .getJSONObject("MediaContainer")
+            Pair(items(mc, null), mc.optBoolean("more"))
+        }
+
     suspend fun popularAll(ctx: Context) = fromAll(ctx) { srv ->
         listFrom("/local/library/popularShows?all=1", srv)
+    }.sortedByDescending { it.popularity }
+
+    /** The films being watched now, most first, then every other film held, by name. */
+    suspend fun popularFilms(ctx: Context) = fromAll(ctx) { srv ->
+        listFrom("/local/library/popularFilms", srv)
     }.sortedByDescending { it.popularity }
 
     /** One pack a programme could be added from, as the tracker holds it. */
@@ -1122,6 +1254,94 @@ object Api {
                         val pick: Boolean = false)
 
     /** The packs the tracker holds for a programme, best first. */
+    /** A single episode the tracker carries: (id, name, season, episode, size, seeds). */
+    data class TrackerEpisode(val id: String, val name: String, val season: Int,
+                              val episode: Int, val size: Long, val seeds: Int)
+
+    /** The packs the tracker holds for a programme, and its single episodes, from one
+     *  asking of the tracker. */
+    /** Null when the tracker did not answer: not the same as it having nothing. A
+     *  first search can take a minute, and taken as none it left only the button that
+     *  adds a series with no pack. */
+    suspend fun showFind(title: String): Pair<List<ShowPack>, List<TrackerEpisode>>? =
+        withContext(Dispatchers.IO) {
+        runCatching {
+            val said = JSONObject(post("/shows/packs", JSONObject().put("show", title)
+                .put("look", true), readMs = 60_000))
+            val rows = said.optJSONArray("found") ?: JSONArray()
+            val packs = (0 until rows.length()).mapNotNull { i ->
+                rows.optJSONObject(i)?.let { o ->
+                    val runs = o.optJSONArray("seasons")
+                    ShowPack(o.optString("id"), o.optString("name"),
+                             (0 until (runs?.length() ?: 0)).map { runs!!.optInt(it) },
+                             o.optBoolean("complete"), o.optLong("size"),
+                             o.optInt("seeds"), o.optBoolean("fits"),
+                             o.optBoolean("pick"))
+                }
+            }
+            val arr = said.optJSONArray("episodes") ?: JSONArray()
+            val eps = (0 until arr.length()).mapNotNull { i ->
+                arr.optJSONObject(i)?.let { o ->
+                    TrackerEpisode(o.optString("id"), o.optString("name"), o.optInt("season"),
+                                   o.optInt("episode"), o.optLong("size"), o.optInt("seeds"))
+                }
+            }
+            packs to eps
+        }.getOrNull()
+    }
+
+    /** One pack of a held series' list: on the tracker (`id`) or added here (`hash`). */
+    data class PackRow(val id: String, val hash: String, val name: String,
+                       val seasons: List<Int>, val complete: Boolean, val size: Long,
+                       val seeds: Int, val pick: Boolean)
+
+    /** A held series' packs: the hashes chosen for it, and every pack it could come
+     *  from - added here and, looked for, on the tracker. Null when the server would
+     *  not say: only somebody who may fetch is answered. */
+    suspend fun packState(title: String, look: Boolean): Pair<List<String>, List<PackRow>>? =
+        withContext(Dispatchers.IO) {
+        runCatching {
+            val said = JSONObject(post("/shows/packs", JSONObject().put("show", title)
+                .put("look", look), readMs = 60_000))
+            val runs = { o: JSONObject -> o.optJSONArray("seasons").let { a ->
+                (0 until (a?.length() ?: 0)).map { a!!.optInt(it) } } }
+            val chosen = said.optJSONArray("chosen").let { a ->
+                (0 until (a?.length() ?: 0)).map { a!!.optString(it) } }
+            val here = said.optJSONArray("here") ?: JSONArray()
+            val found = said.optJSONArray("found") ?: JSONArray()
+            val rows = mutableListOf<PackRow>()
+            val seen = mutableSetOf<String>()
+            // the tracker's, each one already added here named by its hash
+            for (i in 0 until found.length()) {
+                val o = found.getJSONObject(i)
+                val held = o.optString("held", "")
+                if (held.isNotEmpty()) seen.add(held)
+                rows.add(PackRow(o.optString("id"), held, o.optString("name"), runs(o),
+                                 o.optBoolean("complete"), o.optLong("size"), o.optInt("seeds"),
+                                 o.optBoolean("pick")))
+            }
+            // and the ones added here the tracker list did not carry
+            for (i in 0 until here.length()) {
+                val o = here.getJSONObject(i)
+                val h = o.optString("hash")
+                if (h.isEmpty() || h in seen || o.optBoolean("single")) continue
+                rows.add(PackRow("", h, o.optString("name"), runs(o), false, o.optLong("size"),
+                                 o.optInt("seeds"), false))
+            }
+            chosen to rows.sortedByDescending { it.seeds }
+        }.getOrNull()
+    }
+
+    /** Take a series from a pack - one on the tracker by `id`, one added by `hash` - or
+     *  drop one. "" when it worked, else what went wrong. */
+    suspend fun usePack(title: String, id: String = "", hash: String = "",
+                        drop: Boolean = false): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/shows/usepack", JSONObject().put("show", title).put("id", id)
+                .put("hash", hash).put("drop", drop), readMs = 60_000)).optString("error", "")
+        }.getOrDefault("the server did not answer - only somebody who may fetch can change packs")
+    }
+
     suspend fun showPacks(title: String): List<ShowPack> = withContext(Dispatchers.IO) {
         runCatching {
             val rows = JSONObject(post("/shows/packs", JSONObject().put("show", title)
@@ -1140,11 +1360,14 @@ object Api {
     }
 
     /** Into the library with this pack as a link; its library key, or empty. */
-    suspend fun addShowPack(m: Media, id: String): String = withContext(Dispatchers.IO) {
+    /** The series in the library with that pack: (its key or "", what went wrong with
+     *  the pack or ""). */
+    suspend fun addShowPack(m: Media, id: String): Pair<String, String> = withContext(Dispatchers.IO) {
         runCatching {
-            JSONObject(post("/shows/addpack", JSONObject().put("show", m.title)
-                .put("tmdb", m.tmdb).put("id", id))).optString("key", "")
-        }.getOrDefault("")
+            val said = JSONObject(post("/shows/addpack", JSONObject().put("show", m.title)
+                .put("tmdb", m.tmdb).put("id", id), readMs = 60_000))
+            said.optString("key", "") to said.optString("error", "")
+        }.getOrDefault("" to "the server did not answer")
     }
 
     /** Put a popular programme in the library; its library key, or empty. */
@@ -1206,7 +1429,9 @@ object Api {
                        val mbit: Double = 0.0,
                        // a copy in one of the house's packs, and a file here the tracker
                        // no longer lists
-                       val pack: Boolean = false, val disk: Boolean = false)
+                       val pack: Boolean = false, val disk: Boolean = false,
+                       // a film inside a box set on the tracker, or an episode in a season pack
+                       val box: Boolean = false, val seasonPack: Boolean = false)
 
     /**
      * Every version of one film, the most carried first.
@@ -1227,14 +1452,18 @@ object Api {
                      (0 until rows.length()).mapNotNull { i ->
                          rows.optJSONObject(i)?.let {
                              Carried(it.optString("id"), it.optString("name"),
-                                     it.optInt("seeds", 0), it.optString("kind", ""),
+                                     // unknown is -1, said as nothing
+                                     if (it.isNull("seeds")) -1 else it.optInt("seeds", -1),
+                                     it.optString("kind", ""),
                                      it.optLong("size", 0L), it.optString("why", ""),
                                      it.optBoolean("pick", false),
                                      it.optBoolean("have", false),
                                      it.optDouble("quality", 0.0).takeIf { q -> !q.isNaN() } ?: 0.0,
                                      it.optDouble("perGb", 0.0).takeIf { q -> !q.isNaN() } ?: 0.0,
                                      it.optDouble("mbit", 0.0).takeIf { q -> !q.isNaN() } ?: 0.0,
-                                     it.optBoolean("pack", false), it.optBoolean("disk", false))
+                                     it.optBoolean("pack", false), it.optBoolean("disk", false),
+                                     it.optBoolean("box", false),
+                                     it.optBoolean("seasonPack", false))
                          }
                      })
         }.getOrDefault(Carrying())
@@ -1299,15 +1528,14 @@ object Api {
             .sortedByDescending { it.seasonRank }
     }.getOrDefault(emptyList())
 
-    suspend fun releasedShows(ctx: Context): List<Media> {
-        // the greyed next episodes of series this viewer is up to date with, first
-        // both machines may know the same one: one card per episode
-        val coming = runCatching {
-            fromAll(ctx) { srv -> listFrom("/local/library/upcoming", srv) }
-        }.getOrDefault(emptyList())
+    /** The web's row: the newest episodes, a season out on one day as one card (the
+     *  earliest not watched), the greyed next ones among them - from both machines. */
+    suspend fun releasedShows(ctx: Context): List<Media> =
+        fromAll(ctx) { srv -> listFrom("/local/library/sections/2/recentlyReleased", srv) }
             .distinctBy { Triple(it.grandparentTitle, it.parentIndex, it.index) }
-        return coming + page(ctx, 2, "originallyAvailableAt:desc", 0, 30)
-    }
+            .sortedWith(compareByDescending<Media> { it.released.take(10) }
+                .thenByDescending { it.parentIndex ?: 0 }
+                .thenByDescending { it.index ?: 0 })
 
     /**
      * The shelves this viewer keeps, drawn as things with posters.
@@ -1429,7 +1657,7 @@ object Api {
             } catch (stopped: kotlinx.coroutines.CancellationException) {
                 throw stopped
             } catch (e: Exception) {
-                Sync(0f, 1f, false, "could not reach the server", emptyList())
+                Sync(0f, 1f, false, Route.syncFailure(e), emptyList())
             }
         }
 
@@ -1608,8 +1836,9 @@ object Api {
     suspend fun notice(since: Int = 0, hold: Int = 0): Notice? =
         withContext(Dispatchers.IO) {
         try {
-            val o = JSONObject(get("/notice?since=" + since + "&wait=" + hold,
-                                   patience = (hold + 12) * 1000))
+            val held = Route.noticeHold(hold, homeHere(base))
+            val o = JSONObject(get("/notice?since=" + since + "&wait=" + held,
+                                   patience = (held + 12) * 1000))
             val said = o.optString("text")
             // No words is a notice too: it is the one that takes the last one down.
             // Read as nothing at all, a notice could only be got rid of by pressing
@@ -2358,12 +2587,14 @@ object Api {
         // under its way in from outside did not match the network address in use -
         // so it found itself, called itself a second machine, and the film was moved
         // to the machine it was already playing from.
+        // and by the id the machine at that address answers with: played through the
+        // router's outside address, the main server is on no row and was asked for a
+        // second copy of its own film
         val self = Server("", here, "")
-        val mine = list.firstOrNull { Servers.sameMachine(it, self) }
-        val asked = list.filter {
-            it.base.isNotEmpty() && !Servers.sameMachine(it, self) &&
-                (mine == null || !Servers.sameMachine(it, mine))
-        }
+        val hereId = runCatching {
+            Servers.idAt(here, list.firstOrNull { Servers.sameMachine(it, self) }?.token ?: token)
+        }.getOrDefault("")
+        val asked = Route.othersThan(list, here, hereId)
         val got = asked
             .map { row ->
                 val srv = Servers.withKey(list, row)
@@ -2435,13 +2666,22 @@ object Api {
             null
         }
 
+    /** The last search found films the tracker is still being asked about. */
+    @Volatile var searchAsking = false
+    /** The catalogue was still being asked: the search is asked again in a moment. */
+    @Volatile var searchFilling = false
+
     suspend fun search(ctx: Context, term: String): List<Media> {
         val q = URLEncoder.encode(term, "UTF-8")
         // Newest first, over the whole answer: the hubs come back grouped by kind, and
         // which kind a hit is says nothing about which hit was wanted.
+        // the closest title first, as the server ranks them; newest first within each
         return sortMerged(fromAll(ctx) { srv ->
-            val hubs = JSONObject(get("/local/hubs/search?query=$q", srv))
-                .getJSONObject("MediaContainer").optJSONArray("Hub") ?: return@fromAll emptyList()
+            val said = JSONObject(get("/local/hubs/search?query=$q", srv))
+                .getJSONObject("MediaContainer")
+            if (said.optBoolean("askingTracker")) searchAsking = true
+            if (said.optBoolean("fillingIn")) searchFilling = true
+            val hubs = said.optJSONArray("Hub") ?: return@fromAll emptyList()
             val out = ArrayList<Media>()
             for (i in 0 until hubs.length()) {
                 val hub = hubs.getJSONObject(i)
@@ -2452,7 +2692,7 @@ object Api {
                 out.addAll(items(hub, srv))
             }
             out
-        }, "originallyAvailableAt:desc")
+        }, "originallyAvailableAt:desc").sortedBy { it.match }
     }
 
     /** A name a search found, and the server that knows their face. */
@@ -2529,6 +2769,21 @@ object Api {
         if (m.copyThumb.isNotEmpty()) artUrl(m.copy(thumb = m.copyThumb).also { it.srv = m.srv },
                                               width)
         else artUrl(m, width)
+
+    /** A still of the film at `sec`, for the box over the timeline. */
+    fun frameUrl(m: Media, part: String, sec: Long, width: Int): String =
+        addressOf(m.srv) + "/local" +
+            auth("/art/frame/" + part + "?s=" + sec + "&w=" + width, m.srv?.token ?: token)
+
+    /** The picture behind an address, or null. */
+    fun bitmapAt(url: String): android.graphics.Bitmap? = runCatching {
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 4000
+        c.readTimeout = 20000
+        c.setRequestProperty("X-Palladium-App", appName())
+        try { c.inputStream.use { android.graphics.BitmapFactory.decodeStream(it) } }
+        finally { c.disconnect() }
+    }.getOrNull()
 
     fun artUrl(m: Media, width: Int = 0, of: String? = null): String? {
         val path = of ?: m.thumb
@@ -3118,6 +3373,26 @@ object Api {
     }
 
     /** The decades this library holds, newest first, with how many are in each. */
+    /** Where the shelf's titles were made, most first, counted among the marked genres
+     *  and decades: the TV tab's country menu. */
+    suspend fun countries(kind: String, genre: String = "", decade: String = ""):
+        List<Pair<String, Int>> = withContext(Dispatchers.IO) {
+        try {
+            val arr = JSONObject(get("/local/library/countries?type=" + kind +
+                (if (genre.isEmpty()) "" else "&genre=" + URLEncoder.encode(genre, "UTF-8")) +
+                (if (decade.isEmpty()) "" else "&decade=" + decade)))
+                .getJSONObject("MediaContainer").optJSONArray("Directory") ?: JSONArray()
+            (0 until arr.length()).map {
+                val d = arr.getJSONObject(it)
+                Pair(d.optString("country"), d.optInt("count"))
+            }.filter { it.first.isNotEmpty() }
+        } catch (stopped: kotlinx.coroutines.CancellationException) {
+            throw stopped
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     suspend fun decades(kind: String, genre: String = ""): List<Pair<String, Int>> =
       withContext(Dispatchers.IO) {
         try {
@@ -3311,12 +3586,12 @@ object Api {
      * the browser and on the television.
      */
     data class FilmsShow(val disk: Boolean = true, val download: Boolean = true,
-                         val request: Boolean = true)
+                         val request: Boolean = false)
 
     private fun filmsShowOf(said: JSONObject?) = FilmsShow(
         said?.optBoolean("disk", true) ?: true,
         said?.optBoolean("download", true) ?: true,
-        said?.optBoolean("request", true) ?: true)
+        said?.optBoolean("request", false) ?: false)
 
     /**
      * Which of the two scores a new film has to have satisfied to be listed.
@@ -3359,6 +3634,8 @@ object Api {
     /** Tell the server this screen's sound is going through to the receiver, or ended. */
     suspend fun receiverPassthrough(state: String, key: String, screen: String): JSONObject? =
         withContext(Dispatchers.IO) {
+        // the receiver is the owner's to set: a guest's screen was refused every time
+        if (seenAsOwner == false) return@withContext null
         runCatching {
             JSONObject(post("/receiver/passthrough", JSONObject().put("state", state)
                 .put("key", key).put("device", appName()).put("screen", screen)))
@@ -3567,6 +3844,32 @@ object Api {
         }.getOrDefault(want)
     }
 
+    /** Whether the TV tab stands the popular programmes not held: "always" or "popular". */
+    suspend fun tvPopular(): String = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/settings")).optString("tvPopular", "always") }
+            .getOrDefault("always").ifEmpty { "always" }
+    }
+
+    suspend fun setTvPopular(want: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("tvPopular", want)))
+                .optString("tvPopular", want)
+        }.getOrDefault(want)
+    }
+
+    /** Whether this viewer's lists stand series nobody can get: "hide" or "show". */
+    suspend fun tvRequest(): String = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/settings")).optString("tvRequest", "hide") }
+            .getOrDefault("hide").ifEmpty { "hide" }
+    }
+
+    suspend fun setTvRequest(want: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("tvRequest", want)))
+                .optString("tvRequest", want)
+        }.getOrDefault(want)
+    }
+
     suspend fun filmsShow(): FilmsShow = withContext(Dispatchers.IO) {
         runCatching { filmsShowOf(JSONObject(get("/settings")).optJSONObject("filmsShow")) }
             .getOrDefault(FilmsShow())
@@ -3737,7 +4040,9 @@ object Api {
                             // release: shown, but not believed
                             val hashOdd: Boolean = false,
                             /** already beside the film */
-                            val onDisk: Boolean = false)
+                            val onDisk: Boolean = false,
+                            /** the one fetching ahead takes */
+                            val autoPick: Boolean = false)
 
     /**
      * What is on offer for one title.
@@ -3758,7 +4063,8 @@ object Api {
                              r.optString("language"), r.optInt("downloads"),
                              r.optBoolean("fromHash"), r.optBoolean("confirmed"),
                              r.optBoolean("sameName"), r.optBoolean("hashOdd"),
-                             onDisk = r.optBoolean("onDisk"))
+                             onDisk = r.optBoolean("onDisk"),
+                             autoPick = r.optBoolean("autoPick"))
             }
             Pair(out, o.optString("error"))
         } catch (stopped: kotlinx.coroutines.CancellationException) {
@@ -3805,6 +4111,17 @@ object Api {
             postTo(m.srv, "/copy/pick",
                    JSONObject().put("key", m.ratingKey)
                        .put("file", if (copy.mi == 0) "" else copy.path))
+        } catch (stopped: kotlinx.coroutines.CancellationException) {
+            throw stopped
+        } catch (e: Exception) { "" }
+        Unit
+    }
+
+    /** Remember which soundtrack was chosen, for the film or the whole series. */
+    suspend fun pickSound(m: Media, index: Int) = withContext(Dispatchers.IO) {
+        try {
+            postTo(m.srv, "/sound/pick",
+                   JSONObject().put("key", m.ratingKey).put("index", index).put("mi", m.mi))
         } catch (stopped: kotlinx.coroutines.CancellationException) {
             throw stopped
         } catch (e: Exception) { "" }
@@ -3924,11 +4241,11 @@ object Api {
     }
 
     /** A write to the server the library is on, routed as every request is. */
-    private fun post(path: String, body: JSONObject): String =
-        routed(null) { door -> postBase(door, path, body) }
+    private fun post(path: String, body: JSONObject, readMs: Int = 15000): String =
+        routed(null) { door -> postBase(door, path, body, readMs) }
 
-    private fun postBase(b: String, path: String, body: JSONObject): String {
-        val conn = Net.open(b + auth(path, token), reachFor(b, 8000), 15000, token, "POST")
+    private fun postBase(b: String, path: String, body: JSONObject, readMs: Int = 15000): String {
+        val conn = Net.open(b + auth(path, token), reachFor(b, 8000), readMs, token, "POST")
         Net.send(conn, body.toString())
         return Net.text(conn)
     }

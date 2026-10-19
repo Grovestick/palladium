@@ -16,9 +16,9 @@ android {
         // small additions, the second is reserved for a real feature release, the first
         // for calling it done. versionCode is separate and only ever counts up, because
         // that is the number Android compares when deciding an APK is an update.
-        versionCode = 1230
+        versionCode = 1391
         // A film's page says what else is like it, in its own years.
-        versionName = "0.18.482"     // one number for the app and the server it ships with
+        versionName = "0.19.130"     // one number for the app and the server it ships with
 
         // Where the app looks for its own updates, whatever server it happens to be
         // browsing. A friend's Palladium serves whatever APK they downloaded, which
@@ -65,6 +65,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
+    // live channels arrive as HLS
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
     // casting from the phone to the Google TV Streamer
     implementation("androidx.media3:media3-cast:1.4.1")
     // a media session, so the button on a pair of headphones reaches the player

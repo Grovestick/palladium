@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,11 +44,16 @@ val PackBlue = Color(0xFF7FB4FF)
 fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                    onSaid: (String) -> Unit,
                    /** GB free where it would land; negative when not known */
-                   free: Double = -1.0) {
+                   free: Double = -1.0,
+                   /** what pressing one does instead of downloading it: a series' pack */
+                   onTake: ((Api.Carried) -> Unit)? = null) {
     val ctx = LocalContext.current
     AlertDialog(
         onDismissRequest = onClose,
         containerColor = Skin.Panel,
+        // most of the screen: the platform's width cut release names off on a phone
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.fillMaxWidth(Route.PICKER_WIDTH).widthIn(max = Route.PICKER_MAX.dp),
         title = {
             Text("Which one" + (if (free >= 0) "  ·  " + Math.round(free) + " GB free" else ""),
                  color = Skin.Fg, fontSize = 18.sp)
@@ -74,7 +80,7 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                         Modifier.fillMaxWidth()
                             .then(if (one === first) Modifier.focusRequester(opening) else Modifier)
                             .padding(bottom = 8.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Skin.round(8.dp)))
                             .background(if (ring) Skin.Accent else Skin.Panel2)
                             .onFocusChanged {
                                 lit = it.isFocused || it.hasFocus
@@ -84,6 +90,7 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                             .clickable {
                                 onClose()
                                 when {
+                                    onTake != null -> onTake(one)
                                     one.have -> onSaid("That one is on disk already")
                                     one.why.isNotEmpty() -> onSaid(one.why)
                                     else -> {
@@ -105,8 +112,9 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                                      else Skin.Fg,
                              fontSize = 13.sp, lineHeight = 17.sp)
                         val under = listOfNotNull(
-                            when { one.disk -> "On disk"; one.pack -> "Pack"; else -> "Tracker" },
-                            "${one.seeds} seeding".takeIf { !one.disk },
+                            "Recommended".takeIf { one.pick && !one.have },
+                            when { one.disk -> "On disk"; one.pack -> "Pack"; one.box -> if (one.seasonPack) "Season pack" else "Box set"; else -> "Tracker" },
+                            "${one.seeds} seeding".takeIf { !one.disk && one.seeds >= 0 },
                             one.mbit.takeIf { it > 0 }?.let { "$it Mbit/s" },
                             one.size.takeIf { it > 0 }?.let {
                                 String.format(java.util.Locale.US, "%.1f GB", it / 1073741824.0) },

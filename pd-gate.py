@@ -46,6 +46,7 @@ GETS = [
     "/local/library/onDeck",
     "/local/library/upcoming",
     "/local/library/popularShows",
+    "/local/library/popularFilms",
     "/local/library/collections",
     "/local/library/streaming",
     "/local/library/seasonal",
@@ -274,13 +275,19 @@ MAY_FALL = {
     ("streaming.json", "bytes"), ("top_shows.json", "bytes"),
     ("traffic.json", "bytes"), ("meters.json", "bytes"), ("ahead.json", "bytes"),
     ("sittings.json", "bytes"), ("notified.json", "bytes"),
+    # copies of a catalogue, read again from it: the popular list and the release list
+    # come back one or two shorter when the outside list does. Half gone is still a fault.
+    ("top_shows.json", ".shows"), ("streaming.json", ".rows"),
 }
 
 
 #: Papers whose entries go out of date by themselves: what a sitting took is kept a
 #: few hours and then dropped. They must still be there and readable; how many
 #: entries they hold is theirs to say.
-EXPIRES = {"sittings.json", "subcheck_asked.json"}
+EXPIRES = {"sittings.json", "subcheck_asked.json",
+           # the critics' scores of the New on streaming titles: they come and go with
+           # the twelve-hour streaming read, an unscored one replaced when it is read
+           "meters.json"}
 
 
 def compare(before, after):
@@ -454,6 +461,9 @@ def walk(base, token):
                 if r["show"] == show and r["season"] == season and not r["episode"]]
         if code != 200 or left != had:
             bad.append("a skip rule was not put back: %s %s, was %s" % (code, left, had))
+        code, got = tell(base + "/library/repair", token, {})
+        if code != 200 or got.get("ok") is not True or not got.get("rows"):
+            bad.append("check and repair did not find the copy sound: %s %s" % (code, str(got)[:200]))
         if tell(base + "/skipstart", token, {"show": "nosuchshow", "season": 1, "seconds": 5})[0] != 404:
             bad.append("a skip rule for a programme that is not held was taken")
         if tell(base + "/skipstart", token, dict(rule, seconds=9999))[0] != 400:
@@ -495,7 +505,10 @@ def walk(base, token):
             break
     print("gate: %d episode cards on the shelves, %d of them still to come"
           % (len(eps), len([c for c in eps if c.get("upcoming")])))
-    return bad, n, len(shows), len(films), len(eps)
+    # the films, not the New on streaming titles listed among them ("rt"): those are
+    # read again from outside every twelve hours, and may fall like streaming.json's rows
+    held = [f for f in films if not str(f.get("ratingKey") or "").startswith("rt")]
+    return bad, n, len(shows), len(held), len(eps)
 
 
 def main():

@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import pd_safe
 
 LOCK = threading.RLock()
 STATE = {"root": "", "data": None, "lib": None, "scan": None, "worker": False,
@@ -186,6 +187,7 @@ def save():
         tmp = path + ".tmp"
         with io.open(tmp, "w", encoding="utf-8") as f:
             json.dump(STATE["data"], f)
+            pd_safe.settle(f)
         os.replace(tmp, path)
 
 
@@ -386,7 +388,467 @@ def key_for(info_hash, index):
 
 # ---------------------------------------------------------------- packs
 
-def add_pack(raw=None, path=None):
+def _folder_rank(folder):
+    """A folder sorts by the number in front of it ("5 - Animations" before
+    "13 - Talk Shows"), then by name."""
+    first = folder.split("/")[0]
+    got = re.match(r"\s*(\d+)\s*-", first)
+    return (int(got.group(1)) if got else 9999, folder.lower())
+
+
+def _plain_folder(part):
+    """ "5 - Animations" as "Animations"; a name with no number in front as it is."""
+    return re.sub(r"^\s*\d+\s*-\s*", "", part).strip()
+
+
+def series_layout(files, series):
+    """Every video in a pack as one series: each folder a season, in the pack's own
+    folder order, its files the episodes in name order. For a site rip, whose shows are
+    on no catalogue: one card, and the folders as they were laid out.
+
+    `files` are the torrent's (index, path, size); returns the pack entries."""
+    def clean(text):
+        return re.sub(r"\s+", " ", str(text).replace("\ufffd", "-")).strip(" -.")
+
+    videos = [f for f in files if f["path"].lower().endswith(VIDEO)]
+    folders = sorted({f["path"].rsplit("/", 1)[0] if "/" in f["path"] else "" for f in videos},
+                     key=_folder_rank)
+    out = []
+    for season, folder in enumerate(folders, 1):
+        these = sorted((f for f in videos
+                        if (f["path"].rsplit("/", 1)[0] if "/" in f["path"] else "") == folder),
+                       key=lambda f: [int(t) if t.isdigit() else t.lower()
+                                      for t in re.split(r"(\d+)", f["path"])])
+        parts = [_plain_folder(p) for p in folder.split("/") if p][1:] or \
+                [_plain_folder(p) for p in folder.split("/") if p]
+        label = clean(" - ".join(parts))
+        # letters and digits only, "&" read as "and": "Hammer & Bolter" and
+        # "Hammer And Bolter." are the same words
+        flat = lambda t: re.sub(r"[^a-z0-9]", "", str(t).lower().replace("&", "and"))
+        whole = flat(label)
+        for number, f in enumerate(these, 1):
+            stem = os.path.splitext(f["path"].rsplit("/", 1)[-1])[0]
+            # "Show - Season 1 - 3 - Title": what the folder already says, and the
+            # season and number the order gives, left off
+            bits = [clean(b) for b in re.split(r"\s+[-\u2013\u2014\ufffd]\s+|\.\s+", stem)]
+            bits = [b for b in bits if b]
+            keep = [b for b in bits if flat(b) and flat(b) not in whole
+                    and not re.fullmatch(r"(?i)season\s*\d+|\d+|episode\s*\d+\.?", b)]
+            # all of it said by the folder ("Astartes - 1 - Astartes"): its last word
+            if not keep:
+                keep = [b for b in bits if not re.fullmatch(r"\d+", b)][-1:] or [stem]
+            name = clean(" - ".join(keep))
+            out.append({"index": f["index"], "path": f["path"], "size": f["size"],
+                        "title": series, "year": 0, "kind": "episode",
+                        "season": season, "episode": number,
+                        "episodeName": (label + ": " + name) if label else name,
+                        # the folder it came from: the season's own name
+                        "seasonName": label,
+                        # on no catalogue: not looked up, and not matched to whatever
+                        # programme a search turns up
+                        "tmdb": 0, "name": series, "rechecked": True,
+                        "series": True, "key": None})
+    return out
+
+
+def season_name(entry):
+    """A series pack's season by its folder's name; packs added before the name was kept
+    carry it at the front of each episode's name. "" for any other pack."""
+    if not entry.get("series"):
+        return ""
+    said = str(entry.get("seasonName") or "")
+    if not said and ": " in str(entry.get("episodeName") or ""):
+        said = str(entry["episodeName"]).split(": ", 1)[0]
+    return said
+
+
+def series_seasons(packs, title):
+    """{season: name} for a series made of a pack, by its title; empty for the rest."""
+    want = re.sub(r"[^a-z0-9]+", "", str(title or "").lower())
+    out = {}
+    for pack in packs or []:
+        for one in pack.get("films") or []:
+            if one.get("series") and re.sub(r"[^a-z0-9]+", "", str(one.get("title") or "").lower()) == want:
+                name = season_name(one)
+                if name:
+                    out.setdefault(int(one.get("season") or 0), name)
+    return out
+
+
+#: every series pack's season names by flattened title, read again every 30 s: the TV
+#: tab asks once per card, and walking every pack's every file for each was slow
+_SERIES_NAMES = {"at": 0.0, "map": {}}
+
+
+def seasons_named(title):
+    """series_seasons against the packs this server holds."""
+    if time.time() - _SERIES_NAMES["at"] > 30:
+        found = {}
+        try:
+            for pack in load()["packs"]:
+                for one in pack.get("films") or []:
+                    if one.get("series"):
+                        flat = re.sub(r"[^a-z0-9]+", "", str(one.get("title") or "").lower())
+                        name = season_name(one)
+                        if name:
+                            found.setdefault(flat, {}).setdefault(int(one.get("season") or 0), name)
+        except Exception:
+            found = {}
+        _SERIES_NAMES.update(at=time.time(), map=found)
+    return dict(_SERIES_NAMES["map"].get(re.sub(r"[^a-z0-9]+", "", str(title or "").lower()), {}))
+
+
+def series_art(title, season=0):
+    """Where a drawn poster for a series pack is fetched: the series, or one season."""
+    flat = re.sub(r"[^a-z0-9]+", "", str(title or "").lower())
+    said = "/art/series/%s/%s" % (flat, ("s%d" % season) if season else "poster")
+    # a new address once it wears an official poster: screens keep pictures by address
+    own = folded_poster(flat, season) if season else series_logo(flat)
+    return said + ("?own=1" if own else "")
+
+
+def series_by_flat(flat):
+    """(title, {season: name}) of the series pack whose flattened title this is."""
+    for pack in load()["packs"]:
+        for one in pack.get("films") or []:
+            if one.get("series") and re.sub(r"[^a-z0-9]+", "", str(one.get("title") or "").lower()) == flat:
+                return str(one.get("title")), series_seasons(load()["packs"], one.get("title"))
+    return None
+
+
+def find_told(packs, path):
+    """(series, season, episode, name) for a file from a pack added as one series, by
+    the end of its path; None for any other file."""
+    flat = str(path or "").replace("\\", "/").lower()
+    for pack in packs or []:
+        for one in pack.get("films") or []:
+            if not one.get("series"):
+                continue
+            inside = str(one.get("path") or "").replace("\\", "/").lower()
+            if inside and flat.endswith("/" + inside):
+                return (str(one.get("title") or ""), int(one.get("season") or 0),
+                        int(one.get("episode") or 0), str(one.get("episodeName") or ""))
+    return None
+
+
+def told(path):
+    """find_told against the packs this server holds: the library's hook - and a file of
+    a programme held on its own that a series pack carries, filed under that series."""
+    try:
+        said = find_told(load()["packs"], path)
+    except Exception:
+        said = None
+    if said:
+        return said
+    got = folded()["paths"].get(os.path.normcase(str(path or "")))
+    return tuple(got) if got else None
+
+
+#: files folded into a series pack's series, and that series' seasons' own posters
+FOLDED = {"data": None, "at": 0.0}
+#: how often the library is looked through for programmes a series pack carries
+FOLD_EVERY = 600
+
+
+def _folded_path():
+    return os.path.join(STATE["root"] or ".", "folded.json")
+
+
+def folded():
+    """{"paths": {path: [series, season, episode, name]}, "seasons": {flat series:
+    {season: {"title", "poster"}}}}."""
+    if FOLDED["data"] is None:
+        try:
+            with open(_folded_path(), encoding="utf-8") as f:
+                FOLDED["data"] = json.load(f) or {}
+        except FileNotFoundError:
+            FOLDED["data"] = {}
+        except (OSError, ValueError):
+            return {"paths": {}, "seasons": {}, "unread": True}   # never written over
+        FOLDED["data"].setdefault("paths", {})
+        FOLDED["data"].setdefault("seasons", {})
+    return FOLDED["data"]
+
+
+def folded_shows():
+    """{tmdb number: {"title", "series", "season"}} of programmes filed under a series pack."""
+    return dict(folded().get("shows") or {})
+
+
+def folded_poster(flat_series, season):
+    """The official poster a season of a series pack wears: the programme filed into it,
+    else its own show on the series' network. None for a drawn one."""
+    data = folded()
+    own = ((data["seasons"].get(flat_series) or {}).get(str(int(season))) or {}).get("poster")
+    return own or (((data.get("art") or {}).get(flat_series) or {}).get("seasons")
+                   or {}).get(str(int(season)))
+
+
+def series_logo(flat_series):
+    """The logo of the network a series pack is, for its main poster; None if unknown."""
+    return ((folded().get("art") or {}).get(flat_series) or {}).get("logo")
+
+
+#: how often a series pack's official pictures are looked for again
+ART_EVERY = 7 * 86400
+
+
+def match_season_posters(seasons, shows):
+    """{season: poster} for a series pack's seasons, from shows of its network: the
+    longest show name a season's name starts with. "Loremasters - Age of Sigmar" is
+    Loremasters; "Blacktalon - Season 2" takes Blacktalon's season 2 where it has one."""
+    flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower().replace("&", "and"))
+    out = {}
+    for number, name in (seasons or {}).items():
+        mine = flat(name)
+        best = max((s for s in shows or [] if s.get("poster") and flat(s.get("name"))
+                    and mine.startswith(flat(s.get("name")))),
+                   key=lambda s: len(flat(s.get("name"))), default=None)
+        if not best:
+            continue
+        told = re.search(r"(?i)season\s*(\d+)", str(name))
+        own = (best.get("seasons") or {}).get(int(told.group(1))) if told else None
+        out[int(number)] = own or best["poster"]
+    return out
+
+
+def official_art(lib, title, network):
+    """The network's logo and its shows' posters for a series pack's seasons."""
+    said = lib.tmdb("/network/%d" % int(network), timeout=10) or {}
+    shows = []
+    for page in range(1, 6):
+        got = lib.tmdb("/discover/tv", timeout=10, with_networks=int(network), page=page,
+                       sort_by="popularity.desc") or {}
+        shows += [{"id": s["id"], "name": s.get("name"), "poster": s.get("poster_path")}
+                  for s in got.get("results") or []]
+        if page >= int(got.get("total_pages") or 1):
+            break
+    seasons = seasons_named(title)
+    # a season that names its season number: that season's own poster, where it has one
+    for s in shows:
+        if any(s["name"] and re.search(r"(?i)season\s*\d+", n) and n.lower().startswith(
+                s["name"].lower()) for n in seasons.values()):
+            try:
+                det = lib.tmdb("/tv/%d" % s["id"], timeout=10) or {}
+                s["seasons"] = {int(x.get("season_number") or 0): x.get("poster_path")
+                                for x in det.get("seasons") or [] if x.get("poster_path")}
+            except Exception:
+                pass
+    posters = match_season_posters(seasons, shows)
+    # and the rest by name, taken only from this network
+    for number, name in sorted(seasons.items())[:80]:
+        if number in posters:
+            continue
+        try:
+            found = (lib.tmdb("/search/tv", timeout=10, query=re.sub(r"[^\w ]+", " ", name)) or {}
+                     ).get("results") or []
+        except Exception:
+            continue
+        same = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower().replace("&", "and"))
+        for one in found[:3]:
+            if not one.get("poster_path"):
+                continue
+            # the same name exactly, or another name on this network
+            if same(one.get("name")) == same(name):
+                posters[number] = one["poster_path"]
+                break
+            try:
+                det = lib.tmdb("/tv/%d" % one["id"], timeout=10) or {}
+            except Exception:
+                continue
+            if any(int(n.get("id") or 0) == int(network) for n in det.get("networks") or []):
+                posters[number] = one["poster_path"]
+                break
+    return {"network": int(network), "logo": said.get("logo_path"),
+            "seasons": {str(k): v for k, v in posters.items()}, "at": time.time()}
+
+
+def series_network(lib, title):
+    """The network a series pack is, from a programme filed into it: the one named like
+    the series. 0 when none is."""
+    flat = re.sub(r"[^a-z0-9]+", "", str(title or "").lower())
+    for number, one in folded_shows().items():
+        if one.get("series") != title:
+            continue
+        try:
+            det = lib.tmdb("/tv/%d" % int(number), timeout=10) or {}
+        except Exception:
+            continue
+        for n in det.get("networks") or []:
+            if re.sub(r"[^a-z0-9]+", "", str(n.get("name") or "").lower()) == flat:
+                return int(n["id"])
+    return 0
+
+
+ARTED = {"at": 0.0}
+
+
+def _official_art():
+    """Each series pack that has a network: its logo and its seasons' official posters,
+    looked for weekly."""
+    if time.time() - ARTED["at"] < FOLD_EVERY:
+        return
+    ARTED["at"] = time.time()
+    lib = STATE["lib"]() if STATE["lib"] else None
+    data = folded()
+    if not lib or data.get("unread") or not STATE["root"]:
+        return
+    art = data.setdefault("art", {})
+    changed = False
+    for title in sorted({one.get("series") for one in folded_shows().values() if one.get("series")}):
+        flat = re.sub(r"[^a-z0-9]+", "", title.lower())
+        if time.time() - float((art.get(flat) or {}).get("at") or 0) < ART_EVERY:
+            continue
+        try:
+            network = series_network(lib, title)
+            if network:
+                art[flat] = official_art(lib, title, network)
+                changed = True
+        except Exception:
+            continue
+    if changed:
+        tmp = _folded_path() + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, _folded_path())
+        except OSError:
+            pass
+
+
+def fold_matches(shows, packs):
+    """Programmes held on their own whose every episode is one of a series pack's: the
+    pack's season named after them, matched episode by episode on the episode's title.
+
+    `shows` are {"id", "title", "episodes": [{"title", "path"}]}; returns
+    [(show id, series, {path: (season, episode, name)}, season)]."""
+    flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower().replace("&", "and"))
+    series = {}
+    for pack in packs or []:
+        for one in pack.get("films") or []:
+            if not one.get("series"):
+                continue
+            mine = series.setdefault(str(one.get("title") or ""), {"seasons": {}, "names": {}})
+            season = int(one.get("season") or 0)
+            mine["seasons"].setdefault(season, flat(season_name(one)))
+            name = str(one.get("episodeName") or "").split(": ", 1)[-1]
+            mine["names"].setdefault((season, flat(name)),
+                                     (int(one.get("episode") or 0), str(one.get("episodeName") or "")))
+    out = []
+    for show in shows or []:
+        mine_flat = flat(show.get("title"))
+        eps = [e for e in show.get("episodes") or [] if e.get("path")]
+        if not mine_flat or not eps:
+            continue
+        for title, got in series.items():
+            if flat(title) == mine_flat:
+                continue                     # the series itself
+            near = sorted(s for s, n in got["seasons"].items()
+                          if n and (n in mine_flat or mine_flat in n))
+            mapping = {}
+            for e in eps:
+                hit = next(((s, got["names"][(s, flat(e.get("title")))])
+                            for s in near if (s, flat(e.get("title"))) in got["names"]), None)
+                if not hit or not flat(e.get("title")):
+                    mapping = {}
+                    break
+                mapping[e["path"]] = (hit[0], hit[1][0], hit[1][1])
+            if mapping:
+                out.append((show["id"], title, mapping, min(s for s, _, _ in mapping.values())))
+                break
+    return out
+
+
+def fold_held(lib, now=None):
+    """File programmes held on their own under the series pack that carries them: their
+    files become that series' episodes, their own poster the season's, and the separate
+    card goes. Their viewing goes with each episode. Returns how many were folded."""
+    now = now or time.time()
+    if now - FOLDED["at"] < FOLD_EVERY:
+        return 0
+    FOLDED["at"] = now
+    data = folded()
+    if data.get("unread") or not STATE["root"]:
+        return 0
+    import pd_tracker
+    if not pd_tracker.state().get("asks"):
+        return 0                             # the main machine files; a copy follows its rows
+    con = lib.db()
+    try:
+        shows = []
+        for r in con.execute("SELECT id, title, poster, tmdb_id FROM item WHERE type='show'"):
+            eps = [{"title": e["title"], "path": e["path"], "id": e["id"]} for e in con.execute(
+                "SELECT e.id, e.title, f.path FROM episode e JOIN file f ON f.episode_id=e.id "
+                "WHERE e.item_id=?", (r["id"],))]
+            if eps:
+                shows.append({"id": r["id"], "title": r["title"], "poster": r["poster"],
+                              "tmdb": r["tmdb_id"], "episodes": eps})
+        found = fold_matches(shows, load()["packs"])
+        if not found:
+            return 0
+        by_id = {s["id"]: s for s in shows}
+        hook = getattr(lib, "told_by_pack", None)
+        for show_id, title, mapping, season in found:
+            show = by_id[show_id]
+            for path, (s, e, name) in mapping.items():
+                data["paths"][os.path.normcase(path)] = [title, s, e, name]
+            flat = re.sub(r"[^a-z0-9]+", "", title.lower())
+            # which programme it was, so a search for it finds the series it is in now
+            # and never offers it to Add again
+            if show.get("tmdb"):
+                data.setdefault("shows", {})[str(int(show["tmdb"]))] = {
+                    "title": show["title"], "series": title, "season": season}
+            if show.get("poster"):
+                data["seasons"].setdefault(flat, {}).setdefault(
+                    str(season), {"title": show["title"], "poster": show["poster"]})
+            if not hook:
+                continue
+            for ep in show["episodes"]:
+                try:
+                    lib._index_file(con, "show", ep["path"], os.stat(ep["path"]),
+                                    reset_probe=False, known=True)
+                except OSError:
+                    continue
+                new = con.execute("SELECT episode_id FROM file WHERE path=?",
+                                  (ep["path"],)).fetchone()
+                if new and new["episode_id"] and new["episode_id"] != ep["id"]:
+                    # what was watched of it, and where somebody stopped, goes with it
+                    for table in ("progress", "watchlog", "ending", "subcheck"):
+                        try:
+                            con.execute("UPDATE OR IGNORE %s SET key=? WHERE key=?" % table,
+                                        (new["episode_id"], ep["id"]))
+                        except Exception:
+                            pass
+            left = con.execute("SELECT COUNT(*) AS n FROM file WHERE item_id=?",
+                               (show_id,)).fetchone()["n"]
+            if not left:
+                for table, col in (("episode", "item_id"), ("credit", "item_id"),
+                                   ("season_art", "item_id"), ("item", "id")):
+                    try:
+                        con.execute("DELETE FROM %s WHERE %s=?" % (table, col), (show_id,))
+                    except Exception:
+                        pass
+        con.commit()
+    finally:
+        con.close()
+    tmp = _folded_path() + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, _folded_path())
+    except OSError:
+        pass
+    return len(found)
+
+
+def _fold_held():
+    """Programmes a series pack carries, filed under it."""
+    lib = STATE["lib"]() if STATE["lib"] else None
+    if lib:
+        fold_held(lib)
+
+
+def add_pack(raw=None, path=None, series=""):
     if path:
         with open(path, "rb") as f:
             raw = f.read()
@@ -406,7 +868,11 @@ def add_pack(raw=None, path=None):
         with open(kept, "wb") as f:
             f.write(raw)
         films = []
-        for one in files:
+        if series:
+            films = series_layout(files, series)
+            for entry in films:
+                entry["key"] = key_for(info_hash, entry["index"])
+        for one in ([] if series else files):
             low = one["path"].lower()
             # a file that names a season and an episode is judged as an episode
             floor = EPISODE_BYTES if episode_of(one["path"], name) else FILM_BYTES
@@ -598,6 +1064,51 @@ def remove_pack(info_hash):
     return {"ok": True}
 
 
+#: downloads at the same time unless set otherwise, and the most that can be set
+AT_ONCE = 1
+AT_ONCE_MOST = 5
+#: how often the client is checked for the setting: a restarted or reinstalled
+#: qBittorrent forgets nothing, but one set by hand since is put back
+AT_ONCE_EVERY = 600
+
+
+def at_once(cfg):
+    """Downloads that may run at once, from the settings; 0 is no limit."""
+    try:
+        n = int((cfg or {}).get("atOnce", AT_ONCE))
+    except (TypeError, ValueError):
+        n = AT_ONCE
+    return max(0, min(AT_ONCE_MOST, n))
+
+
+def queue_prefs(n):
+    """What qBittorrent is told for `n` downloads at once. Its own queue holds the rest,
+    whoever added them - a film from a pack, a release from the tracker, one added by
+    hand. Seeding is never limited: a torrent stopped for the queue is a torrent the
+    tracker stops counting. No limit is the client's own -1."""
+    if n <= 0:
+        return {"max_active_downloads": -1}
+    return {"queueing_enabled": True, "max_active_downloads": int(n),
+            "max_active_uploads": -1, "max_active_torrents": -1,
+            "dont_count_slow_torrents": False}
+
+
+def keep_at_once(force=False):
+    """The setting put to the client when it differs from what the client has. Returns
+    what was changed, {} when nothing was."""
+    if not force and time.time() - float(STATE.get("atOnceAt") or 0) < AT_ONCE_EVERY:
+        return {}
+    STATE["atOnceAt"] = time.time()
+    cfg = load()["config"]
+    want = queue_prefs(at_once(cfg))
+    qb = QB(cfg)
+    have = qb.preferences()
+    changed = {k: v for k, v in want.items() if have.get(k) != v}
+    if changed:
+        qb.set_preferences(changed)
+    return changed
+
+
 def set_config(body):
     data = load()
     with LOCK:
@@ -608,6 +1119,13 @@ def set_config(body):
         # nextEpisode: fetch the following episode at the half-way point of one
         if "nextEpisode" in body:
             cfg["nextEpisode"] = bool(body["nextEpisode"])
+        # atOnce: how many downloads run at the same time; 0 is no limit
+        if "atOnce" in body:
+            try:
+                cfg["atOnce"] = max(0, min(AT_ONCE_MOST, int(body["atOnce"])))
+            except (TypeError, ValueError):
+                pass
+            STATE["atOnceAt"] = 0.0            # put to the client on the next pass
         if body.get("password") is not None and body.get("password") != "":
             cfg["password"] = str(body["password"])
         if body.get("clearPassword"):
@@ -759,6 +1277,31 @@ def free_gb(path):
         return round(shutil.disk_usage(probe).free / 1e9, 1)
     except (OSError, ValueError):
         return None
+
+
+def room_for_guest(obj):
+    """A reply as a guest gets it: a "free" (GB on the download drive) is the owner's
+    to see, kept only where a "size" (bytes) beside or under it does not fit in it."""
+    def sizes(o):
+        if isinstance(o, dict):
+            got = [o["size"]] if isinstance(o.get("size"), (int, float)) else []
+            return got + [s for v in o.values() for s in sizes(v)]
+        if isinstance(o, list):
+            return [s for v in o for s in sizes(v)]
+        return []
+
+    def walk(o):
+        if isinstance(o, list):
+            return [walk(v) for v in o]
+        if not isinstance(o, dict):
+            return o
+        out = {k: walk(v) for k, v in o.items()}
+        free = o.get("free")
+        if isinstance(free, (int, float)) and not isinstance(free, bool):
+            if not any(s / 1e9 > free for s in sizes(o)):
+                out["free"] = None
+        return out
+    return walk(obj)
 
 
 def free_cached():
@@ -1095,6 +1638,32 @@ def drop_show_pack(name, info_hash):
     _put_choice(name, choice)
 
 
+def packs_free(name, config, downloads):
+    """The packs chosen for one programme that can go with it: not one another programme
+    chose, and not one a download came from."""
+    plain = _plain(name)
+
+    def chosen(v):
+        if isinstance(v, dict):
+            return [str(h) for h in v.get("packs") or [] if h]
+        return [str(v)] if v else []
+    packs = config.get("showPacks") or {}
+    mine = chosen(packs.get(plain)) + chosen((config.get("showPack") or {}).get(plain))
+    others = {h for k, v in packs.items() if k != plain for h in chosen(v)}
+    used = {str(d.get("hash")) for d in downloads or [] if d.get("hash")}
+    return [h for h in dict.fromkeys(mine) if h not in others and h not in used]
+
+
+def remove_show(name):
+    """A programme's packs dropped with it: links only, the torrents and files stay."""
+    data = load()
+    going = packs_free(name, data["config"], data["downloads"])
+    for h in going:
+        remove_pack(h)
+    _put_choice(name, {"packs": [], "season": {}})
+    return {"ok": True, "packs": len(going)}
+
+
 def set_season_pack(name, season, info_hash):
     """Which chosen pack one season comes from, where more than one carries it."""
     choice = show_choice(name)
@@ -1270,7 +1839,8 @@ def offered_shows():
             "rating": film.get("rating"),
             "leafCount": len(holds), "childCount": len(seasons),
             "viewedLeafCount": 0, "viewCount": 0,
-            "thumb": "/art/%s/poster" % film["key"] if film.get("poster") else None,
+            "thumb": ("/art/%s/poster" % film["key"] if film.get("poster")
+                      else series_art(name) if film.get("series") else None),
             "art": "/art/%s/backdrop" % film["key"] if film.get("backdrop") else None,
             "addedAt": max([int(g.get("when") or 0) for g in got] or [0]) or
                        int(holds[0][1].get("added") or 0),
@@ -1299,10 +1869,12 @@ def offered_seasons(key):
             return days[0] if days else ""
         return [{
             "ratingKey": "%s-s%d" % (key, season), "type": "season",
-            "title": "Season %d" % season, "index": season,
+            # a series pack's season by its folder's name
+            "title": season_name(these[0]) or "Season %d" % season, "index": season,
             "leafCount": len(these), "viewedLeafCount": 0,
             "parentRatingKey": key,
-            "thumb": "/art/%s/poster" % film["key"] if film.get("poster") else None,
+            "thumb": ("/art/%s/poster" % film["key"] if film.get("poster")
+                      else series_art(name, season) if film.get("series") else None),
             "offered": True,
             # the season's own year, not the programme's
             "originallyAvailableAt": first_aired(these),
@@ -1328,7 +1900,9 @@ def episode_item(film, show, pack=None):
         "originallyAvailableAt": str(film.get("aired") or ""),
         "duration": 0, "viewCount": 0,
         "addedAt": int(got.get("when") or 0) or int((pack or {}).get("added") or 0),
-        "thumb": "/art/%s/poster" % film["key"] if film.get("poster") else None,
+        # a series made of a pack: its season's poster, official or drawn
+        "thumb": ("/art/%s/poster" % film["key"] if film.get("poster")
+                  else series_art(show, season) if film.get("series") else None),
         "art": "/art/%s/backdrop" % film["key"] if film.get("backdrop") else None,
         "maxHeight": 1080 if "1080p" in (film.get("path") or "").lower() else 0,
         "offered": True,
@@ -1404,6 +1978,21 @@ def unfinished(path, wait=True):
 FILE_LISTS = {}
 
 
+def unfinished_file(progress, priority, path, hollow=None):
+    """Whether a torrent's file is no film yet: begun, asked for - or neither, but the
+    empty space the client made for it is what stands there, which is what a download
+    cancelled before anything came leaves: 26 GB with a name and nothing in it, and the
+    library took it for a film. A real file put there from elsewhere still counts."""
+    if progress >= 1:
+        return False
+    if progress > 0 or priority > 0:
+        return True
+    if hollow is None:
+        from pd_library import hollow_file
+        hollow = lambda where: os.path.exists(where) and hollow_file(where)
+    return bool(hollow(path))
+
+
 def _read_unfinished():
     """Every file a torrent is still writing, judged file by file across all torrents.
 
@@ -1433,14 +2022,45 @@ def _read_unfinished():
                 progress = float(f.get("progress") or 0)
                 if progress >= 1:
                     done.add(p)
-                elif progress > 0 or int(f.get("priority") or 0) > 0:
+                elif unfinished_file(progress, int(f.get("priority") or 0), p):
                     partial.add(p)
         for h in list(FILE_LISTS):
             if h not in live:
                 FILE_LISTS.pop(h, None)
         UNFINISHED["paths"] = partial - done
+        _keep_unfinished(UNFINISHED["paths"])
     except Exception:
-        pass                                  # unanswered: keep what was known
+        # unanswered: keep what was known - and after a restart, what was known last
+        # time. Holding nothing back let every half-fetched film of a pack into the
+        # library whenever qBittorrent was off.
+        if not UNFINISHED["paths"]:
+            UNFINISHED["paths"] = _kept_unfinished()
+
+
+def _unfinished_file():
+    return os.path.join(STATE["root"] or ".", "unfinished.json")
+
+
+def _keep_unfinished(paths):
+    """The files qBittorrent last said were unfinished, written down."""
+    if not STATE["root"]:
+        return
+    try:
+        with open(_unfinished_file() + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(sorted(paths), f)
+        os.replace(_unfinished_file() + ".tmp", _unfinished_file())
+    except OSError:
+        pass
+
+
+def _kept_unfinished():
+    """The files last known unfinished, for when qBittorrent cannot be asked."""
+    try:
+        with open(_unfinished_file(), encoding="utf-8") as f:
+            said = json.load(f)
+        return {str(p) for p in said} if isinstance(said, list) else set()
+    except (OSError, ValueError):
+        return set()
 
 
 def offered_keys(title, season=None):
@@ -1565,11 +2185,18 @@ class QB:
         """Seeders in each torrent's swarm, as its trackers last said: {hash: count}."""
         rows = json.loads(self._call("/api/v2/torrents/info?hashes=" + "|".join(hashes),
                                      timeout=10) or b"[]")
+        # 0 from a torrent that has not asked its tracker yet is not known to be none
         return {str(t.get("hash") or "").lower(): int(t.get("num_complete") or 0)
-                for t in rows if int(t.get("num_complete") or -1) >= 0}
+                for t in rows if int(t.get("num_complete") or -1) > 0}
 
     def files(self, info_hash):
         return json.loads(self._call("/api/v2/torrents/files?hash=" + info_hash) or b"[]")
+
+    def preferences(self):
+        return json.loads(self._call("/api/v2/app/preferences", timeout=10) or b"{}")
+
+    def set_preferences(self, prefs):
+        self._call("/api/v2/app/setPreferences", {"json": json.dumps(prefs)}, timeout=10)
 
     def remove(self, info_hash, files=False):
         """Take a torrent out of the client, with what it has written if asked.
@@ -1702,6 +2329,7 @@ def status():
                        "user": cfg.get("user") or "",
                        "hasPassword": bool(cfg.get("password")),
                        "nextEpisode": bool(cfg.get("nextEpisode")),
+                       "atOnce": at_once(cfg),
                        "saveTo": cfg.get("saveTo") or (folders[0] if folders else "")},
             "folders": folders, "qbittorrent": qb, "packs": packs,
             # where a torrent file can be dropped to become a pack by itself, so the
@@ -3045,6 +3673,20 @@ def _unindex_unfinished():
         STATE["scan_wanted"] = True
 
 
+def _boxsets():
+    """One box set from the tracker read for the films inside it."""
+    import pd_boxsets
+    pd_boxsets.step()
+
+
+def _tracker_landed():
+    """A film or episode fetched from the tracker, into the library once it is whole."""
+    lib = STATE["lib"]() if STATE["lib"] else None
+    if lib:
+        import pd_tracker
+        pd_tracker.take_in_finished(lib)
+
+
 #: when a download that finished but never reached the library last asked for a scan
 LOOKED = {"at": 0.0}
 
@@ -3175,10 +3817,15 @@ def _work():
         # a pack qBittorrent has stopped on is read again, once - a drive that
         # went away and came back leaves every torrent that touched it halted
         _step("mend_halted", mend_halted)
+        _step("keep_at_once", keep_at_once)
         _step("_start_next", _start_next)
         _step("_guard_packs", _guard_packs)
         _step("_name_arrivals", _name_arrivals)
         _step("_chase_arrivals", _chase_arrivals)
+        _step("_tracker_landed", _tracker_landed)
+        _step("_boxsets", _boxsets)
+        _step("_fold_held", _fold_held)
+        _step("_official_art", _official_art)
         _step("_unindex_unfinished", _unindex_unfinished)
         _step("scan", _scan_if_wanted)
         pd_beat.beat("torrents", "idle", 900)

@@ -166,12 +166,12 @@ fun SubtitleDownloadDialog(
                                     if (inUse.isNotEmpty() && inUse.startsWith(
                                             candidate.name.removeSuffix(".srt")))
                                         Skin.Accent.copy(alpha = 0.22f) else Skin.Panel2,
-                                    RoundedCornerShape(8.dp))
+                                    RoundedCornerShape(Skin.round(8.dp)))
                                 // the same white ring as everywhere else: this is
                                 // where the remote is standing
                                 .border(2.dp,
                                         if (focused) Color.White else Color.Transparent,
-                                        RoundedCornerShape(8.dp))
+                                        RoundedCornerShape(Skin.round(8.dp)))
                                 .onFocusChanged { focused = it.isFocused }
                                 .then(if (at == 0) Modifier.focusRequester(first)
                                       else Modifier)
@@ -216,6 +216,7 @@ fun SubtitleDownloadDialog(
                                      fontSize = 13.5.sp)
                                 Text(
                                     listOfNotNull(
+                                        if (candidate.autoPick) "auto pick" else null,
                                         if (sure) "confirmed" else null,
                                         if (using) "in use" else null,
                                         if (candidate.onDisk && !using) "on disk" else null,
@@ -264,12 +265,12 @@ fun SubtitleDownloadDialog(
                 var madeFocus by remember { mutableStateOf(false) }
                 if (speaking == "en" || speaking == "sv")
                 Row(Modifier.fillMaxWidth().padding(top = 6.dp)
-                        .background(Skin.Panel2, RoundedCornerShape(8.dp))
+                        .background(Skin.Panel2, RoundedCornerShape(Skin.round(8.dp)))
                         // the same white ring the rows above carry: this is where
                         // the remote is standing
                         .border(2.dp,
                                 if (madeFocus) Color.White else Color.Transparent,
-                                RoundedCornerShape(8.dp))
+                                RoundedCornerShape(Skin.round(8.dp)))
                         .onFocusChanged { madeFocus = it.isFocused }
                         .focusable()
                         // while one is being written, the same row stops it: a film

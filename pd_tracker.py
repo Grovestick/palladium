@@ -155,13 +155,25 @@ def jackett():
     return (where, key) if key else ("", "")
 
 
+#: what a search is asked of: films, television and documentaries. Asked without, the
+#: indexer leaves out TorrentLeech's Anime section - Shutter Hop had 72 releases there
+#: and a search found none; films answered the same either way
+CATEGORIES = "2000,5000,100029"
+
+
+def jackett_url(where, key, kind, words):
+    """The indexer's address for one search."""
+    return ("%s/api/v2.0/indexers/torrentleech/results/torznab/api"
+            "?apikey=%s&t=%s&q=%s&cat=%s" % (where, key, kind, urllib.parse.quote(str(words)),
+                                             CATEGORIES))
+
+
 def ask_jackett(words, kind="search"):
     """Search through the local indexer. Rows in the same shape the feeds give."""
     where, key = jackett()
     if not (where and words):
         return []
-    url = ("%s/api/v2.0/indexers/torrentleech/results/torznab/api"
-           "?apikey=%s&t=%s&q=%s" % (where, key, kind, urllib.parse.quote(str(words))))
+    url = jackett_url(where, key, kind, words)
     try:
         ask = urllib.request.Request(url, headers={"User-Agent": "Palladium"})
         with urllib.request.urlopen(ask, timeout=60) as answer:
@@ -301,7 +313,7 @@ def look_for(words, most=40):
     of. What comes back is folded into the index like any other row, so the version
     list and the fetch work on it afterwards without a second lookup.
     """
-    got = search(str(words or ""), 0)
+    got = search(str(words or ""), 0) or []
     if got:
         return got[:most]
     # nothing matched the title as a film: the rows are still learned, and what was
@@ -316,7 +328,59 @@ def look_for(words, most=40):
     return out[:most]
 
 
+#: what the tracker is asked per minute by every part of this server together: searches,
+#: and torrent files fetched. A person waiting is always served and counted; background
+#: work gives way once the minute is spent and is asked again later.
+PER_MINUTE = {"search": 10, "fetch": 12}
+_SPENT = {"search": [], "fetch": []}
+_SPEND_LOCK = threading.Lock()
+_HOW = threading.local()
+
+
+def quietly(work):
+    """`work` run as background work: it gives way when the minute's budget is spent."""
+    def run(*args, **kwargs):
+        was = getattr(_HOW, "background", False)
+        _HOW.background = True
+        try:
+            return work(*args, **kwargs)
+        finally:
+            _HOW.background = was
+    return run
+
+
+def room(kind):
+    """Whether background work may ask the tracker for one more of this kind now."""
+    now = time.time()
+    with _SPEND_LOCK:
+        return len([t for t in _SPENT[kind] if now - t < 60]) < PER_MINUTE[kind]
+
+
+def _spend(kind):
+    """One request of this kind, counted: False when background work has to wait."""
+    now = time.time()
+    with _SPEND_LOCK:
+        _SPENT[kind] = [t for t in _SPENT[kind] if now - t < 60]
+        if getattr(_HOW, "background", False) and len(_SPENT[kind]) >= PER_MINUTE[kind]:
+            return False
+        _SPENT[kind].append(now)
+        return True
+
+
 def search(title, year=0):
+    """Ask the tracker what it has for one film, and once more without the year when
+    that finds nothing: a release dated a year off its catalogue entry - "Northspur
+    2022" for a film catalogued in 2023 - is found by neither name with the year in it.
+    None when background work had to give way: not asked, rather than nothing found."""
+    got = _search(title, year)
+    if got is None:
+        return None
+    if not got and year:
+        got = _search(title, 0) or []
+    return got
+
+
+def _search(title, year=0):
     """Ask the tracker what it has for one film. Returns the rows learned.
 
     This is what the feeds cannot do: they carry only what was posted today, and a
@@ -328,9 +392,12 @@ def search(title, year=0):
     """
     if HELD["on"]:
         return []
+    if not _spend("search"):
+        return None
     # the year goes into the search as well as the filtering: "F1" alone brings back a
     # hundred race broadcasts and one release of the film; "F1 2025" brings sixteen
-    words = ("%s %d" % (str(title or "").strip(), int(year)) if year else str(title or ""))
+    # asked in plain letters, the way releases are named
+    words = ("%s %d" % (plain(title).strip(), int(year)) if year else plain(title))
     through = ask_jackett(words)
     if through:
         return through
@@ -685,8 +752,16 @@ def measure_many(ids, at_once=3, gap=0.5, budget=5.0):
     return done[0]
 
 
+def plain(said):
+    """A name with its letters' marks taken off: "Över Bergen" as "Over Bergen".
+    Releases are named in plain letters, the catalogue in Swedish ones."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", str(said or ""))
+                   if not unicodedata.combining(c))
+
+
 def _flat(said):
-    return "".join(c for c in str(said or "").lower() if c.isalnum())
+    return "".join(c for c in plain(said).lower() if c.isalnum())
 
 
 #: the index by name and by IMDb number, rebuilt when the list changes or once a minute
@@ -748,13 +823,30 @@ def find(title, year=0, imdb=""):
     return out
 
 
+#: an episode or a season in a release name: S01E01, S01.E01, S01
+_EPISODE_TAG = re.compile(r"(?i)(?:^|[ ._\-\[])S(\d{1,2})(?:[ ._]?E(\d{1,3}))?(?=[ ._\-\]]|$)")
+
+
+def episode_tag(name):
+    """(series, season, episode) a release name says it is, episode 0 for a whole
+    season; None for a film. "TYSON S01E01 1080p" is ("TYSON", 1, 1)."""
+    got = _EPISODE_TAG.search(str(name or ""))
+    if not got:
+        return None
+    show = re.sub(r"[._]+", " ", str(name)[:got.start()]).strip(" -[")
+    show = re.sub(r"\s+(19|20)\d\d$", "", show).strip()
+    if not show:
+        return None
+    return (show, int(got.group(1)), int(got.group(2) or 0))
+
+
 def episodes_of(title, season):
     """The index's single-episode releases of one season, by episode number.
 
     Whatever the catalogue says about air dates: an episode that turns up before its
     date is on the tracker all the same, and that is when somebody wants it.
     """
-    want = re.sub(r"[^a-z0-9]+", "", str(title or "").lower())
+    want = re.sub(r"[^a-z0-9]+", "", plain(title).lower())
     if not want:
         return {}
     tag = re.compile(r"(?i)(?:^|[ ._\-\[])S0*%d[ ._]?E0*(\d{1,3})(?=[ ._\-\]]|$)" % int(season))
@@ -779,7 +871,7 @@ def episodes_of(title, season):
 def torrent_of(ident):
     """The torrent file for one release in the index, or nothing."""
     row = read().get(str(ident))
-    if not row:
+    if not row or not _spend("fetch"):
         return None
     try:
         raw = urllib.request.urlopen(
@@ -789,6 +881,47 @@ def torrent_of(ident):
         return None
     return raw if (raw.startswith(b"d8:announce")
                    or b"announce" in raw[:200]) else None
+
+
+def release_flat(name):
+    """A release name as letters and digits, file ending left off: the tracker writes
+    "Some Film 2026 1080p ...-GRP" and qBittorrent "Some.Film...-GRP.mkv"."""
+    plain = re.sub(r"\.(mkv|mp4|avi|m4v|ts)$", "", str(name or "").strip(), flags=re.I)
+    return re.sub(r"[^a-z0-9]+", "", plain.lower())
+
+
+#: how long a finished tracker download is shown at 100% while the library has not
+#: read it yet: the folder watcher waits two minutes for the disk to settle first
+LANDING_FOR = 900
+
+
+def landing_now(log, done, held, now):
+    """Finished tracker fetches of films the library has not read in yet.
+
+    `log` is the tracker's own log, `done` maps a flat release name to the time
+    qBittorrent finished it, `held(title, year)` says whether the library has the film.
+    Between the torrent finishing and the scan, the card fell back to Download and
+    then dropped off the release row; it stays at 100% until the film is there.
+    Films only: an episode has no year to be matched by.
+    """
+    out, seen = [], set()
+    for t in reversed(log or []):
+        name = str(t.get("name") or "")
+        flat = release_flat(name)
+        finished = done.get(flat)
+        if not finished or flat in seen or now - finished > LANDING_FOR:
+            continue
+        seen.add(flat)
+        title, year = bare(name)
+        if not year or re.search(r"\bS\d{1,2}(E\d{1,3})?\b", name, re.I):
+            continue
+        if held(title, year):
+            continue
+        out.append({"name": name, "progress": 1.0, "mbit": 0.0, "eta": 0,
+                    "size": int(t.get("size") or 0), "who": t.get("who") or "",
+                    "from": "tracker", "added": int(t.get("at") or 0),
+                    "state": "landing"})
+    return out
 
 
 def take(ident="", title="", year=0, most_gb=0.0, who="", auto=False, reason=""):
@@ -892,10 +1025,13 @@ def _wanted():
         year = int(row.get("year") or 0)
         mark = "%s|%d" % (title.lower(), year)
         when = float(asked.get(mark) or 0)
-        have = bool(find(title, year))
+        have = bool(find(title, year)) or any(find(n, year) for n in row.get("aka") or [])
         if now - when < (AGAIN_AFTER if have else AGAIN_EMPTY):
             continue
-        one = (str(row.get("released") or ""), title, year, mark)
+        # and the other names the catalogue knows it by: "Battle Cabin" on the list,
+        # "Northspur" on every release
+        one = (str(row.get("released") or ""), title, year, mark,
+               tuple(n for n in (row.get("aka") or []) if n))
         if have:
             known.append((when, one))
         else:
@@ -905,6 +1041,7 @@ def _wanted():
     return empty + [one for _, one in known]
 
 
+@quietly
 def ask_about_one():
     """One search, for the newest film nothing is known about. Returns what it learned."""
     if HELD["on"]:
@@ -912,12 +1049,27 @@ def ask_about_one():
     want = _wanted()
     if not want:
         return 0
-    _, title, year, mark = want[0]
+    _, title, year, mark, aka = want[0]
     got = search(title, year)
+    if got is None:
+        return 0                          # the minute was spent: asked again later
+    for name in aka:
+        if got:
+            break
+        got = search(name, year) or []
     with LOCK:
         STATE.setdefault("asked", {})[mark] = time.time()
     write()
     return len(got)
+
+
+def asked_within(title, year=0, seconds=90.0):
+    """Whether this film was asked about in the last `seconds`."""
+    read()
+    mark = "%s|%d" % (str(title or "").strip().lower(), int(year or 0))
+    with LOCK:
+        when = float((STATE.get("asked") or {}).get(mark) or 0)
+    return time.time() - when < seconds
 
 
 def ask_for(title, year=0, again_after=90.0):
@@ -947,6 +1099,15 @@ def ask_for(title, year=0, again_after=90.0):
     if time.time() - when < again_after or not room:
         return []
     got = search(title, year)
+    if got is None:
+        return []                         # gave way: not marked asked
+    with LOCK:
+        failed = not got and bool(STATE.get("why"))
+    if failed:
+        # the tracker or the indexer did not answer: not asked, and asked again next
+        # time. Marked, a network that was down for a minute turned every series asked
+        # in it into Request for two weeks
+        return []
     with LOCK:
         STATE.setdefault("asked", {})[mark] = time.time()
     write()
@@ -1063,6 +1224,46 @@ def taking():
                 (STATE.get("taken") or {}).pop(mark, None)
         write()
     return out
+
+
+#: what a finished download holds that the library plays
+VIDEO_ENDS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".mov", ".wmv")
+
+
+def take_in_finished(lib, qb=None):
+    """Each tracker download handed to the library the moment it is whole, as a pack's
+    file is: the folder watch misses a file that lands while the server restarts, and
+    the full scan is a day away. Returns how many files were added."""
+    read()
+    with LOCK:
+        waiting = [m for m, s in (STATE.get("taken") or {}).items() if not s.get("in")]
+    if not waiting:
+        return 0
+    if qb is None:
+        import pd_torrents
+        qb = pd_torrents.QB(pd_torrents.load()["config"])
+    took, landed = 0, []
+    for mark in waiting:
+        try:
+            held = qb.info(mark)
+            if not held or float(held.get("progress") or 0) < 1.0:
+                continue
+            files = qb.files(mark)
+        except Exception:
+            continue
+        root = str(held.get("save_path") or "")
+        paths = [os.path.join(root, *str(f.get("name") or "").split("/")) for f in files
+                 if str(f.get("name") or "").lower().endswith(VIDEO_ENDS)
+                 and "sample" not in str(f.get("name") or "").lower()]
+        took += lib.take_in(paths)
+        landed.append(mark)
+    if landed:
+        with LOCK:
+            for mark in landed:
+                if mark in (STATE.get("taken") or {}):
+                    STATE["taken"][mark]["in"] = True
+        write()
+    return took
 
 
 def drop(mark):

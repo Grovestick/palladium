@@ -463,6 +463,500 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     check("10 drawn again after a change, there is still one card", count() === 1, "found " + count());
   }
 
+  // ---- 11. the server picker's light and name: what is known, of the machine answering
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval(take("pickLight") + take("pickName") + "window.pickLight = pickLight; window.pickName = pickName;");
+    check("11 no colour until there has been a look", w.pickLight(false, null, null) === "waiting"
+          && w.pickLight(true, true, null) === "waiting");
+    check("11 green when this page's server answers, red when it does not",
+          w.pickLight(false, true, null) === "up" && w.pickLight(false, false, true) === "down");
+    check("11 carried by the copy, the light is the copy's",
+          w.pickLight(true, false, true) === "up" && w.pickLight(true, true, false) === "down");
+    check("11 and so is the name", w.pickName(true, "Copy", "Main") === "Copy" && w.pickName(false, "Copy", "Main") === "Main"
+          && w.pickName(true, "", "Main") === "The other server" && w.pickName(false, "", "") === "This server");
+    const css = fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8");
+    const base = (css.match(/\.srvpick \.dot\{[^}]*\}/) || [""])[0];
+    check("11 the light has no colour of its own in the stylesheet", base.length > 0 && !/#42c96a/i.test(base)
+          && /\.srvpick \.dot\.up\{background:#42c96a\}/.test(css), base);
+    check("11 the picker is drawn again when a look changes what is known",
+          /if \(\(home !== was \|\| there !== wasCopy\) && typeof drawServerPick === "function"\) drawServerPick\(\);/.test(SOURCE));
+  }
+
+  // ---- 12. the soundtrack the server marks is the one a browser plays
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval(take("soundNeedsPicking") + "\nwindow.soundNeedsPicking = soundNeedsPicking;");
+    const part = (marks) => ({ Stream: [{ streamType: 1 }].concat(marks.map((m, n) =>
+      ({ streamType: 2, index: n + 1, selected: m })), [{ streamType: 3, index: 9, selected: true }]) });
+    check("12 the second track marked: picked out by ffmpeg", w.soundNeedsPicking(part([false, true])) === 2);
+    check("12 the first marked, or none, or one track: played as it is",
+          w.soundNeedsPicking(part([true, false])) === null && w.soundNeedsPicking(part([false, false])) === null
+          && w.soundNeedsPicking(part([true])) === null && w.soundNeedsPicking(null) === null);
+    check("12 direct play gives way to it", /if \(soundNeedsPicking\(part\) !== null\) return null;/.test(SOURCE));
+  }
+
+  // ---- 13. the monitor: workers on a tab of their own, and a phone layout that reads
+  {
+    const css = fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8").replace(/\r\n/g, "\n");
+    const settings = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
+    check("13 a Workers tab", /\["workers", "Workers"\]/.test(settings));
+    check("13 the overview leaves the workers out",
+          css.includes('body.monitor:is([data-design="overview"],[data-design="drawing"]) .nowtop>.workers{display:none}'));
+    const phone = css.indexOf("/* A phone: one column that scrolls");
+    const compact = css.indexOf('body.monitor[data-design="overview"] .person.live .pmeta .note{font-size:10px');
+    check("13 the phone's rows come after the television's compact ones", phone > compact && compact > 0);
+    check("13 and are as specific, so they win",
+          css.slice(phone, phone + 4000).includes("body.monitor[data-design] .person.live .pmeta b{font-size:17px"));
+  }
+
+  // ---- 14. the subtitle a title opens with: the app's rule
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval("let LIST = [], PREFS = {}, MEDIA = null; let SERVERLANG = '', SERVERLANG2 = '';\n" +
+           "const subOptions = () => LIST; const prefs = () => PREFS; const mediaOf = () => MEDIA;\n" +
+           SOURCE.slice(SOURCE.indexOf("const LANG_SAME = "), SOURCE.indexOf("};", SOURCE.indexOf("const LANG_SAME = ")) + 2) + "\n" +
+           take("sameLang") + take("preferredSub") + take("nextWantsSubs") +
+           "\nwindow.set = (l, p, m) => { LIST = l; PREFS = p; MEDIA = m || null; }; window.preferredSub = preferredSub;" +
+           " window.nextWantsSubs = nextWantsSubs;");
+    const t = (id, code, more) => Object.assign({ id: id, code: code, external: false, picked: false,
+                                                  forced: false, sdh: false }, more || {});
+    const pick = (list, prefs) => { w.set(list, prefs); const got = w.preferredSub({}, 0); return got ? got.id : null; };
+    check("14 a Swedish file chosen once does not keep an English reader on Swedish",
+          pick([t(1, "swe", { external: true, picked: true }), t(2, "eng")], { subLang: "en" }) === 2);
+    check("14 chosen last time and in the first language: that one",
+          pick([t(1, "eng"), t(2, "eng", { external: true, picked: true })], { subLang: "en" }) === 2);
+    check("14 a file beside the video before the film's own",
+          pick([t(1, "eng"), t(2, "eng", { external: true })], { subLang: "en" }) === 2);
+    check("14 a full track before a forced one or one describing sounds",
+          pick([t(1, "eng", { forced: true }), t(2, "eng", { sdh: true }), t(3, "eng")], { subLang: "en" }) === 3);
+    check("14 nothing in the first language: the second",
+          pick([t(1, "fre"), t(2, "swe")], { subLang: "en", subLang2: "sv" }) === 2);
+    check("14 the second set to off: nothing", pick([t(1, "fre")], { subLang: "en", subLang2: "off" }) === null);
+    check("14 off: nothing, unless one was chosen", pick([t(1, "eng")], { subLang: "" }) === null
+          && pick([t(1, "eng", { picked: true })], { subLang: "" }) === 1);
+    w.set([t(1, "eng"), t(2, "swe", { start: true })], { subLang: "en" }, { subsDecided: true });
+    check("14 the server's choice is taken over the web's own rule", w.preferredSub({}, 0).id === 2);
+    w.set([t(1, "eng")], { subLang: "en" }, { subsDecided: true });
+    check("14 decided, none marked: none", w.preferredSub({}, 0) === null);
+    w.set([t(1, "eng")], {});
+    check("14 the next episode with subtitles only when they were on, the series wants them, or a file is beside it",
+          w.nextWantsSubs(false, { subsWanted: false }) === false && w.nextWantsSubs(true, {}) === true
+          && w.nextWantsSubs(false, { subsWanted: true }) === true);
+    w.set([t(1, "eng", { external: true })], {});
+    check("14 a file beside it counts", w.nextWantsSubs(false, {}) === true);
+    check("14 the next episode asks it", /play\(meta, 0, nextWantsSubs\(showing, meta\) \? \{\} : \{ subId: 0 \}\);/.test(SOURCE));
+  }
+
+  // ---- 15. the popular page's filters, and a pack's episode opening its releases
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval(take("popularFilter") + "\nwindow.popularFilter = popularFilter;");
+    const list = [{ title: "A", year: 2019, genres: ["Drama", "Crime"] },
+                  { title: "B", year: 2024, genres: ["Drama"] },
+                  { title: "C", year: 1998, genres: ["Comedy"] },
+                  { title: "D", year: 0, genres: [] }];
+    const t = (g, d) => Array.from(w.popularFilter(list, g, d)).map((x) => x.title).join("");
+    check("15 nothing marked: all of them", t("", "") === "ABCD");
+    check("15 every marked genre", t("Drama", "") === "AB" && t("Drama,Crime", "") === "A");
+    check("15 any marked decade", t("", "2010") === "A" && t("", "2010,1990") === "AC");
+    check("15 both at once", t("Drama", "2020") === "B");
+    check("15 a pack's episode opens the release list, its page only for one who may not fetch",
+          /row\.onclick = \(\) => \(ep\.offered\s*\? \(\(!CFG\.guest \|\| CFG\.mayFetch\) \? episodeDownloads\(row, ep\) : viewOffer\(ep\)\)/.test(SOURCE));
+  }
+
+  // ---- 16. Popular is an order of the tab: the same page, the same controls
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval("let sortState = { key: 'popular', dir: 'desc' };\n" + take("sortLike") +
+           "\nwindow.sortLike = sortLike;");
+    const list = [{ title: "Beta", popularity: 5 }, { title: "alpha", popularity: 9 },
+                  { title: "Gamma", popularity: 7 }, { title: "Delta", popularity: 0 }];
+    check("16 Popular: most watched first, the rest after",
+          Array.from(w.sortLike(list.slice())).map((x) => x.title[0].toUpperCase()).join("") === "AGBD");
+    const body = SOURCE.slice(SOURCE.indexOf("async function viewSection(type)"),
+                              SOURCE.indexOf("async function viewSection(type)") + 6000);
+    check("16 the tab draws Popular itself, with its own sort, service, genre and decade",
+          body.includes('if (sortState.key === "popular") {') &&
+          body.includes("h.appendChild(withPopular(sortBar(() => viewSection(type)), type));\n    h.appendChild(serviceBar(type));") &&
+          !SOURCE.includes("function popularSortBar(") && !SOURCE.includes("const POPULAR_WANTED"));
+  }
+
+  // ---- 17. the popular page by where a show was made
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval(take("popularFilter") + take("countryName") +
+           "\nwindow.popularFilter = popularFilter; window.countryName = countryName;");
+    const list = [{ title: "A", countries: ["US"] }, { title: "B", countries: ["KR"] },
+                  { title: "C", countries: ["GB", "US"] }, { title: "D", countries: [] }];
+    const t = (c) => Array.from(w.popularFilter(list, "", "", c)).map((x) => x.title).join("");
+    check("17 nothing marked: every country", t("") === "ABCD");
+    check("17 any marked country", t("US") === "AC" && t("KR,GB") === "BC" && t("kr") === "B");
+    check("17 the country by its name", w.countryName("KR") === "South Korea" && w.countryName("US") === "United States");
+  }
+
+  // ---- 18. a download's corner: how far first, the version on its own line
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval("const etaShort = (s) => s + ' s';\n" + take("offerWord") + take("offerVersion") +
+           "\nwindow.offerWord = offerWord; window.offerVersion = offerVersion;");
+    const it = { offer: { state: "downloading", progress: 0.57, eta: 120, version: "1080p WEB-DL - THEGAME" } };
+    check("18 the percentage first, with no version in it", w.offerWord(it) === "57% \u00b7 120 s");
+    check("18 the version alone, for its own line", w.offerVersion(it) === "1080p WEB-DL - THEGAME"
+          && w.offerVersion({ offer: { state: "queued", version: "x" } }) === "");
+    check("18 the badge draws it under", /'<small class="ver">' \+ esc\(offerVersion\(it\)\)/.test(SOURCE));
+  }
+
+  // ---- 19. Popular in the TV page's order menu
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval("let ordered = 0; const sortState = { key: 'popular' };\n" +
+           take("withPopular") +
+           "\nwindow.make = (type) => { const bar = document.createElement('div');" +
+           " const sel = document.createElement('select'); sel.add(new Option('Name', 'name'));" +
+           " sel.onchange = () => { ordered++; }; bar.appendChild(sel); return withPopular(bar, type); };" +
+           " window.counts = () => ordered;");
+    const tv = w.make("show"), films = w.make("movie");
+    const sel = tv.querySelector("select");
+    check("19 TV and Films both offer Popular, first, and show it chosen",
+          sel.options[0].value === "popular" && sel.value === "popular"
+          && films.querySelector("select").options[0].value === "popular");
+    sel.value = "popular"; sel.onchange();
+    sel.value = "name"; sel.onchange();
+    check("19 Popular is chosen like any other order: no page of its own", w.counts() === 2);
+  }
+
+  // ---- 20c. a film on SVT Play plays from there, from its own page
+  {
+    check("20c SVT Play: a Play button on the page of a film SVT shows, its stream asked of the server",
+          SOURCE.includes(`(m.svt ? '<button class="btn" id="svtplay">`) &&
+          SOURCE.includes('api("/library/svt/" + encodeURIComponent(m.svt), {}, null)') &&
+          fs.existsSync(path.join(__dirname, "static", "hls.min.js")));
+  }
+
+  // ---- 20l. every way into Films or TV lands on the tab; the door sets order and marks
+  {
+    check("20l the tab's Popular order reads the films' or the series' popular list",
+          /if \(type !== "show" && type !== "movie"\) return bar;/.test(SOURCE) &&
+          SOURCE.includes('type === "movie" ? "/library/popularFilms" : "/library/popularShows"'));
+    check("20l a shelf's name and a genre on a title open the tab under its own name",
+          SOURCE.includes('const tabState = SORT_BY_TAB[toTab[0] === "movie" ? "movies" : "shows"];') &&
+          SOURCE.includes('go(kind === "show" ? "shows" : "movies");') &&
+          !SOURCE.includes('go(kind === "show" ? "tv" : "movies");'));
+  }
+
+  // ---- 20k. a search can be spoken: what was heard goes in the box as typing
+  {
+    check("20k the mic button puts what was said in the search box and searches",
+          /box\.value = said;\s*box\.dispatchEvent\(new Event\("input"\)\)/.test(SOURCE) &&
+          /window\.isSecureContext/.test(SOURCE));
+  }
+
+  // ---- 20j. a series not held says where it streams
+  {
+    check("20j the add page of a series carries Region and its streaming services",
+          /'<div class="sub">' \+ facts \+ "<\/div>" \+\s*\/\/[^\n]*\n\s*badgesRow\(\[\], m\) \+/.test(SOURCE));
+  }
+
+  // ---- 20i. a series' single episodes in the one download menu, after the packs
+  {
+    check("20i one download menu on a series' page: packs, then its single episodes, each fetched alone",
+          !SOURCE.includes("function trackerEpisodesInto(") &&
+          SOURCE.includes('group.label = "Single episodes";') &&
+          SOURCE.indexOf('pick.add(new Option("Let it find packs by itself') <
+            SOURCE.indexOf('group.label = "Single episodes";') &&
+          SOURCE.includes("body: JSON.stringify({ id: ep.id, title: m.title, year: m.year || 0 }) })).json();"));
+  }
+
+  // ---- 20h. a series nobody has: Checking while asked, Request where nothing carries it
+  {
+    check("20h series bands: Checking, Request, Add; the setting to show series nobody has",
+          SOURCE.includes(`: it.addable && it.onTracker === false ? '<div class="ribbon"><span>Request</span></div>'`) &&
+          fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8").includes('post("/settings", { tvRequest: val })'));
+  }
+
+  // ---- 20g. what was played from SVT Play keeps its place and comes back on at once
+  {
+    check("20g SVT Play: the place told every ten seconds and on closing; a played card plays at once",
+          SOURCE.includes('const key = "sv" + m.svt;') && SOURCE.includes('tell("stopped");') &&
+          SOURCE.includes('if (it && it.svt && String(it.ratingKey || "").startsWith("sv")) return playSvt(it);'));
+  }
+
+  // ---- 20f. a stream's page: seasons in a menu, the cast under Show more
+  {
+    check("20f SVT Play: seasons in a menu; on a stream's page the cast is under Show more",
+          SOURCE.includes("pick.onchange = () => show(+pick.value);") &&
+          SOURCE.includes('if (m.svt) wrap.querySelector(".cast").remove();') &&
+          SOURCE.includes('if (it.svt) { pressableText(wrap, m); wrap.querySelector(".cast").remove(); }'));
+  }
+
+  // ---- 20e. a poster SVT Play can stream wears the Stream band
+  {
+    check("20e the Stream band on what SVT Play has, before Request, Download and Add",
+          SOURCE.includes(`: (it.askable || it.addable) && it.svt ? '<div class="ribbon stream"><span>Stream</span></div>'`));
+  }
+
+  // ---- 20d. a series on SVT Play: its seasons and episodes on its add page
+  {
+    check("20d SVT Play series: seasons and episodes on the page, each episode played from SVT",
+          SOURCE.includes("if (it.svt) svtSeriesInto(wrap.querySelector(\".svtseries\"), it.svt, m.title);") &&
+          SOURCE.includes('b.onclick = () => playSvt({ svt: e.id, title: title + " \\u00b7 " + e.name });'));
+  }
+
+  // ---- 20o. a tracker that did not answer leaves nothing to add, rather than no pack
+  {
+    check("20o no answer from the tracker: the add button stays off, and says so",
+          SOURCE.includes("} catch (e) { found = []; unanswered = true; }") &&
+          /if \(unanswered\) \{[^}]*return;\s*\}/.test(SOURCE));
+  }
+
+  // ---- 20n. a Popular films row under Recently released films, opening the whole list
+  {
+    const ids = [...SOURCE.matchAll(/\{ id: "([a-z]+)", title:/g)].map((x) => x[1]);
+    check("20n the Popular films row follows Recently released films and opens its page",
+          ids.indexOf("popularfilms") === ids.indexOf("released") + 1 &&
+          SOURCE.includes('if (cat.id === "popularfilms") return viewPopularShows(false, "movie");') &&
+          SOURCE.includes("if (before >= 0) out.splice(before + 1, 0, c);"));
+  }
+
+  // ---- 20m. Films opens on its popular page too, unless a service is marked
+  {
+    check("20m Films and TV open on Popular from their button unless a service is marked",
+          SOURCE.includes('if (kind && !serviceWanted[kind]) {\n      SORT_BY_TAB[t.dataset.view].key = "popular";') &&
+          SOURCE.includes('const SORT_BY_TAB = { movies: { key: "popular", dir: "desc" },'));
+  }
+
+  // ---- 20b. TV opens on the popular shows, the library's series under My shows
+  {
+    check("20b a Popular row's See all is the tab on Popular, nothing marked",
+          SOURCE.includes('SORT_BY_TAB[view].key = "popular";\n  SORT_BY_TAB[view].dir = "desc";\n  if (asTab) return viewSection(type);'));
+  }
+
+  // ---- 20. the TV page's country menu is gone; the Service filter stands in its place
+  {
+    check("20 no country menu on TV; a Service menu on Films and TV",
+          !/h\.appendChild\(countryBar\(type\)\)/.test(SOURCE)
+          && /h\.appendChild\(serviceBar\(type\)\);/.test(SOURCE));
+  }
+
+  // ---- 21. a sport's card opens its events
+  {
+    check("21 a sport on the Sports row opens its races or games",
+          /if \(it && it\.sportRow\) return viewSport\(it\);/.test(SOURCE)
+          && /api\("\/library\/sports", \{ sport: it\.sport \}/.test(SOURCE));
+  }
+
+  // ---- 22. a live channel plays when pressed
+  {
+    check("22 a channel on the Live TV row plays, through the server's own pieces",
+          /if \(it && it\.live\) return playLive\(it\);/.test(SOURCE)
+          && /url\("\/live\/" \+ ch\.ratingKey \+ "\/index\.m3u8"/.test(SOURCE)
+          && SOURCE.includes("tune(it);"));
+  }
+
+  // ---- 23. a live channel starts at half volume, then at the last one set
+  {
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only", url: "http://x/" });
+    const w = dom.window;
+    w.eval(take("liveVolume") + "\nwindow.liveVolume = liveVolume;");
+    check("23 half the first time", w.liveVolume() === 0.5);
+    w.localStorage.setItem("liveVolume", "0.3");
+    check("23 the last one set after that", w.liveVolume() === 0.3);
+    w.localStorage.setItem("liveVolume", "7");
+    check("23 nonsense is half", w.liveVolume() === 0.5);
+  }
+
+  // ---- 23. a download written over the subtitle in use is read again
+  {
+    check("23 a subtitle replaced in place is reloaded, not left showing the old one",
+          /\} else if \(picker && S && S\.subId\) \{\s*\/\/[^\n]*\n\s*picker\.value = String\(S\.subId\);\s*picker\.dispatchEvent\(new Event\("change"\)\);/.test(SOURCE));
+  }
+
+  // ---- 24. a film from the tracker says so on its poster, as a pack's does not
+  {
+    const css = fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8");
+    check("24 no On tracker label: the download list says where each version comes from",
+          !SOURCE.includes("srctag") && !css.includes("srctag"));
+  }
+
+  // ---- 25. the Monitor opens the Log tab's watch log, a week of both servers
+  {
+    const settings = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
+    check("25 no Watch log button on the Monitor; the log opened on its own scrolls, list first",
+          !settings.includes('log.textContent = "Watch log";')
+          && settings.includes('if (document.body.classList.contains("monitor")) document.body.dataset.design = "log";')
+          && fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8")
+               .includes('body.monitor[data-design="log"] main>.logbox{order:-1}'));
+    check("25 a phone held sideways gets the phone's Monitor",
+          SOURCE.includes('document.body.classList.toggle("phonelike",')
+          && fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8")
+               .includes("body.monitor.phonelike:is("));
+    check("25 the last week by default, filtered by viewer and by the server it played on",
+          settings.includes('data = await get("/watchlog" + (logWeek ? "?days=7"')
+          && settings.includes("if (logOn) rows = rows.filter((w) => machinesOf(w).includes(logOn));"));
+    check("25 #monitor/log opens on it, for the app's Log", SOURCE.includes(
+          'settingsTab(which === "log" ? "log" : "now")'));
+  }
+
+  // ---- 26. a search from Home: films first, then programmes
+  {
+    check("26 Home orders the rows films, programmes, episodes",
+          SOURCE.includes('|| ["movie", "show", "episode"];'));
+  }
+
+  // ---- 27. a film not asked of the tracker yet says Checking
+  {
+    check("27 Checking… rather than Request until the tracker has answered",
+          SOURCE.includes(`'<div class="ribbon checking"><span>Checking…</span></div>'`));
+  }
+
+  // ---- 28. the own playlist: its row opens its page, its settings are the owner's
+  {
+    const iptv = fs.readFileSync(path.join(__dirname, "static", "iptv.js"), "utf8");
+    const settings = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
+    check("28 a plugin's row opens its own page, and a refused channel says why",
+          SOURCE.includes("if (cat.open) return cat.open();")
+          && iptv.includes("open: () => viewMyChannels() });")
+          && SOURCE.includes("if (code !== 429 && code !== 504 && code !== 404) return;") && !SOURCE.includes("mylive"));
+    check("28 its settings are buttons in a tab of their own, each press redrawing its row alone",
+          iptv.includes("if (data.liveList === undefined) {")
+          && iptv.includes('b.className = "btn ghost kind" + (isOn(one) ? " on" : "");')
+          && iptv.includes("await onPress(one);\n          draw();")
+          && !iptv.includes("liveGroups: next });\n          render();")
+          && iptv.includes('window.PD_TABS.push(["iptv", "IP-TV", iptvTab]);')
+          && settings.includes("if (plugged) await plugged[2](main, { get, post, block, render });")
+          && iptv.includes("await save({ liveGroups: next });") && !iptv.includes("liveScreen")
+          && SOURCE.includes("if (it && it.liveGroup && window.PD_OPEN_GROUP) return window.PD_OPEN_GROUP(it);")
+          && iptv.includes("window.PD_OPEN_GROUP = (it) => viewMyChannels(it.liveGroup);")
+          && iptv.includes("...(groupsOnly ? { more: 1 } : {}) }, null);"));
+  }
+
+  // ---- 29. a search shows the library at once and fills in the catalogue's films
+  {
+    check("29 a search still filling in is asked again in a moment",
+          SOURCE.includes("if (c.fillingIn) filling = true;")
+          && SOURCE.includes("if (filling && !asking && again < SEARCH_AGAIN_TIMES) {"));
+  }
+
+  // ---- 30. a search asked again redraws only what changed; the closest title first
+  {
+    check("30 the same answer again is not drawn again, and no Searching on a second ask",
+          SOURCE.includes("const same = again > 0 && SEARCH_SIG.q === q && SEARCH_SIG.sig === sig;")
+          && SOURCE.includes("if (!genreKeep && !again) main.innerHTML"));
+    check("30 search rows by closeness, not by the shelf's order",
+          SOURCE.includes("h.Metadata.sort((a, b) => (a.match ?? 9) - (b.match ?? 9));"));
+    const ctl30 = fs.readFileSync(path.join(__dirname, "static", "controls.js"), "utf8");
+    check("30 a still over the bar while it is moved or pointed at",
+          ctl30.includes("peekAt(bar.scrub.value / 1000);") && SOURCE.includes("window.framePreview = (sec, w) =>"));
+  }
+
+  // ---- 31. live channels stepped through in the playlist's order; the monitor alone
+  {
+    const w = page("", ["liveStep"]);
+    const L = [{ ratingKey: "a" }, { ratingKey: "b" }, { ratingKey: "c" }];
+    check("31 next and previous channel, round at the ends",
+          w.liveStep(L, "a", 1).ratingKey === "b" && w.liveStep(L, "c", 1).ratingKey === "a"
+          && w.liveStep(L, "a", -1).ratingKey === "c" && w.liveStep(L, "x", 1).ratingKey === "a"
+          && w.liveStep(L, "x", -1).ratingKey === "c" && w.liveStep([], "a", 1) === null);
+    check("31 the monitor opens without the front page under it, once",
+          SOURCE.includes('if (where !== "monitor") go("home");')
+          && SOURCE.includes('} else if (where === "settings" || where === "reports") {'));
+    const set31 = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
+    check("31 the queue moves one place up or down, and a series can be removed",
+          set31.includes("keys[at] = keys[to];") && set31.includes('post("/shows/remove", { show: name })'));
+  }
+
+  // ---- 32. where a title streams, on every title's page
+  {
+    const w = page("", ["providersLine"], { esc: (t) => String(t), img: (u) => u });
+    const line = w.providersLine({ providers: [{ name: "A", logo: "/art/provider/a.png", kind: "stream" },
+                                               { name: "B", logo: "/art/provider/b.png", kind: "store" }] });
+    check("32 the services' marks, a shop said as rent or buy, nothing for none",
+          line.includes('src="/art/provider/a.png"') && line.includes("B - rent or buy")
+          && w.providersLine({}) === "");
+    check("32 on a film here, a programme, an offer and a series not held alike",
+          (SOURCE.match(/badgesRow\([^;]*?, (m|s)\) \+/g) || []).length === 4);
+    check("32 a service's catalogue is read from what api() hands back, the container itself",
+          /const mc = d \|\| \{\};/.test(SOURCE) && !/d\.MediaContainer \|\| \{\}/.test(SOURCE));
+    const c32 = page("", ["channelsWord"]);
+    check("32 the channels as said: Stereo, 5.1, 7.1, nothing unknown",
+          c32.channelsWord(2) === "Stereo" && c32.channelsWord(6) === "5.1"
+          && c32.channelsWord(8) === "7.1" && c32.channelsWord(undefined) === "");
+    const b32 = page("", ["badgesRow", "providersLine", "flagOf"], { esc: (t) => String(t), img: (u) => u });
+    const row32 = b32.badgesRow(["1080p", "", "HEVC"], { providers: [{ name: "A", logo: "/a.png", country: "SE" }] });
+    check("32 each fact a badge of its own, then Region and the services; nothing for nothing",
+          (row32.match(/class="badge"/g) || []).length === 2 && row32.includes(">Region<")
+          && row32.indexOf("HEVC") < row32.indexOf("Region") && b32.badgesRow([], {}) === "");
+  }
+
+  // ---- 33. the timeline's still box only with a still in it
+  {
+    const ctl33 = fs.readFileSync(path.join(__dirname, "static", "controls.js"), "utf8");
+    const pa33 = fs.readFileSync(path.join(__dirname, "android", "app", "src", "main", "java",
+                                           "se", "palladium", "tv", "PlayerActivity.kt"), "utf8");
+    check("33 the box shows when a still has loaded, never empty",
+          ctl33.includes('if (peekOn) { peek.src = img.src; peekShown = sec; peek.classList.add("on"); }')
+          && ctl33.includes('if (peekShown >= 0) peek.classList.add("on");')
+          && !/^\s*peek\.classList\.add\("on"\);\n\s*peekWant =/m.test(ctl33.replace(/\r\n/g, "\n"))
+          && pa33.includes("if (previewShown >= 0) img.visibility = android.view.View.VISIBLE")
+          && pa33.includes("if (got != null && previewOn) {"));
+  }
+
+  // ---- 34. the studios in Show more, not on the page
+  {
+    check("34 studios only in the Show more sheet",
+          // the function itself, and the sheet
+          (SOURCE.match(/studiosLine\(m\)/g) || []).length === 2
+          && SOURCE.includes('insertAdjacentHTML("afterend", studiosLine(m))'));
+    const ma34 = fs.readFileSync(path.join(__dirname, "android", "app", "src", "main", "java",
+                                           "se", "palladium", "tv", "MainActivity.kt"), "utf8");
+    check("34 and in the app: studios() drawn only in the Show more box, wrapping",
+          (ma34.match(/\bstudios\(\)/g) || []).length === 1
+          && ma34.includes("Box(Modifier.padding(bottom = 14.dp)) { studios() }"));
+  }
+
+  // ---- 35. the favorite and collection marks next to Play, then the rest
+  {
+    const ma35 = fs.readFileSync(path.join(__dirname, "android", "app", "src", "main", "java",
+                                           "se", "palladium", "tv", "MainActivity.kt"), "utf8")
+      .replace(/\r\n/g, "\n");
+    const play35 = ma35.indexOf("startIt(resume)\n                }");
+    check("35 app: marks straight after Play, before From start and Mark watched; first on a series' row",
+          play35 > 0 && ma35.indexOf("if (!full.offered && !full.askable) marks()", play35) > play35
+          && ma35.indexOf("if (!full.offered && !full.askable) marks()", play35)
+             < ma35.indexOf('Pill("From start"', play35)
+          && ma35.indexOf("marks()\n                        Pill(\"Mark all watched\")") < 0
+          && ma35.includes("        if (full.isFolder) {\n            Box(Modifier.padding(top = 10.dp)) { marks() }"));
+    check("35 web: the mark control before Mark watched",
+          SOURCE.indexOf("slot.appendChild(markControl(m));")
+          < SOURCE.indexOf("slot.appendChild(watchedButton(m, () => playFromStartOnly(m)));"));
+  }
+
+  // ---- 36. every passing bar over the shelves is counted out of the posters' height
+  {
+    const ma36 = fs.readFileSync(path.join(__dirname, "android", "app", "src", "main", "java",
+                                           "se", "palladium", "tv", "MainActivity.kt"), "utf8");
+    check("36 the notice, server and update bars all left out when posters are sized",
+          ["notice", "server", "update"].every((n) => ma36.includes('browse.bars["' + n + '"] = it.size.height / dens')));
+  }
+
+  // ---- 37. the app's film badges: one row, the streaming marks in it; no year, no play mode
+  {
+    const ma37 = fs.readFileSync(path.join(__dirname, "android", "app", "src", "main", "java",
+                                           "se", "palladium", "tv", "MainActivity.kt"), "utf8");
+    check("37 film badges: no year chip, no Transcoded, streaming marks inside the badge row",
+          !ma37.includes("full.year?.let { Chip(it.toString()) }") && !ma37.includes('else -> "Transcoded"')
+          && ma37.indexOf("full.providers.forEach") > ma37.indexOf("// The badges in one row"));
+  }
+
   console.log(FAILS.length ? "WEB FAILED: " + FAILS.length : "WEB PASSED");
   FAILS.forEach((f) => console.log("  - " + f));
   process.exit(FAILS.length ? 1 : 0);

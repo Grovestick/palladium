@@ -25,11 +25,11 @@ import androidx.compose.ui.unit.sp
 fun NextEpisodeCard(next: Media, seconds: Int, onPlay: () -> Unit, onStop: () -> Unit) {
     Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.BottomEnd) {
         Row(
-            Modifier.background(Color(0xF01A2029), RoundedCornerShape(12.dp))
+            Modifier.background(Color(0xF01A2029), RoundedCornerShape(Skin.round(12.dp)))
                 .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.width(76.dp).height(114.dp).clip(RoundedCornerShape(8.dp))) {
+            Box(Modifier.width(76.dp).height(114.dp).clip(RoundedCornerShape(Skin.round(8.dp)))) {
                 Art(Api.artUrl(next), next.title, Modifier.fillMaxSize(), mark = 28)
             }
             Column(Modifier.padding(start = 14.dp).widthIn(max = 300.dp)) {

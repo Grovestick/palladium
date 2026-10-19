@@ -185,7 +185,7 @@ fun SubtitleLookDialog(
                 usePlatformDefaultWidth = false),
         ) {
             androidx.compose.material3.Surface(
-                color = Skin.Panel, shape = RoundedCornerShape(16.dp),
+                color = Skin.Panel, shape = RoundedCornerShape(Skin.round(16.dp)),
                 modifier = Modifier.fillMaxWidth(0.94f),
             ) {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
@@ -230,8 +230,8 @@ private fun Screen(l: Api.SubLook, wide: Boolean, label: String,
     Column(modifier) {
         Text(label, color = Skin.Dim, fontSize = 11.sp)
         BoxWithConstraints(Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(6.dp)).background(Color.Black)
-                .border(1.dp, Skin.Line, RoundedCornerShape(6.dp))) {
+                .clip(RoundedCornerShape(Skin.round(6.dp))).background(Color.Black)
+                .border(1.dp, Skin.Line, RoundedCornerShape(Skin.round(6.dp)))) {
             val h = maxHeight
             // a 2.39:1 picture on a 16:9 screen leaves an eighth of the height black
             // above it and an eighth below
@@ -246,7 +246,7 @@ private fun Screen(l: Api.SubLook, wide: Boolean, label: String,
             val words = Modifier
                 .background(when (l.background) {
                     "dark" -> Color(0x8C000000); "black" -> Color.Black
-                    else -> Color.Transparent }, RoundedCornerShape(2.dp))
+                    else -> Color.Transparent }, RoundedCornerShape(Skin.round(2.dp)))
                 .padding(horizontal = 3.dp)
             val line: @Composable () -> Unit = {
                 Text("The quick brown fox", color = subtitleColour(l.colour),
@@ -365,9 +365,9 @@ private fun OledLine(onInfo: () -> Unit, inline: Boolean = false) {
         Text("Info", color = Skin.Accent, fontSize = 11.5.sp,
              modifier = Modifier
                  .padding(start = 8.dp)
-                 .clip(RoundedCornerShape(999.dp))
+                 .clip(RoundedCornerShape(Skin.round(999.dp)))
                  .border(if (asking) 2.dp else 1.dp,
-                         if (asking) Color.White else Skin.Line, RoundedCornerShape(999.dp))
+                         if (asking) Color.White else Skin.Line, RoundedCornerShape(Skin.round(999.dp)))
                  .onFocusChanged { asking = it.isFocused }
                  .focusable()
                  .clickable(interactionSource = remember { MutableInteractionSource() },

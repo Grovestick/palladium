@@ -159,11 +159,11 @@ private fun QualityRow(label: String, on: Boolean, modifier: Modifier = Modifier
         modifier
             .fillMaxWidth()
             .padding(vertical = if (narrow) 2.dp else 3.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(Skin.round(8.dp)))
             .background(if (on) Color(0x224A90F0) else Skin.Panel2)
             .border(if (focused) 2.dp else 0.dp,
                     if (focused) Color.White else Color.Transparent,
-                    RoundedCornerShape(8.dp))
+                    RoundedCornerShape(Skin.round(8.dp)))
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onPick)

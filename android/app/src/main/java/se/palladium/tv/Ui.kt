@@ -20,6 +20,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -90,6 +91,12 @@ object Skin {
     private var fgIs by androidx.compose.runtime.mutableStateOf(Color(0xFFE8ECF1))
     private var dimIs by androidx.compose.runtime.mutableStateOf(Color(0xFF93A0B0))
     private var accentIs by androidx.compose.runtime.mutableStateOf(Color(0xFF4A90F0))
+    private var onAccentIs by androidx.compose.runtime.mutableStateOf(Color(0xFF111111))
+    private var cornerIs by androidx.compose.runtime.mutableStateOf(1f)
+    private var serifIs by androidx.compose.runtime.mutableStateOf(false)
+    //: washes of colour over the ground: x%, y%, radius px, colour
+    private var glowIs by androidx.compose.runtime.mutableStateOf(
+        emptyList<Pair<FloatArray, Color>>())
 
     val Bg: Color get() = bgIs
     val Panel: Color get() = panelIs
@@ -98,6 +105,38 @@ object Skin {
     val Fg: Color get() = fgIs
     val Dim: Color get() = dimIs
     val Accent: Color get() = accentIs
+    /** Text drawn on the accent: dark or white, as the skin says reads. */
+    val OnAccent: Color get() = onAccentIs
+    /** The face shelf titles are set in. */
+    val Titles: androidx.compose.ui.text.font.FontFamily
+        get() = if (serifIs) androidx.compose.ui.text.font.FontFamily.Serif
+                else androidx.compose.ui.text.font.FontFamily.Default
+
+    /** A corner as this skin rounds it: the app's own size, scaled. */
+    fun round(base: androidx.compose.ui.unit.Dp): androidx.compose.ui.unit.Dp =
+        base * Route.cornerScale(cornerIs)
+
+    /** The ground every screen stands on: the background and the skin's washes of
+     *  colour - what keeps a dark skin from reading as a black rectangle. */
+    fun ground(m: Modifier): Modifier = m.drawBehind {
+        drawRect(bgIs)
+        glowIs.forEach { (at, colour) ->
+            val c = androidx.compose.ui.geometry.Offset(size.width * at[0] / 100f,
+                                                        size.height * at[1] / 100f)
+            val r = at[2] * density * 0.55f
+            drawCircle(Brush.radialGradient(listOf(colour, colour.copy(alpha = 0f)),
+                                            center = c, radius = r),
+                       radius = r, center = c)
+        }
+    }
+
+    private fun rgba(text: String): Color? {
+        val m = Regex("""rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)""")
+            .find(text) ?: return null
+        val (r, g, b) = m.destructured.toList().take(3).map { it.toInt() }
+        val a = m.groupValues[4].toFloatOrNull() ?: 1f
+        return Color(r, g, b, (a * 255).toInt().coerceIn(0, 255))
+    }
 
     /** One answer from the server, worn. Anything it leaves out keeps what it had. */
     fun wear(said: org.json.JSONObject) {
@@ -115,13 +154,24 @@ object Skin {
         fgIs = hex(said.optString("fg"), fgIs)
         dimIs = hex(said.optString("dim"), dimIs)
         accentIs = hex(said.optString("accent"), accentIs)
+        onAccentIs = hex(said.optString("onAccent"), Color(0xFF111111))
+        cornerIs = said.optDouble("corner", 1.0).toFloat()
+        serifIs = said.optString("titles") == "serif"
+        glowIs = said.optJSONArray("glow")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                val g = arr.optJSONArray(i) ?: return@mapNotNull null
+                val colour = rgba(g.optString(3)) ?: return@mapNotNull null
+                floatArrayOf(g.optDouble(0).toFloat(), g.optDouble(1).toFloat(),
+                             g.optDouble(2).toFloat()) to colour
+            }
+        } ?: emptyList()
     }
 
     /** "#4a90f0" as the colour to draw with; anything else leaves it alone. */
     fun paint(code: String) {
         accentIs = hex(code, accentIs)
     }
-    val Empty = Brush.linearGradient(listOf(Color(0xFF191F27), Color(0xFF12161C)))
+    val Empty: Brush get() = Brush.linearGradient(listOf(panel2Is, panelIs))
 }
 
 /**
@@ -275,7 +325,7 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
         ground: androidx.compose.ui.graphics.Brush = Skin.Empty) {
     Box(modifier.background(ground), contentAlignment = Alignment.Center) {
         if (mark > 0) {
-            Text("P", color = Color(0xFF2B333D), fontSize = mark.sp,
+            Text("P", color = Skin.Line, fontSize = mark.sp,
                  fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
         }
         if (url != null) {
@@ -461,10 +511,14 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
         // anything placed against the poster's own edges is worked out from the width
         // it was drawn at, not the one that was asked for
         val bandW = if (realPx > 0) (realPx / density).toInt() else width
+        // a live channel is a round card, its logo in the middle
+        val round = m.live || m.liveGroup.isNotEmpty()
+        val shape = if (round) androidx.compose.foundation.shape.CircleShape
+                    else RoundedCornerShape(Skin.round(10.dp))
         Box(
             Modifier.fillMaxWidth()
-                .then(if (fill) Modifier.aspectRatio(2f / 3f)
-                      else Modifier.height((width * 1.5).dp))
+                .then(if (fill) Modifier.aspectRatio(if (round) 1f else 2f / 3f)
+                      else Modifier.height((width * (if (round) 1.0 else 1.5)).dp))
                 // The lift, on the picture and nowhere else: it is a drawing
                 // instruction, so the picture grows and the slot does not. Anywhere
                 // in the column's own chain it changes the bounds a lazy grid
@@ -479,12 +533,11 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 .onSizeChanged { realPx = it.width }
                 // no shadow: it is a blur pass under a moving poster, and the white
                 // ring already says which one has the focus
-                .clip(RoundedCornerShape(10.dp))
+                .clip(shape)
                 // white, not accent: half the things on screen are already accent, and
                 // on a television the only question is which one the remote is pointing at
                 .border(if (ring) 3.dp else 0.dp,
-                        if (ring) Color.White else Color.Transparent,
-                        RoundedCornerShape(10.dp))
+                        if (ring) Color.White else Color.Transparent, shape)
         ) {
             // A film on offer is shown in full colour like any other: the artwork is
             // what makes it recognisable, and drained of it a shelf of them read as
@@ -525,7 +578,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // the mark always, and words only when there are some: a film nobody
             // has asked for yet said nothing but a character, and on a television
             // that was a smudge in the corner of the picture
-            val said = if (!coming) "" else Route.posterDownload(state, progress.toDouble())
+            val said = if (!coming) "" else Route.posterDownload(state, progress.toDouble(), mbit.toDouble())
             // The same band across the corner for the three things a poster says
             // about itself; only the word in it changes. One band, chosen: three
             // conditions each drawing their own put two words over each other in
@@ -540,7 +593,12 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // something on the tracker for it: the band says what pressing it
             // does, and asking is not what it does any more
             if (m.askable && said.isNotEmpty()) { /* coming in: the badge says how far */ }
+            // on SVT Play: it streams from there, which beats asking or downloading
+            else if (Route.streamBand(m.askable, m.addable, m.svtId))
+                CornerBand("STREAM", bandW, Color(0xFF1E9E6A))
             else if (m.askable && m.onTracker) CornerBand("DOWNLOAD", bandW)
+            // not asked of the tracker yet: neither word is known
+            else if (m.askable && m.checking && !m.asked) CornerBand("CHECKING", bandW, Skin.Dim)
             else if (m.askable) CornerBand(if (m.asked) "ASKED" else "REQUEST", bandW,
                                       if (m.asked) Color(0xFF2F6B35) else Skin.Accent)
             // on the tracker already, before its date or after: it can be fetched
@@ -554,11 +612,15 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // here, and aired this past week
             else if (m.fresh) CornerBand("NEW", bandW, Color(0xFFD9A21B))
             // off the popular list and not held yet: pressing it adds it
-            else if (m.addable) CornerBand("ADD", bandW)
+            else if (m.addable) when (Route.seriesBand(true, m.onTracker, m.checking)) {
+                "CHECKING" -> CornerBand("CHECKING", bandW, Skin.Dim)
+                "REQUEST" -> CornerBand("REQUEST", bandW, Skin.Accent)
+                else -> CornerBand("ADD", bandW)
+            }
             else if (m.offered && said.isEmpty()) CornerBand("DOWNLOAD", bandW)
             if (coming && said.isNotEmpty()) {
                 Row(Modifier.align(Alignment.TopStart).padding(5.dp)
-                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .background(Color(0xD9070A0E), RoundedCornerShape(Skin.round(5.dp)))
                         .padding(horizontal = 4.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     DownloadMark(13.dp)
@@ -584,7 +646,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 Box(Modifier.align(Alignment.BottomEnd)
                         .padding(start = 5.dp, top = 5.dp, end = 5.dp,
                                  bottom = if (m.maxHeight >= 1700) 28.dp else 8.dp)
-                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .background(Color(0xD9070A0E), RoundedCornerShape(Skin.round(5.dp)))
                         .padding(horizontal = 5.dp, vertical = 2.dp)) {
                     Text(String.format(java.util.Locale.US, "S%02dE%02d", markSE.first, markSE.second),
                          color = Skin.Fg, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
@@ -597,7 +659,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             if (marks && m.cuts > 1) {
                 Box(Modifier.align(Alignment.BottomStart)
                         .padding(start = 5.dp, top = 5.dp, end = 5.dp, bottom = 8.dp)
-                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .background(Color(0xD9070A0E), RoundedCornerShape(Skin.round(5.dp)))
                         .padding(horizontal = 5.dp, vertical = 2.dp)) {
                     Text("${m.cuts} CUTS", color = Color(0xFFE0B341), fontSize = 10.sp,
                          fontWeight = FontWeight.SemiBold)
@@ -606,7 +668,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             if (marks && m.maxHeight >= 1700) {
                 Box(Modifier.align(Alignment.BottomEnd)
                         .padding(start = 5.dp, top = 5.dp, end = 5.dp, bottom = 8.dp)
-                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .background(Color(0xD9070A0E), RoundedCornerShape(Skin.round(5.dp)))
                         .padding(horizontal = 5.dp, vertical = 2.dp)) {
                     Text("4K", color = Skin.Accent, fontSize = 10.sp,
                          fontWeight = FontWeight.SemiBold)
@@ -621,7 +683,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 (m.episodeCount > 0 && m.watchedEpisodes >= m.episodeCount)
             if (allSeen && m.shuffle.isEmpty()) {
                 Box(Modifier.align(Alignment.TopEnd).padding(5.dp)
-                        .background(Color(0xD9070A0E), RoundedCornerShape(5.dp))
+                        .background(Color(0xD9070A0E), RoundedCornerShape(Skin.round(5.dp)))
                         .padding(horizontal = 5.dp, vertical = 2.dp)) {
                     Text("✓", color = Color(0xFF5FD08A), fontSize = 12.sp,
                          fontWeight = FontWeight.SemiBold)
@@ -636,7 +698,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 Box(Modifier.align(Alignment.BottomStart)
                         .padding(start = 6.dp, bottom = if (p > 0f) 12.dp else 7.dp)
                         .size(9.dp)
-                        .background(Color(0xFF42C96A), RoundedCornerShape(5.dp)))
+                        .background(Color(0xFF42C96A), RoundedCornerShape(Skin.round(5.dp))))
             }
             // a favorite: a red heart in the corner, over the dot when there is one
             if (m.ratingKey in Api.favKeys.value) {
@@ -690,13 +752,57 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
 fun Chip(text: String, accent: Boolean = false) {
     Text(
         text,
-        color = if (accent) Color(0xFF111111) else Skin.Dim,
+        color = if (accent) Skin.OnAccent else Skin.Dim,
         fontSize = 11.5.sp,
         fontWeight = FontWeight.Medium,
         modifier = Modifier.padding(end = 8.dp)
-            .background(if (accent) Skin.Accent else Skin.Panel2, RoundedCornerShape(6.dp))
+            .background(if (accent) Skin.Accent else Skin.Panel2, RoundedCornerShape(Skin.round(6.dp)))
             .padding(horizontal = 9.dp, vertical = 4.dp),
     )
+}
+
+/** A search spoken rather than typed: the platform's speech dialog, on a phone or a
+ *  television, where the device has one; nothing where it does not. */
+@Composable
+fun SpeakPill(onText: (String) -> Unit, small: Boolean = false) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ask = remember {
+        val said = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                      android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Search")
+        // Speech Recognition by Google where the device has it, whatever was saved as
+        // Always: Google voice search chosen once on the streamer stuck for good
+        said.setPackage(SPEECH_PACKAGE)
+        if (said.resolveActivity(ctx.packageManager) == null) said.setPackage(null)
+        said
+    }
+    val hear = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
+        r.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let(onText)
+    }
+    val can = remember { ask.resolveActivity(ctx.packageManager) != null }
+    if (!can) return
+    // the microphone, as every search box draws it
+    Pill("Search by voice", filled = true, small = small, icon = MicIcon) {
+        try { hear.launch(ask) } catch (_: android.content.ActivityNotFoundException) {}
+    }
+}
+
+/** The recognizer Speak asks for by name, before whatever the device has as default. */
+const val SPEECH_PACKAGE = "com.google.android.tts"
+
+/** The microphone: Material's mic, the mark every search box uses for speaking. */
+val MicIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
+    androidx.compose.ui.graphics.vector.ImageVector.Builder(
+        name = "Mic", defaultWidth = 24.dp, defaultHeight = 24.dp,
+        viewportWidth = 24f, viewportHeight = 24f)
+        .addPath(androidx.compose.ui.graphics.vector.PathParser()
+                     .parsePathString("M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-2.1A7 7 0 0 0 19 12z")
+                     .toNodes(),
+                 fill = SolidColor(Color.White))
+        .build()
 }
 
 /** Pill button used for the tabs and for anything the remote should be able to reach. */
@@ -720,6 +826,8 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
             Hiding it would leave somebody hunting for a setting that is not missing,
             only inapplicable - so it stays, faded, and the reason is said beside it */
          dim: Boolean = false,
+         /* drawn instead of the words, which then only name it for a screen reader */
+         icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
          modifier: Modifier = Modifier, onClick: () -> Unit) {
     // The release of the hold that opened a menu is not a press of what is in it.
     // Dropped here as well as at the window, because a menu that has just appeared
@@ -739,7 +847,7 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
         // the gap to the next one, tighter on a small pill: three of these and a
         // narrow phone is 360 points across, not the 411 a Pixel gives
         modifier.padding(end = if (small) 4.dp else 8.dp)
-            .clip(RoundedCornerShape(999.dp))
+            .clip(RoundedCornerShape(Skin.round(999.dp)))
             .background(bg)
             // A yellow pill on a dark ground reads as "chosen", which is not the same as
             // "the remote is here". The white ring says the second, over either state,
@@ -751,7 +859,7 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
                         outline -> Skin.Accent
                         else -> Color.Transparent
                     },
-                    RoundedCornerShape(999.dp))
+                    RoundedCornerShape(Skin.round(999.dp)))
             // hasFocus as well as isFocused: focus asked for by name can land on the
             // group around a control rather than the control itself, and the
             // ring then never appeared although the remote was there
@@ -767,8 +875,14 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
                                     androidx.compose.ui.platform.LocalConfiguration
                                         .current.screenHeightDp < 560) 5.dp else 9.dp),
     ) {
+        if (icon != null) {
+            androidx.compose.material3.Icon(icon, contentDescription = label,
+                tint = if (active || primary) Skin.OnAccent else Skin.Fg,
+                modifier = Modifier.size(if (small) 16.dp else 19.dp))
+            return@Box
+        }
         Text(label,
-             color = if (active || primary) Color(0xFF111111) else Skin.Fg,
+             color = if (active || primary) Skin.OnAccent else Skin.Fg,
              fontSize = if (small ||
                            androidx.compose.ui.platform.LocalConfiguration
                                .current.screenHeightDp < 560) 12.5.sp else 14.sp,
@@ -847,9 +961,9 @@ fun TextBox(
 
     Box(
         modifier
-            .background(Skin.Panel, RoundedCornerShape(8.dp))
+            .background(Skin.Panel, RoundedCornerShape(Skin.round(8.dp)))
             .border(if (focused) 2.dp else 0.dp,
-                    if (focused) Color.White else Color.Transparent, RoundedCornerShape(8.dp))
+                    if (focused) Color.White else Color.Transparent, RoundedCornerShape(Skin.round(8.dp)))
             .then(if (tv) Modifier
                 // hasFocus as well as isFocused: focus asked for by name can land on the
             // group around a control rather than the control itself, and the
@@ -945,7 +1059,7 @@ private fun KeyboardDialog(
                 // what has been typed so far, large enough to read from a sofa
                 Text(buffer.ifEmpty { " " }, color = Skin.Fg, fontSize = 20.sp,
                      modifier = Modifier.fillMaxWidth()
-                         .background(Skin.Panel2, RoundedCornerShape(8.dp))
+                         .background(Skin.Panel2, RoundedCornerShape(Skin.round(8.dp)))
                          .padding(horizontal = 14.dp, vertical = 12.dp))
                 // offered as one press, and kept offered while it is not what is typed
                 if (suggestion.isNotBlank() && buffer != suggestion) {
@@ -1007,10 +1121,10 @@ private fun Key(label: String, modifier: Modifier = Modifier,
         modifier
             .padding(2.dp)
             .height(48.dp)
-            .clip(RoundedCornerShape(7.dp))
+            .clip(RoundedCornerShape(Skin.round(7.dp)))
             .background(if (focused) Skin.Accent else Skin.Panel2)
             .border(if (focused) 2.dp else 0.dp,
-                    if (focused) Color.White else Color.Transparent, RoundedCornerShape(7.dp))
+                    if (focused) Color.White else Color.Transparent, RoundedCornerShape(Skin.round(7.dp)))
             // hasFocus as well as isFocused: focus asked for by name can land on the
             // group around a control rather than the control itself, and the
             // ring then never appeared although the remote was there
@@ -1019,7 +1133,7 @@ private fun Key(label: String, modifier: Modifier = Modifier,
             .clickable(onClick = onPress),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (focused) Color(0xFF111111) else Skin.Fg,
+        Text(label, color = if (focused) Skin.OnAccent else Skin.Fg,
              fontSize = if (label.length > 1) 13.sp else 19.sp, maxLines = 1)
     }
 }
@@ -1032,7 +1146,7 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
     Text(text.uppercase(), color = Skin.Dim,
          fontSize = if (small) 10.sp else 12.sp,
          letterSpacing = if (small) 1.sp else 1.2.sp,
-         fontWeight = FontWeight.SemiBold, modifier = modifier)
+         fontWeight = FontWeight.SemiBold, fontFamily = Skin.Titles, modifier = modifier)
 }
 
 /** A film on offer being fetched: how far and how long, across its poster on its own page. */
@@ -1044,7 +1158,7 @@ fun androidx.compose.foundation.layout.BoxScope.OfferProgress(loaded: Media) {
     if (!(loaded.offered || m !== loaded || loaded.askable) ||
         m.offerState !in setOf("queued", "downloading")) return
     Box(Modifier.align(Alignment.TopEnd).padding(6.dp)
-            .background(Color(0xD9070A0E), RoundedCornerShape(6.dp))
+            .background(Color(0xD9070A0E), RoundedCornerShape(Skin.round(6.dp)))
             .padding(horizontal = 7.dp, vertical = 3.dp)) {
         Text(if (m.offerState == "queued") "Queued"
              else "${(m.offerProgress * 100).toInt()}%" +

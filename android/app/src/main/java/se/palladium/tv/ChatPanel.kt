@@ -87,7 +87,7 @@ fun ChatPanel(scope: CoroutineScope, onClose: () -> Unit) {
                 state?.let { now ->
                     if (now.invitedBy.isNotEmpty()) {
                         Row(Modifier.fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(Skin.round(10.dp)))
                                 .background(Color(0xFF12324F))
                                 .padding(horizontal = 12.dp, vertical = 9.dp),
                             verticalAlignment = Alignment.CenterVertically) {

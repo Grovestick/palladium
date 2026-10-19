@@ -26,6 +26,7 @@ import time
 import types
 import urllib.parse
 import urllib.request
+import pd_safe
 
 VIDEO_EXT = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts", ".wmv"}
 TMDB = "https://api.themoviedb.org/3"
@@ -183,6 +184,39 @@ RELEASE_WORDS = re.compile(
 
 EPISODE_MARK = re.compile(
     r"(?i)s\d{1,2}[ ._-]?e\d{1,3}(?:[ ._-]?(?:e|-)\d{1,3})*|(?<![a-z0-9])\d{1,2}x\d{1,3}")
+
+
+def file_double(path, season=None):
+    """The two numbers a filename gives a double episode - "S04E03E04", "S04E03-E04",
+    "S04E03-04" - or None for one that names a single episode."""
+    m = re.search(r"s(\d{1,2})[\s._-]?e(\d{1,3})(?:-?e|-)(\d{1,3})(?!\d)",
+                  os.path.basename(path or ""), re.I)
+    if not m:
+        return None
+    if season is not None and int(m.group(1)) != int(season):
+        return None
+    a, b = int(m.group(2)), int(m.group(3))
+    return (a, b) if b == a + 1 else None
+
+
+def doubles_map(episodes):
+    """A release's numbers -> the catalogue's, for a season where the release counts each
+    double episode as two and the catalogue as one: walking the catalogue's episodes in
+    order, one far longer than the rest takes two numbers, any other one. A sitcom's
+    fourth season: the release's E03E04 is the catalogue's E02, its E09 the E05."""
+    eps = sorted((e for e in episodes or [] if e.get("episode_number")),
+                 key=lambda e: int(e["episode_number"]))
+    times = sorted(int(e.get("runtime") or 0) for e in eps if e.get("runtime"))
+    if not eps or not times:
+        return {}
+    usual = times[len(times) // 2]
+    out, at = {}, 1
+    for e in eps:
+        span = 2 if usual and int(e.get("runtime") or 0) >= usual * 1.6 else 1
+        for k in range(span):
+            out[at + k] = int(e["episode_number"])
+        at += span
+    return out
 
 
 def file_episode(path, season=None):
@@ -590,6 +624,14 @@ def hollow_file(path, look=65536):
 UNFINISHED = None
 
 
+def made_in(detail):
+    """Where the catalogue says a title was made, as "US" or "SE,DK": a series by its
+    origin, a film by its production countries."""
+    codes = list(detail.get("origin_country") or []) or [
+        str(c.get("iso_3166_1") or "") for c in detail.get("production_countries") or []]
+    return ",".join(sorted({str(c).upper() for c in codes if c}))
+
+
 class Library:
     def __init__(self, root):
         self.root = root
@@ -643,9 +685,11 @@ class Library:
     def save_config(self, cfg):
         # written beside and swapped in: truncating in place left the file empty for
         # a moment, and a read at that moment threw JSONDecodeError
+        pd_safe.daily(self.cfgpath)
         part = self.cfgpath + ".%d.%d.tmp" % (os.getpid(), threading.get_ident())
         with open(part, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+            pd_safe.settle(f)
         for attempt in range(40):
             try:
                 os.replace(part, self.cfgpath)
@@ -787,6 +831,16 @@ class Library:
         # over because what arrives is not a film and is deleted on arrival.
         if "hollow" not in cols:
             con.execute("ALTER TABLE file ADD COLUMN hollow INTEGER DEFAULT 0")
+        # the language a title was made in, from TMDB: its soundtrack plays first.
+        # NULL is not asked yet, "" is asked and TMDB had none.
+        if "orig_lang" not in [r[1] for r in con.execute(
+                "PRAGMA table_info(item)").fetchall()]:
+            con.execute("ALTER TABLE item ADD COLUMN orig_lang TEXT")
+        # where a title was made, comma-joined country codes: "US", "SE,DK". NULL is
+        # not asked yet, "" is asked and the catalogue had none.
+        if "countries" not in [r[1] for r in con.execute(
+                "PRAGMA table_info(item)").fetchall()]:
+            con.execute("ALTER TABLE item ADD COLUMN countries TEXT")
         # A file probed before the column existed was written down as having an empty
         # list of soundtracks rather than none recorded, and the two look the same
         # from the outside. What fills them in on first open skips anything that is
@@ -1219,6 +1273,13 @@ class Library:
                    [(f, "show") for f in cfg.get("tv", [])] +
                    [(f, "mixed") for f in cfg.get("mixed", [])])
         found, seen_paths = [], set()
+        # files already found empty: the space a download asked for and never filled,
+        # left when it was cancelled and its torrent removed - no film until it is
+        con = self.db()
+        try:
+            empty = {r["path"] for r in con.execute("SELECT path FROM file WHERE hollow=1")}
+        finally:
+            con.close()
         for path, st in self.walk([f for f, _ in folders]):
             if path in seen_paths:
                 continue
@@ -1228,6 +1289,8 @@ class Library:
                     continue                # not here yet: it comes in when it is whole
             except Exception:
                 pass
+            if path in empty and hollow_file(path):
+                continue                    # still empty: out of the library
             found.append((self.kind_for(path, folders) or "mixed", path, st))
         self.scan_state.update(total=len(found), phase="indexing")
         con = self.db()
@@ -1276,6 +1339,10 @@ class Library:
                 pass
         try:
             self.find_extras()
+        except Exception:
+            pass
+        try:
+            self.keep_numbering()
         except Exception:
             pass
         self.scan_state.update(running=False, phase="idle")
@@ -1391,6 +1458,11 @@ class Library:
                 con.commit()
         finally:
             con.close()
+        if took:
+            try:
+                self.keep_numbering()
+            except Exception:
+                pass
         if took and not self.scan_state.get("running"):
             was = dict(self.scan_state)
             try:
@@ -1424,7 +1496,11 @@ class Library:
         What the folder buys is protection from the looser reading: "Sequel 3" in a film
         folder stays a film, where in a series folder it would be episode three.
         """
-        parsed = parse_episode(path)                  # unambiguous in any folder
+        # A file from a pack added as one series says nothing in its name: the pack
+        # says which season and episode it is, and what it is called.
+        hook = getattr(self, "told_by_pack", None)
+        told = hook(path) if hook else None
+        parsed = (told[0], told[1], told[2]) if told else parse_episode(path)
         if parsed is None:
             parsed = episode_from_folders(path)       # equally unambiguous
         if parsed is None and (kind == "show" or in_a_season_folder(path)):
@@ -1444,6 +1520,13 @@ class Library:
                                "AND number=?", (item_id, season, number)).fetchone()
             if held:
                 episode_id = held["id"]
+            if told:
+                # its name from the pack, and the series on no catalogue: marked looked
+                # up, so a search for its name never puts another programme's poster on it
+                con.execute("UPDATE episode SET title=? WHERE id=? AND "
+                            "(title IS NULL OR title='')", (told[3], episode_id))
+                con.execute("UPDATE item SET identified=1, orig_lang=COALESCE(orig_lang, '') "
+                            "WHERE id=? AND tmdb_id IS NULL", (item_id,))
         elif kind == "show":
             return                       # nothing in the name or the folders to go on
         else:
@@ -1657,13 +1740,75 @@ class Library:
         }
 
     # ---- identification -----------------------------------------------------
-    def tmdb(self, path, **params):
+    def tmdb(self, path, timeout=20, **params):
         cfg = self.config()
         params["api_key"] = cfg.get("tmdb_key", "")
         params.setdefault("language", cfg.get("language", "en-US"))
         url = f"{TMDB}{path}?" + urllib.parse.urlencode(params)
-        with urllib.request.urlopen(url, timeout=20) as r:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.loads(r.read())
+
+    def fill_countries(self, most=30):
+        """Ask the catalogue where each series was made, for those not asked yet: the
+        TV tab's country filter. A few at a time with a breath between; how many were
+        filled, or -1 when nothing is left to ask."""
+        if not self.config().get("tmdb_key"):
+            return -1
+        con = self.db()
+        try:
+            rows = con.execute("SELECT id, tmdb_id FROM item WHERE type='show' AND "
+                               "tmdb_id IS NOT NULL AND countries IS NULL LIMIT ?",
+                               (most,)).fetchall()
+            if not rows:
+                return -1
+            done = 0
+            for r in rows:
+                try:
+                    detail = self.tmdb("/tv/%d" % int(r["tmdb_id"]), timeout=8)
+                except Exception:
+                    continue
+                con.execute("UPDATE item SET countries=? WHERE id=?", (made_in(detail), r["id"]))
+                con.commit()
+                done += 1
+                time.sleep(0.3)
+            return done
+        finally:
+            con.close()
+
+    #: item id -> when TMDB last failed to say its language; not asked again for 10 min
+    _lang_missed = {}
+
+    def original_language(self, item_id):
+        """The language a title was made in ("ko"), or "" when unknown.
+
+        Kept on the item once asked. Titles identified before the column existed are
+        asked the first time they are opened, with a short wait: a page must not hang
+        on TMDB.
+        """
+        con = self.db()
+        try:
+            row = con.execute("SELECT type, tmdb_id, orig_lang FROM item WHERE id=?",
+                              (str(item_id),)).fetchone()
+            if not row:
+                return ""
+            if row["orig_lang"] is not None:
+                return row["orig_lang"]
+            if not row["tmdb_id"] or not self.config().get("tmdb_key"):
+                return ""
+            if time.time() - self._lang_missed.get(str(item_id), 0) < 600:
+                return ""
+            kind = "movie" if row["type"] == "movie" else "tv"
+            try:
+                detail = self.tmdb(f"/{kind}/{int(row['tmdb_id'])}", timeout=4)
+            except Exception:
+                self._lang_missed[str(item_id)] = time.time()
+                return ""
+            lang = str(detail.get("original_language") or "")
+            con.execute("UPDATE item SET orig_lang=? WHERE id=?", (lang, str(item_id)))
+            con.commit()
+            return lang
+        finally:
+            con.close()
 
     #: how many of a cast list are worth keeping. A film has thirty names on it and
     #: nobody reads past the sixth; the ones after that are "Man in bar".
@@ -1944,6 +2089,9 @@ class Library:
         detail = self.tmdb(f"/{kind}/{tmdb_id}", append_to_response="external_ids")
         ext = detail.get("external_ids") or {}
         title = detail.get("title") or detail.get("name") or row["title"]
+        # a Swedish series by its Swedish name, which is what its releases carry
+        if kind == "tv" and detail.get("original_language") == "sv" and detail.get("original_name"):
+            title = detail["original_name"]
         date = detail.get("release_date") or detail.get("first_air_date") or ""
         con.execute("""UPDATE item SET title=?, sort_title=?, year=?, tmdb_id=?, imdb_id=?,
                        overview=?, rating=?, genres=?, runtime=?, poster=?, backdrop=?,
@@ -1958,6 +2106,8 @@ class Library:
                      detail.get("runtime") or (detail.get("episode_run_time") or [None])[0],
                      detail.get("poster_path"), detail.get("backdrop_path"),
                      row["id"]))
+        con.execute("UPDATE item SET orig_lang=?, countries=? WHERE id=?",
+                    (str(detail.get("original_language") or ""), made_in(detail), row["id"]))
         if kind == "tv":
             self._identify_episodes(con, row["id"], detail)
         con.commit()
@@ -2032,6 +2182,41 @@ class Library:
             except Exception:
                 pass
 
+    def keep_numbering(self):
+        """A season numbered by choice ("doubles", "files") put on those numbers again
+        when its files changed: a file indexed later lands on the number in its name, and
+        the copy, which receives a season a file at a time, filed Branch-Wars-like
+        episodes under others and could not be asked for them. Once per start for each,
+        then on a change. How many seasons were renumbered."""
+        try:
+            with open(os.path.join(self.root, "settings.json"), encoding="utf-8") as f:
+                said = json.loads(f.read()).get("numbering") or {}
+        except Exception:
+            return 0
+        memo = self.__dict__.setdefault("_numbered", {})
+        done = 0
+        for name, mode in (said.items() if isinstance(said, dict) else []):
+            key, _, season = str(name).rpartition("-s")
+            if mode not in ("doubles", "files") or not key or not season.isdigit():
+                continue
+            con = self.db()
+            try:
+                now = tuple(con.execute(
+                    """SELECT COUNT(*), COALESCE(MAX(f.id), 0) FROM file f
+                       JOIN episode e ON e.id=f.episode_id
+                       WHERE e.item_id=? AND e.season=?""", (key, int(season))).fetchone())
+            finally:
+                con.close()
+            if not now[0] or memo.get(name) == (mode,) + now:
+                continue
+            try:
+                self.renumber(key, int(season), mode)
+                done += 1
+            except Exception:
+                continue
+            memo[name] = (mode,) + now
+        return done
+
     def numbering_choice(self, item_id, season):
         """What was chosen for this season: auto, files, or database."""
         try:
@@ -2059,6 +2244,7 @@ class Library:
         finally:
             con.close()
         seasons = {}
+        doubled = set()
         for r in rows:
             said = file_episode(r["path"], r["season"])
             if said is None:
@@ -2066,13 +2252,18 @@ class Library:
             key = (r["item"], r["show"], r["season"])
             seen = seasons.setdefault(key, {})
             seen[said - r["number"]] = seen.get(said - r["number"], 0) + 1
+            if file_double(r["path"], r["season"]):
+                doubled.add(key)
         out = []
         for (item, show, season), counts in seasons.items():
             by, files = max(counts.items(), key=lambda kv: kv[1])
-            if not by:
+            # a season of double episodes, counted as two, is listed even where the
+            # numbers happen to agree: the files after the first double are one ahead
+            if not by and (item, show, season) not in doubled:
                 continue                   # the file and the episode agree
             out.append({"key": str(item), "show": show, "season": season,
                         "shift": by, "files": files,
+                        "doubles": (item, show, season) in doubled,
                         "total": sum(counts.values())})
         out.sort(key=lambda r: (r["show"] or "", r["season"]))
         return out
@@ -2093,6 +2284,8 @@ class Library:
                    JOIN episode e ON e.id=f.episode_id
                    WHERE e.item_id=? AND e.season=? ORDER BY e.number""",
                 (str(item_id), int(season))).fetchall()
+            if mode == "doubles":
+                return self._renumber_doubles(con, str(item_id), int(season))
             if mode == "auto":
                 said = con.execute("SELECT tmdb_id FROM item WHERE id=?",
                                    (str(item_id),)).fetchone()
@@ -2142,6 +2335,49 @@ class Library:
             return moved
         finally:
             con.close()
+
+    def _renumber_doubles(self, con, item_id, season):
+        """Each file onto the catalogue's episode it is, where the release counts double
+        episodes as two: by doubles_map() over the catalogue's own runtimes. Files move
+        between episodes; an episode left with no file and no number of the catalogue's
+        goes. How many files moved."""
+        said = con.execute("SELECT tmdb_id FROM item WHERE id=?", (item_id,)).fetchone()
+        if not said or not said["tmdb_id"]:
+            return 0
+        try:
+            data = self.tmdb("/tv/%s/season/%s" % (said["tmdb_id"], season))
+        except Exception:
+            return 0
+        eps = data.get("episodes") or []
+        to = doubles_map(eps)
+        if not to:
+            return 0
+        rows = con.execute("""SELECT f.id fid, f.path, e.id eid, e.number FROM file f
+                              JOIN episode e ON e.id=f.episode_id
+                              WHERE e.item_id=? AND e.season=?""", (item_id, season)).fetchall()
+        by_number = {r["number"]: r["id"] for r in con.execute(
+            "SELECT id, number FROM episode WHERE item_id=? AND season=?", (item_id, season))}
+        moved = 0
+        for r in rows:
+            n = file_episode(r["path"], season)
+            target = to.get(n) if n else None
+            dest = by_number.get(target) if target else None
+            if dest and dest != r["eid"]:
+                con.execute("UPDATE file SET episode_id=? WHERE id=?", (dest, r["fid"]))
+                moved += 1
+        # the catalogue's titles on its own numbers, and the numbers it has not gone
+        known = {int(e["episode_number"]) for e in eps if e.get("episode_number")}
+        for ep in eps:
+            con.execute("""UPDATE episode SET title=?, overview=?, aired=?, still=?
+                           WHERE item_id=? AND season=? AND number=?""",
+                        (ep.get("name"), ep.get("overview"), ep.get("air_date"),
+                         ep.get("still_path"), item_id, season, ep.get("episode_number")))
+        for number, eid in by_number.items():
+            if number not in known and not con.execute(
+                    "SELECT 1 FROM file WHERE episode_id=? LIMIT 1", (eid,)).fetchone():
+                con.execute("DELETE FROM episode WHERE id=?", (eid,))
+        con.commit()
+        return moved
 
     def _align_season(self, con, item_id, season):
         """Put a season's files on the numbers the episodes actually have.

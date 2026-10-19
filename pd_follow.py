@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
+import pd_safe
+
 #: how often to ask the main server what is happening. A film is two hours; a minute is
 #: often enough to catch it, and quiet enough to leave a sleeping machine alone.
 ASK_EVERY = 60
@@ -599,6 +601,54 @@ def newer(a, b):
 #: Watchlists and shelves change slowly; where somebody is in a shuffle changes
 #: every twenty minutes, and it now travels both ways on this same round.
 VIEWERS_EVERY = 120
+
+#: The main server's settings this machine takes as they are, every round: what the
+#: rows hold, and how a release is chosen - so Recommended is the same release on both
+#: machines. The copy had none of the choosing rules and picked by its defaults.
+CHOOSING = ("preferRes", "preferSource", "preferCodec", "preferSound", "preferGroup",
+            "preferOrder", "preferQuality", "preferSeeds", "preferBy", "preferRate264",
+            "preferRate265", "rateLock", "closeCall", "seriesRate")
+#: and what every viewer meets the same on either machine: the quality ceilings at
+#: home and away, who may be sent a burned-in subtitle, even volume, the pause before
+#: the next episode, fetching a subtitle before it starts, the streaming country and
+#: the accent. Not the machine's own: its port, ffmpeg, receiver, game mode, folders,
+#: the per-file subtitle fixes, or what it downloads.
+SHARED = ("quality", "burnFor", "evenVolume", "nextDelay", "autoFetch", "watchRegion",
+          "accent",
+          # and the rest of what a viewer meets: subtitles put in step by themselves,
+          # their look and size, the seasonal row, how long New lasts, the streaming
+          # services, the volume target, what guests may fetch, and remote admin
+          "autoScan", "subtitles", "subSizeBase", "subPlaceRound", "subLang", "subLang2",
+          "seasonal", "newDays", "watchServices", "volumeTarget", "letThemFetch",
+          "fetchMaxGb", "remoteAdmin", "remoteOwner")
+
+#: a viewer's own settings that stay on each machine: they name titles by the main
+#: server's own numbers, which mean other titles on the copy
+VIEWER_LOCAL = ("deckAside", "subsFor", "subsPick", "subsTried", "copyPick",
+                "casualNext", "casualStamp", "casualTotal")
+#: and how each season is numbered: a season numbered one way here and another on the
+#: main server files an episode under another key, and a place, a mark or a row on the
+#: panel lands on the wrong episode or is counted twice
+#: and the live channels: the same playlist, YouTube channels and groups on both, so a
+#: channel has the same key on each and a player can move to the copy when the main
+#: server restarts
+LIVE = ("liveList", "liveMost", "liveGroups", "liveFolders", "liveYouTube", "liveWho")
+HOUSE_MIRRORED = ("libraryShows", "homeRowsDefault", "numbering") + CHOOSING + SHARED + LIVE
+
+
+def numbering_changes(before, after):
+    """The seasons whose numbering the main server changed: [(key, season, mode)], a
+    season no longer listed going back to auto."""
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    out = []
+    for name in sorted(set(before) | set(after)):
+        if before.get(name) == after.get(name):
+            continue
+        key, _, season = str(name).rpartition("-s")
+        if key and season.isdigit():
+            out.append((key, int(season), str(after.get(name) or "auto")))
+    return out
 VIEWERS_AT = [0.0]
 
 
@@ -685,9 +735,14 @@ def learn_the_viewers(one, settings_path, api=None):
         return 0                  # unreadable: writing what is in hand would empty it
     before = json.loads(json.dumps(mine))
     # the main server's choices for everyone, taken as they are: a mirror, not a merge
-    for name, value in (said.get("house") or {}).items():
-        if name in ("libraryShows", "homeRowsDefault") and mine.get(name) != value:
-            mine[name] = value
+    house = said.get("house") if isinstance(said.get("house"), dict) else None
+    if house is not None:
+        for name in HOUSE_MIRRORED:
+            if name in house:
+                if mine.get(name) != house[name]:
+                    mine[name] = house[name]
+            elif name in mine:
+                del mine[name]            # unset on the main server, unset here
     users = mine.setdefault("users", {})
     filled = 0
     mine_to_send = []
@@ -695,9 +750,12 @@ def learn_the_viewers(one, settings_path, api=None):
         theirs = theirs or {}
         here = users.setdefault(str(who), {})
         for name, value in theirs.items():
-            if name in ("watchlistIs", "shuffles", "collections"):
-                continue                  # settled below
-            if not here.get(name):
+            if name in ("watchlistIs", "shuffles", "collections", "watchlist") or name in VIEWER_LOCAL:
+                continue                  # settled below, or this machine's own
+            # a mirror: what the viewer set on the main server is what they have here,
+            # changed there and changed here. Filled only where empty, a second
+            # subtitle language set later never arrived.
+            if here.get(name) != value:
                 here[name] = value
                 filled += 1
         # Collections, by the one a viewer made rather than by the list as a whole.
@@ -781,8 +839,10 @@ def learn_the_viewers(one, settings_path, api=None):
             return filled
         # and the house's own choices: taken above and then dropped here, so the
         # copy's Popular shows row stayed at whatever it held of the list
-        for name in ("ownerIs", "ownerName", "libraryShows", "homeRowsDefault"):
-            if mine.get(name) != before.get(name):
+        for name in ("ownerIs", "ownerName") + HOUSE_MIRRORED:
+            if name not in mine and name in before:
+                fresh.pop(name, None)
+            elif mine.get(name) != before.get(name):
                 fresh[name] = mine.get(name)
         users = fresh.setdefault("users", {})
         for who, one in (mine.get("users") or {}).items():
@@ -794,7 +854,16 @@ def learn_the_viewers(one, settings_path, api=None):
         tmp = settings_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(fresh, f, indent=2)
+            pd_safe.settle(f)
         os.replace(tmp, settings_path)
+        # and the seasons the main server numbers another way now, numbered so here
+        if api is not None:
+            for key, season, mode in numbering_changes(before.get("numbering"),
+                                                       mine.get("numbering")):
+                try:
+                    api.lib.renumber(key, season, mode)
+                except Exception:
+                    pass
     return filled
 
 

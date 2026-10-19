@@ -427,7 +427,8 @@ if check("11 two episodes on the shelf", len(victims) == 2):
     pd_torrents.request, pd_torrents.arrived = real_request, real_arrived
     # carrying on with a round that stands on it asks the pack too
     said = {"key": None}
-    for _ in range(len(pool) + 5):
+    # into the next round too: this round may have drawn it already
+    for _ in range(3 * (len(pool) + 5)):
         said = h.shuffle_draw(cid)
         if said.get("key") == "ofake00000001":
             break

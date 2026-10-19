@@ -36,7 +36,7 @@ fun MarkControl(
     Row(
         Modifier
             .padding(end = 8.dp)
-            .clip(RoundedCornerShape(9.dp))
+            .clip(RoundedCornerShape(Skin.round(9.dp)))
             .background(Skin.Panel2),
     ) {
         Half(mark = if (favorite) "♥" else if (listed) "★" else "☆", on = listed || favorite,
@@ -61,7 +61,7 @@ private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit,
             .background(if (on) colour else Color.Transparent)
             .border(if (focused) 2.dp else 0.dp,
                     if (focused) Color.White else Color.Transparent,
-                    RoundedCornerShape(9.dp))
+                    RoundedCornerShape(Skin.round(9.dp)))
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onPress)

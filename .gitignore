@@ -116,3 +116,10 @@ pd-travel-*.py
 
 # the type checker (pyright, installed with npm into this folder)
 .typecheck
+.shuffle-passed
+.tests-passed
+buildtools/
+svt_play.json
+top_films.json
+tmdb_popularity.json
+watch_providers.json

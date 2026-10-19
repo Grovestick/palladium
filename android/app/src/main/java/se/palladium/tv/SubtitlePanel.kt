@@ -158,7 +158,7 @@ fun SubtitlePanel(
                              .padding(bottom = 10.dp)
                              .background(Skin.Panel2,
                                          androidx.compose.foundation.shape
-                                             .RoundedCornerShape(7.dp))
+                                             .RoundedCornerShape(Skin.round(7.dp)))
                              .padding(horizontal = 10.dp, vertical = 7.dp))
                 }
                 if (tracks.isEmpty()) {
@@ -169,7 +169,8 @@ fun SubtitlePanel(
                 val nameOf: (SubTrack) -> String = { track ->
                     // language first: "Forced" alone does not say which language; and
                     // for a fetched one, how many had downloaded it
-                    track.shown() +
+                    // the list keeps the release: several of one language are told apart by it
+                    track.shown(release = true) +
                         (if (track.downloads > 0) "  \u00b7  " + track.downloads +
                              " downloads" else "")
                 }
@@ -206,11 +207,11 @@ fun SubtitlePanel(
                     Box(Modifier.weight(1f)) {
                         Row(
                             Modifier.fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Skin.round(8.dp)))
                                 .background(Skin.Panel2)
                                 .border(if (onIt) 2.dp else 1.dp,
                                         if (onIt) Color.White else Skin.Line,
-                                        RoundedCornerShape(8.dp))
+                                        RoundedCornerShape(Skin.round(8.dp)))
                                 .onFocusChanged { onIt = it.isFocused }
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
@@ -452,7 +453,7 @@ fun SubtitlePanel(
                     }
                     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp)
                             .background(Skin.Accent.copy(alpha = 0.22f),
-                                        RoundedCornerShape(8.dp))
+                                        RoundedCornerShape(Skin.round(8.dp)))
                             .padding(horizontal = 10.dp, vertical = 8.dp)) {
                         Text(if (ready)
                                  "Written from the sound  ·  ready to play  ·  " +
@@ -505,11 +506,11 @@ private fun HoldPill(label: String, dim: Boolean = false, onStep: () -> Unit) {
     val scope = rememberCoroutineScope()
     Box(
         Modifier
-            .clip(RoundedCornerShape(999.dp))
+            .clip(RoundedCornerShape(Skin.round(999.dp)))
             .background(if (focused) Skin.Panel2 else Color.Transparent)
             .border(if (focused) 2.dp else 0.dp,
                     if (focused) Color.White else Color.Transparent,
-                    RoundedCornerShape(999.dp))
+                    RoundedCornerShape(Skin.round(999.dp)))
             .onFocusChanged { focused = it.isFocused }
             .then(if (dim) Modifier.alpha(0.45f) else Modifier)
             .focusable()
