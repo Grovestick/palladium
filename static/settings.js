@@ -19,19 +19,50 @@
   let picking = null;          // which list the folder picker is adding to
   let tab = "quality";          // Settings: the first tab, and the one most opened
 
-  const OWNER_TABS = [["quality", "Settings"],
-                      ["library", "Library"],
-                      // what belongs to a title rather than being one, placed by hand
-                      ["extras", "Extras"],
-                      // its own tab: qBittorrent, where downloads land and what is
-                      // offered from each pack is a subject of its own, and it sat at
-                      // the foot of the folder lists
-                      ["torrents", "Torrents"],
-                      ["people", "Users"], ["subs", "Subtitles"],
-                      ["now", "Now playing"], ["log", "Log"],
-                      ["reports", "Reports"],
-                      ["remote", "Remote computer"],
-                      ["receiver", "Receiver"]];
+  // one subject a tab; the sections of the old pages are sorted into them by SECTION_TAB
+  const OWNER_TABS = [["playback", "Playback"], ["library", "Library"],
+                      ["torrents", "Downloads"], ["subs", "Subtitles"],
+                      ["people", "People"], ["machines", "Machines"],
+                      ["workers", "Workers & disks"], ["health", "Health"],
+                      ["music", "Music videos"], ["you", "You"]];
+  //: where each section drawn on the old Settings, Library and Receiver pages stands now,
+  //: by its title. A section not named here stays on the tab its page fills.
+  const SECTION_TAB = {
+    "Theme": "you", "Your name": "you",
+    "Backdrop": "library", "What Films shows": "library", "What TV shows": "library",
+    "New on posters": "library", "Seasonal row": "library",
+    "Yours \u2014 the most you want sent to you": "playback", "Playback": "playback",
+    "Colour": "playback", "Encoding": "machines", "Everyone, on this network": "playback",
+    "Everyone, from outside": "playback", "Receiver": "playback",
+    "How films are downloaded": "torrents", "Which scores a new film must pass": "torrents",
+    "What everyone else may download": "torrents",
+    "This server": "machines", "This computer": "machines",
+    "Running this server from away": "machines", "Reach from outside": "machines",
+    "Link merge": "machines", "Add-ins": "machines", "A word to the main server": "machines",
+    "What this computer is doing": "machines", "Game mode": "machines",
+    "Report faults": "health", "Automatic runs": "workers",
+  };
+  //: the pages inside a tab, the first the one it opens on
+  const PAGES = {
+    playback: [["quality", "Quality"], ["playing", "Playing"], ["receiver", "Receiver"]],
+    machines: [["server", "This server"], ["reach", "Reach"], ["addins", "Add-ins"],
+               ["copies", "Copies"]],
+    workers: [["runs", "Automatic runs"], ["disks", "Disks"]],
+  };
+  //: which of its tab's pages a section is on, by its title; not named: the first page
+  const SECTION_PAGE = {
+    "Playback": "playing", "Colour": "playing", "Receiver": "receiver",
+    "Running this server from away": "reach", "Reach from outside": "reach", "Link merge": "reach",
+    "Add-ins": "addins", "A word to the main server": "addins",
+    "New on posters": "shelves", "Seasonal row": "shelves", "Backdrop": "shelves",
+    "What Films shows": "shelves", "What TV shows": "shelves",
+  };
+  //: the page open in each tab
+  const pageNow = {};
+  //: an old tab's name, as a link or a reload may still ask for it
+  const OLD_TAB = {quality: ["playback"], receiver: ["playback"], remote: ["machines", "copies"],
+                   now: ["health", "now"], log: ["health", "log"], reports: ["health", "reports"]};
+  let healthTab = "health", machineTab = "server";
   // a guest is a visitor, not an administrator: no folders, nobody to invite, and no
   // friends of ours to browse - only the two screens that are theirs
   // The other server has no tab of its own: what it is and what it holds is a box
@@ -82,9 +113,22 @@
                  { method: "POST", headers: { "Content-Type": "application/json" },
                    body: JSON.stringify(body || {}) })).json();
     if (back && back.mirrored && back.error) toast(back.error);
+    ASKED.clear();                       // what was kept is out of date now
     return back;
   };
-  const get = async (path) => (await fetch(where(path))).json();
+  //: an answer kept for two seconds: the sections of one page each asked the server for
+  //: its settings, twenty requests for one tab. Each caller gets its own copy to change.
+  const ASKED = new Map();
+  const get = async (path) => {
+    const now = Date.now();
+    let one = ASKED.get(where(path));
+    if (!one || now - one.at > 2000) {
+      one = { at: now, said: fetch(where(path)).then((r) => r.json()) };
+      ASKED.set(where(path), one);
+      one.said.catch(() => ASKED.delete(where(path)));
+    }
+    return JSON.parse(JSON.stringify(await one.said));
+  };
 
   const block = (title) => {
     const el = document.createElement("div");
@@ -890,6 +934,72 @@
           c.textContent = t;
           facts.appendChild(c);
         });
+      // two ways to hold a pack: what is watched and ahead of it, or all of it, seeded
+      const mode = document.createElement("div");
+      mode.className = "addrow subrow";
+      mode.innerHTML = "<span class='sublabel'>Fetch</span>";
+      [[false, kind === "tv" ? "Ahead only" : "Asked only"], [true, "Whole pack"]].forEach(([w, label]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (!!p.whole === w ? " on" : "");
+        b.textContent = label;
+        b.onclick = async () => {
+          if (!!p.whole === w) return;
+          if (w && !confirm("Fetch all " + p.gb + " GB of " + p.name + " and seed it?")) return;
+          const got = await post("/torrents/whole", { hash: p.hash, on: w });
+          toast(got && got.ok ? (w ? "Fetching all of it" : "Back to the rules") : "Could not change it");
+          render();
+        };
+        mode.appendChild(b);
+      });
+      const modeNote = document.createElement("div");
+      modeNote.className = "note";
+      modeNote.textContent = p.whole
+        ? "Every file is fetched and seeded, whatever is watched. Nothing in it is switched off."
+        : (kind === "tv"
+          ? "Only what is watched and the episodes ahead of it are fetched; the rest stays off."
+          : "Only the films somebody asks for are fetched; the rest stays off.");
+      // which machine the pack lives on: its films are downloaded and seeded there
+      const home = document.createElement("div");
+      home.className = "addrow subrow";
+      home.innerHTML = "<span class='sublabel'>Home</span>";
+      [["main", "This server"], ["copy", "Copy server"], ["both", "Both"], ["split", "Split"]].forEach(([h, label]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + ((p.home || "main") === h ? " on" : "");
+        b.textContent = label;
+        b.onclick = async () => {
+          if ((p.home || "main") === h) return;
+          const got = await post("/torrents/home", { hash: p.hash, home: h });
+          toast(got && got.ok ? "Home: " + label : "Could not change it");
+          render();
+        };
+        home.appendChild(b);
+      });
+      const homeNote = document.createElement("div");
+      homeNote.className = "note";
+      homeNote.textContent = (p.home || "main") === "copy"
+        ? "Films asked for from this pack are downloaded, kept and seeded on the copy server; this server holds them only while Sync back wants them."
+        : (p.home === "both"
+          ? "Every film asked for from this pack is downloaded, kept and seeded on both servers."
+          : p.home === "split"
+          ? "Each film stays on the server it came down on, and nothing is moved. Each server seeds what it holds."
+          : "Films asked for from this pack are downloaded, kept and seeded on this server.");
+      // split: where its new downloads go first, the same for every split pack
+      const first = document.createElement("div");
+      if (p.home === "split") {
+        first.className = "addrow subrow";
+        first.innerHTML = "<span class='sublabel'>Downloads first on</span>";
+        [["copy", "Copy server"], ["main", "This server"]].forEach(([w, label]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" + ((p.splitFirst || "copy") === w ? " on" : "");
+          b.textContent = label;
+          b.onclick = async () => {
+            const got = await post("/torrents/home", { splitFirst: w });
+            toast(got && got.ok ? "Split packs download first on: " + label : "Could not change it");
+            render();
+          };
+          first.appendChild(b);
+        });
+      }
       const acts = document.createElement("div");
       acts.className = "packacts";
       if (p.halted) {
@@ -918,7 +1028,7 @@
       };
       acts.appendChild(rm);
       head.appendChild(acts);
-      r.append(head, meter, facts, inside);
+      r.append(head, meter, facts, mode, modeNote, home, first, homeNote, inside);
       // qBittorrent cannot load it, or has stopped on it: said under the row
       [[p.refused, "qBittorrent cannot load this pack: "], [p.halted && (p.haltedWhy ||
         "qBittorrent has stopped on this pack."), ""]].forEach(([why, lead]) => {
@@ -1331,15 +1441,12 @@
 
   async function paneLibrary(main) {
     await panePlayback(main);
-    await numberingBlock(main);
     await newDaysBlock(main);
     await seasonalBlock(main);
     // a plugin's own settings: static/iptv.js and the like register theirs here
     for (const add of (window.PD_SETTINGS || [])) {
       try { await add(main, { get, post, block, render }); } catch (e) { /* a plugin's own */ }
     }
-    await watchBlock(main);
-    await skipStartBlock(main);
     accentBlock(main, await get("/settings"));
     const stats = await get("/library/status");
     const bar = block("Index");
@@ -2183,7 +2290,13 @@
           boxes.set(key, el);
         }
         seen.add(key);
-        const cls = "wbox" + (w.state === "working" ? " on" : w.state === "stalled" ? " stalled" : "");
+        // a worker with its own page opens it on a click
+        if (el._link !== (w.link || "")) {
+          el._link = w.link || "";
+          el.onclick = el._link ? () => window.open(el._link, "_blank", "noopener") : null;
+        }
+        const cls = "wbox" + (w.state === "working" ? " on" : w.state === "stalled" ? " stalled" : "")
+          + (w.link ? " link" : "");
         if (el.className !== cls) el.className = cls;
         const line = workerLine(w);
         const span = el.querySelector("span");
@@ -2346,6 +2459,10 @@
       const working = [].concat(...answers.map((one, which) =>
         ((one && one.working) || []).map((w) => Object.assign({}, w,
           { on: whose[which] || "" }))));
+      // and the torrents being checked: files already here, read through once
+      const checking = [].concat(...answers.map((one, which) =>
+        ((one && one.checking) || []).map((c) => Object.assign({}, c,
+          { on: whose[which] || "" }))));
       // every worker of each machine with its state; an older server sends none,
       // and then what it says it is doing stands in as lit boxes
       const workers = answers.map((one, which) => ({
@@ -2360,7 +2477,8 @@
                 { state: w.ok === false ? "stalled" : "working" }, w))),
       })).filter((g) => g.rows.length);
       data = { live: merged, measuring: measuring, analysing: analysing,
-               downloading: downloading, working: working, workers: workers };
+               downloading: downloading, working: working, workers: workers,
+               checking: checking };
     } catch (e) { /* server restarting */ }
     into.innerHTML = "";
     if (totals) {
@@ -2389,7 +2507,7 @@
         });
     }
     if (work) drawWorkers(work, data.workers || []);
-    if (!data.live.length && !(data.downloading || []).length) {
+    if (!data.live.length && !(data.downloading || []).length && !(data.checking || []).length) {
       const none = document.createElement("div");
       none.className = "note";
       none.textContent = "Nobody is watching anything at the moment.";
@@ -2409,7 +2527,8 @@
       el.querySelector(".pmeta .note").textContent = [
         d.state === "queued"
           ? "queued" + (d.place ? " · " + d.place + " ahead" : "")
-          : "downloading " + Math.round((d.progress || 0) * 100) + "%",
+          : (d.state === "unpacking" ? "unpacking " : "downloading ") +
+            Math.round((d.progress || 0) * 100) + "%",
         d.size ? (d.size / 1073741824).toFixed(1) + " GB" : "",
         left,
         d.who ? "for " + d.who : "",
@@ -2501,37 +2620,27 @@
       }
       into.appendChild(el);
     });
-    // films on their way in from a torrent pack: who asked, how far, how fast, how long
-    try {
-      const book = await get("/torrents/log");
-      const coming = (book.downloads || []).filter(
-        (d) => d.state === "queued" || d.state === "downloading");
-      if (coming.length) {
-        const head = document.createElement("div");
-        head.className = "note";
-        head.style.margin = "18px 0 6px";
-        head.textContent = "Downloading";
-        into.appendChild(head);
-        coming.forEach((d) => {
-          const el = document.createElement("div");
-          el.className = "person live";
-          el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
-            '<div class="rate"><b></b><span>Mbit/s</span></div>';
-          el.querySelector("b").textContent = downloadName(d, "a film");
-          const eta = d.eta != null && d.eta >= 0
-            ? (d.eta < 60 ? d.eta + " s left" : d.eta < 3600 ? Math.round(d.eta / 60) + " min left"
-               : Math.floor(d.eta / 3600) + " h " + Math.round((d.eta % 3600) / 60) + " min left")
-            : "";
-          el.querySelector(".pmeta .note").textContent = [
-            d.who ? "asked for by " + d.who : "",
-            d.state === "queued" ? "queued" : Math.round((d.progress || 0) * 100) + "%",
-            ((d.size || 0) / 1e9).toFixed(1) + " GB",
-            eta].filter(Boolean).join(" \u00b7 ");
-          el.querySelector(".rate b").textContent = (d.mbit || 0).toFixed(1);
-          into.appendChild(el);
-        });
-      }
-    } catch (e) { /* a server with no torrents, or not the owner's page */ }
+    if ((data.checking || []).length) {
+      const head = document.createElement("div");
+      head.className = "note";
+      head.style.margin = "18px 0 6px";
+      head.textContent = "Checking";
+      into.appendChild(head);
+      data.checking.forEach((c) => {
+        const el = document.createElement("div");
+        el.className = "person live";
+        el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
+          '<div class="rate"><b></b><span>checked</span></div>';
+        el.querySelector("b").textContent = String(c.name || "a torrent").replace(/[._]/g, " ");
+        el.querySelector(".pmeta .note").textContent = [
+          "reading the files already here",
+          c.drive ? "on " + c.drive : "",
+          c.size ? (c.size / 1073741824).toFixed(1) + " GB" : "",
+          c.on && c.on !== "this server" ? c.on : ""].filter(Boolean).join(" · ");
+        el.querySelector(".rate b").textContent = Math.round((c.progress || 0) * 100) + "%";
+        into.appendChild(el);
+      });
+    }
     if (document.body.contains(into)) {
       into._liveTimer = setTimeout(() => drawLive(into, totals, work), 2000);
     }
@@ -2619,6 +2728,75 @@
 
     /* Who is watching has a page of its own now - it is the thing somebody opens
        when a film stutters, and this screen is about handing out invitations. */
+  }
+
+  /* ---------------- health: both machines, and what needs somebody ---------------- */
+
+  /* What /health says, drawn: the problems first - or that there are none - then the
+     machines, the disks, the backup and what qBittorrent is stuck on. Read again every
+     half minute while the tab is open. */
+  async function paneHealth(main) {
+    let said;
+    try {
+      said = await get("/health");
+    } catch (e) {
+      const box = block("Health");
+      box.innerHTML += "<div class='note'>The server did not answer.</div>";
+      main.appendChild(box);
+      return;
+    }
+    main.appendChild(healthBlocks(said, Date.now() / 1000));
+    setTimeout(() => {
+      if (tab === "health" && document.body.contains(main)) render();
+    }, 30000);
+  }
+
+  /* The health page's boxes from one /health answer. */
+  function healthBlocks(said, now) {
+    const out = document.createElement("div");
+    const facts = said.facts || {};
+    const problems = said.problems || [];
+    const head = block(problems.length ? (problems.length === 1 ? "1 thing needs you"
+                                          : problems.length + " things need you") : "All good");
+    head.classList.add("health", problems.length ? "bad" : "good");
+    if (problems.length) {
+      head.innerHTML += problems.map((p) => "<div class='addrow subrow'><span class='kindname'>" +
+                                     esc(p) + "</span></div>").join("");
+    } else {
+      head.innerHTML += "<div class='note'>Both servers answer, nothing is stuck, the disks have " +
+                        "room and the backup ran.</div>";
+    }
+    out.appendChild(head);
+    const rows = (title, list) => {
+      const box = block(title);
+      box.innerHTML += list.map(([a, b, c]) => "<div class='addrow subrow'><span class='sublabel'>" +
+        esc(a) + "</span><span class='kindname'>" + esc(b) + "</span>" +
+        (c ? "<span class='dim' style='margin-left:10px'>" + esc(c) + "</span>" : "") +
+        "</div>").join("") || "<div class='note'>Nothing.</div>";
+      out.appendChild(box);
+    };
+    // a dot for whether each answers - green up, red not - rather than the word
+    const servers = block("Servers");
+    servers.innerHTML += (said.machines || []).map((m) =>
+      "<div class='addrow subrow'><span class='sublabel'><span class='updot " + (m.up ? "up" : "down") +
+      "'></span>" + esc(m.name) + "</span><span class='kindname'>" +
+      esc(m.up ? (m.build || "") : "not answering") + "</span></div>").join("") ||
+      "<div class='note'>Nothing.</div>";
+    out.appendChild(servers);
+    rows("Disks", (facts.disks || []).map((d) =>
+      [d.drive, d.freeGB + " GB free", d.downloads ? "downloads land here" : ""]));
+    const b = facts.backup;
+    rows("Backup", [b ? [b.ok ? "Last ran" : "Failed",
+                         new Date(b.at * 1000).toLocaleString(),
+                         Object.entries(b.parts || {}).map(([k, v]) =>
+                           k + (v.ok ? " " + v.mb + " MB" : ": " + (v.why || "failed"))).join(" · ")]
+                       : ["Never", "no backup has run", ""]]);
+    rows("qBittorrent", (facts.torrents || []).map((t) =>
+      [t.name, t.stuck ? "stuck at 100%" : t.state,
+       t.since ? "for " + Math.round((now - t.since) / 60) + " min" : ""]));
+    rows("Workers", (facts.workers || []).filter((w) => w.state !== "waiting").map((w) =>
+      [w.name, w.state, ""]));
+    return out;
   }
 
   /* ---------------- reports: what people have written in ---------------- */
@@ -2779,6 +2957,36 @@
       "card calls itself - a description of a machine, not of a person. Whatever " +
       "this is set to, a single report can still be sent by hand from Reports.";
     box.appendChild(tellNote);
+
+    // Claude Code on this machine, started by a new fault and allowed only to read:
+    // its answer comes back to Reports, for the owner
+    const claudeRow = document.createElement("div");
+    claudeRow.className = "addrow subrow";
+    claudeRow.innerHTML = "<span class='sublabel'>Ask Claude</span>";
+    const claudeOn = ((cfg && cfg.claudeFaults) || "off") === "on";
+    [["off", "Off"], ["on", "On"]].forEach(([id, label]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + ((claudeOn ? "on" : "off") === id ? " on" : "");
+      b.textContent = label;
+      b.onclick = async () => {
+        await post("/library/config", { claudeFaults: id });
+        toast(id === "on" ? "A new fault is read by Claude" : "Faults are not read by Claude");
+        drawFaults(box);
+      };
+      claudeRow.appendChild(b);
+    });
+    box.appendChild(claudeRow);
+    const claudeNote = document.createElement("div");
+    claudeNote.className = "note";
+    claudeNote.textContent = !(cfg && cfg.claudeHere)
+      ? "Claude Code is not installed on this computer, so nothing would happen."
+      : !claudeOn
+        ? "Faults are kept in Reports and nothing else is done with them."
+        : "A new fault starts Claude Code on this computer, at most once every 15 " +
+          "minutes. It may read the logs" + (cfg.claudeReads ? " and the source in " +
+          cfg.claudeReads : ", but finds no source here") + ", and change nothing. " +
+          "What it makes of it appears in Reports, for you only.";
+    box.appendChild(claudeNote);
   }
 
   /* This server's own code, and following another one.
@@ -3599,6 +3807,7 @@
     // on the main server, only what the main server may set is drawn.
     if (opts.house) {
       followBox.appendChild(opts.house.share(opts.name || "the cache"));
+      followBox.appendChild(opts.house.syncback(opts.name || "the cache", opts.syncBack));
       followBox.appendChild(opts.house.keys(opts.name || "the cache"));
     }
 
@@ -4747,6 +4956,48 @@
         wrap.append(r, said);
         return wrap;
       },
+      // packs at home on the copy: held here only while the copy rules want them
+      syncback: (name, last) => {
+        const wrap = document.createElement("div");
+        const r = subrow("Sync back");
+        const said = noteOf("");
+        const tell = () => {
+          said.textContent = mine.syncBack
+            ? "Films of packs at home on " + name + " are taken back here while somebody watches, is part way through, has them on a list or asked for them - so they play off both machines - and let go here once nothing wants them and " + name + " holds them whole." + (last && (last.fetch || []).length + (last.drop || []).length ? " Last round: " + (last.fetch || []).length + " taken back, " + (last.drop || []).length + " let go." : "")
+            : "Films of packs at home on " + name + " stay there; this server keeps what it has and takes nothing back.";
+        };
+        [[true, "On"], [false, "Off"]].forEach(([v, label]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" + (!!mine.syncBack === v ? " on" : "");
+          b.textContent = label;
+          b.onclick = async () => {
+            if (!!mine.syncBack === v) return;
+            if (v && !confirm("Let films of packs at home on " + name + " go from this server once nothing wants them? " + name + " keeps and seeds them.")) return;
+            await post("/library/config", { syncBack: v });
+            mine.syncBack = v;
+            r.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+            tell();
+          };
+          r.appendChild(b);
+        });
+        tell();
+        // the only folders a film may ever be removed from: none listed, nothing is removed
+        const fr = subrow("Remove only in");
+        const folders = document.createElement("textarea");
+        folders.rows = 2;
+        folders.value = (mine.syncBackFolders || []).join("\n");
+        folders.placeholder = "One folder a line, such as G:\\Movies\\Top.1000.Movies.Pack";
+        folders.onchange = async () => {
+          const list = folders.value.split("\n").map((x) => x.trim()).filter(Boolean);
+          await post("/library/config", { syncBackFolders: list });
+          mine.syncBackFolders = list;
+          toast(list.length ? "Films may be removed only inside " + list.length + (list.length === 1 ? " folder" : " folders")
+                            : "Nothing will be removed");
+        };
+        fr.appendChild(folders);
+        wrap.append(r, said, fr, noteOf("A film is removed only inside these folders, and only after this server and " + name + " both hold it whole with the same contents. With none listed, nothing is removed."));
+        return wrap;
+      },
       // One film read off both machines, for a browser. Off unless somebody sets a
       // share: only whoever knows both machines can say it is worth it.
       share: (name) => {
@@ -4828,6 +5079,7 @@
       // this server's own side of caching, beside the machine it is about
       const called = f.name || "the cache";
       inside.appendChild(house.share(called));
+      inside.appendChild(house.syncback(called));
       inside.appendChild(house.keys(called));
       if (f.managed) {
         // its own box: what that machine is set to copy is drawn by clearing whatever
@@ -5145,6 +5397,66 @@
 
     const out = block("Reach from outside");
     all.appendChild(out);
+    // the link merge tool on this computer: downloads spread over every link it has
+    const merge = block("Link merge");
+    merge.classList.add("mergeset");
+    all.appendChild(merge);
+    const drawMerge = async () => {
+      let t = {};
+      try { t = await get("/torrents"); } catch (e) { t = {}; }
+      merge.querySelectorAll(".addrow, .note, .qbstate").forEach((e) => e.remove());
+      const mode = (t.config || {}).useMerge === "auto" ? "auto"
+        : (t.config || {}).useMerge === true;
+      const on = mode !== false;
+      const said = ((t.qbittorrent || {}).merge) || { links: [], on: false };
+      const row = document.createElement("div");
+      row.className = "addrow subrow";
+      row.innerHTML = "<span class='sublabel'>Downloads</span>";
+      [[false, "Off"], ["auto", "Auto"], [true, "On"]].forEach(([value, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (mode === value ? " on" : "");
+        b.textContent = text;
+        b.onclick = async () => {
+          await post("/torrents/config", { useMerge: value });
+          drawMerge();
+        };
+        row.appendChild(b);
+      });
+      merge.appendChild(row);
+      // a light: green while downloads go through it, and the way to its numbers
+      const state = document.createElement("div");
+      state.className = "qbstate addrow" + (on && said.on ? " on" : "");
+      state.innerHTML = "<i class='qbdot'></i><span></span>";
+      state.querySelector("span").textContent = on && said.on
+        ? "Downloads through link merge"
+        : mode === "auto" ? "Straight out until something downloads"
+        : on ? "Waiting for link merge" : "Off";
+      const stats = document.createElement("button");
+      stats.className = "btn ghost tiny";
+      stats.textContent = "Stats";
+      stats.title = "Each link's speed and total, on Now playing";
+      stats.onclick = () => { tab = "now"; render(); };
+      state.appendChild(stats);
+      merge.appendChild(state);
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = !on
+        ? "qBittorrent goes straight out over the LAN. On: while the link merge tool " +
+          "runs on this computer, its connections are spread over every link the tool has."
+        : mode === "auto" && !said.on
+          ? "Through link merge only while something downloads, and five minutes after. " +
+            "Through it qBittorrent takes no incoming connections, so seeding goes " +
+            "straight out the rest of the time."
+        : said.on
+          ? "Link merge is running with " + said.links.join(" and ") + ": qBittorrent's " +
+            "connections are spread over them. Asked every minute."
+          : said.links.length === 1
+            ? "Link merge runs with one link only, so qBittorrent goes straight out."
+            : "Link merge is not running: qBittorrent goes straight out, and is put " +
+              "through it within a minute of it starting.";
+      merge.appendChild(note);
+    };
+    drawMerge();
     const drawProxy = async () => {
       let p = {};
       try {
@@ -5596,6 +5908,137 @@
 
   /* The receiver in the house: whether it answers, and the steps it is turned up by
      while a film's Dolby sound is passed through to it. */
+  /* The music video playlists: chosen with a row of buttons, named, filled from every
+     music video, put in order. Each plays from its card on Start, round and round. */
+  let musicSel = "";
+  async function paneMusic(main) {
+    const box = block("Music video playlists");
+    main.appendChild(box);
+    let said = {};
+    try { said = await post("/music/playlists", {}); } catch (e) { said = {}; }
+    if (said.why) toast(said.why);
+    const lists = said.playlists || [];
+    const videos = said.videos || [];
+    const named = {};
+    videos.forEach((v) => { named[v.key] = v; });
+    if (!lists.some((p) => p.id === musicSel)) musicSel = lists.length ? lists[0].id : "";
+    const change = async (body) => {
+      let out = {};
+      try { out = await post("/music/playlists", body); } catch (e) { out = { why: "The server did not answer" }; }
+      if (out.why) { toast(out.why); return; }
+      if (out.id && body.do !== "delete") musicSel = out.id;
+      render();
+    };
+    // which playlist, the chosen one lit
+    const pick = document.createElement("div");
+    pick.className = "addrow subrow";
+    pick.innerHTML = "<span class='sublabel'>Playlists</span>";
+    lists.forEach((p) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (p.id === musicSel ? " on" : "");
+      b.textContent = p.name + " (" + p.keys.filter((k) => named[k]).length + ")";
+      b.onclick = () => { musicSel = p.id; render(); };
+      pick.appendChild(b);
+    });
+    box.appendChild(pick);
+    const pickNote = document.createElement("div");
+    pickNote.className = "note";
+    pickNote.textContent = lists.length
+      ? "Each playlist is a card on Start's Music videos row, with All music videos last."
+      : "No playlists yet: Start's row has All music videos only.";
+    box.appendChild(pickNote);
+    // a new one
+    const make = document.createElement("div");
+    make.className = "addrow";
+    make.innerHTML = '<input id="musicnew" type="text" placeholder="New playlist name">' +
+      '<button class="btn save">Create</button>';
+    make.querySelector("button").onclick = () => {
+      const name = $("#musicnew").value.trim();
+      if (name) change({ do: "create", name: name });
+    };
+    box.appendChild(make);
+    const one = lists.find((p) => p.id === musicSel);
+    if (!one) return;
+    // its name, and deleting it - pressed twice, as no dialog is shown
+    const ren = document.createElement("div");
+    ren.className = "addrow";
+    ren.innerHTML = '<input id="musicname" type="text">' +
+      '<button class="btn save">Rename</button><button class="btn ghost kind">Delete</button>';
+    ren.querySelector("input").value = one.name;
+    const [renBtn, delBtn] = ren.querySelectorAll("button");
+    renBtn.onclick = () => change({ do: "rename", id: one.id, name: $("#musicname").value });
+    delBtn.onclick = () => {
+      if (delBtn.dataset.sure) { change({ do: "delete", id: one.id }); return; }
+      delBtn.dataset.sure = "1";
+      delBtn.textContent = "Press again to delete";
+    };
+    box.appendChild(ren);
+    // what it plays, in order
+    const keys = one.keys.filter((k) => named[k]);
+    const put = (next) => change({ do: "set", id: one.id, keys: next });
+    const inBox = block("In " + esc(one.name) + " - " + keys.length + (keys.length === 1 ? " video" : " videos"));
+    main.appendChild(inBox);
+    if (!keys.length) {
+      const none = document.createElement("div");
+      none.className = "note";
+      none.textContent = "Nothing in it yet: add videos below.";
+      inBox.appendChild(none);
+    }
+    keys.forEach((k, i) => {
+      const row = document.createElement("div");
+      row.className = "addrow subrow";
+      row.innerHTML = "<span class='sublabel' style='flex:1;min-width:0'>" +
+        (i + 1) + ". " + esc(named[k].title) + "</span>";
+      [["↑", i > 0, () => { const n = keys.slice(); n.splice(i - 1, 0, n.splice(i, 1)[0]); put(n); }],
+       ["↓", i < keys.length - 1, () => { const n = keys.slice(); n.splice(i + 1, 0, n.splice(i, 1)[0]); put(n); }],
+       ["Remove", true, () => put(keys.filter((x) => x !== k))]].forEach(([word, may, act]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind";
+        b.textContent = word;
+        b.disabled = !may;
+        b.onclick = act;
+        row.appendChild(b);
+      });
+      inBox.appendChild(row);
+    });
+    // and every music video not in it, to add at the end
+    const addBox = block("Add to " + esc(one.name));
+    main.appendChild(addBox);
+    const find = document.createElement("div");
+    find.className = "addrow";
+    find.innerHTML = '<input id="musicfind" type="text" placeholder="Filter by name">' +
+      '<button class="btn ghost kind">Add all shown</button>';
+    addBox.appendChild(find);
+    const rest = document.createElement("div");
+    addBox.appendChild(rest);
+    const out = videos.filter((v) => !keys.includes(v.key));
+    const shown = () => {
+      const w = $("#musicfind").value.trim().toLowerCase();
+      return out.filter((v) => !w || v.title.toLowerCase().includes(w));
+    };
+    const draw = () => {
+      rest.innerHTML = "";
+      shown().forEach((v) => {
+        const row = document.createElement("div");
+        row.className = "addrow subrow";
+        row.innerHTML = "<span class='sublabel' style='flex:1;min-width:0'>" + esc(v.title) + "</span>";
+        const b = document.createElement("button");
+        b.className = "btn ghost kind";
+        b.textContent = "Add";
+        b.onclick = () => put(keys.concat([v.key]));
+        row.appendChild(b);
+        rest.appendChild(row);
+      });
+      if (!rest.children.length) rest.innerHTML = "<div class='note'>Every music video shown is in it.</div>";
+    };
+    find.querySelector("input").oninput = draw;
+    find.querySelector("button").onclick = () => {
+      const more = shown().map((v) => v.key);
+      if (more.length) put(keys.concat(more));
+    };
+    draw();
+  }
+
   async function paneReceiver(main) {
     const box = block("Receiver");
     let said = {};
@@ -5614,6 +6057,48 @@
       : "Not answering at " + (one.ip || "no address") + (said.why ? " - " + said.why : "");
     box.appendChild(state);
     const put = async (body) => { await post("/receiver", body); render(); };
+    // whose receiver: Yamaha is the one tried here; the others follow their makers' papers
+    const brandRow = document.createElement("div");
+    brandRow.className = "addrow subrow";
+    brandRow.innerHTML = "<span class='sublabel'>Make</span>";
+    [["yamaha", "Yamaha"], ["denon", "Denon / Marantz"], ["onkyo", "Onkyo / Pioneer"], ["sony", "Sony"]]
+      .forEach(([val, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + ((one.brand || "yamaha") === val ? " on" : "");
+        b.textContent = text;
+        b.onclick = () => put({ brand: val });
+        brandRow.appendChild(b);
+      });
+    box.appendChild(brandRow);
+    const brandNote = document.createElement("div");
+    brandNote.className = "note";
+    brandNote.textContent = (one.brand || "yamaha") === "yamaha"
+      ? "A Yamaha with MusicCast, reached over its own web interface."
+      : "Written from the maker's published control protocol and not yet tried on one: " +
+        "if Connected stays red or the volume does not move, say so in Reports.";
+    box.appendChild(brandNote);
+    // the copy server: the main server's settings, its own, or the receiver left alone
+    if (CFG && CFG.copyOf) {
+      const fromRow = document.createElement("div");
+      fromRow.className = "addrow subrow";
+      fromRow.innerHTML = "<span class='sublabel'>Settings</span>";
+      [["main", "Main server's"], ["own", "Own"], ["off", "Off"]].forEach(([val, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + ((one.from || "main") === val ? " on" : "");
+        b.textContent = text;
+        b.onclick = () => put({ from: val });
+        fromRow.appendChild(b);
+      });
+      box.appendChild(fromRow);
+      const fromNote = document.createElement("div");
+      fromNote.className = "note";
+      fromNote.textContent = (one.from || "main") === "main"
+        ? "The main server's receiver settings, taken over a few minutes after they change there: " +
+          "when it is off, this machine raises the receiver for a film the same way."
+        : one.from === "own" ? "The settings below are this machine's own; the main server's are not taken."
+        : "This machine leaves the receiver alone.";
+      box.appendChild(fromNote);
+    }
     // on or off, the values spelled out, the chosen one lit
     const onRow = document.createElement("div");
     onRow.className = "addrow subrow";
@@ -5726,13 +6211,9 @@
     }
     // Three questions that share a page and nothing else: what has been added,
     // what is broken, and what somebody would like. One tab each.
-    // a heading of their own, so three buttons under the page's tab bar do not read
-    // as a second row of page tabs
-    const what = document.createElement("h2");
-    what.innerHTML = '<span class="ct">Reports</span>';
-    main.appendChild(what);
+    // every second row of tabs alike: a heading above this one moved it down
     const tabs = document.createElement("div");
-    tabs.className = "addrow subtabs";
+    tabs.className = "subtabs";
     main.appendChild(tabs);
     const data = await get("/feedback");
     const counts = {
@@ -5855,6 +6336,7 @@
       el.querySelector("b").textContent = r.who || "someone";
       el.querySelector(".kind").textContent =
         r.kind === "request" ? "request" : r.kind === "crash" ? "crash"
+        : r.kind === "claude" ? "Claude's reading"
         : r.source === "auto" ? "fault" : "problem";
       el.querySelector(".when").textContent =
         new Date(r.when * 1000).toLocaleString() + (r.app ? " \u00b7 " + r.app : "") +
@@ -5895,7 +6377,8 @@
        * On a request as well as on a fault. A request is the one report somebody
        * sat down and wrote, and it was the one kind that could not be passed on.
        */
-      if (data.owner) {
+      // Claude's reading of a fault stays here: it is not a fault or a request
+      if (data.owner && r.kind !== "claude") {
         const asking = !(r.kind === "error" || r.kind === "crash");
         const away = document.createElement("button");
         away.className = "btn ghost sendaway" + (r.sentAway ? " on" : "");
@@ -6609,14 +7092,37 @@
     main.appendChild(tabBar());
     const plugged = (window.PD_TABS || []).filter((t) => t[0] === tab)[0];
     if (plugged) await plugged[2](main, { get, post, block, render });
-    else if (tab === "library") await paneLibrary(main);
-    else if (tab === "extras") await extrasBlock(main);
+    else if (tab === "library") {
+      // the library's own settings, then four subjects with a page each
+      const which = document.createElement("div");
+      which.className = "subtabs";
+      main.appendChild(which);
+      [["library", "Library"], ["shelves", "Shelves"], ["extras", "Extras"],
+       ["numbering", "Episode numbering"], ["streaming", "Streaming services"],
+       ["skip", "Skip at start"]]
+        .forEach(([id, label]) => {
+        const b = document.createElement("button");
+        b.className = "subtab" + (libTab === id ? " active" : "");
+        b.textContent = label;
+        b.onclick = () => { libTab = id; render(); };
+        which.appendChild(b);
+      });
+      if (libTab === "extras") await extrasBlock(main);
+      else if (libTab === "numbering") await numberingBlock(main);
+      else if (libTab === "streaming") await watchBlock(main);
+      else if (libTab === "skip") await skipStartBlock(main);
+      else {
+        const page = libTab === "shelves" ? "shelves" : "library";
+        await pick(main, paneLibrary, "library", page);
+        await pick(main, oldSettings, "library", page);
+      }
+    }
     else if (tab === "torrents") {
       // Four subjects, a row of tabs of their own: the client and its folders, what
       // the tracker holds, how a release is chosen out of what it holds, and the
       // programmes this house follows. One page of all four read as a wall.
       const which = document.createElement("div");
-      which.className = "addrow subtabs";
+      which.className = "subtabs";
       main.appendChild(which);
       // what is coming in, then the series and where new ones come from, then the
       // settings touched once
@@ -6631,6 +7137,7 @@
         b.onclick = () => { torrentTab = id; render(); };
         which.appendChild(b);
       });
+      if (torrentTab === "choosing") await pick(main, oldSettings, "torrents");
       if (torrentTab === "client") {
         // who downloaded what is under Logs, Downloads; what the tracker holds and
         // the session it is asked with stand here too - a tab of their own was a
@@ -6647,29 +7154,218 @@
       }
     }
     else if (tab === "quality") await paneQuality(main);
+    else if (tab === "playback") {
+      const page = tabPages(main, "playback");
+      if (page === "receiver") await paneReceiver(main);
+      else {
+        await pick(main, oldSettings, "playback", page);
+        await pick(main, paneLibrary, "playback", page);
+      }
+    }
+    else if (tab === "you") await pick(main, oldSettings, "you");
+    else if (tab === "machines") {
+      if (machineTab !== "server") { pageNow.machines = machineTab; machineTab = "server"; }
+      const page = tabPages(main, "machines");
+      if (page === "copies") await paneRemote(main);
+      else {
+        await pick(main, oldSettings, "machines", page);
+        if (page === "server") main.appendChild(advancedBox());
+      }
+    }
+    else if (tab === "workers") {
+      if (tabPages(main, "workers") === "disks") main.appendChild(await diskBox());
+      else await pick(main, oldSettings, "workers");
+    }
+    else if (tab === "health") {
+      pages(main, [["health", "Health"], ["now", "Now playing"], ["reports", "Reports"],
+                   ["log", "Log"]], () => healthTab, (id) => { healthTab = id; });
+      if (healthTab === "now") await paneNow(main);
+      else if (healthTab === "reports") await paneReports(main);
+      else if (healthTab === "log") await paneLog(main);
+      else {
+        await paneHealth(main);
+        await pick(main, oldSettings, "health");
+      }
+    }
     else if (tab === "people") await panePeople(main);
     else if (tab === "now") await paneNow(main);
     else if (tab === "log") await paneLog(main);
     else if (tab === "remote") await paneRemote(main);
     else if (tab === "receiver") await paneReceiver(main);
+    else if (tab === "music") await paneMusic(main);
     else if (tab === "reports") await paneReports(main);
+    else if (tab === "health") await paneHealth(main);
     else paneSubs(main);
     // on Settings and nowhere else: it is about the machine as a whole, and under
     // Library or Users it read as belonging to what was above it
-    if (tab === "quality" && !(CFG && CFG.guest)) main.appendChild(await autoRunsBox());
-    if (tab === "quality" && !(CFG && CFG.guest)) main.appendChild(advancedBox());
+
+  }
+
+  /* Every drive: its free space, how many jobs it takes at once, and what is reading it
+     now and waiting for it - watching first, then a download, the copy, a check and
+     the workers. */
+  async function diskBox() {
+    const box = block("Disks");
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "One line per drive. Watching never waits; then a download coming " +
+      "in, the copy to the other machine, a torrent being checked, and last the workers " +
+      "above. The number is how many may read a drive at once: one for a spinning disk.";
+    box.appendChild(note);
+    const list = document.createElement("div");
+    box.appendChild(list);
+    const draw = async () => {
+      let said = {};
+      try { said = await get("/settings"); } catch (e) { return; }
+      const slots = said.diskSlots || {};
+      const lines = {};
+      (said.diskQueue || []).forEach((q) => { lines[q.drive] = q; });
+      list.innerHTML = "";
+      (said.drives || []).forEach((d) => {
+        const row = document.createElement("div");
+        row.className = "addrow subrow";
+        const name = document.createElement("span");
+        name.className = "sublabel";
+        name.textContent = d.drive + "  " + d.freeGB + " GB free of " + d.sizeGB;
+        row.appendChild(name);
+        [1, 2, 3, 4].forEach((n) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" + ((slots[d.drive] || 1) === n ? " on" : "");
+          b.textContent = String(n);
+          b.title = n + " at once";
+          b.onclick = async () => { await post("/settings", { diskSlots: { [d.drive]: n } }); draw(); };
+          row.appendChild(b);
+        });
+        list.appendChild(row);
+        const q = lines[d.drive] || { going: [], waiting: [] };
+        const said2 = document.createElement("div");
+        said2.className = "note";
+        said2.textContent = (q.going.length ? "Reading: " + q.going.map((g) => g.label).join(", ") : "Nothing reading it") +
+          (q.waiting.length ? "  \u00b7  waiting: " + q.waiting.map((w) => w.label).join(", ") : "");
+        list.appendChild(said2);
+      });
+    };
+    await draw();
+    const again = setInterval(() => { if (!box.isConnected) clearInterval(again); else draw(); }, 15000);
+    return box;
+  }
+
+  /* What the old Settings page drew, for the tabs to pick their sections from. */
+  async function oldSettings(main) {
+    await paneQuality(main);
+    main.appendChild(await autoRunsBox());
+  }
+
+  /* The row of pages of tab `id`, drawn; the page open. */
+  function tabPages(main, id) {
+    const list = PAGES[id];
+    if (!list.some((p) => p[0] === pageNow[id])) pageNow[id] = list[0][0];
+    pages(main, list, () => pageNow[id], (p) => { pageNow[id] = p; });
+    return pageNow[id];
+  }
+
+  /* A row of pages under a tab, the chosen one lit. */
+  function pages(main, list, now, choose) {
+    const which = document.createElement("div");
+    which.className = "subtabs";
+    list.forEach(([id, label]) => {
+      const b = document.createElement("button");
+      b.className = "subtab" + (now() === id ? " active" : "");
+      b.textContent = label;
+      b.onclick = () => { choose(id); render(); };
+      which.appendChild(b);
+    });
+    main.appendChild(which);
+  }
+
+  /* The sections `draw` makes that belong on tab `want`, by SECTION_TAB: drawn out of
+     sight and the rest left out. A heading goes with the section after it, a note with
+     the one before; a section SECTION_TAB does not name stays with its page's own tab. */
+  async function pick(main, draw, want, page) {
+    const holder = document.createElement("div");
+    await draw(holder);
+    const home = draw === paneLibrary ? "library" : draw === paneReceiver ? "playback" : "playback";
+    const nodes = [...holder.childNodes];
+    // a section's place: its tab, and with pages its page - the tab's first unless named
+    const first = page ? (want === "library" ? "library" : (PAGES[want] || [[page]])[0][0]) : "";
+    const whose = nodes.map((n) => {
+      if (!(n.classList && n.classList.contains("setblock"))) return null;
+      const title = ((n.querySelector("h3") || {}).textContent || "").trim();
+      const where = SECTION_TAB[title] || home;
+      return page ? where + "/" + (SECTION_PAGE[title] || first) : where;
+    });
+    for (let i = 0; i < nodes.length; i++) {
+      if (whose[i] !== null) continue;
+      const head = /^H[1-4]$/.test(nodes[i].nodeName || "");
+      let j = i;
+      if (head) { while (j < nodes.length && whose[j] === null) j++; }
+      else { while (j >= 0 && whose[j] === null) j--; if (j < 0) { j = i; while (j < nodes.length && whose[j] === null) j++; } }
+      whose[i] = j >= 0 && j < nodes.length ? whose[j] : home;
+    }
+    const mine = page ? want + "/" + page : want;
+    nodes.forEach((n, i) => { if (whose[i] === mine) main.appendChild(n); });
   }
 
   /* The jobs that run by themselves, each with its own switch: what the machine does
      when nobody asked it to. All on unless turned off here. */
+  /* The weekly restart: on or off, the day and the time, and both servers follow it. */
+  function weeklyRestartRow(start) {
+    const holder = document.createElement("div");
+    const now = { on: !!start.on, day: start.day || 0, time: start.time || "04:00" };
+    const send = () => post("/settings", { weeklyRestart: now });
+    const button = (text, lit, press) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (lit ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => { press(); await send(); draw(); };
+      return b;
+    };
+    const draw = () => {
+      holder.innerHTML = "";
+      const top = document.createElement("div");
+      top.className = "addrow subrow";
+      const name = document.createElement("span");
+      name.textContent = "Restart once a week";
+      top.appendChild(name);
+      top.appendChild(button("On", now.on, () => { now.on = true; }));
+      top.appendChild(button("Off", !now.on, () => { now.on = false; }));
+      holder.appendChild(top);
+      if (now.on) {
+        const days = document.createElement("div");
+        days.className = "addrow subrow";
+        ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach((d, i) =>
+          days.appendChild(button(d, now.day === i, () => { now.day = i; })));
+        const clock = document.createElement("input");
+        clock.type = "time";
+        clock.value = now.time;
+        clock.onchange = async () => { now.time = clock.value || now.time; await send(); };
+        days.appendChild(clock);
+        holder.appendChild(days);
+      }
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = now.on
+        ? "Each server restarts at this time, one at a time. Asleep or hibernated then, it restarts when it wakes. " +
+          "It waits up to six hours for nobody to be watching, and viewers carry on when it goes."
+        : "No scheduled restart. The boss still restarts a server if a worker gets stuck.";
+      holder.appendChild(note);
+    };
+    draw();
+    return holder;
+  }
+
   async function autoRunsBox() {
     const box = block("Automatic runs");
     let now = {};
     let beats = {};
+    let givenUp = {};
+    let said0 = {};
     try {
       const said = await get("/settings");
+      said0 = said;
       now = said.autoRuns || {};
       beats = said.autoBeats || {};
+      givenUp = said.givenUp || {};
     } catch (e) { now = {}; }
     // a dot per job: green while it is alive, red once it has stalled, grey when it
     // is off or does not run on this machine
@@ -6682,8 +7378,9 @@
       // alive only once it has said something; a count alone is not a heartbeat
       const alive = b && b.step !== undefined;
       dot.className = "rundot " + (off || !alive ? "idle" : b.ok ? "up" : "down");
-      const counted = b && b.done !== undefined
-        ? "  \u00b7  " + b.done + " done, " + b.left + " left" : "";
+      const counted = (b && b.done !== undefined
+        ? "  \u00b7  " + b.done + " done, " + b.left + " left" : "") +
+        (givenUp[name] ? "  \u00b7  " + givenUp[name] + " passed over" : "");
       said.textContent = (off ? "Off"
         : !alive ? "Not running on this machine"
         : !b.ok ? "Stopped: on " + b.step + " for " + mins(b.for)
@@ -6714,7 +7411,18 @@
       "Searches the tracker once a day for films on the new-release list."],
      ["stills", "Timeline stills",
       "Makes the stills over the timeline ahead of time, while nothing plays: titles " +
-      "being watched and their next episode first, then what came in the last two weeks."]
+      "being watched and their next episode first, then what came in the last two weeks."],
+     ["warmup", "Subtitle warm-up",
+      "Reads each film's own subtitle tracks into the cache while nothing plays, so a " +
+      "subtitle starts at once. A track that comes out empty three times is left."],
+     ["loudness", "Loudness",
+      "Reads how loud each file is, so the receiver can even out the volume: the file " +
+      "being watched first, then the rest while nothing plays. A file it cannot read " +
+      "three times is left; Reset tries those again."],
+     ["fixer", "File fixer",
+      "Samples every library file once a month for the empty shell of a download, and " +
+      "mends one it finds: a link to a whole copy here, or the missing parts fetched " +
+      "through qBittorrent or the tracker."]
     ].forEach(([name, label, note]) => {
       const row = document.createElement("div");
       row.className = "addrow subrow";
@@ -6746,6 +7454,20 @@
         };
         row.appendChild(b);
       });
+      {
+        const again = document.createElement("button");
+        again.className = "btn ghost";
+        again.textContent = "Reset";
+        again.title = "Try the files it gave up on again";
+        again.onclick = async () => {
+          again.disabled = true;
+          let n = 0;
+          try { n = (await post("/settings", { autoReset: name })).reset || 0; } catch (e) { n = -1; }
+          again.textContent = n < 0 ? "Failed" : n + " to try again";
+          setTimeout(() => { again.textContent = "Reset"; again.disabled = false; }, 4000);
+        };
+        row.appendChild(again);
+      }
       row.appendChild(said);
       box.appendChild(row);
       const n = document.createElement("div");
@@ -6754,6 +7476,7 @@
       box.appendChild(n);
     });
     paint();
+    box.appendChild(weeklyRestartRow(said0.weeklyRestart || {}));
     return box;
   }
 
@@ -7019,14 +7742,16 @@
       ? data.filmsShow : {};
     // the same defaults the server answers with, so a page read before anything was
     // ever chosen lights the same buttons the shelf is actually standing
-    const fallback = { disk: true, download: true, request: false };
+    const fallback = { disk: true, download: true, request: false, upcoming: true };
     [["disk", "On disk",
       "Films this house holds a file for. These play."],
      ["download", "Download",
       "Films a pack or the tracker carries. Not here yet, but downloading one is a button."],
-     ["request", "Request",
+     ["request", "Missing",
       "Films nowhere in the house, on no pack and not on the tracker: new on streaming, " +
-      "and all anybody can do is ask."]]
+      "and all anybody can do is ask."],
+     ["upcoming", "Upcoming",
+      "Films not out yet, on the popular list and in search, with their date."]]
       .forEach(([name, label, note]) => {
         const on = said[name] === undefined ? fallback[name] : !!said[name];
         const row = document.createElement("div");
@@ -7080,6 +7805,28 @@
       ? "The TV tab stands the popular programmes you do not have yet beside your own, each with Add."
       : "The TV tab stands your own programmes; the popular ones are under its Popular choice.";
     box.appendChild(n);
+    // which tab the page and the app open on
+    const opens = data.startTab === "home" ? "home" : "start";
+    const row0 = document.createElement("div");
+    row0.className = "addrow subrow";
+    row0.innerHTML = "<span class='sublabel'>Opens on</span>";
+    [["home", "Home"], ["start", "Start"]].forEach(([val, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (opens === val ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/settings", { startTab: val });
+        render();
+      };
+      row0.appendChild(b);
+    });
+    box.appendChild(row0);
+    const n0 = document.createElement("div");
+    n0.className = "note";
+    n0.textContent = opens === "start"
+      ? "The page and the app open on Start: this week's pick, and something chosen for your mood."
+      : "The page and the app open on Home, with its shelves.";
+    box.appendChild(n0);
     // and the series nobody can download or stream: hidden as it comes
     const ask = data.tvRequest === "show" ? "show" : "hide";
     const row2 = document.createElement("div");
@@ -7345,6 +8092,8 @@
      what the tracker holds, how a release is chosen, and the programmes followed -
      and one page of all of them is a page nobody reads to the end of. */
   let torrentTab = "client";
+  //: Library's own row: its settings, Extras, Episode numbering, Streaming services, Skip at start
+  let libTab = "library";
   let upgradeSpare = false;          // Upgrade: only the spare copies, for clearing out
 
   /* Films here whose file is not the release Choosing would pick now: what is held,
@@ -7777,6 +8526,87 @@
         results.appendChild(row);
       });
     };
+    // a video from a web page, through yt-dlp, into the download folder; a music video
+    // goes to its own folder for Start's Music videos row, a mix's videos with it
+    let webAs = "film";
+    const asRow = document.createElement("div");
+    asRow.className = "addrow subrow";
+    asRow.innerHTML = "<span class='sublabel'>Save as</span>";
+    const asNote = document.createElement("div");
+    asNote.className = "note";
+    const asSay = { film: "A film: filed and named from the catalogue like any download.",
+                    music: "A music video: Start's Music videos row; a playlist or mix brings up to 50." };
+    [["film", "Film"], ["music", "Music video"]].forEach(([id, label]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (id === webAs ? " on" : "");
+      b.textContent = label;
+      b.onclick = () => {
+        webAs = id;
+        asRow.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+        asNote.textContent = asSay[id];
+      };
+      asRow.appendChild(b);
+    });
+    asNote.textContent = asSay[webAs];
+    box.appendChild(asRow);
+    box.appendChild(asNote);
+    const web = document.createElement("div");
+    web.className = "addrow";
+    web.innerHTML =
+      '<input id="webgeturl" type="text" placeholder="Video address (https://…)">' +
+      '<button class="btn look">Download</button>';
+    box.appendChild(web);
+    const webNote = document.createElement("div");
+    webNote.className = "note";
+    webNote.textContent = "Any page yt-dlp can read; copy-protected streams are refused.";
+    box.appendChild(webNote);
+    const webRows = document.createElement("div");
+    box.appendChild(webRows);
+    const drawWeb = async () => {
+      let said = {};
+      try { said = await post("/webget/list", {}); } catch (e) { return; }
+      webRows.innerHTML = "";
+      (said.jobs || []).forEach((j) => {
+        const row = document.createElement("div");
+        row.className = "addrow subrow";
+        const mb = (n) => (n / 1048576).toFixed(0) + " MB";
+        const many = j.count > 1 ? j.count + " videos  ·  " : "";
+        const state = j.why ? many + j.why
+          : j.done ? many + "Saved - in the library after the scan"
+          : j.count > 1 && j.size ? many + Math.floor(100 * j.got / j.size) + "% of this one"
+          : j.size ? Math.floor(100 * j.got / j.size) + "%  ·  " + mb(j.got) + " of " + mb(j.size)
+          : "Starting…";
+        row.innerHTML = "<span class='sublabel' style='flex:1;min-width:0'>" +
+          "<b>" + esc(j.title || j.url) + "</b><br><small>" + esc(state) + "</small></span>";
+        if (!j.done) {
+          const stop = document.createElement("button");
+          stop.className = "btn ghost kind";
+          stop.textContent = "Cancel";
+          stop.onclick = async () => {
+            stop.disabled = true;
+            try { await post("/webget/cancel", { id: j.id }); } catch (e) {}
+            drawWeb();
+          };
+          row.appendChild(stop);
+        }
+        webRows.appendChild(row);
+      });
+    };
+    web.querySelector(".look").onclick = async () => {
+      const url = $("#webgeturl").value.trim();
+      if (!url) return;
+      let out = {};
+      try { out = await post("/webget/start", { url: url, music: webAs === "music" }); }
+      catch (e) { out = { why: "The server did not answer" }; }
+      if (out.why) { toast(out.why); return; }
+      $("#webgeturl").value = "";
+      drawWeb();
+    };
+    drawWeb();
+    const webTick = setInterval(() => {
+      if (!box.isConnected) { clearInterval(webTick); return; }
+      drawWeb();
+    }, 3000);
     }
     if (!only || only === "choosing") {
     const rule = document.createElement("div");
@@ -8662,10 +9492,21 @@
 
   /** Open the settings on one particular tab - "subs" for how subtitles look. */
   /** Which tab and Downloads sub-tab are open, for a reload to come back to. */
-  window.settingsWhere = () => ({ tab: tab, sub: torrentTab });
+  window.settingsWhere = () => ({ tab: tab, sub: tab === "library" ? libTab : torrentTab });
 
   window.settingsTab = function (which, sub) {
+    // Extras was a tab of its own; a reload kept from then opens it under Library
+    if (which === "extras") { which = "library"; sub = "extras"; }
+    // and a tab that is now part of another: the one it went to, on its own page there
+    if (!(CFG && CFG.guest) && OLD_TAB[which]) {
+      const [now, page] = OLD_TAB[which];
+      if (which === "receiver") pageNow.playback = "receiver";
+      if (now === "health" && page) healthTab = page;
+      if (now === "machines" && page) machineTab = page;
+      which = now;
+    }
     if (tabs().some((t) => t[0] === which)) tab = which;
+    if (which === "library" && sub) libTab = sub;
     // and Downloads' own tab: the download line opens the queue
     if (which === "torrents" && sub) torrentTab = sub;
   };
@@ -9237,6 +10078,61 @@
     return bar;
   }
 
+  /* Link merge on Now playing: each link's name, its speed and how much it has carried,
+     and the sum - asked every two seconds while the box is on the page. Nothing while
+     the tool is not running. */
+  function mergeBlock(into) {
+    const box = block("Link merge");
+    box.classList.add("mergebox");
+    box.style.display = "none";
+    into.appendChild(box);
+    // the title opens its settings, under Remote computer
+    if (!document.body.classList.contains("monitor")) {
+      const head = box.querySelector("h3");
+      head.classList.add("golink");
+      head.tabIndex = 0;
+      const go = async () => {
+        tab = "remote";
+        await render();
+        const there = document.querySelector(".mergeset");
+        if (there) there.scrollIntoView({ block: "start" });
+      };
+      head.onclick = go;
+      head.onkeydown = (e) => { if (e.key === "Enter") go(); };
+    }
+    const table = document.createElement("div");
+    table.className = "mergelinks";
+    box.appendChild(table);
+    const gb = (n) => (n / 1073741824).toFixed(n >= 10737418240 ? 0 : 1) + " GB";
+    const tick = async () => {
+      if (!box.isConnected) return;
+      // a missed answer keeps the box as it was: hidden for one miss, everything
+      // under it jumped up and back
+      let s = tick.last || {};
+      try { s = tick.last = await get("/merge"); } catch (e) { /* kept */ }
+      if (!box.isConnected) return;
+      box.style.display = s.running ? "" : "none";
+      if (s.running) {
+        table.innerHTML = "";
+        const line = (name, mbit, bytes, cls) => {
+          const r = document.createElement("div");
+          r.className = "mergerow" + (cls ? " " + cls : "");
+          r.innerHTML = "<span class='n'></span><span class='s'></span><span class='t'></span>";
+          r.querySelector(".n").textContent = name;
+          r.querySelector(".s").textContent = mbit.toFixed(1) + " Mbit/s";
+          r.querySelector(".t").textContent = gb(bytes);
+          table.appendChild(r);
+        };
+        (s.links || []).forEach((l) => line(l.name + (l.up ? "" : " (off)"), l.mbit, l.bytes,
+                                            l.up ? "" : "off"));
+        line("Total" + (s.through ? " · downloads through it" : ""), s.mbit || 0,
+             s.bytes || 0, "sum");
+      }
+      setTimeout(tick, 2000);
+    };
+    tick();
+  }
+
   async function paneNow(main) {
     if (document.body.classList.contains("monitor")) main.appendChild(designBar());
     // The drawing, the totals and the streams in one column, a box for each worker in
@@ -9262,12 +10158,18 @@
       page.className = "nowpage";
       const left = document.createElement("div");
       left.className = "nowleft";
-      page.append(left, work);
+      // Link merge over the workers, at their width
+      const right = document.createElement("div");
+      right.className = "nowright";
+      page.append(left, right);
       main.appendChild(page);
       wiringBlock(left);
       left.append(sum, live);
+      mergeBlock(right);
+      right.appendChild(work);
     }
     drawLive(live, sum, work);
+    if (monitor) mergeBlock(main);
   }
 
   /* Who is following this server, and what has already gone to them. */

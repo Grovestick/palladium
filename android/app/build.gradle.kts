@@ -1,7 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// The Play Store build's upload key, kept outside the source: Google re-signs what it
+// ships with its own key, and this one only proves an upload is ours. Read out here:
+// "java" alone is Gradle's java extension here, so the class is imported.
+val upload = Properties().apply {
+    val f = rootProject.file("../../palladium-private/keys/upload.properties")
+    if (f.exists()) f.inputStream().use { this.load(it) }
 }
 
 android {
@@ -16,9 +26,9 @@ android {
         // small additions, the second is reserved for a real feature release, the first
         // for calling it done. versionCode is separate and only ever counts up, because
         // that is the number Android compares when deciding an APK is an update.
-        versionCode = 1391
+        versionCode = 1624
         // A film's page says what else is like it, in its own years.
-        versionName = "0.19.130"     // one number for the app and the server it ships with
+        versionName = "0.19.363"     // one number for the app and the server it ships with
 
         // Where the app looks for its own updates, whatever server it happens to be
         // browsing. A friend's Palladium serves whatever APK they downloaded, which
@@ -32,12 +42,39 @@ android {
         // a four-second timeout on every start.
         buildConfigField("String", "UPDATE_HOME",
                          "\"" + (project.findProperty("updateHome") ?: "") + "\"")
+        // the house's own build: downloads, requests and its own updates
+        buildConfigField("boolean", "PLAY", "false")
+    }
+
+    signingConfigs {
+        if (upload.getProperty("storeFile") != null) create("upload") {
+            storeFile = file(upload.getProperty("storeFile"))
+            storePassword = upload.getProperty("storePassword")
+            keyAlias = upload.getProperty("keyAlias")
+            keyPassword = upload.getProperty("keyPassword")
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: the libraries' code made smaller and faster - Compose most of all,
+            // which runs markedly slower without it. Names are kept, so a crash report
+            // still reads as the source does.
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"),
+                          "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("debug")   // sideloading, not Play
+        }
+        // The Play Store's: a player for one's own server - no downloads, no requests,
+        // no updating itself - under its own id, beside the house's build.
+        // bundlePlay makes the .aab Play takes.
+        create("play") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".play"
+            matchingFallbacks += listOf("release")
+            buildConfigField("boolean", "PLAY", "true")
+            signingConfig = signingConfigs.findByName("upload")
+                ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
@@ -76,4 +113,8 @@ dependencies {
     // MediaRouteButton inflates against an AppCompat theme and crashes without one
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    // The ahead-of-time profiles Compose and the rest ship with, and this app's own,
+    // put on the device at install. A sideloaded app has no store to deliver them, and
+    // without them the screens run interpreted for days - which is the stutter.
+    implementation("androidx.profileinstaller:profileinstaller:1.3.1")
 }

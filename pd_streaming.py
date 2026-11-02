@@ -13,6 +13,7 @@ Kept on disk with the hour it was read, because the page is fetched rarely and t
 server is restarted often.
 """
 
+import pd_log
 import hashlib
 import io
 import json
@@ -1097,11 +1098,9 @@ def refresh(lib, force=False, months=None):
         if STATE.get("missed"):
             # said in the log: a shelf shorter than the source's is otherwise a puzzle
             try:
-                with io.open(os.path.join(STATE["root"] or ".", "debug.log"), "a",
-                             encoding="utf-8") as f:
-                    f.write("%s new releases: the catalogue did not answer for %d of %d "
-                            "titles; those already known were kept as they were%s"
-                            % (time.strftime("%H:%M:%S"), STATE["missed"], len(found), chr(10)))
+                pd_log.raw("%s new releases: the catalogue did not answer for %d of %d "
+                        "titles; those already known were kept as they were%s"
+                        % (time.strftime("%H:%M:%S"), STATE["missed"], len(found), chr(10)), os.path.join(STATE["root"] or ".", "debug.log"))
             except OSError:
                 pass
         known = {int(one.get("tmdb") or 0) for one in rows}
@@ -1148,6 +1147,11 @@ def refresh(lib, force=False, months=None):
                 if not one.get("imdb") and known.get(int(one.get("tmdb") or 0)):
                     one["imdb"] = known[int(one.get("tmdb") or 0)]
             keep_keys(rows, STATE["rows"])
+            # what this reading no longer lists is kept with the searched films, so a
+            # page, a watchlist or a back press holding its key still opens it: they
+            # answered 404 the day after the list moved on
+            now_keys = {r.get("key") for r in rows}
+            dropped = [r for r in STATE["rows"] if r.get("key") and r.get("key") not in now_keys]
             STATE["rows"] = rows
             STATE["at"] = time.time()
             # and how far back this reading went. Left unwritten, the file kept saying
@@ -1156,6 +1160,8 @@ def refresh(lib, force=False, months=None):
             # somebody waited on it.
             STATE["months"] = int(months)
             _write()
+        if dropped:
+            _keep_searched(dropped)
         # and the numbers these films are known by elsewhere, a few each pass: it is
         # what lets a release named differently still be found as the same film
         try:
@@ -1345,6 +1351,30 @@ def shown():
     return [one for one in read() if out_now(one)]
 
 
+def not_out(one):
+    """A film whose release date is still to come."""
+    return str(one.get("released") or "")[:10] > time.strftime("%Y-%m-%d")
+
+
+#: how popular on TMDB a film not out yet has to be to be found by a search: the one
+#: everybody is waiting for, not every announcement with a poster
+UPCOMING_POPULAR = 10.0
+NUMBER_WORDS = {"2": ("two", "ii"), "3": ("three", "iii"), "4": ("four", "iv"),
+                "5": ("five", "v"), "6": ("six", "vi"), "7": ("seven", "vii"),
+                "8": ("eight", "viii"), "9": ("nine", "ix")}
+
+
+def number_spellings(low):
+    """The search as typed, and with a lone number spelt as a word and as a numeral:
+    "dune 3" is "Dune: Part Three", which the catalogue does not find by the 3."""
+    out = [low]
+    words = low.split()
+    for i, w in enumerate(words):
+        for other in NUMBER_WORDS.get(w, ()):
+            out.append(" ".join(words[:i] + [other] + words[i + 1:]))
+    return out
+
+
 def item(one):
     """One of them, shaped the way the library shapes a film."""
     key = one["key"]
@@ -1367,8 +1397,10 @@ def item(one):
         "duration": 0, "viewCount": 0, "addedAt": 0,
         "thumb": ("/art/%s/poster" % key) if one.get("poster") else None,
         "art": ("/art/%s/backdrop" % key) if one.get("backdrop") else None,
-        #: not here, not on a pack: the only thing to do with it is ask
-        "askable": True,
+        #: not here, not on a pack: the only thing to do with it is ask - unless it
+        #: is not out yet, when it is upcoming and there is nothing to ask for
+        "askable": not not_out(one),
+        "upcoming": not_out(one),
         # unless SVT Play has it, unprotected: then it plays from there
         "svt": svt_of(one),
         "where": _where(one),
@@ -1401,6 +1433,57 @@ def keep_keys(rows, before):
         if old and one.get("key") != old:
             one["key"] = old
     return rows
+
+
+#: tmdb number -> (when, [part, ...]): a film's series, asked of the catalogue once a week
+SAGAS = {}
+
+
+def saga_order(parts, held, today):
+    """A series' films in the order they came out, each as a page key and a title:
+    [{key, tmdb, title, year, here}]. `parts` the catalogue's, `held` {tmdb: library key}.
+    One not out yet goes last; one with no date at all is left out."""
+    out = []
+    for one in parts or []:
+        when = str(one.get("release_date") or "")[:10]
+        number = int(one.get("id") or 0)
+        if len(when) != 10 or not number:
+            continue
+        out.append({"key": held.get(number) or key_for("tmdb:%d" % number), "tmdb": number,
+                    "title": one.get("title") or "", "year": int(when[:4]),
+                    "here": number in held, "released": when, "coming": when > today,
+                    "poster": one.get("poster_path"), "backdrop": one.get("backdrop_path"),
+                    "overview": one.get("overview") or "", "rating": one.get("vote_average"),
+                    "votes": int(one.get("vote_count") or 0)})
+    out.sort(key=lambda o: o["released"])
+    return out
+
+
+def saga(lib, tmdb, patience=6):
+    """The films of the series film `tmdb` belongs to, in order - [] for one standing
+    alone. Those not here are kept as searched films, so their keys open a page."""
+    number = int(tmdb or 0)
+    if not number:
+        return []
+    hit = SAGAS.get(number)
+    if hit and time.time() - hit[0] < 7 * 86400:
+        parts = hit[1]
+    else:
+        try:
+            film = lib.tmdb("/movie/%d" % number, timeout=patience)
+            whole = (film.get("belongs_to_collection") or {}).get("id")
+            parts = (lib.tmdb("/collection/%d" % int(whole), timeout=patience).get("parts")
+                     or []) if whole else []
+        except Exception:
+            return []
+        SAGAS[number] = (time.time(), parts)
+        for one in parts:
+            SAGAS.setdefault(int(one.get("id") or 0), (time.time(), parts))
+    by_tmdb, _ = _held(lib)
+    held = {n: k for (kind, n), k in by_tmdb.items() if kind == "movie"}
+    out = saga_order(parts, held, time.strftime("%Y-%m-%d"))
+    _keep_searched([dict(o, genres=[], imdb="") for o in out if not o["here"]])
+    return out if len(out) > 1 else []
 
 
 def one_of(key):
@@ -1469,17 +1552,30 @@ def by_name(lib, words, most=BY_NAME_MOST, patience=6):
     hit = FOUND_BY_NAME.get(low)
     if hit and time.time() - hit[0] < 3600:
         return hit[1]
-    try:
-        said = lib.tmdb("/search/movie", timeout=patience, query=low, include_adult="false")
-    except Exception:
-        return []
+    results, ids = [], set()
+    for spelt in number_spellings(low):
+        try:
+            said = lib.tmdb("/search/movie", timeout=patience, query=spelt,
+                            include_adult="false")
+        except Exception:
+            if spelt == low:
+                return []
+            continue
+        for one in said.get("results") or []:
+            if one.get("id") not in ids:
+                ids.add(one.get("id"))
+                results.append(one)
     by_tmdb, _ = _held(lib)
     today = time.strftime("%Y-%m-%d")
     out = []
-    for one in said.get("results") or []:
+    for one in results:
         when = str(one.get("release_date") or "")[:10]
-        if (len(when) != 10 or when > today or not one.get("poster_path")
-                or int(one.get("vote_count") or 0) < 20
+        # out: with votes enough to be a film people saw; not out yet: one people
+        # are waiting for, shown as upcoming
+        coming = when > today and float(one.get("popularity") or 0) >= UPCOMING_POPULAR
+        if (len(when) != 10 or not one.get("poster_path")
+                or (when > today and not coming)
+                or (not coming and int(one.get("vote_count") or 0) < 20)
                 or by_tmdb.get(("movie", int(one.get("id") or 0)))):
             continue
         out.append({
@@ -1607,6 +1703,42 @@ def ask_tracker_about_shows(titles):
     threading.Thread(target=pd_tracker.quietly(work), daemon=True).start()
 
 
+#: the long lists' series asked one at a time behind: one run at a time
+ASKING_SHOWS_SLOWLY = {"busy": False}
+#: seconds between two of its series: each is two searches, so about four a minute
+SHOW_GAP = 30.0
+
+
+def ask_tracker_slowly_about_shows(titles, gap=SHOW_GAP):
+    """Every series of a long list the tracker has not been asked about lately - by name,
+    and as a complete run - asked behind, one at a time, giving way to people. A series'
+    page then answers from what is known at once rather than asking while it waits."""
+    import pd_tracker
+    if not pd_tracker.state().get("asks"):
+        return False
+    todo = [t for t in dict.fromkeys(titles or []) if t and show_unchecked(t)]
+    if not todo:
+        return False
+    with LOCK:
+        if ASKING_SHOWS_SLOWLY["busy"]:
+            return True
+        ASKING_SHOWS_SLOWLY["busy"] = True
+
+    def work():
+        try:
+            for n, t in enumerate(todo):
+                if n:
+                    time.sleep(gap)
+                pd_tracker.ask_for(t, 0, again_after=CHECKED_FOR)
+                time.sleep(gap / 2)
+                pd_tracker.ask_for(t + " complete", 0, again_after=CHECKED_FOR)
+        finally:
+            ASKING_SHOWS_SLOWLY["busy"] = False
+
+    threading.Thread(target=pd_tracker.quietly(work), daemon=True).start()
+    return True
+
+
 def unchecked(one):
     """Whether the tracker has not been asked about this film lately, and does not carry it
     by what is known: Checking, rather than a Request that may be wrong. Never on a
@@ -1633,6 +1765,8 @@ def boxed(one):
 
 #: name searches being asked of the catalogue now, so one search starts one
 _NAMING = set()
+#: seconds before a catalogue that did not answer is asked again
+NO_ANSWER_FOR = 60
 
 
 def by_name_soon(lib, words, shows=False):
@@ -1640,7 +1774,7 @@ def by_name_soon(lib, words, shows=False):
     answered, else None - and it is asked behind the search, whose next asking has
     them. A search waited for the catalogue, or gave up on it after a few seconds."""
     low = " ".join(str(words or "").lower().split())
-    if len(low) < 3:
+    if len(low) < (2 if shows else 3):
         return []
     key = ("tv|" if shows else "") + low
     hit = FOUND_BY_NAME.get(key)
@@ -1652,20 +1786,21 @@ def by_name_soon(lib, words, shows=False):
         def ask():
             try:
                 (shows_by_name if shows else by_name)(lib, low)
-                # a catalogue that did not answer is nothing, for an hour: the search
-                # stops asking again
-                FOUND_BY_NAME.setdefault(key, (time.time(), []))
+                # a catalogue that did not answer: nothing for a minute, not the hour a
+                # real answer is kept, or one timeout hides every series of that search
+                FOUND_BY_NAME.setdefault(key, (time.time() - 3600 + NO_ANSWER_FOR, []))
             finally:
                 _NAMING.discard(key)
         threading.Thread(target=ask, name="palladium-by-name", daemon=True).start()
     return None
 
 
-def shows_by_name(lib, words, most=BY_NAME_MOST):
+def shows_by_name(lib, words, most=BY_NAME_MOST * 2):
     """Series the catalogue knows by these words and this library does not hold, shaped
-    as the popular list's are: a search with nothing here offers them to Add."""
+    as the popular list's are: a search with nothing here offers them to Add. Two letters
+    are enough for a series: one is called "24", and was never searched (2026-11-01)."""
     low = " ".join(str(words or "").lower().split())
-    if len(low) < 3:
+    if len(low) < 2:
         return []
     hit = FOUND_BY_NAME.get("tv|" + low)
     if hit and time.time() - hit[0] < 3600:
@@ -1674,6 +1809,14 @@ def shows_by_name(lib, words, most=BY_NAME_MOST):
         said = lib.tmdb("/search/tv", timeout=6, query=low, include_adult="false")
     except Exception:
         return []
+    # and the second page: a name shared by a run of spin-offs has more than twenty
+    if int(said.get("total_pages") or 1) > 1:
+        try:
+            more = lib.tmdb("/search/tv", timeout=6, query=low, include_adult="false", page=2)
+            said = dict(said, results=list(said.get("results") or []) + list(more.get("results") or []))
+        except Exception:
+            pass
+    asked = set(re.findall(r"[a-z0-9]+", low))
     by_tmdb, _ = _held(lib)
     try:
         import pd_torrents
@@ -1683,8 +1826,11 @@ def shows_by_name(lib, words, most=BY_NAME_MOST):
     out = []
     for one in said.get("results") or []:
         first_aired = str(one.get("first_air_date") or "")[:10]
+        # a series named for every word asked is what was searched for, however few
+        # have rated it: a shared name found its six series, not the spin-offs
+        named_for = asked <= set(re.findall(r"[a-z0-9]+", str(one.get("name") or "").lower()))
         if (len(first_aired) != 10 or not one.get("poster_path")
-                or int(one.get("vote_count") or 0) < 5
+                or (int(one.get("vote_count") or 0) < 5 and not named_for)
                 or by_tmdb.get(("show", int(one.get("id") or 0)))
                 or str(int(one.get("id") or 0)) in filed):
             continue
@@ -1701,17 +1847,25 @@ def shows_by_name(lib, words, most=BY_NAME_MOST):
     return out
 
 
-def credit_rows(lib, credits, most=30):
+#: a person's films offered by a search: the whole of a long career, and any film the
+#: catalogue has a poster and a handful of votes for - an old Hong Kong film has few
+CREDITS_MOST = 80
+CREDIT_VOTES = 5
+
+
+def credit_rows(lib, credits, most=CREDITS_MOST, skip=None):
     """Films out already from a person's catalogue credits that this library does not
-    hold, as rows of this list, the best known first: their page lists them all."""
+    hold, as rows of this list, the best known first: their page lists them all.
+    `skip` names a title already shown - held, or a pack's - which takes no place."""
     by_tmdb, _ = _held(lib)
     today = time.strftime("%Y-%m-%d")
     out = []
     for one in sorted(credits or [], key=lambda c: -float(c.get("popularity") or 0)):
         when = str(one.get("release_date") or "")[:10]
         if (len(when) != 10 or when > today or not one.get("poster_path")
-                or int(one.get("vote_count") or 0) < 20
-                or by_tmdb.get(("movie", int(one.get("id") or 0)))):
+                or int(one.get("vote_count") or 0) < CREDIT_VOTES
+                or by_tmdb.get(("movie", int(one.get("id") or 0)))
+                or (skip and skip(one.get("title")))):
             continue
         out.append({"title": one.get("title") or "", "key": key_for("tmdb:%s" % one.get("id")),
                     "tmdb": one.get("id"), "votes": int(one.get("vote_count") or 0),
@@ -1822,7 +1976,8 @@ def ask_tracker_about(rows, lib=None, mine=False):
 
 
 #: the long lists' slow asking: one run at a time
-ASKING_SLOWLY = {"busy": False}
+# waiting: films still to ask; a list sent while one runs joins it instead of dropping
+ASKING_SLOWLY = {"busy": False, "waiting": []}
 #: seconds between two of its searches: four a minute, leaving the rest of the
 #: tracker's ten for whoever is searching
 SLOW_GAP = 15.0
@@ -1840,21 +1995,72 @@ def ask_tracker_slowly(rows, gap=SLOW_GAP):
     if not todo:
         return False
     with LOCK:
+        # the newest list first: it is the page somebody is looking at
+        mark = lambda r: (str(r.get("title") or "").lower(), int(r.get("year") or 0))
+        new = {mark(r) for r in todo}
+        ASKING_SLOWLY["waiting"] = todo + [r for r in ASKING_SLOWLY["waiting"]
+                                           if mark(r) not in new]
         if ASKING_SLOWLY["busy"]:
             return True
         ASKING_SLOWLY["busy"] = True
 
     def work():
+        first, done = True, set()
         try:
-            for n, r in enumerate(todo):
-                if n:
+            while True:
+                with LOCK:
+                    if not ASKING_SLOWLY["waiting"]:
+                        ASKING_SLOWLY["busy"] = False
+                        return
+                    r = ASKING_SLOWLY["waiting"].pop(0)
+                if mark(r) in done or pd_tracker.asked_within(
+                        r.get("title"), r.get("year") or 0, 6 * 3600):
+                    continue
+                done.add(mark(r))
+                if not first:
                     time.sleep(gap)
+                first = False
                 pd_tracker.ask_for(r.get("title"), r.get("year") or 0, again_after=6 * 3600)
         finally:
-            ASKING_SLOWLY["busy"] = False
+            with LOCK:
+                ASKING_SLOWLY["busy"] = False
 
     threading.Thread(target=pd_tracker.quietly(work), daemon=True).start()
     return True
+
+
+#: how far a watchlisted film has come: nothing, something to fetch it from, here
+SOURCE_STEP = {"": 0, "fetch": 1, "here": 2}
+
+
+def watch_changes(keys, had, source):
+    """The watchlist's films not here yet, looked at again: (where each is now, the ones
+    that have gone a step - to something to fetch them from, or here). Only a step up
+    counts: a film that could already be had when it was put on the list was never
+    news. A key the list has moved on from - the film arrived, and its mark went to the
+    library's key - is looked at once more, so its arrival is said, then forgotten."""
+    now, newly = {}, []
+    for key in list(keys) + [k for k in had if k not in keys]:
+        got = str(source(key) or "")
+        if key in keys:
+            now[key] = got
+        if key in had and SOURCE_STEP.get(got, 0) > SOURCE_STEP.get(str(had[key] or ""), 0) \
+                and (key in keys or got == "here"):
+            newly.append(key)
+    return now, newly
+
+
+def source_of(key):
+    """What a catalogue film on a watchlist can be had from now: "here" when the library
+    holds it, "fetch" when the tracker or a box set carries it, "" when nothing does."""
+    one = one_of(key)
+    if not one:
+        return ""
+    if one.get("here"):
+        return "here"
+    if fetchable(one) or boxed(one):
+        return "fetch"
+    return ""
 
 
 def art_of(key, kind):

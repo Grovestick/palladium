@@ -9,8 +9,10 @@ one in the morning does not mean finding the next one gone.
 Nothing is pushed. The cache asks, and takes what it is given: the main server needs no
 knowledge of who is following it beyond a key it can revoke.
 """
+import pd_log
 import io
 import json
+import re
 import os
 import shutil
 import threading
@@ -95,6 +97,90 @@ def look():
     said["house"] = list(HOUSE.get("people") or [])
     said["forWhom"] = HOUSE.get("ownerName") or ""
     return said
+
+
+#: what the main server sets on a copy server it manages, kept there and locked here;
+#: the rest - whether to follow, whom, where the copies go - stays this machine's own
+MANAGED = ("hours", "cap", "casualHours", "keepDays", "episodes", "coverNight", "wholeList",
+           "listByDay", "deleteBy", "kinds", "nightFrom", "nightTo", "cacheFor", "cacheWho",
+           "clearBy")
+
+
+def managed(one):
+    """Whether the main server sets this machine's copying: following it, and allowed to."""
+    return bool(one.get("on") and one.get("allowRemote") and one.get("master"))
+
+
+def apply_settings(one, body):
+    """The copying settings in body written into one, each checked as the page sends it."""
+    for name in ("on", "updateWith", "wholeList", "coverNight",
+                 "listByDay", "allowRemote"):
+        if name in body:
+            one[name] = bool(body[name])
+    for name in ("master", "key", "folder", "outside"):
+        if name in body:
+            one[name] = str(body[name]).strip()
+    # what goes first when there is no room left: the one nobody has touched
+    # for longest, or the one that frees the most in a single deletion
+    if body.get("deleteBy") in ("oldest", "largest"):
+        one["deleteBy"] = body["deleteBy"]
+    for name in ("hours", "cap", "casualHours", "keepDays"):
+        if name in body:
+            try:
+                one[name] = max(0, float(body[name]))
+            except (TypeError, ValueError):
+                pass
+    if "episodes" in body:
+        try:
+            one["episodes"] = max(0, min(int(body["episodes"]), 40))
+        except (TypeError, ValueError):
+            pass
+    # per-kind mode: off, night, or always. Sent one at a time so a page
+    # cannot overwrite a setting it was not displaying.
+    if isinstance(body.get("kinds"), dict):
+        kinds = dict(one.get("kinds") or {})
+        for kind, mode in body["kinds"].items():
+            if kind in KINDS and str(mode) in ("off", "night", "always"):
+                kinds[str(kind)] = str(mode)
+        one["kinds"] = kinds
+    # The hours this machine is the one awake. The page has always offered
+    # them and the server has always dropped them, so an owner who typed 21
+    # was left with 22 and nothing on screen to say otherwise.
+    for name in ("nightFrom", "nightTo"):
+        if name in body:
+            try:
+                one[name] = int(body[name]) % 24
+            except (TypeError, ValueError):
+                pass
+    # whose evening this cache is for, and whether the cap may delete on its
+    # own. Both are set from the page and neither was ever written down: a
+    # setting the page can change and the server drops is a switch that
+    # moves and does nothing.
+    if body.get("cacheFor") in ("user", "server"):
+        one["cacheFor"] = body["cacheFor"]
+    if "cacheWho" in body:
+        one["cacheWho"] = str(body["cacheWho"]).strip()[:60]
+    if body.get("clearBy") in ("manual", "auto"):
+        one["clearBy"] = body["clearBy"]
+    return one
+
+
+def take_managed(one, given, lib):
+    """The settings the main server keeps for this machine, written here when they differ -
+    only while it manages this machine. Returns whether anything changed."""
+    if not (isinstance(given, dict) and given and managed(one) and lib):
+        return False
+    new = apply_settings(dict(one), {k: v for k, v in given.items() if k in MANAGED})
+    changed = [k for k in MANAGED if new.get(k) != one.get(k)]
+    if not changed:
+        return False
+    cfg = lib.config()
+    cfg["follow"] = dict(settings(cfg), **{k: new[k] for k in MANAGED if k in new})
+    lib.save_config(cfg)
+    one.update({k: new[k] for k in MANAGED if k in new})
+    log_line("settings from the main server: " + ", ".join(
+        "%s %s" % (k, new[k]) for k in changed)[:300])
+    return True
 
 
 def settings(cfg) -> dict:
@@ -620,7 +706,11 @@ SHARED = ("quality", "burnFor", "evenVolume", "nextDelay", "autoFetch", "watchRe
           # services, the volume target, what guests may fetch, and remote admin
           "autoScan", "subtitles", "subSizeBase", "subPlaceRound", "subLang", "subLang2",
           "seasonal", "newDays", "watchServices", "volumeTarget", "letThemFetch",
-          "fetchMaxGb", "remoteAdmin", "remoteOwner")
+          "fetchMaxGb", "remoteAdmin", "remoteOwner",
+          # this week's picks, drawn on the main server, and one set by hand
+          "weeklyPicks", "weekPick", "weeklyRestart",
+          # what is skipped at the start of each programme's episodes
+          "skipStart")
 
 #: a viewer's own settings that stay on each machine: they name titles by the main
 #: server's own numbers, which mean other titles on the copy
@@ -634,6 +724,62 @@ VIEWER_LOCAL = ("deckAside", "subsFor", "subsPick", "subsTried", "copyPick",
 #: server restarts
 LIVE = ("liveList", "liveMost", "liveGroups", "liveFolders", "liveYouTube", "liveWho")
 HOUSE_MIRRORED = ("libraryShows", "homeRowsDefault", "numbering") + CHOOSING + SHARED + LIVE
+
+
+#: the main server's subtitle choices, kept by title: which subtitle, that it fits, where
+#: it was left off - the same title keys on both machines
+SUBS_BY_TITLE = ("subsPick", "subsOk", "subSince", "subsFor", "subsTried")
+#: and those kept by the file's path, the path here differing: a subtitle's measured fit,
+#: a double episode's split and the release a fetched subtitle came from
+SUBS_BY_PATH = ("subFit", "splitSubs", "subsRelease")
+
+
+def subs_for_copy(theirs, keys, paths):
+    """The main server's subtitle choices as this machine keeps them: {setting: {key: value}}.
+
+    `theirs` the main server's settings of SUBS_BY_TITLE and SUBS_BY_PATH; `keys` the title
+    and episode keys this library holds; `paths` {file name, lower case: its path here}. A
+    title not held here is left out; a path is the file of the same name here, with what
+    followed it ("|2") kept."""
+    out = {}
+    for name in SUBS_BY_TITLE:
+        got = theirs.get(name)
+        if isinstance(got, dict):
+            out[name] = {k: v for k, v in got.items() if str(k) in keys}
+    for name in SUBS_BY_PATH:
+        got = theirs.get(name)
+        if not isinstance(got, dict):
+            continue
+        here = {}
+        for k, v in got.items():
+            where, bar, rest = str(k).partition("|")
+            mine = paths.get(os.path.basename(where.replace("/", os.sep).replace("\\", os.sep)).lower())
+            if mine:
+                here[mine + bar + rest] = v
+        out[name] = here
+    return out
+
+
+#: the settings that are this machine's own and never copied: its port and address, its
+#: switches and drives, what it follows and fetches, and what it worked out about its own
+#: files and viewers. With the lists above, every setting there is - a test fails on one
+#: none of them names, so a new setting is placed rather than silently left behind.
+MACHINE_OWN = ("port", "machineId", "outsideName", "setupDone", "betaKey", "ffmpeg", "copyOf",
+               "mirrorOf", "gameMode", "apartPause", "autoRuns", "diskSlots", "reportsSeen",
+               "followShows", "grabLatest", "copyPick", "noDolby", "subShift", "subShiftBy",
+               "subsDownloads", "subsLastDownload", "managedCopies")
+#: and a viewer's own that each machine works out for itself
+VIEWER_MACHINE = ("watchNews", "watchSources")
+
+
+def unplaced(top, viewer_keys, mirrored_viewer):
+    """The settings no list places: top-level names, then a viewer's. `mirrored_viewer`
+    the viewer keys the main server sends."""
+    house = set(HOUSE_MIRRORED) | set(SUBS_BY_TITLE) | set(SUBS_BY_PATH) | set(MACHINE_OWN) | {
+        "receiver", "ownerIs", "ownerName", "users"}
+    viewer = set(mirrored_viewer) | set(VIEWER_LOCAL) | set(VIEWER_MACHINE)
+    return (sorted(k for k in top if k not in house and k not in viewer),
+            sorted(k for k in viewer_keys if k not in viewer))
 
 
 def numbering_changes(before, after):
@@ -710,6 +856,24 @@ def _viewers_here(api):
     return out
 
 
+def _keys_and_paths(api):
+    """The title and episode keys this library holds, and {file name: path} of its files."""
+    keys, paths = set(), {}
+    try:
+        con = api.lib.db()
+        try:
+            for row in con.execute("SELECT item_id, episode_id, path FROM file WHERE path IS NOT NULL"):
+                keys.add(str(row["item_id"]))
+                if row["episode_id"]:
+                    keys.add(str(row["episode_id"]))
+                paths[os.path.basename(str(row["path"]).replace("/", os.sep)).lower()] = str(row["path"])
+        finally:
+            con.close()
+    except Exception:
+        pass
+    return keys, paths
+
+
 def learn_the_viewers(one, settings_path, api=None):
     """Take a copy of what each viewer keeps, so this machine knows them too.
 
@@ -743,6 +907,26 @@ def learn_the_viewers(one, settings_path, api=None):
                     mine[name] = house[name]
             elif name in mine:
                 del mine[name]            # unset on the main server, unset here
+    if house is not None and isinstance(house.get("receiver"), dict):
+        import pd_receiver
+        took = pd_receiver.for_copy(house["receiver"], mine.get("receiver"))
+        if took != mine.get("receiver"):
+            mine["receiver"] = took
+    subs = said.get("subs") if isinstance(said.get("subs"), dict) else None
+    if subs is not None and api is not None:
+        keys, paths = _keys_and_paths(api)
+        for name, got in subs_for_copy(subs, keys, paths).items():
+            merged = dict(mine.get(name) or {})
+            merged.update(got)
+            if merged != mine.get(name):
+                mine[name] = merged
+        for who, one in (said.get("subsBy") or {}).items():
+            them = mine.setdefault("users", {}).setdefault(str(who), {})
+            for name, got in subs_for_copy(one or {}, keys, paths).items():
+                merged = dict(them.get(name) or {})
+                merged.update(got)
+                if merged != them.get(name):
+                    them[name] = merged
     users = mine.setdefault("users", {})
     filled = 0
     mine_to_send = []
@@ -839,7 +1023,8 @@ def learn_the_viewers(one, settings_path, api=None):
             return filled
         # and the house's own choices: taken above and then dropped here, so the
         # copy's Popular shows row stayed at whatever it held of the list
-        for name in ("ownerIs", "ownerName") + HOUSE_MIRRORED:
+        for name in (("ownerIs", "ownerName", "receiver") + HOUSE_MIRRORED + SUBS_BY_TITLE
+                     + SUBS_BY_PATH):
             if name not in mine and name in before:
                 fresh.pop(name, None)
             elif mine.get(name) != before.get(name):
@@ -1162,6 +1347,16 @@ def worth_asking_again(item):
     return False
 
 
+def connection_lost(e):
+    """A copy that stopped because the connection did - the main server restarting, the
+    network dropping - rather than because of the file. Never a reason to give up on it."""
+    import http.client
+    if isinstance(e, (ConnectionError, TimeoutError, http.client.HTTPException)):
+        return True
+    return isinstance(e, urllib.error.URLError) and isinstance(
+        getattr(e, "reason", None), (ConnectionError, TimeoutError, OSError))
+
+
 def note_trouble(name, why, size=0, item=None):
     """Write down a file that would not come. Called with the lock held."""
     text = str(why)[:160]
@@ -1433,13 +1628,12 @@ def make_room(folder, cap_bytes, keeping, how="oldest"):
 #: so the lock this used to rely on is not there for most of a film.
 BUSY = None
 
-#: How long a file this machine fetched is kept after the main server stops naming it.
-#: A shuffle's queue moves as it is watched, so what is wanted now is wanted again
-#: shortly; the cap still frees room when room is short.
-KEEP_UNWANTED_HOURS = 12
+
+#: files missing from the main server's full list, and on how many lists in a row
+ABSENT = {}
 
 
-def clear_unwanted(folder, qualified, keeping):
+def clear_unwanted(folder, qualified, keeping, verified=True):
     """Delete what this machine fetched and the main server has stopped wanting.
 
     Everything the main server named is safe, whether tonight's hour lets it move or not:
@@ -1451,19 +1645,15 @@ def clear_unwanted(folder, qualified, keeping):
     should act on by emptying a disk, and a file somebody is watching refuses to be
     deleted and stays.
     """
-    if not a_sane_folder(folder) or not qualified:
+    # Only against a verified list: the main server's whole list, answered this round.
+    # A short list, an old server's or a missed answer is no reason to delete anything.
+    if not a_sane_folder(folder) or not qualified or not verified:
         return {"files": 0, "gb": 0.0}
     mine = ours(folder)
     gone, freed = 0, 0
-    # Nothing fetched in the last few hours is deleted for being unwanted.
-    #
-    # A shuffle's next ten change as it is watched, so a file leaves the list and
-    # joins it again a little later - and deleting the moment it left had the same
-    # episodes fetched over and over: in one day, 381 copies of 207 files, 86 of them
-    # fetched twice and some six times, 332 GB moved to hold 207 files. Room is not
-    # the reason to hurry: make_room() frees what the cap needs, when the cap needs
-    # it. This is only about what is no longer named, and that can wait.
-    young = time.time() - KEEP_UNWANTED_HOURS * 3600
+    # and missing from two verified lists in a row before it goes: one answer that
+    # left a file out by mistake deletes nothing
+    seen_now = set()
     for here, dirs, names in os.walk(folder):
         for name in names:
             path = os.path.join(here, name)
@@ -1477,11 +1667,10 @@ def clear_unwanted(folder, qualified, keeping):
                     pass
             if name.endswith(".part"):
                 continue                   # arriving now, not left over
-            try:
-                if os.path.getmtime(path) > young:
-                    continue               # fetched lately: it may be wanted again
-            except OSError:
-                pass
+            seen_now.add(path)
+            ABSENT[path] = ABSENT.get(path, 0) + 1
+            if ABSENT[path] < 2:
+                continue                   # off one list: the next one confirms it
             try:
                 known = os.path.relpath(path, folder).replace("\\", "/")
             except ValueError:
@@ -1494,8 +1683,11 @@ def clear_unwanted(folder, qualified, keeping):
             except OSError:
                 continue                   # open, or gone already: leave it
             mine.discard(known)
+            ABSENT.pop(path, None)
             gone += 1
             freed += size
+    for path in [p for p in ABSENT if p not in seen_now]:
+        ABSENT.pop(path, None)
     if gone:
         try:
             with io.open(ledger_file(folder), "w", encoding="utf-8") as f:
@@ -1503,6 +1695,203 @@ def clear_unwanted(folder, qualified, keeping):
         except OSError:
             pass
     return {"files": gone, "gb": round(freed / 1e9, 2)}
+
+
+#: seconds a transfer may be silent before it is given up and the next one taken
+MOVE_SILENCE = 300
+#: the films the main server listed for this machine to move in, waiting, and whether
+#: the one mover thread is running
+MOVES = {"rows": [], "busy": False, "now": "", "said": set()}
+MOVES_LOCK = threading.Lock()
+
+
+def _recheck(info_hash, indexes):
+    """The pack looked at once its files are in, and seeded once it reads whole."""
+    import pd_torrents
+    try:
+        if pd_torrents.recheck_if_unread(info_hash, indexes):
+            log_line("moved in: %d films, the pack read again" % len(indexes))
+            threading.Thread(target=pd_torrents.seed_when_read, args=(info_hash,),
+                             daemon=True).start()
+    except Exception as e:
+        log_line("recheck after moving in: %s" % e)
+
+
+def _read_moved_when_in(moves):
+    """Every film handed over is in its place: the pack read, so the main server sees them."""
+    import pd_torrents
+    try:
+        for name in pd_torrents.finish_moved_reads():
+            log_line("moved in: %s read, seeding again" % name)
+        for r in moves:
+            if r.get("part") or not pd_torrents.already_placed(
+                    str(r["hash"]), int(r["index"]), str(r.get("name") or ""), int(r.get("size") or 0)):
+                return
+        said = pd_torrents.read_moved()
+        if said:
+            log_line("moved in: %s read, so the main server sees its films" % said)
+    except Exception as e:
+        log_line("reading what was moved in: %s" % e)
+
+
+def move_in(one, rows, fetch=None, told=None, recheck=None):
+    """Films of packs at home here that the main server holds and this machine lacks: the
+    file itself copied over the house network into the place this machine's qBittorrent
+    expects, then looked at again - one file at a time, by one thread. The main server is
+    told each one taken once it is in place."""
+    import pd_torrents
+    told = told or (lambda ids: ask(one, "/follow/took?ids=" + ",".join(ids), 20))
+
+    def get_part(r):
+        t = pd_torrents.QB(pd_torrents.load()["config"]).info(str(r["hash"])) or {}
+        root = str(t.get("save_path") or "")
+        if not root:
+            raise ValueError("the pack is not in qBittorrent here")
+        onto = os.path.join(root, "." + re.sub(r"[^0-9a-f]", "", str(r["hash"]).lower()) + ".parts")
+        url = "%s/follow/packpart?hash=%s&t=%s" % (one["master"].rstrip("/"),
+                                                   urllib.parse.quote(str(r["hash"])),
+                                                   urllib.parse.quote(one["key"]))
+        req = urllib.request.Request(url, headers={"X-Palladium-App": "follower"})
+        with drive_lock(onto), opened(req, MOVE_SILENCE) as answer:
+            with open(onto + ".new", "wb") as f:
+                while True:
+                    lump = answer.read(LUMP)
+                    if not lump:
+                        break
+                    f.write(lump)
+        if int(r.get("size") or 0) and os.path.getsize(onto + ".new") != int(r["size"]):
+            os.remove(onto + ".new")
+            raise ValueError("the part file came short")
+        # qBittorrent holds it open while the pack runs: in place with the pack stopped
+        pd_torrents.QB(pd_torrents.load()["config"]).stop(str(r["hash"]))
+        os.replace(onto + ".new", onto)
+        return onto
+
+    def get(r):
+        if r.get("part"):
+            return get_part(r)
+        # in its place already: nothing is sent
+        there = pd_torrents.already_placed(str(r["hash"]), int(r["index"]),
+                                           str(r.get("name") or ""), int(r.get("size") or 0))
+        if there:
+            return there
+        pd_torrents.moved_fresh(str(r["hash"]), int(r["index"]))
+        url = "%s/follow/file?hash=%s&index=%d&t=%s" % (
+            one["master"].rstrip("/"), urllib.parse.quote(str(r["hash"])), int(r["index"]),
+            urllib.parse.quote(one["key"]))
+        req = urllib.request.Request(url, headers={"X-Palladium-App": "follower"})
+        onto = pd_torrents.placed_path(str(r["hash"]), int(r["index"]), str(r.get("name") or ""))
+        # silent this long and the transfer is gone: the sender holds a viewer's turn for
+        # two minutes at most, and waiting half an hour stopped every move behind it
+        with drive_lock(onto or "D:"), opened(req, MOVE_SILENCE) as answer:
+            return pd_torrents.place_and_recheck(str(r["hash"]), int(r["index"]),
+                                                 str(r.get("name") or ""), answer,
+                                                 int(r.get("size") or 0), recheck=False)
+    fetch = fetch or get
+    recheck = recheck or _recheck
+    with MOVES_LOCK:
+        have = {r.get("id") for r in MOVES["rows"]} | {MOVES["now"]}
+        MOVES["rows"] += [r for r in rows if r.get("id") not in have]
+        if MOVES["busy"]:
+            return
+        MOVES["busy"] = True
+
+    def work():
+        placed = {}
+        try:
+            while True:
+                with MOVES_LOCK:
+                    if not MOVES["rows"]:
+                        MOVES["now"] = ""
+                        break
+                    r = MOVES["rows"].pop(0)
+                    MOVES["now"] = r.get("id")
+                try:
+                    got = fetch(r)
+                except Busy:
+                    # the drive at the other end is another transfer's: this film goes
+                    # back to the front and the run waits for the next round
+                    with MOVES_LOCK:
+                        MOVES["rows"].insert(0, r)
+                    break
+                except Exception as e:
+                    log_line("moving in %s: %s" % (r.get("title") or r.get("name"), e))
+                    continue
+                if got and r.get("part"):
+                    log_line("moved in from the main server: the part file of %s" % r.get("hash"))
+                    try:
+                        told([str(r.get("id"))])
+                    except Exception:
+                        pass
+                    continue
+                if got:
+                    placed.setdefault(str(r["hash"]), []).append(int(r["index"]))
+                    try:
+                        pd_torrents.mark_done(str(r["hash"]), int(r["index"]), "moved here: the pack's home")
+                    except Exception as e:
+                        log_line("moved in, not written down: %s" % e)
+                    if (r["hash"], int(r["index"])) not in MOVES["said"]:
+                        log_line("moved in from the main server: %s" % (r.get("title") or r.get("name")))
+                        MOVES["said"].add((r["hash"], int(r["index"])))
+                    try:
+                        told([str(r.get("id"))])
+                    except Exception:
+                        pass
+            # no read here: a pack is read once, when the whole move is done - a read at
+            # the end of every run stopped the pack and its downloads again and again
+        finally:
+            with MOVES_LOCK:
+                MOVES.update(busy=False, now="")
+    threading.Thread(target=work, name="palladium-move-in", daemon=True).start()
+
+
+#: seconds between asking the main server for downloads somebody asked for: it says at once
+#: when one is asked for, and this is for when that did not get through
+REQUESTS_EVERY = 60
+TAKING = threading.Lock()
+
+
+def take_requests(one, read=None, take=None):
+    """Downloads asked for on the main server taken now. Moved films wait for their round."""
+    rows = (read or (lambda: ask(one, "/follow/asked", 8)))().get("forCopy") or []
+    rows = [r for r in rows if isinstance(r, dict) and not r.get("move")]
+    return (take or take_for_copy)(one, rows) if rows else []
+
+
+def take_for_copy(one, rows, request=None, told=None):
+    """Films asked for on the main server whose pack lives here: downloaded here, as this
+    machine's own, and the main server told which were taken so it stops listing them.
+    A file already in its place is read by qBittorrent first, so only what is missing
+    comes in. Returns the ids taken. One at a time: a round and the quick look share this."""
+    with TAKING:
+        return _take_for_copy(one, rows, request, told)
+
+
+def _take_for_copy(one, rows, request=None, told=None):
+    import pd_torrents
+    request = request or pd_torrents.request
+    told = told or (lambda ids: ask(one, "/follow/took?ids=" + ",".join(ids), 20))
+    took = []
+    for r in rows[:20]:
+        if not isinstance(r, dict) or not r.get("key"):
+            continue
+        try:
+            said = request(str(r["key"]), str(r.get("token") or "me"), str(r.get("who") or ""),
+                           float(r.get("cap") or 0), float(r.get("most") or 0), auto=True,
+                           reason=str(r.get("reason") or "asked for on the main server"))
+        except Exception as e:
+            log_line("pack request %s not taken: %s" % (r.get("key"), e))
+            continue
+        # taken, or refused for good (not on offer, no room): either way not asked again
+        took.append(str(r.get("id")))
+        if not said.get("ok", True):
+            log_line("pack request %s refused here: %s" % (r.get("key"), said.get("why")))
+    if took:
+        try:
+            told(took)
+        except Exception:
+            pass
+    return took
 
 
 def take_over_half_copies(one):
@@ -1568,23 +1957,64 @@ def log_line(text):
     if not where:
         return
     try:
-        with io.open(os.path.join(where, "debug.log"), "a", encoding="utf-8") as f:
-            f.write("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)))
+        pd_log.raw("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)), os.path.join(where, "debug.log"))
     except OSError:
         pass
 
 
+def copy_place(folder, name, size=None):
+    """Where a copy lives: where a pack here keeps that file, or the copies folder."""
+    import pd_torrents
+    return pd_torrents.pack_place(name, size) or os.path.join(folder, name)
+
+
+def copy_here(folder, name, path, size=None, mark=""):
+    """Whether the copy at path is here. In a pack's folder a file of the right length may be
+    an empty placeholder, so there what is on the disk counts."""
+    import pd_torrents
+    try:
+        if not os.path.exists(path) or (size is not None and os.path.getsize(path) != size):
+            return False
+        if size is None and os.path.getsize(path) <= 0:
+            return False
+    except OSError:
+        return False
+    if os.path.abspath(path) != os.path.abspath(os.path.join(folder, name)) and not pd_torrents.in_its_place(path):
+        return False
+    return not mark or quick_mark(path) == mark
+
+
 def copy_file(one, item, folder):
-    """Fetch one film or episode, carrying on from whatever is already here."""
+    """Fetch one film or episode, carrying on from whatever is already here. A file a pack here
+    carries goes where the pack keeps it, once: played and seeded as one, and it stays."""
+    import pd_torrents
     name = a_safe_name(item.get("name"))
     if not name:
         raise ValueError("refused the name %r" % (item.get("name"),)[:80])
-    into = os.path.join(folder, name)
+    plain = os.path.join(folder, name)
     # and it lands inside the folder that was asked for, whatever the name says
-    if os.path.dirname(os.path.abspath(into)) != os.path.abspath(folder):
+    if os.path.dirname(os.path.abspath(plain)) != os.path.abspath(folder):
         raise ValueError("refused a name that points outside the folder")
-    if os.path.exists(into) and os.path.getsize(into) == item.get("size"):
-        return into                        # already here, whole
+    in_pack = pd_torrents.pack_place(name, item.get("size")) if item.get("side") is None else ""
+    into = in_pack or plain
+    if in_pack and copy_here(folder, name, in_pack, item.get("size"), item.get("mark") or ""):
+        return in_pack                     # already in its pack, whole
+    # a copy made before this rule, whole beside the pack: put in place, nothing fetched
+    if (in_pack and copy_here(folder, name, plain, item.get("size"), item.get("mark") or "")
+            and os.path.splitdrive(in_pack)[0].upper() == os.path.splitdrive(plain)[0].upper()):
+        os.makedirs(os.path.dirname(in_pack), exist_ok=True)
+        os.replace(plain, in_pack)
+        pd_torrents.copied_into_pack(name)
+        log_line("put in its pack: %s" % name)
+        return in_pack
+    if not in_pack and os.path.exists(into) and os.path.getsize(into) == item.get("size"):
+        if not item.get("mark") or quick_mark(into) == item["mark"]:
+            return into                    # already here, whole
+        # the right size and other contents: a copy of an older file. Fetched again;
+        # returned as here, it was picked forty times a round and nothing below it came
+        os.remove(into)
+    if in_pack:
+        os.makedirs(os.path.dirname(in_pack), exist_ok=True)
     part = into + ".part"
     have = os.path.getsize(part) if os.path.exists(part) else 0
     # a subtitle beside a video is asked for by that video and its number; the film
@@ -1608,7 +2038,7 @@ def copy_file(one, item, folder):
                 f.write(json.dumps({"size": said, "name": name}))
         except OSError:
             pass
-    with urllib.request.urlopen(req, timeout=60) as answer:
+    with drive_lock(into), opened(req, 60) as answer:
         with open(part, "ab" if have else "wb") as f:
             while True:
                 if STOP.is_set():
@@ -1627,6 +2057,12 @@ def copy_file(one, item, folder):
                     STATE["at"] = (have / said) if said else 0.0
                     STATE["size"] = said
                     STATE["pinned"] = bool(item.get("pinned"))
+                # somebody has something on a screen this machine does not hold, and
+                # this is not that: put down while a good deal is still to come
+                if (PREEMPT["name"] and PREEMPT["name"] != name
+                        and not is_hot(item)
+                        and said - have > PREEMPT_LEFT):
+                    raise Preempted(PREEMPT["name"])
     if os.path.getsize(part) < 16:
         # nothing came down at all - the other machine was restarting, or the
         # connection went before the first block. Not a bad file: an absent one.
@@ -1645,7 +2081,11 @@ def copy_file(one, item, folder):
         os.remove(part + ".want")
     except OSError:
         pass
-    note_ours(folder, into)
+    # only what is in the copies folder is on the list a full folder clears from
+    if in_pack:
+        pd_torrents.copied_into_pack(name)
+    else:
+        note_ours(folder, into)
     with LOCK:
         STATE["copying"] = ""
         STATE["size"] = 0
@@ -2075,8 +2515,7 @@ def say_what_is_here(one, folder, wanted):
     _keep_book(folder, known)
     holding = []
     for name, key in known.items():
-        here = os.path.join(folder, name)
-        if os.path.exists(here) and os.path.getsize(here) > 0:
+        if copy_here(folder, name, copy_place(folder, name)):
             holding.append(key)
     try:
         # whole: this list was built by looking at the disk, so it is everything
@@ -2199,12 +2638,78 @@ def light_round(one, lib=None, api=None):
             urllib.parse.quote(for_whom(one)), keep_days(one))
         said = ask(one, "/follow/playing?deck=1&" + forward, 30)
         wanted = said.get("wanted") or []
+        PREEMPT["name"] = first_on_screen(wanted, folder, STATE.get("copying") or "")
         say_what_is_here(one, folder, wanted)
         if lib:
             dress_the_copies(one, lib, folder, wanted)
             learn_the_facts(one, lib)
     except Exception:
         pass
+
+
+#: a file on a screen now and not here, seen while a long copy runs: that copy steps
+#: aside for it. A guest's episode waited an evening behind a film being copied at the
+#: crawl a copy keeps to while somebody watches.
+PREEMPT = {"name": ""}
+
+#: what a copy must still have to come before it steps aside for one on a screen
+PREEMPT_LEFT = 500 * 1000 * 1000
+
+
+class Busy(Exception):
+    """The main server's drive is another transfer's this minute: asked again next round,
+    not counted against the file."""
+
+
+#: drive -> lock: what arrives here is written one transfer a drive at a time
+DRIVE_LOCKS = {}
+DRIVE_LOCKS_LOCK = threading.Lock()
+
+
+def opened(req, patience):
+    """urlopen, with the main server's busy drive said as Busy."""
+    try:
+        return urllib.request.urlopen(req, timeout=patience)
+    except urllib.error.HTTPError as e:
+        if e.code == 503:
+            raise Busy(str(e))
+        raise
+
+
+def drive_lock(path):
+    """The lock for the drive a path is on."""
+    drive = os.path.splitdrive(os.path.abspath(str(path or "")))[0].upper()
+    with DRIVE_LOCKS_LOCK:
+        return DRIVE_LOCKS.setdefault(drive, threading.Lock())
+
+
+class Preempted(Exception):
+    """A copy put down for a file on a screen now; its part stays to carry on from."""
+
+
+def first_on_screen(wanted, folder, copying):
+    """The first film or episode on a screen now - or kept ahead of one: the next
+    episodes of a series somebody has just started - that is neither here nor the one
+    being copied, or ""."""
+    for item in wanted:
+        if item.get("side") is not None or not is_hot(item):
+            continue
+        safe = a_safe_name(item.get("name"))
+        if not safe or safe == copying:
+            continue
+        if copy_here(folder, safe, copy_place(folder, safe, item.get("size")), item.get("size")):
+            continue
+        return safe
+    return ""
+
+
+def is_hot(item):
+    """On a screen now, or wanted for one: what puts down any other copy in flight."""
+    return item.get("why") == "on a screen now" or bool(item.get("hot"))
+
+
+#: what the round running now has done, for the line it writes when it ends
+ROUND = {"listed": 0, "copied": 0, "skipped": set()}
 
 
 def round_of(one, lib=None, api=None):
@@ -2214,10 +2719,21 @@ def round_of(one, lib=None, api=None):
         return
     if not PASS.acquire(blocking=False):
         return                            # one already running: it will see this too
+    began = time.time()
+    ROUND.update(listed=0, copied=0, skipped=set())
     try:
         _round(one, lib, api, folder)
     finally:
         PASS.release()
+        # a round that did something, set something aside or took a while, in the log:
+        # a gap in the copying is then the length of a round, or a file given up on
+        took = time.time() - began
+        if ROUND["copied"] or ROUND["skipped"] or took > 120:
+            skipped = sorted(ROUND["skipped"])
+            log_line("round %d s: %d on the list, %d copied%s" % (
+                took, ROUND["listed"], ROUND["copied"],
+                (", given up on %d: %s" % (len(skipped), ", ".join(skipped[:3])[:160]))
+                if skipped else ""))
 
 
 def _round(one, lib, api, folder):
@@ -2295,7 +2811,23 @@ def _round(one, lib, api, folder):
         # a key of one's own on somebody else's server keeps that person's films and
         # nobody else's; a key marked as a following server keeps the main server's
         STATE["whose"] = said.get("whose") or ""
+    take_managed(one, said.get("managed"), lib)
+    rows = [r for r in said.get("forCopy") or [] if isinstance(r, dict)]
+    # a film moved in from the main server is the file itself, not a download
+    moves = [r for r in rows if r.get("move") and r.get("hash")
+             and (int(r.get("index", -1)) >= 0 or r.get("part"))]
+    move_in(one, moves)
+    _read_moved_when_in(moves)
+    take_for_copy(one, [r for r in rows if not r.get("move")])
     wanted = said.get("wanted") or []
+    ROUND["listed"] = len(wanted)
+    # the main server holding copies back while its disks are busy: said once when it
+    # starts and once when it ends, so a gap in the copying has a reason in the log
+    held = str(said.get("busy") or "")
+    if held != STATE.get("held", ""):
+        log_line(("copies wait: " + held) if held else "copies go on")
+        with LOCK:
+            STATE["held"] = held
     # What there is a reason to hold, films and subtitles alike, before the hour
     # below decides what may move tonight. A file is swept when it is on neither
     # this list nor the shorter one, and testing against the shorter one alone would
@@ -2304,7 +2836,8 @@ def _round(one, lib, api, folder):
     # of what may be fetched this minute. A main server too old to send it falls back
     # to the short list, which is what this did before.
     holding = said.get("holding")
-    if not isinstance(holding, list) or not holding:
+    verified = isinstance(holding, list) and bool(holding)
+    if not verified:
         holding = wanted
     # downloads started here while the main server was away, for files it now lists:
     # copying brings those
@@ -2376,16 +2909,16 @@ def _round(one, lib, api, folder):
         if item.get("casual"):
             return False              # on a screen, unchosen: kept, not fetched
         if not worth_asking_again(item):
+            ROUND["skipped"].add(str(item.get("name") or "")[:60])
             return False
         safe = a_safe_name(item.get("name"))
         if not safe:
             with LOCK:
                 STATE["why"] = "refused a file named %.40s" % (item.get("name") or "")
             return False
-        here = os.path.join(folder, safe)
-        keeping.add(here)
-        if (os.path.exists(here) and os.path.getsize(here) == item.get("size")
-                and (not item.get("mark") or quick_mark(here) == item["mark"])):
+        here = copy_place(folder, safe, item.get("size"))
+        keeping.add(os.path.join(folder, safe))
+        if copy_here(folder, safe, here, item.get("size"), item.get("mark") or ""):
             if item.get("key") and item["key"] not in got_already:
                 got_already.append(item["key"])
             return False
@@ -2405,19 +2938,22 @@ def _round(one, lib, api, folder):
     # hours, so on a busy night it never ran at all. It belongs here anyway: free the
     # disk, then fill it. A read-only key copies nothing and has nothing to delete.
     if ALLOWED.get("mayCopy", True):
-        swept = clear_unwanted(folder, qualified, keeping)
+        swept = clear_unwanted(folder, qualified, keeping, verified)
         if swept["files"]:
             with LOCK:
                 STATE["swept"] = swept
 
     taken_now = 0
     tried_and_failed = set()
+    # each file once a round, whatever happens to it
+    handled = set()
     while taken_now < 40:
         # The top of the list as it stands, every time. Working through a list taken
         # at the start of the pass meant fetching what was wanted an hour ago while
         # the queue on screen had moved on - and the two could never agree.
         item = next((w for w in wanted
                      if str(w.get("name") or "") not in tried_and_failed
+                     and str(w.get("name") or "") not in handled
                      and still_wanted(w)), None)
         if item is None:
             break
@@ -2429,6 +2965,7 @@ def _round(one, lib, api, folder):
                 item.get("title") or item.get("name") or "?",
                 item.get("why") or "no reason given",
                 (" (" + str(item.get("who")) + ")") if item.get("who") else ""))
+        handled.add(str(item.get("name") or ""))
         try:
             copy_file(one, item, folder)
             # A subtitle is a few kilobytes riding along with its film, not one of
@@ -2438,6 +2975,7 @@ def _round(one, lib, api, folder):
             # day while the queue said it was next.
             if item.get("side") is None:
                 taken_now += 1
+                ROUND["copied"] = taken_now
             with LOCK:
                 STATE["files"] += 1
             # A pass fetching a dozen files runs for an hour, and until it ended
@@ -2455,11 +2993,29 @@ def _round(one, lib, api, folder):
                 STATE["copying"], STATE["at"] = "", 0.0
                 STATE["size"], STATE["pinned"] = 0, False
             return                        # asked to stop: leave the rest for later
+        except Busy:
+            # the main server's drive is another transfer's: this round ends, the next
+            # asks again - nothing is counted against the file
+            with LOCK:
+                STATE["copying"], STATE["at"] = "", 0.0
+                STATE["size"], STATE["pinned"] = 0, False
+            return
+        except Preempted as e:
+            # the round starts again at once from the top, where what is on a screen is
+            log_line("copy of %s put down for %s, on a screen now"
+                     % (item.get("title") or item.get("name") or "?", e))
+            PREEMPT["name"] = ""
+            with LOCK:
+                STATE["copying"], STATE["at"] = "", 0.0
+                STATE["size"], STATE["pinned"] = 0, False
+            return
         except Exception as e:
             with LOCK:
                 STATE["why"] = str(e)[:160]
+                # written down either way; counted towards giving up only when it was
+                # the file: three installs in a morning gave up on three episodes
                 note_trouble(item.get("name") or item.get("title") or "?", e,
-                             item.get("size") or 0, item)
+                             item.get("size") or 0, None if connection_lost(e) else item)
             # one that will not come is set aside for this pass rather than tried
             # again immediately: without this the loop asks for it for ever and
             # nothing below it in the queue is ever reached
@@ -2566,6 +3122,14 @@ def _round(one, lib, api, folder):
                        or socket.gethostname())
     except Exception as e:
         STATE["why"] = "watch log: %s: %s" % (type(e).__name__, str(e)[:120])
+    # and the report board, so both machines hold one list of what was reported
+    try:
+        import pd_board
+        if ME.get("settings"):
+            pd_board.trade(os.path.dirname(ME["settings"]),
+                           lambda path, body: tell(one, path, body, 30))
+    except Exception as e:
+        STATE["why"] = "board: %s: %s" % (type(e).__name__, str(e)[:120])
     try:
         learn_the_viewers(one, ME.get("settings") or "", api)
     except Exception as e:
@@ -2728,4 +3292,15 @@ def start(config, library=None, quiet=None, me=None, keys=None, api=None, carry=
                         STATE["why"] = "half copies: %s" % str(e)[:140]
             time.sleep(ASK_EVERY)
 
+    def requests():
+        while True:
+            time.sleep(REQUESTS_EVERY)
+            try:
+                one = settings(config())
+                if one.get("on") and one.get("master") and one.get("key"):
+                    take_requests(one)
+            except Exception:
+                pass                       # the main server asleep, or one with no such door
+
     threading.Thread(target=work, daemon=True).start()
+    threading.Thread(target=requests, name="palladium-requests", daemon=True).start()

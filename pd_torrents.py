@@ -7,6 +7,7 @@ every other file in it is left at "do not download".
 State is one JSON file beside the library: the qBittorrent connection, the packs with
 what each film was matched to, and every download with who asked for it and when.
 """
+import pd_log
 import hashlib
 import io
 import json
@@ -161,8 +162,27 @@ def load():
             data.setdefault("config", {})
             data.setdefault("packs", [])
             data.setdefault("downloads", [])
+            _episodes_read_again(data)
             STATE["data"] = data
         return STATE["data"]
+
+
+def _episodes_read_again(data):
+    """A pack's file read as a film that names an episode after all - "S06E0013", which
+    the reading of the day passed over - made the episode it is. How many."""
+    fixed = 0
+    for pack in data.get("packs") or []:
+        for film in pack.get("films") or []:
+            if film.get("kind") == "episode":
+                continue
+            told = episode_of(film.get("path") or "", pack.get("name") or "")
+            if not told:
+                continue
+            show, made, season, number = told
+            film.update({"title": show, "year": made or film.get("year"), "kind": "episode",
+                         "season": season, "episode": number, "tmdb": None})
+            fixed += 1
+    return fixed
 
 
 def save():
@@ -263,7 +283,8 @@ def film_of(path):
 
 #: SxxExx anywhere in a name, bounded by a non-digit, so a resolution or a year is
 #: not read as an episode number.
-EPISODE_AT = re.compile(r"(?:^|[^A-Za-z0-9])[sS](\d{1,2})[eE](\d{1,3})(?![0-9])")
+#: four digits too: "S06E0013" is episode 13, and read as nothing it was a film
+EPISODE_AT = re.compile(r"(?:^|[^A-Za-z0-9])[sS](\d{1,2})[eE](\d{1,4})(?![0-9])")
 
 
 #: folders a pack keeps some of its episodes in that are not a programme's name
@@ -1072,6 +1093,11 @@ AT_ONCE_MOST = 5
 AT_ONCE_EVERY = 600
 
 
+def slots(data):
+    """Downloads that may run now: the setting, one unless set otherwise. 0 is no limit."""
+    return at_once(data["config"])
+
+
 def at_once(cfg):
     """Downloads that may run at once, from the settings; 0 is no limit."""
     try:
@@ -1099,14 +1125,182 @@ def keep_at_once(force=False):
     if not force and time.time() - float(STATE.get("atOnceAt") or 0) < AT_ONCE_EVERY:
         return {}
     STATE["atOnceAt"] = time.time()
-    cfg = load()["config"]
-    want = queue_prefs(at_once(cfg))
+    data = load()
+    cfg = data["config"]
+    want = queue_prefs(slots(data))
     qb = QB(cfg)
     have = qb.preferences()
     changed = {k: v for k, v in want.items() if have.get(k) != v}
     if changed:
         qb.set_preferences(changed)
     return changed
+
+
+#: the link merge tool on this PC: a proxy that spreads connections over every internet
+#: link it has - the LAN and phones on USB - and its own page of what each link is doing
+MERGE_AT = "http://127.0.0.1:8899"
+#: how often it is looked for: a minute, so a stopped tool never leaves qBittorrent
+#: pointed at nothing for longer than that
+MERGE_EVERY = 60
+
+
+def merge_links():
+    """The links the merge tool has up and in use; [] when it is not running."""
+    try:
+        with urllib.request.urlopen(MERGE_AT + "/stats", timeout=2) as answer:
+            said = json.loads(answer.read().decode("utf-8", "replace") or "{}")
+    except Exception:
+        return []
+    return [str(l.get("name") or "") for l in said.get("links") or []
+            if l.get("use") and not l.get("down")]
+
+
+def merge_stats():
+    """What the link merge tool is doing now: each link's name, speed over the last
+    three seconds and total, and the sum - for Now playing. running is False when the
+    tool does not answer."""
+    try:
+        with urllib.request.urlopen(MERGE_AT + "/stats", timeout=2) as answer:
+            said = json.loads(answer.read().decode("utf-8", "replace") or "{}")
+    except Exception:
+        return {"running": False, "links": [], "mbit": 0.0, "bytes": 0,
+                "through": bool(STATE.get("merging"))}
+    return merge_read(said, bool(STATE.get("merging")))
+
+
+def merge_read(said, through=False):
+    """The tool's own answer read into link names, speeds and totals: its history holds
+    a second a row, the time first and then each link's Mbit/s in link order."""
+    links = said.get("links") or []
+    recent = (said.get("history") or [])[-3:]
+    out = []
+    for i, link in enumerate(links):
+        speeds = [float(h[i + 1]) for h in recent if isinstance(h, list) and len(h) > i + 1]
+        out.append({"name": str(link.get("name") or ""),
+                    "mbit": round(sum(speeds) / len(speeds), 1) if speeds else 0.0,
+                    "bytes": int(link.get("bytes") or 0),
+                    "active": int(link.get("active") or 0),
+                    "up": bool(link.get("use")) and not link.get("down")})
+    return {"running": True, "links": out, "through": through,
+            "mbit": round(sum(l["mbit"] for l in out), 1),
+            "bytes": sum(l["bytes"] for l in out)}
+
+
+def merge_prefs(on):
+    """qBittorrent's proxy for the merge tool, or none. Peers and trackers both: the
+    client has one switch for its BitTorrent traffic."""
+    if not on:
+        return {"proxy_type": "None", "proxy_bittorrent": False,
+                "proxy_peer_connections": False}
+    return {"proxy_type": "HTTP", "proxy_ip": "127.0.0.1",
+            "proxy_port": int(MERGE_AT.rsplit(":", 1)[1]),
+            "proxy_auth_enabled": False, "proxy_bittorrent": True,
+            "proxy_peer_connections": True, "proxy_misc": False, "proxy_rss": False}
+
+
+#: states in which a torrent is taking something in
+FETCHING = ("downloading", "forcedDL", "metaDL")
+#: how long after the last download the merge tool stays in use, so a torrent going
+#: between downloading and stalled does not switch qBittorrent's proxy every minute
+MERGE_LINGER = 300
+
+
+def merge_wanted(cfg, links, fetching=True):
+    """Through the merge tool when it has a link up - even one: the LAN gone, the tool
+    still has the phones. On: always. Auto: only while something downloads, since
+    through it qBittorrent takes no incoming connections and a seeder lives on those.
+    Off until somebody turns it on."""
+    mode = cfg.get("useMerge")
+    if not links:
+        return False
+    return mode is True or (mode == "auto" and bool(fetching))
+
+
+def fetching_now(states, now, last):
+    """(whether downloads go through the merge tool now, when one was last seen): on
+    while anything downloads and for MERGE_LINGER after."""
+    if any(s in FETCHING for s in states):
+        return True, now
+    return now - float(last or 0) < MERGE_LINGER, last
+
+
+def keep_merge(force=False):
+    """Every minute: qBittorrent through the merge tool while it runs, straight out when
+    it does not. Returns what was changed, {} when nothing was."""
+    if not force and time.time() - float(STATE.get("mergeAt") or 0) < MERGE_EVERY:
+        return {}
+    STATE["mergeAt"] = time.time()
+    cfg = load()["config"]
+    links = merge_links()
+    STATE["mergeLinks"] = links
+    qb = QB(cfg)
+    try:
+        states = qb.states().values()
+    except Exception:
+        states = []
+    fetching, STATE["fetchedAt"] = fetching_now(states, time.time(), STATE.get("fetchedAt"))
+    want = merge_prefs(merge_wanted(cfg, links, fetching))
+    have = qb.preferences()
+    changed = {k: v for k, v in want.items() if have.get(k) != v}
+    if changed:
+        qb.set_preferences(changed)
+    STATE["merging"] = want["proxy_type"] == "HTTP"
+    # the server's own calls only while the LAN is down: through the tool otherwise,
+    # the tracker's address check went out over a phone and saw this machine on
+    # another line than the cache, and stopped every torrent
+    merge_own_calls(merge_own_wanted(STATE["merging"], links))
+    return changed
+
+
+def merge_own_wanted(merging, links):
+    """The server's own calls through the merge tool: only when it is in use and the
+    LAN is not among its links - lost, so the phones are all there is."""
+    return bool(merging) and bool(links) and "LAN" not in links
+
+
+#: always asked directly: the address check the tracker guard makes, which must see the
+#: line this machine really is on, and the tracker itself
+DIRECT_HOSTS = ("api.ipify.org", "torrentleech.org", "tleechreload.org")
+
+
+def _in_the_house(host):
+    """A machine on this network, or this one, or a host asked directly whatever the merge
+    tool does."""
+    import ipaddress
+    host = str(host or "").split(":")[0].strip("[]").lower()
+    if host in ("", "localhost") or host.endswith(".local") or host.endswith(".lan"):
+        return True
+    if any(host == h or host.endswith("." + h) for h in DIRECT_HOSTS):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
+class _MergeProxy(urllib.request.ProxyHandler):
+    """The server's own calls out to the internet through the merge tool; the house's
+    own machines - qBittorrent, the cache server, the receiver - straight."""
+
+    def proxy_open(self, req, proxy, type):
+        if _in_the_house(req.host):
+            return None
+        return urllib.request.ProxyHandler.proxy_open(self, req, proxy, type)
+
+
+def merge_own_calls(on):
+    """Palladium's own calls - the tracker, the catalogue, subtitles - through the merge
+    tool while downloads go through it, so the LAN going down does not stop them."""
+    if bool(STATE.get("ownMerged")) == bool(on):
+        return
+    if on:
+        at = MERGE_AT
+        urllib.request.install_opener(urllib.request.build_opener(
+            _MergeProxy({"http": at, "https": at})))
+    else:
+        urllib.request.install_opener(urllib.request.build_opener())
+    STATE["ownMerged"] = bool(on)
 
 
 def set_config(body):
@@ -1119,6 +1313,10 @@ def set_config(body):
         # nextEpisode: fetch the following episode at the half-way point of one
         if "nextEpisode" in body:
             cfg["nextEpisode"] = bool(body["nextEpisode"])
+        # useMerge: qBittorrent through the link merge tool while it runs
+        if "useMerge" in body:
+            cfg["useMerge"] = "auto" if body["useMerge"] == "auto" else bool(body["useMerge"])
+            STATE["mergeAt"] = 0.0             # put to the client on the next pass
         # atOnce: how many downloads run at the same time; 0 is no limit
         if "atOnce" in body:
             try:
@@ -1402,6 +1600,88 @@ def latest_download(key):
     return rows[-1] if rows else None
 
 
+def eta_words(seconds):
+    """Time left, said short: "40 s", "6 min", "1 h 5 min"."""
+    s = int(seconds)
+    if s < 60:
+        return "%d s" % max(1, s)
+    if s < 3600:
+        return "%d min" % (s // 60)
+    return "%d h %d min" % (s // 3600, s % 3600 // 60)
+
+
+#: seconds a check may sit still before it is said to be waiting for another
+CHECK_STILL = 60
+
+
+def check_state(info_hash, progress, now):
+    """"checkingDL", or "checkWaiting" for a pack whose check has not moved for
+    CHECK_STILL seconds: qBittorrent reads one pack at a time and says "checking" of the
+    ones waiting too."""
+    seen = STATE.setdefault("checkSeen", {})
+    was = seen.get(info_hash)
+    if was is None or was[0] != progress:
+        seen[info_hash] = (progress, now)
+        return "checkingDL"
+    return "checkWaiting" if now - was[1] >= CHECK_STILL else "checkingDL"
+
+
+def stage_words(state, qb_state="", progress=0.0, mbit=0.0, eta=None, place=0, why=""):
+    """What a download is doing, as (stage, the line every screen shows). One wording for
+    the web and the app: each screen made up its own and said "Downloading 0%" for a
+    torrent still looking for seeders, checking its files, or stopped on an error."""
+    pct = "%d%%" % int(max(0.0, min(1.0, float(progress or 0))) * 100)
+    qs = str(qb_state or "")
+    if why and state in ("downloading", "unpacking"):
+        return "stuck", why
+    if state == "unpacking":
+        return "unpacking", "Unpacking " + pct
+    if state == "done":
+        return "arriving", "Downloaded · adding it to the library"
+    if state == "queued":
+        return "queued", "Queued" + (" · %d ahead" % place if place else "")
+    if state != "downloading":
+        return "", ""
+    if qs == "checkWaiting":
+        return "queued", "Waiting for another pack's check"
+    if qs.startswith("checking"):
+        return "checking", "Checking the files " + pct
+    if qs in ("metaDL", "forcedMetaDL"):
+        return "finding", "Fetching the torrent"
+    if qs.startswith("queued"):
+        return "queued", "Waiting its turn in qBittorrent"
+    if float(mbit or 0) <= 0:
+        return (("finding", "Looking for seeders") if float(progress or 0) <= 0
+                else ("waiting", "Waiting for seeders · " + pct))
+    return "downloading", ("Downloading %s · %.0f Mbit/s" % (pct, float(mbit)) +
+                           (" · %s left" % eta_words(eta) if eta is not None and int(eta) >= 0 else ""))
+
+
+def coming_of(key, keys=()):
+    """This release's download, or another release's of the same film while it is queued or
+    coming in: the page opens on one release and the picker can fetch another."""
+    own = latest_download(key) or {}
+    if own.get("state") in ("queued", "downloading"):
+        return own
+    for other in keys:
+        got = latest_download(other) or {}
+        if other != key and (got.get("state") in ("queued", "downloading") or
+                             # in and not in the library yet: Arriving, not Download
+                             (got.get("state") == "done"
+                              and time.time() - float(got.get("when") or 0) < 86400)):
+            return got
+    return own
+
+
+def release_keys(key):
+    """Every pack release of the film this key is one release of."""
+    _, film = by_key(key)
+    if not film or film.get("kind") == "episode":
+        return [key]
+    same = _same(film)
+    return [f["key"] for p in load()["packs"] for f in (p.get("films") or []) if _same(f) == same]
+
+
 def held_here(film, owned=None):
     """True when the library already holds this entry.
 
@@ -1482,7 +1762,11 @@ def item(film, pack, free=None, versions=()):
     """One film on offer, as the library lists a title."""
     name = film.get("name") or film.get("title") or ""
     year = int(film.get("year") or 0) or int(str(film.get("released") or "0")[:4] or 0)
-    got = latest_download(film["key"]) or {}
+    got = coming_of(film["key"], [v["key"] for v in versions])
+    stage, words = stage_words(got.get("state") or "", got.get("qb") or "",
+                               got.get("progress") or 0, got.get("mbit") or 0, got.get("eta"),
+                               _place(got.get("key") or film["key"])
+                               if got.get("state") == "queued" else 0, got.get("why") or "")
     return {
         "ratingKey": film["key"], "type": "movie", "title": name,
         # the catalogue's number for it, which is what its cast is asked by
@@ -1511,6 +1795,8 @@ def item(film, pack, free=None, versions=()):
                   # while it comes in: megabits a second towards this film, and seconds left
                   "mbit": float(got.get("mbit") or 0),
                   "eta": got.get("eta"),
+                  # what it is doing, in the words every screen shows
+                  "stage": stage, "words": words,
                   "who": got.get("who") or "",
                   # waiting its turn: how many are ahead of it
                   "place": _place(film["key"]) if got.get("state") == "queued" else 0,
@@ -1638,6 +1924,34 @@ def drop_show_pack(name, info_hash):
     _put_choice(name, choice)
 
 
+def carries_others(pack, plain):
+    """Whether a pack holds anything but this programme's episodes: one pack for many titles
+    is not one programme's to take away."""
+    return any(f.get("kind") != "episode" or _plain(f.get("name") or f.get("title")) != plain
+               for f in pack.get("films") or [])
+
+
+def unlink_pack(name, info_hash):
+    """One pack taken off a programme: its link goes, unless an episode was downloaded
+    from it or another programme chose it. The torrent and its files are never touched."""
+    drop_show_pack(name, info_hash)
+    data = load()
+    plain = _plain(name)
+    others = set()
+    for k, v in (data["config"].get("showPacks") or {}).items():
+        if k != plain:
+            others |= set(str(h) for h in ((v.get("packs") or []) if isinstance(v, dict) else [v]) if h)
+    used = _came_from(data["downloads"])
+    if info_hash in used:
+        return {"ok": True, "kept": "an episode was downloaded from it - it stays linked"}
+    if info_hash in others:
+        return {"ok": True, "kept": "another series uses it - it stays linked"}
+    if any(p.get("hash") == info_hash and carries_others(p, plain) for p in data["packs"]):
+        return {"ok": True, "kept": "it carries other titles too - it stays linked"}
+    remove_pack(info_hash)
+    return {"ok": True}
+
+
 def packs_free(name, config, downloads):
     """The packs chosen for one programme that can go with it: not one another programme
     chose, and not one a download came from."""
@@ -1650,8 +1964,15 @@ def packs_free(name, config, downloads):
     packs = config.get("showPacks") or {}
     mine = chosen(packs.get(plain)) + chosen((config.get("showPack") or {}).get(plain))
     others = {h for k, v in packs.items() if k != plain for h in chosen(v)}
-    used = {str(d.get("hash")) for d in downloads or [] if d.get("hash")}
+    used = _came_from(downloads)
     return [h for h in dict.fromkeys(mine) if h not in others and h not in used]
+
+
+def _came_from(downloads):
+    """The packs an episode or film really came from: a download cancelled or failed
+    brought nothing, and counting it kept a wrong pack linked to a series for good."""
+    return {str(d.get("hash")) for d in downloads or []
+            if d.get("hash") and d.get("state") not in ("cancelled", "failed")}
 
 
 def remove_show(name):
@@ -1872,7 +2193,7 @@ def offered_seasons(key):
             # a series pack's season by its folder's name
             "title": season_name(these[0]) or "Season %d" % season, "index": season,
             "leafCount": len(these), "viewedLeafCount": 0,
-            "parentRatingKey": key,
+            "parentRatingKey": key, "parentTitle": name, "grandparentTitle": name,
             "thumb": ("/art/%s/poster" % film["key"] if film.get("poster")
                       else series_art(name, season) if film.get("series") else None),
             "offered": True,
@@ -1923,6 +2244,10 @@ def episode_item(film, show, pack=None):
 
 #: files qBittorrent has not finished, by normalised path, and when that was asked
 UNFINISHED = {"at": 0.0, "paths": set(), "read": False}
+#: held while one reading of the file lists runs: a reading of 900 torrents outlasted
+#: the 30 s between them, a new one started every half minute, and they piled up until
+#: the server spent a core and a half on them and answered the screens in seconds
+_READING = threading.Lock()
 #: held while the first read is under way, so a caller that must wait waits for it
 _FIRST_READ = threading.Lock()
 
@@ -1931,7 +2256,7 @@ def _first_read():
     """The first look at every torrent's files: 285 of them take 5 s, once."""
     with _FIRST_READ:
         if not UNFINISHED["read"]:
-            _read_unfinished()
+            _read_unfinished(wait=True)
             UNFINISHED["at"] = time.time()
             UNFINISHED["read"] = True
 
@@ -1993,7 +2318,18 @@ def unfinished_file(progress, priority, path, hollow=None):
     return bool(hollow(path))
 
 
-def _read_unfinished():
+def _read_unfinished(wait=False):
+    """One reading at a time; a second asked for while one runs is not started - or,
+    with wait, starts once the first is done."""
+    if not _READING.acquire(blocking=wait):
+        return
+    try:
+        _read_unfinished_now()
+    finally:
+        _READING.release()
+
+
+def _read_unfinished_now():
     """Every file a torrent is still writing, judged file by file across all torrents.
 
     By file, not by torrent: a pack whose wanted films are all in reads as finished,
@@ -2011,10 +2347,23 @@ def _read_unfinished():
         for t in rows:
             h = str(t.get("hash") or "")
             live.add(h)
+            # never took in a byte: added over files already here to seed them, and
+            # waiting for or in its check. Those files are whole; it is not writing them.
+            # Nor while it is being checked: a recheck reads the files, and their progress
+            # climbing from nought took every film of a pack out of the library
+            fetched = (int(t.get("downloaded") or 0) > 0
+                       and not str(t.get("state") or "").startswith("checking"))
             mark = (round(float(t.get("progress") or 0), 4), int(t.get("amount_left") or 0),
                     int(t.get("size") or 0), str(t.get("state") or "")[:4])
             was = FILE_LISTS.get(h)
-            if was is None or was[0] != mark:
+            # finished, with a file still short of whole in the list kept: read again.
+            # qBittorrent says the torrent is done a moment before its file is, and the
+            # torrent then never changes - the film read as unfinished for good, and a
+            # scan took it out of the library while it was being watched
+            short = was is not None and mark[0] >= 1 and any(
+                float(f.get("progress") or 0) < 1 and int(f.get("priority") or 0) > 0
+                for f in was[1])
+            if was is None or was[0] != mark or short:
                 FILE_LISTS[h] = (mark, qb.files(h))
             root = str(t.get("save_path") or "")
             for f in FILE_LISTS[h][1]:
@@ -2022,7 +2371,8 @@ def _read_unfinished():
                 progress = float(f.get("progress") or 0)
                 if progress >= 1:
                     done.add(p)
-                elif unfinished_file(progress, int(f.get("priority") or 0), p):
+                elif unfinished_file(progress if fetched else 0,
+                                     int(f.get("priority") or 0) if fetched else 0, p):
                     partial.add(p)
         for h in list(FILE_LISTS):
             if h not in live:
@@ -2102,7 +2452,33 @@ def metadata(key):
         return episode_item(film, str(film.get("name") or film.get("title") or ""), pack)
     same = _same(film)
     group = [(f, p) for p in load()["packs"] for f in (p.get("films") or []) if _same(f) == same]
-    return item(film, pack, free_cached(), _versions(group))
+    one = item(film, pack, free_cached(), _versions(group))
+    # a copy of a film the library holds already: its page can play that one while
+    # this one comes in, where it offered nothing to press but Cancel
+    one["offer"]["heldKey"] = held_key(film)
+    return one
+
+
+def held_key(film):
+    """The library's key for the film this pack file is a copy of, or ""."""
+    lib = STATE["lib"]() if STATE["lib"] else None
+    if not lib:
+        return ""
+    con = lib.db()
+    try:
+        row = None
+        if film.get("tmdb"):
+            row = con.execute("SELECT id FROM item WHERE type = 'movie' AND tmdb_id = ? LIMIT 1",
+                              (int(film["tmdb"]),)).fetchone()
+        if row is None and film.get("year"):
+            row = con.execute("SELECT id FROM item WHERE type = 'movie' AND lower(title) = ? AND year = ? "
+                              "LIMIT 1", (str(film.get("name") or film.get("title") or "").strip().lower(),
+                                          int(film["year"]))).fetchone()
+        return str(row[0]) if row else ""
+    except Exception:
+        return ""
+    finally:
+        con.close()
 
 
 def art_of(key, kind):
@@ -2192,6 +2568,10 @@ class QB:
     def files(self, info_hash):
         return json.loads(self._call("/api/v2/torrents/files?hash=" + info_hash) or b"[]")
 
+    def pieces(self, info_hash):
+        """Each piece's state: 0 not held, 1 coming, 2 held."""
+        return json.loads(self._call("/api/v2/torrents/pieceStates?hash=" + info_hash) or b"[]")
+
     def preferences(self):
         return json.loads(self._call("/api/v2/app/preferences", timeout=10) or b"{}")
 
@@ -2217,8 +2597,9 @@ class QB:
             # off, so holding it only left it sitting there doing nothing.
             "stopped": "true" if hold else "false",
             "paused": "true" if hold else "false",
-            # the film's own folder straight under the save path, not inside the pack's
-            "contentLayout": "NoSubfolder"}, upload=raw, timeout=60)
+            # every torrent in a folder of its own: without one, two packs' Season 01
+            # folders were the same folder
+            "contentLayout": "Subfolder"}, upload=raw, timeout=60)
         if b"Fail" in said:
             raise RuntimeError("qBittorrent would not take the torrent")
 
@@ -2228,6 +2609,16 @@ class QB:
             "stopped": "true", "paused": "true"}, timeout=30)
         if b"Fail" in said:
             raise RuntimeError("qBittorrent would not take the magnet")
+
+    def add_at(self, raw, location, category, layout="Original"):
+        """A torrent added stopped with its files laid out as they are named, under
+        location: where its file already is, to be read and then seeded."""
+        said = self._call("/api/v2/torrents/add", fields={
+            "savepath": location, "category": category or "palladium",
+            "stopped": "true", "paused": "true", "contentLayout": layout},
+            upload=raw, timeout=60)
+        if b"Fail" in said:
+            raise RuntimeError("qBittorrent would not take the torrent")
 
     def export(self, info_hash):
         return self._call("/api/v2/torrents/export?hash=" + info_hash, timeout=30)
@@ -2244,6 +2635,15 @@ class QB:
             if e.code != 404:
                 raise
             self._call("/api/v2/torrents/resume", fields={"hashes": info_hash})
+
+    def set_location(self, info_hash, location):
+        """Move a torrent's files under another folder: a rename on the same drive, a copy
+        and a removal across drives - one file either way."""
+        self._call("/api/v2/torrents/setLocation", fields={"hashes": info_hash,
+                                                           "location": location})
+
+    def all_info(self):
+        return json.loads(self._call("/api/v2/torrents/info") or b"[]")
 
     def recheck(self, info_hash):
         """Ask qBittorrent to look at the files on disk again.
@@ -2268,7 +2668,10 @@ class QB:
 def status():
     data = load()
     cfg = data["config"]
-    qb = {"ok": False, "version": "", "why": ""}
+    qb = {"ok": False, "version": "", "why": "",
+          # the link merge tool: the links it has up, and whether qBittorrent uses it
+          "merge": {"links": list(STATE.get("mergeLinks") or []),
+                    "on": bool(STATE.get("merging"))}}
     try:
         qb["version"] = QB(cfg).version()
         qb["ok"] = True
@@ -2324,6 +2727,9 @@ def status():
                       "haltedWhy": halted_why(states.get(str(pack["hash"]).lower(), ""),
                                               pack["hash"]),
                       "refused": refused(pack),
+                      # fetched and seeded whole, or held to what is asked and ahead
+                      "whole": kept_whole(pack["hash"]),
+                      "home": home_of(pack["hash"]), "splitFirst": split_first(),
                       "pieceMiB": round((pack.get("pieceBytes") or 0) / 1048576)})
     return {"config": {"url": cfg.get("url") or "http://127.0.0.1:8080",
                        "user": cfg.get("user") or "",
@@ -2372,6 +2778,29 @@ def episode_in_a_pack(show, season, number):
     return None
 
 
+def episode_after(show, season, number):
+    """The pack entry for the episode after this one: the next number its season has, and
+    failing that the first of the season after. A double episode is listed by its first
+    number - "E04E05" as 4 - and looking for 5 jumped a whole season (2026-11-01)."""
+    want = str(show or "").strip().lower()
+    if not want:
+        return None
+    best = None
+    for pack in load()["packs"]:
+        for film in pack.get("films") or []:
+            if film.get("kind") != "episode":
+                continue
+            s, e = int(film.get("season") or 0), int(film.get("episode") or 0)
+            if not ((s == int(season) and e > int(number)) or s == int(season) + 1):
+                continue
+            if not any(str(n or "").strip().lower() == want
+                       for n in (film.get("name"), film.get("title"))):
+                continue
+            if best is None or (s, e) < best[0]:
+                best = ((s, e), film)
+    return best[1] if best else None
+
+
 def next_after(show, season, number):
     """The episode after this one, if a pack has it and the library does not.
 
@@ -2381,8 +2810,7 @@ def next_after(show, season, number):
     # The one after this, and the first of the season after it only where the season
     # has ended - not where the next number is simply already here. Falling through on
     # "already held" jumped a whole season the moment the next episode had arrived.
-    film = (episode_in_a_pack(show, int(season), int(number) + 1)
-            or episode_in_a_pack(show, int(season) + 1, 1))
+    film = episode_after(show, season, number)
     if not film or held_here(film, _owned()):
         return None
     was = latest_download(film["key"]) or {}
@@ -2425,8 +2853,7 @@ def fetch_ahead(show, season, number, token="me", who="", cap_gb=0.0, most=1, ho
     at = (int(season), int(number))
     owned = _owned()
     while ahead < max(1, int(most)):
-        film = (episode_in_a_pack(show, at[0], at[1] + 1)
-                or episode_in_a_pack(show, at[0] + 1, 1))
+        film = episode_after(show, at[0], at[1])
         if not film:
             break
         at = (int(film.get("season") or 0), int(film.get("episode") or 0))
@@ -2523,6 +2950,20 @@ def request(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason=""):
     pack, film = by_key(key)
     if not film:
         return {"ok": False, "why": "That film is not on offer"}
+    # a pack that lives on the copy server is downloaded there, not here; the copy
+    # server's own requests (it follows this one) are never sent back
+    if not _following() and home_of(pack["hash"]) == "copy":
+        # held whole here: the file is moved to the copy, not downloaded there again
+        if whole_file(pack["hash"], film["index"]):
+            give_to_copy(pack, film, reason or "asked for")
+        return send_to_copy(key, token, who, cap_gb, most_gb, auto, reason)
+    # split, the copy server first: it comes down there and stays, unless it is whole here
+    if (not _following() and home_of(pack["hash"]) == "split" and split_first() == "copy"
+            and not whole_file(pack["hash"], film["index"])):
+        return send_to_copy(key, token, who, cap_gb, most_gb, auto, reason)
+    # at home on both: the copy server fetches it too, and it comes in here as well
+    if not _following() and home_of(pack["hash"]) == "both":
+        send_to_copy(key, token, who, cap_gb, most_gb, auto, reason)
     # a pack qBittorrent cannot load is not tried, or every press is one more failure
     if refused(pack):
         return {"ok": False, "why": "qBittorrent cannot load this pack: " + refused(pack)}
@@ -2644,23 +3085,29 @@ def _begin(row, pack, film):
 
 
 def _start_next():
-    """One film at a time: when nothing is coming in, the request that has waited longest
-    starts."""
+    """As many at a time as the setting says, one unless set otherwise: the request that
+    has waited longest starts when one is free."""
     if STATE.get("held"):
         return                             # the tracker is paused on this machine
     with LOCK:
         data = load()
-        if any(d.get("state") == "downloading" for d in data["downloads"]):
-            return
-        row = next((d for d in data["downloads"] if d.get("state") == "queued"), None)
-        if row is None:
+        running = [d for d in data["downloads"] if d.get("state") == "downloading"]
+        room = slots(data)
+        if room != STATE.get("slotsSaid"):
+            STATE["slotsSaid"] = room
+            STATE["atOnceAt"] = 0.0        # the client told on the next pass
+        row = None
+        if not room or len(running) < room:
+            row = next((d for d in data["downloads"] if d.get("state") == "queued"), None)
+        if row is None and not running:
             # and one that failed only because qBittorrent was not running, which it
             # may be again. Oldest first, like everything else in this queue.
             row = next((d for d in data["downloads"]
                         if d.get("state") == "failed"
                         and _waiting_for_qbt(d.get("why"))), None)
-        if row is None:
-            return
+    if row is None:
+        return
+    with LOCK:
         pack, film = by_key(row.get("key"))
         why = "No longer on offer" if not film else ""
         if not why and refused(pack):
@@ -2673,6 +3120,18 @@ def _start_next():
         save()
     if not why:
         _begin(row, pack, film)
+
+
+def _back_to_waiting(hashes):
+    """The files of downloads put back to waiting switched off in qBittorrent."""
+    if not hashes:
+        return
+    try:
+        qb = QB(load()["config"])
+        for h in set(hashes):
+            only_asked(qb, h)
+    except Exception as e:
+        STATE["why"] = str(e)[:160]
 
 
 def fetch(pack, film):
@@ -2717,9 +3176,82 @@ def fetch(pack, film):
     with LOCK:
         again = pack["hash"] in (STATE.get("recheck") or set())
         (STATE.get("recheck") or set()).discard(pack["hash"])
+    # and files on that are already on the disk whole but not yet read - copied in
+    # beside the client: started without a look, it downloads them again from the swarm
+    # (17.7 GB of films already on the disk, on the copy server, 2026-10-31)
+    if held is not None and not again:
+        try:
+            again = needs_read_first(qb.files(pack["hash"]), held.get("save_path") or "",
+                                     load()["downloads"], pack["hash"], film["index"],
+                                     read_at=read_started(pack["hash"]))
+        except Exception:
+            again = True                   # not known: look before fetching
     if again and held is not None:
+        note_read(pack["hash"])
         qb.recheck(pack["hash"])
     qb.start(pack["hash"])
+
+
+def present_unread(files, save_path, exists, size_of):
+    """The files short of whole in the client that are on the disk at their full length,
+    on or off: there, and not read yet."""
+    out = []
+    for n, f in enumerate(files or []):
+        if float(f.get("progress") or 0) >= 1:
+            continue
+        path = os.path.join(save_path, str(f.get("name") or "").replace("/", os.sep))
+        try:
+            if exists(path) and int(size_of(path)) == int(f.get("size") or -1):
+                out.append(int(f.get("index", n)))
+        except OSError:
+            continue
+    return out
+
+
+def note_read(info_hash):
+    """When a read of this pack began. It covers all of the pack on the disk, on or off."""
+    data = load()
+    with LOCK:
+        data.setdefault("packReadAt", {})[str(info_hash)] = time.time()
+        save()
+
+
+def read_started(info_hash):
+    return float((load().get("packReadAt") or {}).get(str(info_hash)) or 0)
+
+
+def needs_read_first(files, save_path, downloads, pack_hash, index, share=None, read_at=0.0):
+    """Whether a pack is read before a film of it starts: only when that film is on the disk
+    whole and has never been read, so it is not fetched again. Every other unread file
+    waits: reading a whole pack for them held one download for hours (2026-11-01). A
+    placeholder of the right length is not on the disk: asked for, it starts at once. And a
+    file unchanged since the last read began has been read, whatever that found: two films
+    asked for together read a 700 GB pack twice, 100 minutes each (2026-11-02)."""
+    if int(index) not in set(unchecked(files, save_path, os.path.exists, os.path.getsize)):
+        return False
+    for n, f in enumerate(files or []):
+        if int(f.get("index", n)) == int(index):
+            path = os.path.join(save_path, str(f.get("name") or "").replace("/", os.sep))
+            if read_at and os.path.getmtime(path) < read_at:
+                return False
+            return (share or on_disk_share)(path) >= ON_DISK_FULL
+    return False
+
+
+def unchecked(files, save_path, exists, size_of):
+    """The files on, short of whole in the client, that are on the disk at their full
+    length: there, and never read. A recheck finds them; a download would fetch them again."""
+    out = []
+    for n, f in enumerate(files or []):
+        if int(f.get("priority") or 0) <= 0 or float(f.get("progress") or 0) >= 1:
+            continue
+        path = os.path.join(save_path, str(f.get("name") or "").replace("/", os.sep))
+        try:
+            if exists(path) and int(size_of(path)) == int(f.get("size") or -1):
+                out.append(int(f.get("index", n)))
+        except OSError:
+            continue
+    return out
 
 
 def adopt(info_hash, indexes):
@@ -2767,10 +3299,464 @@ def asked_for(info_hash):
             and not d.get("off")}
 
 
+def home_of(info_hash):
+    """Which machine a pack lives on: "main" - this one - "copy" for the copy server, "both",
+    every file kept on each, or "split": each file stays on the machine it came down on and
+    nothing moves. Its films are downloaded, kept and seeded there."""
+    home = (load().get("home") or {}).get(str(info_hash))
+    return home if home in ("copy", "both", "split") else "main"
+
+
+def split_first():
+    """Which machine a split pack's new downloads go to: "copy" or "main"."""
+    return "main" if load().get("splitFirst") == "main" else "copy"
+
+
+def set_split_first(where):
+    """The machine a split pack's new downloads go to."""
+    if where not in ("main", "copy"):
+        return {"ok": False, "why": "no such server"}
+    data = load()
+    with LOCK:
+        data["splitFirst"] = where
+        save()
+    return {"ok": True, "splitFirst": where}
+
+
+def set_home(info_hash, home):
+    """A pack's home: "copy" sends what is asked of it to the copy server, "both" fetches it
+    on each, "split" leaves each file where it came down, "main" keeps it here."""
+    info_hash = str(info_hash or "")
+    if not info_hash or home not in ("main", "copy", "both", "split"):
+        return {"ok": False, "why": "no torrent, or no such home"}
+    data = load()
+    with LOCK:
+        homes = dict(data.get("home") or {})
+        if home in ("copy", "both", "split"):
+            homes[info_hash] = home
+        else:
+            homes.pop(info_hash, None)
+        data["home"] = homes
+        if home == "split":
+            # nothing still listed to move: what has not gone stays
+            data["forCopy"] = [r for r in data.get("forCopy") or []
+                               if not (r.get("move") and r.get("hash") == info_hash)]
+        save()
+    return {"ok": True, "home": home}
+
+
+def for_copy():
+    """Requests waiting for the copy server to take: [{id, key, token, who, cap, most, when}]."""
+    return list(load().get("forCopy") or [])
+
+
+def copy_took(ids):
+    """The requests the copy server has taken, off the list."""
+    ids = {str(i) for i in ids or []}
+    data = load()
+    with LOCK:
+        data["forCopy"] = [r for r in data.get("forCopy") or [] if str(r.get("id")) not in ids]
+        save()
+    return {"ok": True}
+
+
+def send_to_copy(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason=""):
+    """A request for a film whose pack lives on the copy server, kept for it to take on its
+    next round. Asked twice, it is listed once."""
+    data = load()
+    with LOCK:
+        # asked for, for sync back: a film somebody pressed for is wanted here too
+        asked = data.setdefault("copyAsked", {})
+        asked[str(key)] = int(time.time())
+        for k in [k for k, at in asked.items() if time.time() - float(at) > ASKED_DAYS * 86400]:
+            asked.pop(k, None)
+        rows = data.setdefault("forCopy", [])
+        if not any(r.get("key") == key for r in rows):
+            rows.append({"id": uuid.uuid4().hex[:10], "key": key, "token": token, "who": who,
+                         "cap": cap_gb, "most": most_gb, "auto": bool(auto),
+                         "reason": str(reason or "")[:200], "when": int(time.time())})
+            save()
+    # said now, so it starts at once and not at the copy server's next look
+    push = STATE.get("pushRequest")
+    if push:
+        threading.Thread(target=push, name="palladium-push-request", daemon=True).start()
+    return {"ok": True, "copy": True, "state": "queued",
+            "why": "Downloading on the copy server, where this pack lives"}
+
+
+def files_here(info_hash):
+    """[(index, name, size)] of every file of one torrent on this machine's disk at its full
+    length - films and the small files beside them alike - and the part file's
+    (path, size), where qBittorrent keeps the pieces of the files nobody asked for."""
+    data = load()
+    qb = QB(data["config"])
+    t = qb.info(info_hash)
+    if t is None:
+        return [], ("", 0)
+    root = str(t.get("save_path") or "")
+    out = []
+    for n, f in enumerate(qb.files(info_hash)):
+        path = os.path.join(root, str(f.get("name") or "").replace("/", os.sep))
+        try:
+            if os.path.isfile(path) and os.path.getsize(path) == int(f.get("size") or -1):
+                out.append((int(f.get("index", n)), str(f.get("name") or ""), int(f.get("size") or 0)))
+        except OSError:
+            continue
+    part = os.path.join(root, "." + str(info_hash) + ".parts")
+    return out, (part, os.path.getsize(part) if os.path.isfile(part) else 0)
+
+
+def give_to_copy(pack, film, reason):
+    """A film of a pack at home on the copy server, held here, listed for the copy to move
+    in from this server (move: the file itself over the house network, not the swarm). Not
+    a request by anybody: it is not marked as wanted back here (copyAsked)."""
+    key = film.get("key")
+    move = {"move": True, "hash": pack.get("hash"), "index": int(film.get("index", -1)),
+            "name": film.get("path"), "size": int(film.get("size") or 0), "title": film.get("title")}
+    data = load()
+    with LOCK:
+        rows = data.setdefault("forCopy", [])
+        if not key:
+            return False
+        was = next((r for r in rows if r.get("key") == key), None)
+        if was is not None:
+            if was.get("move"):
+                return False
+            was.update(move)               # listed as a download: the file is here, so moved
+        else:
+            rows.append(dict({"id": uuid.uuid4().hex[:10], "key": key, "token": "me", "who": "",
+                              "cap": 0.0, "most": 0.0, "auto": True, "reason": str(reason)[:200],
+                              "when": int(time.time())}, **move))
+        save()
+    return True
+
+
+#: how long a film asked for from a pack at home on the copy is wanted back here
+ASKED_DAYS = 30
+
+
+def asked_on_copy():
+    """The films asked for from packs at home on the copy server in the last ASKED_DAYS."""
+    return set((load().get("copyAsked") or {}).keys())
+
+
+def whole_file(info_hash, index):
+    """Whether this machine holds one file of one pack whole: every piece checked, and the
+    file there at its length."""
+    data = load()
+    try:
+        qb = QB(data["config"])
+        t = qb.info(info_hash)
+        if t is None:
+            return False
+        f = next((f for n, f in enumerate(qb.files(info_hash)) if int(f.get("index", n)) == int(index)), None)
+        return bool(f) and _whole_here(f, t.get("save_path"), int(f.get("size") or 0))
+    except Exception:
+        return False
+
+
+def only_edges_short(progress, size, piece):
+    """Whether all that is missing of a file is its first and last piece. Those hold bytes of
+    the films next to it in the pack, so with them not here the pieces can never be read,
+    and the file never reads as whole, however right it is."""
+    return bool(piece) and float(progress) >= 1 or (
+        bool(piece) and (1 - float(progress)) * int(size) <= 2 * int(piece))
+
+
+def held_file(info_hash, index):
+    """Whether this machine has one pack file, whole or short only of its edge pieces: the
+    answer to whether to send it again. Not whether another machine may delete its own."""
+    data = load()
+    try:
+        qb = QB(data["config"])
+        t = qb.info(info_hash)
+        if t is None:
+            return False
+        f = next((f for n, f in enumerate(qb.files(info_hash)) if int(f.get("index", n)) == int(index)), None)
+        if not f:
+            return False
+        pack = next((p for p in data["packs"] if p.get("hash") == info_hash), {})
+        if float(f.get("progress") or 0) <= 0 or not only_edges_short(f.get("progress") or 0, f.get("size") or 0,
+                                                                      int(pack.get("pieceBytes") or 0)):
+            return False
+        path = os.path.join(str(t.get("save_path") or ""), str(f.get("name") or ""))
+        return os.path.getsize(path) == int(f.get("size") or 0) and on_disk_share(path) >= ON_DISK_FULL
+    except Exception:
+        return False
+
+
+def whole_files(info_hash):
+    """The indexes of every file of one pack this machine holds whole."""
+    data = load()
+    try:
+        qb = QB(data["config"])
+        if qb.info(info_hash) is None:
+            return []
+        return [int(f.get("index", n)) for n, f in enumerate(qb.files(info_hash))
+                if float(f.get("progress") or 0) >= 1 and int(f.get("priority") or 0) > 0]
+    except Exception:
+        return []
+
+
+#: seconds a machine's list of what its packs carry is kept
+PLACES_FOR = 300
+
+
+def _pack_places():
+    """{file name: {path, size, hash, index}} of the video files this machine's packs carry."""
+    now = time.time()
+    if STATE.get("packPlaces") is not None and now - STATE.get("packPlacesAt", 0) < PLACES_FOR:
+        return STATE["packPlaces"]
+    places = {}
+    data = load()
+    qb = QB(data["config"])
+    for pack in data["packs"]:
+        t = qb.info(pack["hash"])
+        if t is None:
+            continue
+        for n, f in enumerate(qb.files(pack["hash"])):
+            name = str(f.get("name") or "")
+            if name.lower().endswith(VIDEO_FILE):
+                places.setdefault(os.path.basename(name).lower(), {
+                    "path": os.path.join(str(t.get("save_path") or ""), name.replace("/", os.sep)),
+                    "size": int(f.get("size") or 0), "hash": pack["hash"], "index": int(f.get("index", n))})
+    STATE["packPlaces"], STATE["packPlacesAt"] = places, now
+    return places
+
+
+def pack_place(name, size=None):
+    """Where a pack on this copy server keeps the file of this name and size, or "": the one
+    place a copy of it belongs, seeded and played as one file and never cleared for room."""
+    if not _following():
+        return ""
+    try:
+        row = _pack_places().get(os.path.basename(str(name or "")).lower())
+    except Exception:
+        return ""
+    return row["path"] if row and (not size or row["size"] == int(size)) else ""
+
+
+def in_its_place(path):
+    """Whether a pack's file is really on the disk, not a placeholder of the same length."""
+    try:
+        return os.path.getsize(path) > 0 and on_disk_share(path) >= ON_DISK_FULL
+    except OSError:
+        return False
+
+
+def copied_into_pack(name):
+    """A copy that landed in its pack: written down, and read by the pack in its turn."""
+    row = _pack_places().get(os.path.basename(str(name or "")).lower())
+    if row:
+        mark_done(row["hash"], row["index"], "moved here: copied for dual stream")
+        moved_fresh(row["hash"], row["index"])
+
+
+def mark_done(info_hash, index, reason):
+    """A pack file put in place here written down as a finished download, so the rule that
+    switches off what nobody asked for leaves it on."""
+    data = load()
+    pack = next((p for p in data["packs"] if p.get("hash") == info_hash), None)
+    film = next((f for f in (pack or {}).get("films") or [] if int(f.get("index", -1)) == int(index)), None)
+    if not film:
+        return False
+    with LOCK:
+        if any(d.get("hash") == info_hash and int(d.get("index", -1)) == int(index)
+               and d.get("state") == "done" and not d.get("off") for d in data["downloads"]):
+            return False
+        data["downloads"].append(_done_row(pack, film, file_of(info_hash, index), reason))
+        save()
+    STATE["owned"] = None
+    return True
+
+
+#: what may be let go: a film, never anything else a pack carries
+LET_GO_ENDINGS = (".mkv", ".mp4", ".avi", ".m4v")
+
+
+def fingerprint(path):
+    """The file's size and a megabyte from its start, middle and end, hashed - read fresh,
+    never remembered, so two machines comparing it compare what is on the disk now."""
+    import hashlib
+    size = os.path.getsize(path)
+    digest = hashlib.sha256(str(size).encode())
+    lump = 1 << 20
+    with open(path, "rb") as f:
+        for at in (0, max(0, size // 2 - lump // 2), max(0, size - lump)):
+            f.seek(at)
+            digest.update(f.read(lump))
+    return digest.hexdigest()
+
+
+def _deep_enough(folder):
+    """A folder at least two levels under its drive's root: never a drive, never one folder in."""
+    return len([p for p in os.path.splitdrive(folder)[1].split(os.sep) if p]) >= 2
+
+
+def safe_to_remove(path, save_path, qb_name, film, allowed=()):
+    """Why this file may not be removed, or "" when it may: it must be the pack's own file,
+    inside the pack's own folder, inside one of the folders allowed for removing (Settings),
+    a film, at the length the pack says - and no link."""
+    if not path or not save_path or not qb_name or not film:
+        return "nothing to go on"
+    real = os.path.normcase(os.path.realpath(path))
+    inside = [f for f in allowed or [] if str(f).strip() and _deep_enough(os.path.realpath(str(f).strip()))
+              and real.startswith(os.path.normcase(os.path.realpath(str(f).strip())) + os.sep)]
+    if not inside:
+        return "not inside a folder allowed for removing: %s" % path
+    root = os.path.realpath(save_path)
+    # a drive's root or a folder one level under it is never a pack's own folder
+    if not _deep_enough(root):
+        return "the pack's folder is too near the top of the drive: %s" % root
+    expected = os.path.realpath(os.path.join(save_path, qb_name.replace("/", os.sep)))
+    if os.path.normcase(os.path.realpath(path)) != os.path.normcase(expected):
+        return "not the file qBittorrent keeps for it: %s" % path
+    if not os.path.normcase(expected).startswith(os.path.normcase(root) + os.sep):
+        return "outside the pack's folder: %s" % expected
+    if os.path.islink(path) or not os.path.isfile(path):
+        return "not a plain file: %s" % path
+    if not path.lower().endswith(LET_GO_ENDINGS):
+        return "not a film: %s" % path
+    if os.path.getsize(path) != int(film.get("size") or -1):
+        return "not the length the pack gives it: %s" % path
+    return ""
+
+
+def let_go(info_hash, index, same_on_copy, allowed=(), remove=os.remove):
+    """One film of a pack at home on the copy server, no longer kept here: switched off in
+    this machine's copy of the pack, its finished download marked off, and the file removed.
+
+    Every guard is asked at the moment of removing, and any one of them stops it: the pack
+    lives on the copy server; this machine has every piece of the file checked; the file is
+    the pack's own, inside the pack's own folder (safe_to_remove); and same_on_copy(path,
+    fingerprint) - the copy server asked now, not earlier - holds the same file whole.
+    Returns {"ok", "why", "path"}."""
+    if home_of(info_hash) != "copy":
+        return {"ok": False, "why": "its pack does not live on the copy server"}
+    data = load()
+    pack = next((p for p in data["packs"] if p.get("hash") == info_hash), None)
+    film = next((f for f in (pack or {}).get("films") or [] if int(f.get("index", -1)) == int(index)), None)
+    try:
+        qb = QB(data["config"])
+        t = qb.info(info_hash)
+        f = next((f for n, f in enumerate(qb.files(info_hash)) if int(f.get("index", n)) == int(index)), None)
+    except Exception as e:
+        return {"ok": False, "why": "qBittorrent did not answer: %s" % e}
+    if t is None or f is None or film is None:
+        return {"ok": False, "why": "not in this machine's copy of the pack"}
+    save_path, qb_name = str(t.get("save_path") or ""), str(f.get("name") or "")
+    path = os.path.join(save_path, qb_name.replace("/", os.sep))
+    if not _whole_here(f, save_path, film["size"]):
+        return {"ok": False, "why": "not whole here", "path": path}
+    why = safe_to_remove(path, save_path, qb_name, film, allowed)
+    if why:
+        return {"ok": False, "why": why, "path": path}
+    # one file can be seeded by two torrents - a film taken into its pack keeps its own
+    # torrent: removed while that one still seeds it, it is a seeding file gone
+    try:
+        for other in qb.all_info():
+            if other.get("hash") == info_hash:
+                continue
+            base = os.path.normcase(os.path.normpath(str(other.get("save_path") or ""))) + os.sep
+            if not os.path.normcase(path).startswith(base):
+                continue
+            for g in qb.files(other["hash"]):
+                if os.path.normcase(os.path.join(str(other.get("save_path") or ""),
+                                                 str(g.get("name") or "").replace("/", os.sep))) \
+                        == os.path.normcase(path):
+                    return {"ok": False, "why": "another torrent seeds this file: %s"
+                            % other.get("name"), "path": path}
+    except Exception as e:
+        return {"ok": False, "why": "could not ask which torrents use it: %s" % e, "path": path}
+    mark = fingerprint(path)
+    if not same_on_copy(path, mark):
+        return {"ok": False, "why": "the copy server did not confirm the same file whole", "path": path}
+    try:
+        qb.priority(info_hash, [int(index)], 0)
+    except Exception as e:
+        return {"ok": False, "why": "could not switch it off: %s" % e, "path": path}
+    with LOCK:
+        for d in data["downloads"]:
+            if d.get("hash") == info_hash and int(d.get("index", -1)) == int(index) and d.get("state") == "done":
+                d["off"] = True
+        save()
+    STATE["owned"] = None
+    remove(path)
+    return {"ok": True, "why": "", "path": path, "mark": mark, "size": film["size"]}
+
+
+def kept_whole(info_hash):
+    """Whether this torrent is fetched and seeded whole: a tracker counts a partial
+    download as never seeding."""
+    return str(info_hash) in set(load().get("whole") or [])
+
+
+def keep_whole(info_hash, on=True):
+    """Fetch and seed a torrent whole, every file on, or go back to the files asked for."""
+    info_hash = str(info_hash or "")
+    if not info_hash:
+        return {"ok": False, "why": "no torrent"}
+    data = load()
+    with LOCK:
+        kept = [h for h in data.get("whole") or [] if h != info_hash]
+        data["whole"] = kept + ([info_hash] if on else [])
+        save()
+    qb = QB(data["config"])
+    try:
+        files = qb.files(info_hash)
+    except Exception:
+        files = []
+    if not files:
+        # not in qBittorrent yet: the choice is kept and applies once it is added
+        return {"ok": True, "whole": on, "later": True}
+    if on:
+        qb.priority(info_hash, [int(f.get("index", n)) for n, f in enumerate(files)], 1)
+        qb.start(info_hash)
+    else:
+        # back under the rules now, not at the next pass
+        only_asked(qb, info_hash, files=files)
+    return {"ok": True, "whole": on}
+
+
+def moved_short(info_hash, files=None):
+    """Films this machine was given by the other one and does not hold whole. Nobody asked
+    for those to be fetched: switched on, they came from the swarm, a ratio's cost. One
+    somebody has since asked for is a download like any other."""
+    rows = load()["downloads"]
+    asked = {int(d["index"]) for d in rows if d.get("hash") == info_hash
+             and d.get("state") in ("downloading", "queued")}
+    moved = {int(d["index"]) for d in rows if d.get("hash") == info_hash and d.get("state") == "done"
+             and str(d.get("reason") or "").startswith("moved here")} - asked
+    if not moved:
+        return set()
+    try:
+        files = files if files is not None else QB(load()["config"]).files(info_hash)
+    except Exception:
+        return moved
+    whole = {int(f.get("index", n)) for n, f in enumerate(files) if float(f.get("progress") or 0) >= 1}
+    return moved - whole
+
+
 def only_asked(qb, info_hash, extra=(), files=None):
     """Every file in the pack off except the ones asked for. True when anything changed."""
-    want = asked_for(info_hash) | {int(i) for i in extra}
+    if kept_whole(info_hash):
+        return False
+    want = asked_for(info_hash) - moved_short(info_hash) | {int(i) for i in extra}
     files = files if files is not None else qb.files(info_hash)
+    # a film on the disk whole and not yet read stays off, except while the pack is
+    # being read: switched on in a running pack, its edge pieces - which hold the
+    # neighbouring files' bytes - are fetched from the swarm (2026-11-01, 21 GB)
+    try:
+        held = qb.info(info_hash) or {}
+        if not str(held.get("state") or "").startswith("checking"):
+            # a film being downloaded is never one of these: qBittorrent sets its full
+            # length aside on the disk as it starts, and it read as whole and unread
+            coming = {int(d.get("index", -1)) for d in load()["downloads"]
+                      if d.get("hash") == info_hash and d.get("state") in ("downloading", "queued")}
+            want -= set(present_unread(files, str(held.get("save_path") or ""),
+                                       os.path.exists, os.path.getsize)) - coming - {int(i) for i in extra}
+    except Exception:
+        pass
     selected = {int(f.get("index", n)) for n, f in enumerate(files) if (f.get("priority") or 0) > 0}
     off = sorted(selected - want)
     on = sorted(i for i in want if i not in selected)
@@ -2808,6 +3794,17 @@ def _wanted_now(qb, info_hash, index):
 LUMP = 4 * 1024 * 1024
 
 
+#: done rows for files that came from the other machine or were already on the disk: never
+#: named as fetched. Moved films named so were all taken back by the main server, which
+#: read its whole pack again (2026-11-01)
+NOT_FETCHED = ("moved here", "whole on the disk", "finishing a copy", "taken back")
+
+
+def fetched_here(row):
+    """Whether a done row is a film this machine fetched itself from the swarm."""
+    return not str(row.get("reason") or "").startswith(NOT_FETCHED)
+
+
 def my_own_downloads():
     """What this machine fetched itself, for the server it follows to take a copy of.
 
@@ -2823,7 +3820,7 @@ def my_own_downloads():
         return out
     names = {}
     for d in data["downloads"]:
-        if d.get("state") != "done":
+        if d.get("state") != "done" or not fetched_here(d):
             continue
         h = str(d.get("hash") or "")
         if not h:
@@ -2858,6 +3855,292 @@ def file_of(info_hash, index):
     return ""
 
 
+def on_disk_share(path):
+    """How much of a file's length is really on the disk, 0 to 1. A client sets the length
+    aside before it has the data, so length alone says nothing: 1.0 where it cannot be asked."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        get = ctypes.WinDLL("kernel32", use_last_error=True).GetCompressedFileSizeW
+        get.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        get.restype = wintypes.DWORD
+        high = wintypes.DWORD(0)
+        low = get("\\\\?\\" + os.path.abspath(path), ctypes.byref(high))
+        if low == 0xFFFFFFFF and ctypes.get_last_error():
+            return 1.0
+        return ((high.value << 32) + low) / max(os.path.getsize(path), 1)
+    except (OSError, AttributeError, ImportError, ValueError):
+        return 1.0
+
+
+#: this much of a file on the disk, or it is a placeholder with some pieces in it
+ON_DISK_FULL = 0.95
+
+
+def already_placed(info_hash, index, name, size, share=None):
+    """The path of a file already in its place here at its full length; "" when it is not.
+    Left switched off: recheck_if_unread switches it on with the pack stopped. Asked before anything is sent: opening the
+    transfer first had the other machine read and send every film it had sent already."""
+    onto = placed_path(info_hash, index, name)
+    try:
+        if not (onto and size and os.path.getsize(onto) == int(size)):
+            return ""
+        if (share or on_disk_share)(onto) < ON_DISK_FULL:
+            return ""                     # a placeholder: "moved in" in two seconds, nothing sent
+    except OSError:
+        return ""
+    return onto
+
+
+def recheck_if_unread(info_hash, indexes):
+    """A pack looked at again only when one of these files is still short of whole in the
+    client, and not while it is being looked at already - a whole pack is hundreds of
+    gigabytes read. Returns whether a recheck was asked for."""
+    qb = QB(load()["config"])
+    t = qb.info(info_hash)
+    if t is None or str(t.get("state") or "").startswith("checking"):
+        return False
+    wanted = {int(i) for i in indexes}
+    short = [int(f.get("index", n)) for n, f in enumerate(qb.files(info_hash))
+             if int(f.get("index", n)) in wanted and (float(f.get("progress") or 0) < 1
+                                                      or int(f.get("priority") or 0) <= 0)]
+    if not short:
+        return False
+    # stopped before the files are switched on: a running pack fetches a file switched on
+    # and not yet read from the swarm - 17.7 GB of films already on the disk, 2026-10-31
+    qb.stop(info_hash)
+    qb.priority(info_hash, short, 1)
+    note_read(info_hash)
+    qb.recheck(info_hash)
+    return True
+
+
+def seed_when_read(info_hash, patience=4 * 3600, every=60, moved=()):
+    """After a recheck: once it is done and every file on is whole, the pack is started -
+    seeding only, nothing left to download. A file on and still short leaves it stopped:
+    started, it would fetch that file from the swarm. moved: files read because they were
+    moved in: one that failed is switched off, not left to stop the whole pack."""
+    qb = QB(load()["config"])
+    began = time.time()
+    while time.time() - began < patience:
+        time.sleep(every)
+        t = qb.info(info_hash)
+        if t is None:
+            return False
+        if str(t.get("state") or "").startswith("checking"):
+            continue
+        files = qb.files(info_hash)
+        failed = [int(f.get("index", n)) for n, f in enumerate(files)
+                  if int(f.get("index", n)) in set(moved) and float(f.get("progress") or 0) < 1]
+        if failed:
+            qb.priority(info_hash, failed, 0)
+            files = qb.files(info_hash)
+        if all(float(f.get("progress") or 0) >= 1 for f in files if int(f.get("priority") or 0) > 0):
+            qb.start(info_hash)
+            return True
+        return False
+    return False
+
+
+#: seconds between reads of one pack for films moved into it: a read takes hours and the
+#: pack does not seed meanwhile
+READ_MOVED_EVERY = 86400
+#: this little to read is minutes, so it goes as soon as a film arrives, this far apart: a
+#: read after every film copied would keep stopping the pack. A read covers all of the pack
+#: that is on the disk, switched on or off: 63 GB on took as long as the 700 GB there
+QUICK_READ_BYTES = 50 * 1000 * 1000 * 1000
+QUICK_READ_EVERY = 1800
+
+
+def moved_waiting(info_hash):
+    """Files moved into this pack that are on the disk at their length and that qBittorrent
+    has not read: until it has, the main server sees them as missing and hands them over
+    again every round (2535 times on 2026-11-01)."""
+    data = load()
+    mine = {int(d["index"]) for d in data["downloads"]
+            if d.get("hash") == info_hash and d.get("state") == "done" and not d.get("off")
+            and str(d.get("reason") or "").startswith("moved here")}
+    # read once is enough: short after that is its edge pieces, or a file that failed
+    mine -= {int(i) for i in (data.get("movedChecked") or {}).get(info_hash) or []}
+    if not mine:
+        return []
+    qb = QB(data["config"])
+    t = qb.info(info_hash)
+    if t is None:
+        return []
+    out = []
+    for n, f in enumerate(qb.files(info_hash)):
+        i = int(f.get("index", n))
+        if i not in mine or (float(f.get("progress") or 0) >= 1 and int(f.get("priority") or 0) > 0):
+            continue
+        try:
+            if os.path.getsize(os.path.join(str(t.get("save_path") or ""), str(f.get("name") or ""))) == int(f.get("size") or 0):
+                out.append(i)
+        except (OSError, TypeError, ValueError):
+            pass
+    return out
+
+
+def read_moved(now=None):
+    """One pack read for the films moved into it, once they have all arrived: at most one
+    at a time, once a day each, never with a download coming into it. The name of the pack
+    read, or ""."""
+    now = time.time() if now is None else now
+    data = load()
+    qb = QB(data["config"])
+    packs = data["packs"]
+    if any(str((qb.info(p["hash"]) or {}).get("state") or "").startswith("checking") for p in packs):
+        return ""
+    for pack in packs:
+        h = pack["hash"]
+        since = now - float((data.get("movedRead") or {}).get(h) or 0)
+        if since < QUICK_READ_EVERY:
+            continue
+        if any(d.get("hash") == h and d.get("state") == "downloading" for d in data["downloads"]):
+            continue
+        waiting = moved_waiting(h)
+        if not waiting:
+            continue
+        if since < READ_MOVED_EVERY:
+            to_read = sum(float(f.get("progress") or 0) * int(f.get("size") or 0)
+                          + (int(f.get("size") or 0) if int(f.get("index", n)) in waiting else 0)
+                          for n, f in enumerate(qb.files(h)))
+            if to_read > QUICK_READ_BYTES:
+                continue
+        if recheck_if_unread(h, waiting):
+            with LOCK:
+                data.setdefault("movedRead", {})[h] = now
+                checked = data.setdefault("movedChecked", {})
+                checked[h] = sorted(set(checked.get(h) or []) | set(waiting))
+                save()
+            return str(pack.get("name") or "")
+    return ""
+
+
+def moved_fresh(info_hash, index):
+    """A file that really came over the network: it is read again."""
+    data = load()
+    rows = (data.get("movedChecked") or {}).get(info_hash) or []
+    if int(index) in rows:
+        with LOCK:
+            rows.remove(int(index))
+            save()
+
+
+def finish_moved_reads(now=None):
+    """Packs whose read for moved films has ended, seeding again: asked each round, so a
+    restart during a read cannot leave one stopped. Moved films still short are switched
+    off, so nothing is fetched: their edge pieces hold other films' bytes. The names started."""
+    now = time.time() if now is None else now
+    data = load()
+    qb = QB(data["config"])
+    started = []
+    for pack in data["packs"]:
+        h = pack["hash"]
+        if now - float((data.get("movedRead") or {}).get(h) or 0) >= READ_MOVED_EVERY:
+            continue
+        t = qb.info(h) or {}
+        if not str(t.get("state") or "").startswith(("stopped", "paused")) or h in STATE.get("yielding", {}):
+            continue
+        if any(d.get("hash") == h and d.get("state") == "downloading" for d in data["downloads"]):
+            continue
+        moved = {int(d["index"]) for d in data["downloads"] if d.get("hash") == h
+                 and str(d.get("reason") or "").startswith("moved here")}
+        files = qb.files(h)
+        short = [int(f.get("index", n)) for n, f in enumerate(files)
+                 if int(f.get("index", n)) in moved and int(f.get("priority") or 0) > 0
+                 and float(f.get("progress") or 0) < 1]
+        if short:
+            qb.priority(h, short, 0)
+            files = qb.files(h)
+        if all(float(f.get("progress") or 0) >= 1 for f in files if int(f.get("priority") or 0) > 0):
+            qb.start(h)
+            started.append(str(pack.get("name") or ""))
+    return started
+
+
+VIDEO_FILE = (".mkv", ".mp4", ".avi", ".m4v")
+
+
+def elsewhere_plan(packs, infos, files_of):
+    """Films packs lack here that another torrent here holds whole - the same file, by name
+    and length: [{torrent, name, file, path, pack, index, fits}]. fits: the torrent's file
+    name ends the pack's own path for it, so the torrent can be put where the pack keeps
+    the film and both seed one file. Races are not counted."""
+    want = {}
+    for h in packs:
+        t = infos.get(h)
+        if not t:
+            continue
+        for n, f in enumerate(files_of(h)):
+            if float(f.get("progress") or 0) < 1 and str(f.get("name") or "").lower().endswith(VIDEO_FILE):
+                key = (os.path.basename(str(f["name"])).lower(), int(f.get("size") or 0))
+                want.setdefault(key, (h, int(f.get("index", n)), str(f["name"])))
+    # only torrents named like a wanted film - its folder or its file - are opened: asked
+    # of every torrent, a round listed the files of two thousand of them
+    names = set()
+    for (base, _), (_, _, pname) in want.items():
+        names.update({base, os.path.splitext(base)[0]})
+        names.update(x.lower() for x in pname.replace("\\", "/").split("/")[:-1])
+    out = []
+    for h, t in infos.items():
+        if h in packs or float(t.get("progress") or 0) < 1 or t.get("category") == "fl-race":
+            continue
+        if str(t.get("name") or "").lower() not in names:
+            continue
+        for f in files_of(h):
+            key = (os.path.basename(str(f.get("name") or "")).lower(), int(f.get("size") or 0))
+            if key not in want or not key[0].endswith(VIDEO_FILE):
+                continue
+            ph, index, pname = want.pop(key)
+            tail = str(f["name"]).replace("\\", "/")
+            out.append({"torrent": h, "name": str(t.get("name") or ""), "file": tail,
+                        "path": os.path.join(str(t.get("save_path") or ""), tail.replace("/", os.sep)),
+                        "pack": ph, "index": index,
+                        "fits": ("/" + pname.replace("\\", "/").lower()).endswith("/" + tail.lower())})
+    return out
+
+
+def location_for(pack_path, tail):
+    """The folder a torrent whose file is named tail goes under so that file is the one at
+    pack_path, or "" when tail does not end pack_path."""
+    full = os.path.normpath(str(pack_path))
+    tail = os.path.normpath(str(tail).replace("/", os.sep))
+    if not tail or tail.startswith(("..", os.sep)) or os.path.isabs(tail):
+        return ""
+    if not os.path.normcase(full).endswith(os.sep + os.path.normcase(tail)):
+        return ""
+    return full[:-len(tail) - 1]
+
+
+def inside(folder, name):
+    """folder joined with a torrent's own file name, or "" when the name leaves the folder."""
+    rel = os.path.normpath(str(name).replace("/", os.sep))
+    if not rel or rel.startswith("..") or os.path.isabs(rel) or os.path.splitdrive(rel)[0]:
+        return ""
+    return os.path.join(folder, rel)
+
+
+def file_to_send(info_hash, index):
+    """The path of a pack film to send: the pack's own, unless another torrent here holds more
+    of it. The pack's can be a stub with the film's name: 779 bytes went out as a whole film."""
+    where = file_of(info_hash, index)
+    other = elsewhere_path(info_hash, int(index or -1))
+
+    def length(path):
+        try:
+            return os.path.getsize(path) if path else -1
+        except OSError:
+            return -1
+    best = other if length(other) > length(where) else where
+    return best if length(best) >= 0 else ""
+
+
+def elsewhere_path(info_hash, index):
+    """Where a pack film held by another torrent here sits, from the last pack round."""
+    return (STATE.get("elsewhere") or {}).get((str(info_hash), int(index)), "")
+
+
 def placed_path(info_hash, index, name):
     """Where a file copied from the other machine goes here: where this machine's own
     pack expects it, else under the save folder by the name the other machine sent."""
@@ -2870,12 +4153,13 @@ def placed_path(info_hash, index, name):
     return os.path.join(root, str(name).replace("/", os.sep))
 
 
-def place_and_recheck(info_hash, index, name, reader, size=0):
+def place_and_recheck(info_hash, index, name, reader, size=0, recheck=True, share=None):
     """Write a file copied from the other machine where its pack expects it, then look again.
 
     Returns the path written, or "" when there was nowhere sensible to put it. The
     file is written beside itself and moved into place, so a half-copied one is never
-    mistaken for the film.
+    mistaken for the film. recheck=False leaves the looking again to the caller: a pack
+    of hundreds of gigabytes is read whole by each recheck, so a run of files is checked once.
     """
     # Where this machine's own qBittorrent expects that file, not where the other
     # machine kept it. The two hold the same pack under different layouts - one with
@@ -2891,8 +4175,9 @@ def place_and_recheck(info_hash, index, name, reader, size=0):
         os.makedirs(os.path.dirname(onto), exist_ok=True)
     except OSError:
         return ""
-    if os.path.exists(onto) and size and os.path.getsize(onto) == int(size):
-        return onto                        # already here, and the right length
+    if (os.path.exists(onto) and size and os.path.getsize(onto) == int(size)
+            and (share or on_disk_share)(onto) >= ON_DISK_FULL):
+        return onto                        # already here, the right length, and really there
     part = onto + ".part"
     try:
         with open(part, "wb") as f:
@@ -2901,6 +4186,9 @@ def place_and_recheck(info_hash, index, name, reader, size=0):
                 if not lump:
                     break
                 f.write(lump)
+        # short of its length it is not the film: a 779-byte stub replaced a partial copy here
+        if size and os.path.getsize(part) != int(size):
+            raise ValueError("came short")
         os.replace(part, onto)
     except Exception:
         try:
@@ -2911,6 +4199,8 @@ def place_and_recheck(info_hash, index, name, reader, size=0):
     # Asked for, then looked at again: a file nobody asked this machine to fetch sits
     # at priority nought, and a recheck over one of those leaves the pack saying it
     # has none of it however whole the file on the disk is.
+    if not recheck:
+        return onto                        # switched on by the caller, with the pack stopped
     try:
         qb = QB(load()["config"])
         try:
@@ -3013,7 +4303,7 @@ def cancel(key, token, owner=False):
     """Stop a download: its file off in qBittorrent, the film offered again. The owner's to
     do, or whoever asked for it."""
     with LOCK:
-        row = latest_download(key)
+        row = coming_of(key, release_keys(key))
         if not row or row.get("state") not in ("queued", "downloading"):
             return {"ok": False, "why": "That film is not downloading"}
         if not owner and row.get("token") != token:
@@ -3048,19 +4338,50 @@ def active(token=None):
         if one and not any(o["ratingKey"] == one["ratingKey"] for o in out):
             offer = one.setdefault("offer", {})
             offer["queueKey"] = d["key"]
-            offer["mine"] = d.get("state") == "queued"
+            # the owner moves the one coming in as well
+            offer["mine"] = d.get("state") == "queued" or token is None
             out.append(one)
+    return out
+
+
+def ready_for(tokens, since):
+    """What these tokens asked for by hand that has come in since `since` and is in the
+    library now: the line each screen says when somebody's download is ready. What the
+    shuffle fetched ahead is left out - nobody asked for it, and it came by the dozen."""
+    out = []
+    for d in load()["downloads"]:
+        if (d.get("state") != "done" or d.get("auto") or d.get("token") not in tokens
+                or float(d.get("done") or 0) <= since):
+            continue
+        here = arrived(d.get("key") or "")
+        if not here:
+            continue                      # whole, but not in the library yet
+        name = str(d.get("title") or "")
+        if d.get("kind") == "episode" and d.get("season") and d.get("episode"):
+            name += " S%02dE%02d" % (int(d["season"]), int(d["episode"]))
+        out.append({"id": d.get("id"), "key": here, "title": name,
+                    "done": int(float(d.get("done") or 0))})
     return out
 
 
 def reorder(keys, token=None):
     """Put waiting downloads in the order given. Each one keeps to the places the ones
     being moved already hold, so somebody can reorder their own and nobody else's; the
-    owner (token None) can reorder all of them. The one coming in now is not moved."""
-    keys = [str(k) for k in keys or []]
+    owner (token None) can reorder all of them, and moves the one coming in below a
+    waiting one by doing so: it goes back to waiting and the one above it starts."""
+    keys = [str(k) for k in dict.fromkeys(str(k) for k in keys or [])]
+    back = []
     with LOCK:
         data = load()
         rows = data["downloads"]
+        if token is None:
+            state_of = {d.get("key"): d.get("state") for d in rows}
+            for d in rows:
+                if d.get("state") == "downloading" and d.get("key") in keys and any(
+                        state_of.get(k) == "queued" for k in keys[:keys.index(d["key"])]):
+                    d.update(state="queued", why="")
+                    d.pop("started", None)
+                    back.append(d["hash"])
         slots = [n for n, d in enumerate(rows) if d.get("state") == "queued"
                  and (token is None or d.get("token") == token)]
         by_key = {rows[n]["key"]: rows[n] for n in slots}
@@ -3069,6 +4390,12 @@ def reorder(keys, token=None):
         for n, row in zip(slots, wanted + rest):
             rows[n] = row
         save()
+    if back:
+        _back_to_waiting(back)
+        try:
+            _start_next()
+        except Exception as e:
+            STATE["why"] = str(e)[:160]
     return {"ok": True, "order": [r["key"] for r in wanted + rest]}
 
 
@@ -3135,9 +4462,52 @@ def _notice_removed():
             save()
 
 
+#: seconds nobody watching has been short of disk before a paused pack read starts again
+CALM_FOR = 45
+
+
+def read_turns(checking, watched, short, held, calm_since, now):
+    """(stop, start, calm_since) for pack reads: those on a drive somebody is watching from
+    are stopped while a viewer is short of disk; the ones stopped start again once nobody
+    has been short for CALM_FOR seconds, or their drive is no longer watched. checking:
+    {hash: drive} being read; held: {hash: drive} stopped for a viewer. A read and a film
+    on one drive left the film three seconds from stopping (2026-11-01)."""
+    if short:
+        return [h for h, d in checking.items() if d in watched and h not in held], [], 0.0
+    calm_since = calm_since or now
+    start = [h for h, d in held.items() if d not in watched or now - calm_since >= CALM_FOR]
+    return [], start, calm_since
+
+
+def yield_reads(watched, short, now=None):
+    """Pack reads paused and started again by read_turns, on this machine's client."""
+    now = time.time() if now is None else now
+    data = load()
+    qb = QB(data["config"])
+    held = STATE.setdefault("yielding", {})
+    checking = {}
+    for pack in data["packs"]:
+        try:
+            t = qb.info(pack["hash"]) or {}
+        except Exception:
+            continue
+        if str(t.get("state") or "").startswith("checking"):
+            checking[pack["hash"]] = os.path.splitdrive(str(t.get("save_path") or ""))[0].upper()
+    stop, start, STATE["calmSince"] = read_turns(checking, {str(d).upper() for d in watched},
+                                                 short, held, float(STATE.get("calmSince") or 0), now)
+    for h in stop:
+        qb.stop(h)
+        held[h] = checking[h]
+    for h in start:
+        held.pop(h, None)
+        qb.start(h)
+    return stop, start
+
+
 def _guard_packs():
     """Keep every pack in qBittorrent to what Palladium was asked for. One that nobody asked
-    for is stopped with all of its files off; one that was is held to those films."""
+    for is stopped with all of its files off; one that was is held to those films, and
+    one with a download coming in runs."""
     data = load()
     if not data["packs"]:
         return
@@ -3148,8 +4518,16 @@ def _guard_packs():
             if held is None:
                 continue
             only_asked(qb, pack["hash"])
-            if not asked_for(pack["hash"]) and not str(held.get("state") or "").startswith(("stopped", "paused")):
+            stopped = str(held.get("state") or "").startswith(("stopped", "paused"))
+            if not asked_for(pack["hash"]) and not stopped:
                 _stop(qb, pack["hash"])
+            # stopped in the moment between one download and the next, it stayed
+            # stopped with the next one on: 0% and an ETA counting up
+            # nor one whose read is paused for somebody watching
+            elif stopped and not STATE.get("held") and pack["hash"] not in STATE.get("yielding", {}) and any(
+                    d.get("hash") == pack["hash"] and d.get("state") == "downloading"
+                    for d in data["downloads"]):
+                qb.start(pack["hash"])
         except Exception as e:
             STATE["why"] = str(e)[:160]
 
@@ -3161,11 +4539,16 @@ def downloads():
     written before packs read episodes carry the programme's name alone, which is the
     same for every episode of it.
     """
+    data = load()
+    # every pack film by its key, once: looked up one row at a time, the page that polls
+    # this every two seconds searched 14 000 films for each of 300 rows and the requests
+    # piled up behind each other until the server stopped answering (2026-11-01)
+    films = {f.get("key"): f for p in data["packs"] for f in p.get("films") or []}
     out = []
-    for d in reversed(load()["downloads"]):
+    for d in reversed(data["downloads"]):
         one = {k: v for k, v in d.items() if k != "token"}
         if not one.get("episode"):
-            film = by_key(d.get("key") or "")[1] or {}
+            film = films.get(d.get("key") or "") or {}
             if film.get("kind") == "episode":
                 one.update({"kind": "episode", "season": film.get("season"),
                             "episode": film.get("episode"),
@@ -3199,8 +4582,11 @@ def _match_some(most=40):
     lib = STATE["lib"]() if STATE["lib"] else None
     if not lib or not (lib.config().get("tmdb_key") or "").strip():
         return False
-    waiting = [(p, f) for p in load()["packs"] for f in (p.get("films") or [])
-               if f.get("tmdb") is None or _wrong_year(f)]
+    waiting = [(p, f) for p, doubled in ((p, _doubled(p)) for p in load()["packs"])
+               for f in (p.get("films") or [])
+               if f.get("tmdb") is None or _wrong_year(f)
+               or (f.get("kind") == "episode" and f.get("named") != 2 and f.get("tmdb")
+                   and (str(f.get("title") or "").lower(), int(f.get("season") or 0)) in doubled)]
     if not waiting:
         return False
     genres = STATE.get("genres")
@@ -3251,6 +4637,23 @@ def _match_some(most=40):
     with LOCK:
         save()
     return True
+
+
+def _season_has_double(film):
+    """Whether the pack this episode is in has a double-episode file - "S06E04E05" - in its
+    season."""
+    for pack in load()["packs"]:
+        if any(f is film for f in pack.get("films") or []):
+            return (str(film.get("title") or "").lower(), int(film.get("season") or 0)) in _doubled(pack)
+    return False
+
+
+def _doubled(pack):
+    """(programme, season) of a pack's seasons that have a double-episode file."""
+    from pd_library import file_double
+    return {(str(f.get("title") or "").lower(), int(f.get("season") or 0))
+            for f in pack.get("films") or []
+            if f.get("kind") == "episode" and file_double(f.get("path") or "", int(f.get("season") or 0))}
 
 
 def _match_episode(lib, film):
@@ -3312,7 +4715,15 @@ def _match_episode(lib, film):
             told = {}
         STATE["seasons"][where] = told
         time.sleep(0.1)
-    one = told.get(int(film.get("episode") or 0)) or {}
+    number = int(film.get("episode") or 0)
+    if _season_has_double(film):
+        # the release counts a double episode as two, the catalogue as one: from the
+        # double on, the release's number is one or more ahead of the catalogue's
+        from pd_library import doubles_map
+        number = doubles_map(list(told.values())).get(number, number)
+    one = told.get(number) or {}
+    with LOCK:
+        film["named"] = 2
     if one:
         with LOCK:
             film["episodeName"] = one.get("name") or ""
@@ -3550,9 +4961,16 @@ def _follow_downloads():
                     d["why"] = halted_why(state, info_hash)
                 changed = True
                 continue
+            # a pack waiting for another pack's check says "checking" too: one that has
+            # not moved for a minute is waiting its turn, and said so
+            if state.startswith("checking"):
+                state = check_state(info_hash, float(said.get("progress") or 0), time.time())
             for d in [x for x in active if x["hash"] == info_hash]:
                 if d.pop("stuck", None):
                     d["why"] = ""
+                    changed = True
+                if d.get("qb") != state:
+                    d["qb"] = state             # checking, finding, waiting: said as such
                     changed = True
             speed = float(said.get("dlspeed") or 0)
             was = SPEEDS.get(info_hash)
@@ -3591,8 +5009,11 @@ def _follow_downloads():
             f = by_index.get(int(d["index"]))
             if not f:
                 continue
-            progress = float(f.get("progress") or 0)
             remaining = left(d)
+            # qBittorrent's own number for the file: an estimate from the torrent's bytes
+            # received read 99% while qBittorrent said 80%, and then looked stuck
+            progress = float(f.get("progress") or 0)
+            d.pop("got", None)
             share = speed * remaining / waiting
             mbit = round(share * 8 / 1e6, 1)
             # the rate as it reads now for the rate, the settled one for the time
@@ -3712,61 +5133,6 @@ def _chase_arrivals():
         STATE["scan_wanted"] = True
 
 
-#: how fast qBittorrent may go, both ways, while somebody's picture is running low:
-#: it shares the disk the film is read from, and seeding reads it as hard as fetching
-GENTLE_BYTES = 512 * 1024
-#: whether it is held back now, what its own limits were, and since when all is calm
-GENTLE = {"on": False, "was": None, "calm": 0.0}
-
-
-def ease_off():
-    """While anybody is low, qBittorrent goes gently; a minute after everybody is fine,
-    its own limits are put back. The server says who is low through STATE["thin"]."""
-    thin = STATE.get("thin")
-    try:
-        low = bool(thin and thin() in ("panic", "back"))
-    except Exception:
-        low = False
-    # eased before a restart: the limits it had are on disk, and are put back as usual
-    if not GENTLE["on"]:
-        kept = (load().get("config") or {}).get("gentleWas")
-        if kept:
-            GENTLE.update(on=True, was=tuple(kept), calm=0.0)
-    if not low and not GENTLE["on"]:
-        return
-    try:
-        qb = QB(load()["config"])
-        if low and not GENTLE["on"]:
-            was = (int((qb._call("/api/v2/transfer/downloadLimit", timeout=6) or b"0").strip() or 0),
-                   int((qb._call("/api/v2/transfer/uploadLimit", timeout=6) or b"0").strip() or 0))
-            qb._call("/api/v2/transfer/setDownloadLimit", fields={"limit": GENTLE_BYTES})
-            qb._call("/api/v2/transfer/setUploadLimit", fields={"limit": GENTLE_BYTES})
-            GENTLE.update(on=True, was=was, calm=0.0)
-            # and on disk: a restart while eased left qBittorrent at 512 KB/s for good
-            with LOCK:
-                load().setdefault("config", {})["gentleWas"] = list(was)
-                save()
-            return
-        if low:
-            GENTLE["calm"] = 0.0
-            return
-        now = time.time()
-        if not GENTLE["calm"]:
-            GENTLE["calm"] = now
-            return
-        if now - GENTLE["calm"] < 60:
-            return
-        down, up = GENTLE["was"] or (0, 0)
-        qb._call("/api/v2/transfer/setDownloadLimit", fields={"limit": down})
-        qb._call("/api/v2/transfer/setUploadLimit", fields={"limit": up})
-        GENTLE.update(on=False, was=None, calm=0.0)
-        with LOCK:
-            (load().get("config") or {}).pop("gentleWas", None)
-            save()
-    except Exception as e:
-        STATE["why"] = str(e)[:160]
-
-
 #: the last error each step of the worker gave, so the same one is logged once
 STEP_FAULTS = {}
 
@@ -3787,10 +5153,8 @@ def _step(name, call):
         if STEP_FAULTS.get(name) != why:
             STEP_FAULTS[name] = why
             try:
-                with open(os.path.join(STATE["root"], "debug.log"), "a",
-                          encoding="utf-8") as f:
-                    f.write("%s download worker: %s failed - %s%s"
-                            % (time.strftime("%H:%M:%S"), name, why, chr(10)))
+                pd_log.raw("%s download worker: %s failed - %s%s"
+                        % (time.strftime("%H:%M:%S"), name, why, chr(10)), os.path.join(STATE["root"], "debug.log"))
             except OSError:
                 pass
         return None
@@ -3805,8 +5169,10 @@ def _scan_if_wanted():
 
 def _work():
     while True:
+        # first and again after the slow steps: a round takes half a minute, and a film
+        # whole on the disk waited that long to be called ready
+        _step("_follow_downloads", _follow_downloads)
         _step("_mirror_house", _mirror_house)
-        _step("ease_off", ease_off)
         _step("_notice_removed", _notice_removed)
         _step("read_the_folder", read_the_folder)
         _step("refill_packs", refill_packs)
@@ -3818,8 +5184,10 @@ def _work():
         # went away and came back leaves every torrent that touched it halted
         _step("mend_halted", mend_halted)
         _step("keep_at_once", keep_at_once)
+        _step("keep_merge", keep_merge)
         _step("_start_next", _start_next)
         _step("_guard_packs", _guard_packs)
+        _step("_follow_downloads", _follow_downloads)
         _step("_name_arrivals", _name_arrivals)
         _step("_chase_arrivals", _chase_arrivals)
         _step("_tracker_landed", _tracker_landed)

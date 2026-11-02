@@ -62,7 +62,8 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 // it opens on the one the settings put forward, lit
                 val opening = remember { FocusRequester() }
-                val first = rows.firstOrNull { it.pick } ?: rows.firstOrNull { it.why.isEmpty() }
+                val first = rows.firstOrNull { it.pick && it.word.isEmpty() }
+                    ?: rows.firstOrNull { it.why.isEmpty() && it.word.isEmpty() } ?: rows.firstOrNull()
                 // a dialog is its own window, and a request made before that window has
                 // focus is dropped without a word: asked again until a row holds it
                 var landed by remember { mutableStateOf(false) }
@@ -97,7 +98,7 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                                         onSaid("Starting the download…")
                                         (ctx as AppCompatActivity).lifecycleScope.launch {
                                             val (got, word) = Api.takeFromTracker(full, one.id)
-                                            onSaid(if (got) "Downloading $word" else word)
+                                            onSaid(if (got) "" else word)
                                         }
                                     }
                                 }
@@ -112,13 +113,13 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                                      else Skin.Fg,
                              fontSize = 13.sp, lineHeight = 17.sp)
                         val under = listOfNotNull(
+                            one.word.takeIf { it.isNotEmpty() },
                             "Recommended".takeIf { one.pick && !one.have },
-                            when { one.disk -> "On disk"; one.pack -> "Pack"; one.box -> if (one.seasonPack) "Season pack" else "Box set"; else -> "Tracker" },
-                            "${one.seeds} seeding".takeIf { !one.disk && one.seeds >= 0 },
+                            Route.versionTag(one.disk, one.have, one.pack, one.box, one.seasonPack),
+                            "${one.seeds} seeding".takeIf { !one.disk && !one.have && one.seeds >= 0 },
                             one.mbit.takeIf { it > 0 }?.let { "$it Mbit/s" },
                             one.size.takeIf { it > 0 }?.let {
                                 String.format(java.util.Locale.US, "%.1f GB", it / 1073741824.0) },
-                            "on disk".takeIf { one.have && !one.disk },
                             one.why.takeIf { it.isNotEmpty() },
                         ).joinToString("   ·   ")
                         Text(under, color = if (ring) Color.Black else Skin.Dim,

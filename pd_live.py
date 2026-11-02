@@ -6,6 +6,7 @@ otherwise. A channel is played through this server - ffmpeg copies the picture a
 makes the sound AAC, in short HLS pieces, so the browser can play what the channel's
 own server would not let it reach - and stopped a minute after nobody asks for it.
 """
+import pd_log
 import hashlib
 import json
 import os
@@ -335,8 +336,7 @@ def youtube_stream(url):
 def _say_youtube(text):
     """A line in the server's log about reading a YouTube stream."""
     try:
-        with open(os.path.join(ROOT["dir"] or ".", "debug.log"), "a", encoding="utf-8") as f:
-            f.write("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)))
+        pd_log.raw("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)), os.path.join(ROOT["dir"] or ".", "debug.log"))
     except OSError:
         pass
 
@@ -515,15 +515,43 @@ def keep_ytdlp():
     threading.Thread(target=loop, name="palladium-ytdlp", daemon=True).start()
 
 
+def clear(key):
+    """A stopped channel's pieces deleted. The newest piece's number stays as an empty
+    file, so the next start carries on from it: 10-40 MB a channel were left behind."""
+    where = _dir(key)
+    try:
+        names = os.listdir(where)
+    except OSError:
+        return
+    last = next_number(names) - 1
+    for f in names:
+        try:
+            os.remove(os.path.join(where, f))
+        except OSError:
+            pass
+    if last >= 0:
+        try:
+            open(os.path.join(where, "seg%06d.ts" % last), "wb").close()
+        except OSError:
+            pass
+
+
+def _ended(on, key):
+    """A channel's ffmpeg stopped, waited for so its files are let go, and its pieces cleared."""
+    try:
+        on["proc"].kill()
+        on["proc"].wait(timeout=10)
+    except Exception:
+        pass
+    clear(key)
+
+
 def stop(key):
     """Stop a channel now: one that did not start holds no connection while it retries."""
     with LOCK:
         on = RUNNING.pop(key, None)
     if on:
-        try:
-            on["proc"].kill()
-        except Exception:
-            pass
+        _ended(on, key)
 
 
 #: told of each channel that played: each a function key -> None
@@ -566,16 +594,25 @@ def _reaper():
     _REAPING["on"] = True
 
     def loop():
+        # what earlier runs left: every channel not playing now
+        try:
+            for key in os.listdir(os.path.join(ROOT["dir"], "cache", "live")):
+                with LOCK:
+                    playing = key in RUNNING
+                if not playing:
+                    clear(key)
+        except OSError:
+            pass
         while True:
             time.sleep(15)
+            ended = []
             with LOCK:
                 for key, on in list(RUNNING.items()):
                     if time.time() - on["seen"] > IDLE or on["proc"].poll() is not None:
-                        try:
-                            on["proc"].kill()
-                        except Exception:
-                            pass
+                        ended.append((key, on))
                         RUNNING.pop(key, None)
+            for key, on in ended:
+                _ended(on, key)
     threading.Thread(target=loop, name="palladium-live", daemon=True).start()
 
 

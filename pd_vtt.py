@@ -221,6 +221,115 @@ def script_of(said):
     return best
 
 
+def srt_end(text):
+    """When the last cue of a SubRip or WebVTT text ends, in seconds."""
+    return max([stamp_secs(m.group(1)) for m in re.finditer(r"-->\s*(%s)" % STAMP, text or "")]
+               or [0.0])
+
+
+def double_part(sub_end, runtime, before, after, name="", episode=0):
+    """Which half of a double episode a subtitle cut for the whole of it belongs to here:
+    ("first", where it ends) or ("second", where it starts), else None.
+
+    A double episode split into two files has one subtitle for both on most sites, and
+    that one ran 46 minutes on a 21-minute episode: hidden as cut for something else, and
+    the next language down was shown. Told apart by the lengths of the episodes beside
+    it, and where both would fit, by the episode numbers in the subtitle's name."""
+    if not sub_end or not runtime:
+        return None
+    slack = lambda total: 0.08 * total + 90
+    first = bool(after) and abs(sub_end - (runtime + after)) <= slack(runtime + after)
+    second = bool(before) and abs(sub_end - (before + runtime)) <= slack(before + runtime)
+    if first and second and episode:
+        # both would fit: the episode numbers in its name say which pair it was cut for -
+        # "E14E15", or one number alone, which on a double is the number it starts at
+        low = (name or "").lower()
+        says = lambda n: re.search(r"e0*%d(?!\d)" % n, low) is not None
+        if re.search(r"e0*%d\W{0,3}e?0*%d(?!\d)" % (episode, episode + 1), low):
+            second = False
+        elif re.search(r"e0*%d\W{0,3}e?0*%d(?!\d)" % (episode - 1, episode), low):
+            first = False
+        elif says(episode - 1) and not says(episode):
+            first = False
+        elif says(episode) and not says(episode - 1):
+            second = False
+    if first == second:
+        return None
+    return ("first", float(runtime)) if first else ("second", float(before))
+
+
+def cue_times(text):
+    """(start, end) of every cue, in seconds."""
+    return [(stamp_secs(m.group(1)), stamp_secs(m.group(2)))
+            for m in re.finditer(r"(%s)\s*-->\s*(%s)" % (STAMP, STAMP), text or "")]
+
+
+def best_shift(starts, ref, lo, hi):
+    """The shift that lines most of these cue starts up with another subtitle's for the
+    same video, within [lo, hi] seconds, and how many lined up. Subtitles in two
+    languages share most of their timing, so the shift with the most starts falling on
+    a start of the other is where this one belongs."""
+    votes = {}
+    for a in starts:
+        for b in ref:
+            d = b - a
+            if lo <= d <= hi:
+                k = round(d * 2) / 2
+                votes[k] = votes.get(k, 0) + 1
+    if not votes:
+        return 0.0, 0
+    k = max(votes, key=lambda x: votes[x])
+    return k, votes[k] + votes.get(k - 0.5, 0) + votes.get(k + 0.5, 0)
+
+
+def split_double(text, part, cut_at, runtime, ref_text=""):
+    """This episode's half of a subtitle cut for the whole double episode.
+
+    The whole has no credits between its halves and the files do, so the second half does
+    not start where the first file ends: with a subtitle beside the file that fits it,
+    the half is placed by lining its lines up with that one's. Without one, it is cut at
+    the first file's length and the sync check moves it from there; the second half is
+    then left whole ("" back), as nothing says where it starts."""
+    ref = [a for a, _ in cue_times(ref_text)]
+    if len(ref) >= 20:
+        cues = [a for a, _ in cue_times(text)]
+        if part == "first":
+            mine = [a for a in cues if a < cut_at + 300]
+            shift, n = best_shift(mine, ref, -300, 300)
+        else:
+            mine = [a for a in cues if a > cut_at - 400]
+            shift, n = best_shift(mine, ref, -cut_at - 400, -cut_at + 400)
+        if n >= max(15, len(ref) // 5):
+            last = max(e for _, e in cue_times(ref_text))
+            return srt_part(text, -shift, last - shift + 5, shift=shift)
+    if part == "first":
+        return srt_part(text, 0.0, cut_at)
+    return ""                             # where the second half starts is not known
+
+
+def srt_part(text, start, end, shift=None):
+    """The cues of a SubRip text that start between `start` and `end` seconds, the clock
+    moved by `shift` (back by `start` unless said) and the cues numbered again."""
+    move = -start if shift is None else shift
+    def stamp(s):
+        s = max(0.0, s)
+        return "%02d:%02d:%02d,%03d" % (int(s // 3600), int(s % 3600 // 60), int(s % 60),
+                                        int(round(s % 1 * 1000)) % 1000)
+    out = []
+    for block in re.split(r"\r?\n\s*\r?\n", (text or "").strip()):
+        lines = block.splitlines()
+        at = next((i for i, line in enumerate(lines) if "-->" in line), -1)
+        m = re.search(r"(%s)\s*-->\s*(%s)" % (STAMP, STAMP), lines[at]) if at >= 0 else None
+        if not m:
+            continue
+        a, b = stamp_secs(m.group(1)), stamp_secs(m.group(2))
+        if a < start or a >= end:
+            continue
+        out.append("%d\n%s --> %s\n%s" % (len(out) + 1, stamp(a + move), stamp(b + move),
+                                          "\n".join(lines[at + 1:])))
+    return "\n\n".join(out) + "\n"
+
+
 def last_cue(body):
     """The second the last cue in this WebVTT ends, so a player knows what it holds."""
     last = 0.0
@@ -433,7 +542,27 @@ def as_vtt(path):
     return ""
 
 
+#: an ASS override in a SubRip line - {\pos(190,200)}, {\an8}, {\i1} - which WebVTT
+#: does not know and a player then shows as words
+ASS_TAG = re.compile(r"\{\\[^}]*\}")
+#: and the ones that put a line at the top of the picture
+ASS_TOP = re.compile(r"\{\\[^}]*\ban[789]\b[^}]*\}")
+
+
 def srt_to_vtt(text):
-    """SubRip to WebVTT: a header, and commas in timestamps become full stops."""
+    """SubRip to WebVTT: a header, commas in timestamps become full stops, and the ASS
+    overrides some releases carry taken out - a line meant for the top of the picture
+    keeps its place there."""
     body = re.sub(r"(\d\d:\d\d:\d\d),(\d\d\d)", r"\1.\2", text.replace("\r", ""))
-    return "WEBVTT" + chr(10) + chr(10) + body
+    lines = body.split(chr(10))
+    timing = None
+    for i, line in enumerate(lines):
+        if "-->" in line:
+            timing = i
+            continue
+        if "{" not in line:
+            continue
+        if timing is not None and ASS_TOP.search(line) and "line:" not in lines[timing]:
+            lines[timing] = lines[timing].rstrip() + " line:5%"
+        lines[i] = ASS_TAG.sub("", line)
+    return "WEBVTT" + chr(10) + chr(10) + chr(10).join(lines)

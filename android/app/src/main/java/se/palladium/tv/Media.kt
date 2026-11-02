@@ -262,10 +262,24 @@ data class Media(
     var shuffleId: String = ""
     /** How watched a programme is right now, for the popular row: higher first. */
     var popularity: Int = 0
+    /** the wide picture, where the server names one: a pack's series and a catalogue
+     *  title keep theirs under another key than their own */
+    var art: String = ""
+
+    /** The wide picture a card across the screen wears: the one named, the library's
+     *  own by key for what is held, and the poster when there is no wide one at all. */
+    fun widePicture(): String? = art.ifEmpty {
+        if (Regex("^[0-9a-f]{12}$").matches(ratingKey)) "/art/$ratingKey/backdrop" else thumb
+    }
     /** Off the popular list and not held yet: pressing it puts it in the library. */
     var addable: Boolean = false
     /** The next episode of a series being waited on: not here yet, and when it airs. */
     var upcoming: Boolean = false
+    /** a collection that is a series' own - its shuffle: the Collections tab's second row */
+    var seriesShelf: Boolean = false
+    /** in a collection: left out of its Play shuffle whole, or this many of its episodes */
+    var notShuffled: Boolean = false
+    var shuffleOut: Int = 0
     /** out already, and nowhere here or on the tracker to fetch it from */
     var missing: Boolean = false
     /** a series' newest aired episode: its key and number, for Recently released */
@@ -283,6 +297,13 @@ data class Media(
     var fetchable: Boolean = false
     /** an upcoming episode whose air date is today */
     var airsToday: Boolean = false
+    /** an upcoming episode's or season's air date, "yyyy-MM-dd" */
+    var airDate: String = ""
+    /** the server's words: the ribbon of a title not out yet, a Start slide's first button
+     *  and whether it plays */
+    var band: String = ""
+    var actWord: String = ""
+    var actPlays: Boolean = false
     /** Rotten Tomatoes for a film not held yet, percent; -1 when not known. */
     var critics: Int = -1
     var audience: Int = -1
@@ -362,6 +383,12 @@ data class Media(
     var offerRefused: String = ""
     /** while it comes in: megabits a second, and seconds left (negative when not known) */
     var offerMbit: Double = 0.0
+    /** what the download is doing, as the server words it: "Looking for seeders" */
+    var offerWords: String = ""
+    /** and the stage: queued, finding, checking, waiting, downloading, unpacking, arriving, stuck */
+    var offerStage: String = ""
+    /** a pack copy of a film the library holds already: that film's key, to play meanwhile */
+    var offerHeldKey: String = ""
     var offerEta: Long = -1L
     /** who asked for it, and how many downloads are ahead of it while it waits */
     var offerWho: String = ""
@@ -457,7 +484,7 @@ data class Media(
     fun canDirectPlay(): Boolean {
         val v = videoCodec?.lowercase() ?: return false
         val a = audioCodec?.lowercase() ?: ""
-        val videoOk = v in setOf("h264", "avc", "hevc", "h265", "vp9", "av1", "vp8")
+        val videoOk = Route.videoDirect(v, v == "av1" && Api.takesAv1())
         val audioOk = a in setOf("aac", "ac3", "eac3", "mp3", "flac", "opus", "vorbis", "pcm",
                                  "pcm_s16le", "truehd")
         return videoOk && audioOk
@@ -781,8 +808,12 @@ data class Media(
                 it.shelfResumeAt = o.optInt("resumeAt", 0)
                 it.shuffleId = o.optString("shuffleId", "")
                 it.popularity = o.optInt("popularity", 0)
+                it.art = o.optString("art", "").let { a -> if (a == "null") "" else a }
                 it.addable = o.optBoolean("addable", false)
                 it.upcoming = o.optBoolean("upcoming", false)
+                it.seriesShelf = o.optBoolean("seriesShelf", false)
+                it.notShuffled = o.optBoolean("notShuffled", false)
+                it.shuffleOut = o.optInt("shuffleOut", 0)
                 it.missing = o.optBoolean("missing", false)
                 it.latestKey = o.optString("latestKey", "")
                 it.shelf = o.optString("shelf", "")
@@ -793,6 +824,10 @@ data class Media(
                 it.latestNumber = o.optInt("latestNumber", 0)
                 it.fetchable = o.optBoolean("fetchable", false)
                 it.airsToday = o.optBoolean("airsToday", false)
+                it.airDate = o.optString("airDate", "").let { a -> if (a == "null") "" else a }
+                it.band = o.optString("band", "")
+                o.optJSONObject("act")?.let { a ->
+                    it.actWord = a.optString("word", ""); it.actPlays = a.optBoolean("plays") }
                 it.critics = if (o.isNull("critics")) -1 else o.optInt("critics", -1)
                 it.audience = if (o.isNull("audience")) -1 else o.optInt("audience", -1)
                 it.tagline = o.optString("tagline", "")

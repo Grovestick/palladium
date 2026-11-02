@@ -67,6 +67,7 @@ let navStack = [];
 let onResize = null;
 let playerEntry = false;   // the open player owns a history entry of its own
 let suppressPop = false;   // set when we consume an entry ourselves
+let sheetPop = null;       // Show more's sheet: what its history step does when it goes
 
 /* Where a list was when a title was opened from it, so back lands on that title rather
    than at the top of a library of a thousand films. */
@@ -92,6 +93,8 @@ function restoreListPlace() {
 /* The screen on show, so a reload for a new version comes back to it rather than to
    the front page: the title or search open, the tab, and a film playing and where. */
 let SCREEN = { kind: "tab", view: "home" };
+//: the screen before anything was opened: start-up opens the first tab only while it stands
+const FIRST_SCREEN = SCREEN;
 
 function screenNow() {
   const here = Object.assign({}, SCREEN);
@@ -115,6 +118,11 @@ window.reloadHere = () => {
   location.reload();
 };
 
+/* A title's key that names something: not missing, and not the word a missing one became. */
+function keyed(key) {
+  return key != null && key !== "" && String(key) !== "undefined" && String(key) !== "null";
+}
+
 async function restoreScreen() {
   let was = null;
   try {
@@ -122,6 +130,7 @@ async function restoreScreen() {
     sessionStorage.removeItem("pd-screen");
   } catch (e) { return; }
   if (!was) return;
+  if (was.kind && was.kind !== "search" && was.kind !== "person" && !keyed(was.key)) was.kind = "";
   if (was.settings && window.settingsTab) settingsTab(was.settings.tab, was.settings.sub);
   if (was.tab && was.tab !== "home") go(was.tab);
   if (was.kind === "movie") await viewMovie(was.key);
@@ -229,6 +238,8 @@ if ($("#video")) {
 
 window.addEventListener("popstate", () => {
   if (suppressPop) { suppressPop = false; return; }
+  // Show more's sheet: Back closes it, or its step goes and what was pressed is done
+  if (sheetPop) { const then = sheetPop; sheetPop = null; then(); return; }
   // a film left open behind the settings page is the first thing back should return
   // to; the player's own entry is still below it, and stops the film when reached
   if (leftPlayerOpen && backToFilm()) return;
@@ -359,7 +370,7 @@ function url(path, params = {}, srv) {
 const serverGone = (e) =>
   e instanceof TypeError || /Failed to fetch|NetworkError|-> 5\d\d/.test(String(e));
 
-async function api(path, params, srv) {
+async function api(path, params, srv, page) {
   const s = srv !== undefined ? srv : CTX;
   // not asked at all when the background check has just seen it off
   if (!s && homeAnswers() === false && copyAnswers() && standbyAddress()) {
@@ -371,8 +382,9 @@ async function api(path, params, srv) {
     return ask(path, params, there);
   }
   try {
-    return await ask(path, params, s);
+    return await ask(path, params, s, page);
   } catch (e) {
+    if (e && e.pageMoved) throw e;
     // This server has gone and there is a machine holding copies of it. The page
     // cannot fetch its way out of a server that is off, so the address was handed
     // over while it still answered - this is where that is spent, once, and
@@ -413,11 +425,21 @@ function waitFor(where) {
   return QUICK_WAIT;
 }
 
-async function ask(path, params, s) {
+//: ended when another screen is opened: a shelf's rows asked for the screen left behind
+//: are given up rather than queued in front of the one now asked for
+let PAGE_STOP = new AbortController();
+function pageMoved() {
+  PAGE_STOP.abort();
+  PAGE_STOP = new AbortController();
+}
+
+async function ask(path, params, s, page) {
   const where = (s ? s.origin : location.origin).replace(/\/$/, "");
   const hurry = waitFor(where);
   const stop = hurry ? new AbortController() : null;
   const timer = stop ? setTimeout(() => stop.abort(), hurry) : 0;
+  const left = page ? PAGE_STOP.signal : null;
+  if (left && stop) left.addEventListener("abort", () => stop.abort(), { once: true });
   let r;
   try {
     r = await fetch(url(path, params, s), {
@@ -426,9 +448,11 @@ async function ask(path, params, s) {
       headers: s ? { Accept: "application/json" }
                  : { Accept: "application/json",
                      "X-Palladium-App": "web " + PAGE_BUILD },
-      signal: stop ? stop.signal : undefined,
+      signal: stop ? stop.signal : (left || undefined),
     });
   } catch (e) {
+    // given up because the screen changed: says nothing about the server
+    if (left && left.aborted) { e.pageMoved = true; throw e; }
     notAnswering[where] = Date.now();      // it is off, or too slow to be waited on
     throw e;
   } finally {
@@ -1136,7 +1160,8 @@ async function fixMatch(item, after) {
 /** The button that opens it - the owner's, since it rewrites the library. */
 function fixMatchButton(item, after) {
   const b = document.createElement("button");
-  b.className = "btn ghost";
+  // words, not a button's frame: it is the last thing on the row and the least used
+  b.className = "btn fixmatch";
   b.textContent = "Fix match";
   b.title = "This is the wrong film or programme";
   b.onclick = () => fixMatch(item, after);
@@ -1203,17 +1228,32 @@ async function pickCollection(item, anchor, after) {
     head.textContent = shelves.length ? "Collections" : "No collections yet";
     menu.appendChild(head);
     shelves.forEach((s) => {
-      const row = document.createElement("button");
+      // the name and whether this is on it, then Add or Remove as it stands, and Go to
+      const row = document.createElement("div");
       row.className = "collpick-row" + (s.state === "all" ? " on" : s.state === "some" ? " some" : "");
       row.innerHTML = '<span class="tick">' +
-        (s.state === "all" ? "\u2713" : s.state === "some" ? "\u25D0" : "") + "</span>" + esc(s.name);
-      row.title = s.state === "all" ? "In this collection - press to take it out"
-        : s.state === "some" ? "Partly in this collection - press to add the rest"
-        : "Add to this collection";
-      row.onclick = async (e) => {
+        (s.state === "all" ? "\u2713" : s.state === "some" ? "\u25D0" : "") + "</span>" +
+        '<span class="nm">' + esc(s.name) + "</span>";
+      const act = document.createElement("button");
+      act.className = "btn ghost tiny";
+      act.textContent = s.state === "all" ? "Remove" : "Add";
+      act.title = s.state === "all" ? "Take it out of this collection"
+        : s.state === "some" ? "Partly in this collection - add the rest"
+        : "Add it to this collection";
+      act.onclick = async (e) => {
         e.stopPropagation();
         took(await markShelf(s.id, item.ratingKey, s.state !== "all"));
       };
+      const to = document.createElement("button");
+      to.className = "btn ghost tiny";
+      to.textContent = "Go to";
+      to.title = "Open this collection";
+      to.onclick = (e) => {
+        e.stopPropagation();
+        close();
+        goToCollection(s.id);
+      };
+      row.append(act, to);
       menu.appendChild(row);
     });
     const make = document.createElement("button");
@@ -1230,6 +1270,91 @@ async function pickCollection(item, anchor, after) {
     menu.appendChild(make);
   };
   draw(await shelvesHolding(item.ratingKey));
+}
+
+/* The Collections tab lit and one collection opened on it, the title's page left. */
+function goToCollection(id) {
+  endCollectionEdit();
+  tabBelow = "";
+  inSearch = false;
+  collSearchOn = "";
+  $("#search").value = "";
+  sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
+  pageMoved();
+  SCREEN = { kind: "tab", view: "collections" };
+  navStack = [];
+  document.querySelectorAll(".tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.view === "collections"));
+  openCollection(id);
+}
+
+/* The watchlist button pressed: where the title stands, Add or Remove as it stands, a
+   favorite or not, and the watchlist itself. */
+function pickWatchlist(item, anchor, after) {
+  document.querySelectorAll(".collpick").forEach((m) => m.remove());
+  const menu = document.createElement("div");
+  menu.className = "collpick";
+  const at = anchor.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(at.left, window.innerWidth - 350)) + "px";
+  menu.style.top = (at.bottom + window.scrollY + 4) + "px";
+  document.body.appendChild(menu);
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const close = (e) => {
+    if (e && menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener("mousedown", close);
+    document.removeEventListener("keydown", onKey);
+  };
+  setTimeout(() => {
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+  }, 0);
+  const button = (label, go) => {
+    const b = document.createElement("button");
+    b.className = "collpick-row";
+    b.textContent = label;
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      await go();
+    };
+    menu.appendChild(b);
+  };
+  const draw = () => {
+    menu.innerHTML = "";
+    const fav = isFav(item), on = fav || isMarked(item);
+    const head = document.createElement("div");
+    head.className = "collpick-head";
+    head.textContent = watchlistSaid(on, fav, partMarked(item));
+    menu.appendChild(head);
+    button(on ? "\u2606 Remove from watchlist" : "\u2605 Add to watchlist", async () => {
+      if (!on) await setMarked(item, true);
+      else {
+        if (fav) await setFav(item, false);
+        await setMarked(item, false);
+      }
+      draw();
+      if (after) after();
+    });
+    button(fav ? "\u2661 Not a favorite" : "\u2665 Favorite", async () => {
+      // a favorite is on the watchlist as well
+      if (!fav && !isMarked(item)) await setMarked(item, true);
+      await setFav(item, !fav);
+      draw();
+      if (after) after();
+    });
+    button("Go to watchlist", async () => {
+      close();
+      go("watchlist");
+    });
+  };
+  draw();
+}
+
+/* The watchlist popup's line saying where a title stands. */
+function watchlistSaid(on, fav, part) {
+  return fav ? "A favorite: on your watchlist, and kept there when watched"
+    : on ? "On your watchlist" : part ? "Partly on your watchlist - Add puts the rest on"
+    : "Not on your watchlist";
 }
 
 /* Right-click on a poster: which collections it is on. */
@@ -1314,12 +1439,13 @@ let shuffleDrew = "";
  * whichever browser they happen to be at - and the main server keeps it, so the same
  * evening carries on from any machine.
  */
-async function shuffleDraw(cid, resume, back) {
+async function shuffleDraw(cid, resume, back, at) {
   let d;
   try {
     d = await (await fetch("/collections/shuffle", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: cid, resume: !!resume, back: !!back }),
+      // at: the music videos round started from the card pressed
+      body: JSON.stringify({ id: cid, resume: !!resume, back: !!back, at: at || "" }),
     })).json();
   } catch (e) {
     return noServer();
@@ -1329,7 +1455,8 @@ async function shuffleDraw(cid, resume, back) {
   }
   CTX = null;
   casualOn = true;
-  shuffleOn = cid;
+  // a series page's "series:<id>" plays as the round it resolved to
+  shuffleOn = d.shelf || cid;
   shuffleDrew = d.key || "";
   // Asked for again by key, the way the collection queue asks. What the draw hands
   // back describes the title; what the player wants is the library's own answer with
@@ -1468,18 +1595,12 @@ function markControl(item, after) {
     coll.innerHTML = "\u21BB";
     coll.title = "Collections: add it to one, or take it out";
   };
-  left.onclick = async (e) => {
+  left.onclick = (e) => {
     e.stopPropagation();
-    if (isFav(item)) {
-      await setFav(item, false);
-      await setMarked(item, false);
-    } else if (isMarked(item)) {
-      await setFav(item, true);
-    } else {
-      await setMarked(item, true);
-    }
-    draw();
-    if (after) after();
+    pickWatchlist(item, left, () => {
+      draw();
+      if (after) after();
+    });
   };
   const learn = () => shelvesHolding(item.ratingKey).then((shelves) => {
     inShelf = shelves.some((s) => s.state !== "none");
@@ -1662,6 +1783,9 @@ function card(it, onDeck, coll) {
   // Nothing in the house can be played from this card - it can only be asked for -
   // and a band across the corner says so at a glance on a shelf of things that can.
   if (it.askable) el.classList.add("askable");
+  // left out of a collection's shuffle, whole or in part: red while Play shuffle is hovered
+  if (it.notShuffled) el.classList.add("unshuf");
+  else if (it.shuffleOut) el.classList.add("partshuf");
   // a live channel, or a group of them: a round card
   if (it.live || it.liveGroup) el.classList.add("live");
   el.dataset.key = String(it.ratingKey || "");
@@ -1701,8 +1825,10 @@ function card(it, onDeck, coll) {
     '<div class="poster"><span class="ph"></span>' +
     (thumb ? '<img loading="lazy" src="' + img(thumb, 300, 450, srv) +
       '" alt="" onerror="this.remove()">' : "") +
-    // whose shelf this came from, so a merged list is still legible
-    (srv ? '<div class="from">' + esc(srv.name) + "</div>" : "") +
+    // whose shelf this came from, so a merged list is still legible - a friend's, not
+    // this house's own copy carrying on while the main server is off: then every poster
+    // wore the copy's name
+    (srv && srv.id !== "__copy" ? '<div class="from">' + esc(srv.name) + "</div>" : "") +
     // held in 2160 lines somewhere: on a series that means one season of it may be,
     // which is still the reason to pick it off a shelf
     ((it.maxHeight || 0) >= 1700
@@ -1747,8 +1873,9 @@ function card(it, onDeck, coll) {
       : it.upcoming && it.missing ? '<div class="ribbon soon"><span>Missing</span></div>'
       // out today, and not on the tracker yet
       : it.upcoming && it.airsToday ? '<div class="ribbon today"><span>Today</span></div>'
-      : it.upcoming ? '<div class="ribbon soon"><span>Upcoming</span></div>'
-      : it.shuffle ? '<div class="ribbon"><span>Shuffle</span></div>'
+      : it.upcoming ? '<div class="ribbon soon"><span>' + upcomingBand(it) + '</span></div>'
+      : it.shuffle ? '<div class="ribbon"><span>' +
+        (/^music(:|$)/.test(it.shuffleId || "") ? "Music" : "Shuffle") + '</span></div>'
       // an episode here that aired this past week, or a season holding one
       : it.fresh ? '<div class="ribbon new"><span>New</span></div>'
       // a popular programme not held yet: pressing it puts it in the library
@@ -1760,9 +1887,7 @@ function card(it, onDeck, coll) {
       : it.offered && !offerWord(it)
         ? '<div class="ribbon"><span>Download</span></div>' : "") +
     ((it.offered || it.askable) && offerWord(it) ? '<div class="offerbadge">' + DOWNLOAD_MARK +
-      "<span>" + esc(offerWord(it)) +
-      (offerVersion(it) ? '<small class="ver">' + esc(offerVersion(it)) + "</small>" : "") +
-      "</span></div>" : "") +
+      "<span>" + offerBadgeText(it) + "</span></div>" : "") +
     // not under a band: both want the same corner, and a shuffled row is the shelf
     // rather than the episode it happens to be showing
     (it.shuffle ? ""
@@ -1902,8 +2027,8 @@ function card(it, onDeck, coll) {
     const line = el.querySelector(".s");
     if (line) line.textContent = [line.textContent, it.airs].filter(Boolean).join("  ·  ");
   }
-  // its season, scrolled to the greyed row with its air date
-  el.onclick = it.upcoming ? () => { CTX = srvOf(it);
+  // its season, scrolled to the greyed row with its air date; a film not out yet opens its own page
+  el.onclick = it.upcoming && it.type === "episode" ? () => { CTX = srvOf(it);
       viewShow(it.grandparentRatingKey, it.grandparentRatingKey + "-s" + it.parentIndex,
                it.ratingKey); }
     : onDeck ? () => resumeFromDeck(it) : () => open(it);
@@ -1983,6 +2108,22 @@ function grid(list, cols, onDeck, coll) {
  * dropped rather than leaving a shelf of two: one film was the only thing in the library
  * that was science fiction, drama and a television film at once.
  */
+/* How many genres a widened More like this keeps, in the order tried: one fewer each
+   time, down to two - or to one, for a film that had only two. */
+function genreFewer(n) {
+  const out = [];
+  for (let k = n - 1; k >= (n > 2 ? 2 : 1); k--) out.push(k);
+  return out;
+}
+
+/* Every choice of `size` of the words, in their own order. */
+function genreSets(words, size) {
+  if (size === 0) return [[]];
+  if (words.length < size) return [];
+  const [first, ...rest] = words;
+  return genreSets(rest, size - 1).map((s) => [first].concat(s)).concat(genreSets(rest, size));
+}
+
 async function moreLikeThis(m) {
   let words = (m.genres || []).filter(Boolean);
   if (!words.length) return null;
@@ -2004,8 +2145,18 @@ async function moreLikeThis(m) {
     return list.filter((x) => String(x.ratingKey) !== ownKey);
   };
   // AND filter on every genre the film carries. Dropping a genre to widen the row
-  // returned films of a different kind, so the row widens by year instead.
+  // returned films of a different kind, so the row widens by year instead - unless
+  // nothing carries them all: then one word fewer, the set that finds the most, and
+  // so on down to two. The tags in the heading say which were kept.
   let found = await carrying(words);
+  for (const size of genreFewer(words.length)) {
+    if (found.length) break;
+    const sets = genreSets(words, size);
+    const got = await Promise.all(sets.map((ws) => carrying(ws).catch(() => [])));
+    let best = -1;
+    got.forEach((g, i) => { if (g.length && (best < 0 || g.length > got[best].length)) best = i; });
+    if (best >= 0) { words = sets[best]; found = got[best]; }
+  }
   if (!found.length) return null;
   const mine = m.year || 0;
   // Year order, cut around this film: equal numbers either side of it. Sorted by
@@ -2104,7 +2255,7 @@ function rowSection(cat, list, total) {
     const tabState = SORT_BY_TAB[toTab[0] === "movie" ? "movies" : "shows"];
     tabState.key = toTab[1];
     tabState.dir = "desc";
-    serviceWanted[toTab[0]] = "";
+    serviceWanted[toTab[0]] = SRC_HOUSE;
     genreWanted[toTab[0]] = "";
     decadeWanted[toTab[0]] = "";
     go(toTab[0] === "movie" ? "movies" : "shows");
@@ -2142,7 +2293,7 @@ function viewPopularShows(asTab, kind) {
   if (asTab) return viewSection(type);
   genreWanted[type] = "";
   decadeWanted[type] = "";
-  serviceWanted[type] = "";
+  serviceWanted[type] = SRC_HOUSE;
   go(view);
   // a step in the history like any other row: Back returns to the front page
   tabBelow = "home";
@@ -2375,7 +2526,7 @@ async function addPopularShow(it) {
   try {
     const packsSaid = await (await fetch("/shows/packs", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ show: m.title, look: true }) })).json();
+      body: JSON.stringify({ show: m.title, tmdb: m.tmdb, look: true }) })).json();
     found = packsSaid.found || [];
     episodes = packsSaid.episodes || [];
   } catch (e) { found = []; unanswered = true; }
@@ -2387,7 +2538,9 @@ async function addPopularShow(it) {
     return;
   }
   found.forEach((p) => {
-    pick.add(new Option([p.name, p.complete ? "complete" : seasons(p.seasons), gb(p.size),
+    // first: at the end of a long name it was cut off
+    pick.add(new Option([p.unsure ? "Either series" : "", p.name,
+      p.complete ? "complete" : seasons(p.seasons), gb(p.size),
       p.seeds ? p.seeds + " seeding" : "",
       // every wish under Choosing met, said in words rather than a colour
       p.fits ? "matches your choices" : ""].filter(Boolean).join("  \u00b7  "), p.id));
@@ -2406,7 +2559,10 @@ async function addPopularShow(it) {
       e.seeds ? e.seeds + " seeding" : ""].filter(Boolean).join("  \u00b7  "), "ep:" + e.id)));
     pick.appendChild(group);
   }
-  pick.value = (found.find((p) => p.pick) || found[0] || { id: "" }).id;
+  // every choice on show, not a menu: closed, it read as one pack on offer
+  pick.size = Math.min(12, pick.options.length);
+  pick.classList.toggle("openlist", pick.size > 1);
+  pick.value = (found.find((p) => p.pick) || found.find((p) => !p.unsure) || { id: "" }).id;
   tint(pick);
   const single = () => singles.filter((e) => "ep:" + e.id === pick.value)[0];
   const label = () => {
@@ -2452,6 +2608,457 @@ async function addPopularShow(it) {
           : "In the library - its episodes are coming in as a pack");
     viewShow(out.key);
   };
+}
+
+/* ---------------- Start ---------------- */
+
+/* The tab the page opens on: Start, or Home where they chose it under Opens on. Only
+   the opening: back, the end of a film and another server all go to Home. */
+function firstTab() {
+  const tab = CFG && CFG.startTab === "home" ? "home" : "start";
+  try { localStorage.setItem("palladium-first-tab", tab); } catch (e) { /* private window */ }
+  return tab;
+}
+// lit at once, as it was last time, so the page does not show Home lit for the second it
+// takes to hear which it is
+(() => {
+  let was = "start";
+  try { was = localStorage.getItem("palladium-first-tab") || "start"; } catch (e) { /* none */ }
+  const t = document.querySelector('#topbar .tab[data-view="' + was + '"]');
+  if (t) t.classList.add("active");
+})();
+
+/* The Start tab, laid out as the streaming services lay theirs: a wide picture across
+   the top that turns through this week's pick and each mood's best, a bar of chips -
+   a film or a series, fresh or classic, and the moods - and a row for every mood under
+   it, one line each, paged with an arrow at either side. Each viewer's taste leans the
+   choices; a card's two marks say more like this, or not this again. */
+const START = { kind: "movie", vibe: "", seed: 0, round: 0, era: "" };
+//: the hero's turn: which slide, and the timer that moves it on
+let startTurn = null;
+
+async function viewStart() {
+  const seq = ++sectionSeq;
+  onResize = null;
+  CTX = null;
+  setBackdrop(null);
+  if (startTurn) { clearInterval(startTurn); startTurn = null; }
+  main.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  let front = {};
+  try {
+    front = (await api("/library/start", { rows: 1, seed: START.round })) || {};
+  } catch (e) { front = {}; }
+  if (seq !== sectionSeq) return;
+  main.innerHTML = "";
+  const page = document.createElement("div");
+  page.className = "sp";
+  const rows = front.rows || [];
+  // the hero: this week's pick first, then each mood's best
+  const slides = [];
+  if (front.pick) {
+    slides.push({ it: front.pick, eyebrow: "This week's pick",
+                  text: front.pickNote || front.pick.summary || "" });
+  }
+  // and the first of six rows: as many dots as anybody steps through
+  rows.forEach((r) => {
+    // the picture across the top is the house's front: not the shuffles, not the kids'
+    if (r.id === "shuffle" || r.id === "kids-movie" || r.id === "music") return;
+    const it = (r.Metadata || [])[0];
+    if (slides.length >= 7) return;
+    if (it && !slides.some((s0) => s0.it.ratingKey === it.ratingKey)) {
+      // what it is about, as the services say it; why it was chosen reads as a list
+      slides.push({ it: it, eyebrow: r.name, text: it.summary || "" });   // never why it was chosen
+    }
+  });
+  if (slides.length) page.appendChild(startCarousel(slides, seq));
+  // which rows, in what order: the viewer's own, as Home's Edit rows
+  const edit = document.createElement("div");
+  edit.className = "spedit";
+  const editBtn = document.createElement("button");
+  editBtn.className = "makecoll homeedit";
+  editBtn.textContent = "Edit rows";
+  editBtn.onclick = (e) => { e.stopPropagation(); startForm(edit, front); };
+  edit.appendChild(editBtn);
+  page.appendChild(edit);
+  // the rows are the choice: the series collections' shuffle, films and series, new
+  // and old, each mood - in the order the viewer keeps them
+  rows.forEach((r) => page.appendChild(startShelf(r)));
+  if (!rows.length) {
+    page.appendChild(Object.assign(document.createElement("div"),
+      { className: "empty", textContent: "Nothing here in that mix yet." }));
+  }
+  main.appendChild(page);
+  // the rows plugins add - My channels - last, drawn as Home draws them, once the
+  // page is up
+  for (const cat of (window.PD_START_ROWS || [])) {
+    let c = null;
+    try { c = await fetchCat(cat, 0, 24); } catch (e) { c = null; }
+    if (seq !== sectionSeq || !page.isConnected) return;
+    const list = (c ? items(c) : []).slice(0, HOME_ROW_MOST);
+    if (list.length) page.appendChild(rowSection(cat, list, c.totalSize || c.size || list.length));
+  }
+}
+
+/* Which rows Start carries, and in what order - Home's Edit rows for this tab: a tick
+   to keep a row, arrows to move it. */
+function startForm(where, front) {
+  const old = where.querySelector(".homeform");
+  if (old) { old.remove(); return; }
+  const all = (front.rowList || []).slice();
+  const order = all.map((r) => r.id);
+  const kept = all.filter((r) => r.on).map((r) => r.id);
+  const nameOf = (id) => (all.filter((r) => r.id === id)[0] || {}).name || id;
+  const box = document.createElement("div");
+  box.className = "setblock homeform";
+  box.innerHTML = "<h3>Rows on Start</h3>" +
+    "<div class='note'>What Start carries, in the order it carries them. Yours alone - " +
+    "the server keeps it, so every screen you use agrees.</div>";
+  const list = document.createElement("div");
+  box.appendChild(list);
+  const draw = () => {
+    list.innerHTML = "";
+    order.forEach((id, at) => {
+      const on = kept.indexOf(id) >= 0;
+      const row = document.createElement("div");
+      row.className = "addrow subrow homerow";
+      const tick = document.createElement("button");
+      tick.className = "btn ghost kind" + (on ? " on" : "");
+      tick.textContent = on ? "\u2713" : "\u2717";
+      tick.title = on ? "Shown - press to hide it" : "Hidden - press to show it";
+      tick.onclick = () => {
+        if (on) kept.splice(kept.indexOf(id), 1); else kept.push(id);
+        draw();
+      };
+      row.appendChild(tick);
+      const name = document.createElement("span");
+      name.className = "homename" + (on ? "" : " off");
+      name.textContent = nameOf(id);
+      row.appendChild(name);
+      [["\u2191", -1], ["\u2193", 1]].forEach(([label, step]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind";
+        b.textContent = label;
+        b.disabled = at + step < 0 || at + step >= order.length;
+        b.onclick = () => { order.splice(at + step, 0, order.splice(at, 1)[0]); draw(); };
+        row.appendChild(b);
+      });
+      list.appendChild(row);
+    });
+  };
+  draw();
+  const send = async (rows, off, everyone) => {
+    const body = { startRows: rows, startRowsOff: off };
+    if (everyone) body.everyone = true;
+    await fetch("/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => {});
+  };
+  const shown = () => order.filter((id) => kept.indexOf(id) >= 0);
+  const hidden = () => order.filter((id) => kept.indexOf(id) < 0);
+  const foot = document.createElement("div");
+  foot.className = "addrow subrow";
+  const save = document.createElement("button");
+  save.className = "btn";
+  save.textContent = "Save";
+  save.onclick = async () => { await send(shown(), hidden(), false); viewStart(); };
+  foot.appendChild(save);
+  if (!(CFG && CFG.guest)) {
+    const forAll = document.createElement("button");
+    forAll.className = "btn ghost";
+    forAll.textContent = "Make this everyone's";
+    forAll.title = "The Start rows anybody sees before they arrange their own";
+    forAll.onclick = async () => {
+      await send(shown(), hidden(), true);
+      toast("Everyone starts with this arrangement");
+    };
+    foot.appendChild(forAll);
+  }
+  const stop = document.createElement("button");
+  stop.className = "btn ghost";
+  stop.textContent = "Cancel";
+  stop.onclick = () => box.remove();
+  foot.appendChild(stop);
+  const reset = document.createElement("button");
+  reset.className = "btn ghost";
+  reset.style.marginLeft = "auto";
+  reset.textContent = front.rowsMine ? "Use the server's" : "Set default";
+  reset.title = front.rowsMine ? "Take the arrangement the server sets for everyone"
+                               : "Every row, in the order the program lists them";
+  reset.onclick = async () => { await send([], [], false); viewStart(); };
+  foot.appendChild(reset);
+  box.appendChild(foot);
+  where.appendChild(box);
+}
+
+/* The wide picture across the top, turning through its slides: arrows at its sides,
+   dots under it, on by itself every eight seconds unless the pointer rests on it. */
+function startCarousel(slides, seq) {
+  const box = document.createElement("section");
+  box.className = "sphero";
+  const stage = document.createElement("div");
+  stage.className = "spstage";
+  const dots = document.createElement("div");
+  dots.className = "spdots";
+  let at = 0;
+  const show = (n) => {
+    at = (n + slides.length) % slides.length;
+    const s0 = slides[at];
+    stage.innerHTML = "";
+    stage.appendChild(startSlide(s0.it, s0.eyebrow, s0.text));
+    dots.querySelectorAll("button").forEach((d, i) => d.classList.toggle("on", i === at));
+  };
+  slides.forEach((s0, i) => {
+    const d = document.createElement("button");
+    d.title = s0.it.title;
+    d.onclick = () => show(i);
+    dots.appendChild(d);
+  });
+  const prev = document.createElement("button");
+  prev.className = "sparrow prev";
+  prev.textContent = "\u2039";
+  prev.title = "Back";
+  prev.onclick = () => show(at - 1);
+  const next = document.createElement("button");
+  next.className = "sparrow next";
+  next.textContent = "\u203a";
+  next.title = "Next";
+  next.onclick = () => show(at + 1);
+  box.append(stage, prev, next, dots);
+  if (slides.length < 2) { prev.hidden = next.hidden = true; dots.hidden = true; }
+  let resting = false;
+  box.onmouseenter = () => { resting = true; };
+  box.onmouseleave = () => { resting = false; };
+  startTurn = setInterval(() => {
+    if (seq !== sectionSeq || !box.isConnected) { clearInterval(startTurn); return; }
+    if (!resting && !document.hidden) show(at + 1);
+  }, 8000);
+  show(0);
+  return box;
+}
+
+/* The first button on a Start slide: what it says, and whether it plays or opens the page. */
+function heroAct(it) {
+  if (it.act && it.act.word) return it.act;
+  if (it.upcoming) return { word: upcomingLine(it.originallyAvailableAt), plays: false };
+  if (it.offered) return { word: "\u2913 Get it", plays: false };
+  if (it.askable || it.addable) return { word: "Request", plays: false };
+  return it.type === "movie" ? { word: "\u25b6 Play", plays: true } : { word: "\u25b6 Watch", plays: false };
+}
+
+/* One slide: the backdrop wide, what it is, why, and its buttons. */
+function startSlide(it, eyebrow, text) {
+  const el = document.createElement("div");
+  el.className = "spslide";
+  const art = it.art || it.thumb;
+  const facts = [it.rating ? "\u2605 " + (+it.rating).toFixed(1) : "", it.year,
+                 (it.genres || []).slice(0, 3).join(" \u00b7 ")].filter(Boolean);
+  el.innerHTML = (art ? '<img class="spbg" src="' + img(art, 1920, 1080) + '" alt="" ' +
+                        'onerror="this.remove()">' : "") +
+    '<div class="spshade"></div><div class="spbody">' +
+    '<div class="speyebrow">' + esc(eyebrow) + "</div>" +
+    '<h1 class="sptitle">' + esc(it.title) + "</h1>" +
+    '<div class="spfacts">' + facts.map((f) => "<span>" + esc(String(f)) + "</span>").join("") +
+    "</div>" + (text ? '<p class="spnote">' + esc(text) + "</p>" : "") +
+    '<div class="spacts"></div></div>';
+  const acts = el.querySelector(".spacts");
+  const go1 = document.createElement("button");
+  go1.className = "btn spplay";
+  // a film here plays; one in a pack is downloaded from its page; one not out yet says
+  // when, one not here is asked for from its page; a series opens
+  const act = heroAct(it);
+  go1.textContent = act.word;
+  go1.onclick = () => (act.plays ? play(it) : open(it));
+  const info = document.createElement("button");
+  info.className = "btn ghost";
+  info.textContent = "More info";
+  info.onclick = () => open(it);
+  const liked = document.createElement("button");
+  liked.className = "btn ghost spround";
+  liked.textContent = "\u2713";
+  liked.title = "More like this";
+  liked.onclick = async () => { if (await startTell(it, "more")) liked.classList.add("on"); };
+  const notIt = document.createElement("button");
+  notIt.className = "btn ghost spround";
+  notIt.textContent = "\u2717";
+  notIt.title = "Don't recommend this";
+  notIt.onclick = async () => { if (await startTell(it, "not")) viewStart(); };
+  acts.append(go1, info, liked, notIt);
+  return el;
+}
+
+/* One mood's row: its name and line, then one line of wide cards paged with an arrow
+   at each side - as many as the width holds, never scrolled sideways. */
+/* Where a Start row's Show more goes: its tab, ordered and narrowed as the row is. */
+function startMore(more) {
+  // a kept list: a page of its own, in the list's order
+  if (more.list) {
+    return openCategory({ id: "list:" + more.list, title: more.name || "List",
+                          by: "listRank", one: true,
+                          path: () => ["/library/list", { id: more.list }] });
+  }
+  const kind = more.tab === "tv" ? "show" : "movie";
+  const view = kind === "movie" ? "movies" : "shows";
+  const tabState = SORT_BY_TAB[view];
+  tabState.key = more.sort === "originallyAvailableAt" ? "released" : "popular";
+  tabState.dir = "desc";
+  serviceWanted[kind] = more.service || SRC_HOUSE;
+  genreWanted[kind] = more.genre || "";
+  decadeWanted[kind] = "";
+  go(view);
+  // a step in the history like any other row: Back returns to Start
+  tabBelow = "start";
+  pushView(() => viewSection(kind));
+  $("#back").classList.add("on");
+}
+
+function startShelf(r) {
+  const sec = document.createElement("section");
+  sec.className = "spshelf";
+  sec.dataset.vibe = r.id;
+  sec.innerHTML = '<h2 class="sphead">' + esc(r.name) + ' <span class="sptag">' +
+    esc(r.tagline || "") + "</span></h2>";
+  // the name opens the row's Show more as well
+  if (r.more) {
+    const head = sec.querySelector(".sphead");
+    head.classList.add("link");
+    head.onclick = () => startMore(r.more);
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "spline";
+  // the window the strip slides in: what is past its sides is out of sight
+  const view = document.createElement("div");
+  view.className = "spview";
+  const strip = document.createElement("div");
+  strip.className = "spcards";
+  const list = (r.Metadata || []).slice();
+  const width = (main.clientWidth || window.innerWidth) < 700 ? 230 : 310;
+  const across = Math.max(1, Math.floor(((main.clientWidth || window.innerWidth) + 12) / (width + 12)));
+  strip.style.setProperty("--cw", "calc((100% - " + (across - 1) * 12 + "px) / " + across + ")");
+  const prev = document.createElement("button");
+  prev.className = "sparrow prev";
+  prev.textContent = "\u2039";
+  const next = document.createElement("button");
+  next.className = "sparrow next";
+  next.textContent = "\u203a";
+  // Every card on one strip that slides a page along, as Prime Video's rows do: a
+  // page redrawn at each press jumped from one set to the next.
+  let at = 0;
+  const cards = () => strip.children.length;
+  const place = () => {
+    at = Math.max(0, Math.min(at, Math.max(0, cards() - across)));
+    strip.dataset.at = String(at);
+    strip.style.transform = "translateX(calc(" + (-at) + " * (var(--cw) + 12px)))";
+    prev.hidden = at <= 0;
+    next.hidden = at + across >= cards();
+  };
+  list.forEach((it) => strip.appendChild(startCard(it, () => {
+    list.splice(list.indexOf(it), 1);
+    const gone = Array.from(strip.children).find((c) => c._item === it);
+    if (gone) gone.remove();
+    place();
+  }, r.id)));
+  Array.from(strip.children).forEach((c, i) => { c._item = list[i]; });
+  // and the row's end: its tab, for many more of the same
+  if (r.more) {
+    const more = document.createElement("button");
+    more.className = "spmore";
+    more.textContent = "Show more \u203a";
+    more.onclick = () => startMore(r.more);
+    strip.appendChild(more);
+  }
+  prev.onclick = () => { at -= across; place(); };
+  // past the last whole page is nowhere: the arrow is gone there
+  next.onclick = () => { at += across; place(); };
+  view.appendChild(strip);
+  wrap.append(prev, view, next);
+  sec.appendChild(wrap);
+  place();
+  return sec;
+}
+
+/* A wide card: the backdrop, the title over its foot; resting on it, a little larger,
+   with its year and score, Play and its two marks. */
+function startCard(it, gone, row) {
+  // a collection of series: pressed, its shuffle starts
+  if (it.type === "shelf") return startShuffleCard(it);
+  // a card a playlist: its round, carried on where it was, round and round
+  const music = row === "music";
+  const el = document.createElement("div");
+  el.className = "spcard";
+  el.tabIndex = 0;
+  const art = it.art || it.thumb;
+  const facts = [it.year, it.rating ? "\u2605 " + (+it.rating).toFixed(1) : ""].filter(Boolean);
+  el.innerHTML = '<div class="spframe">' +
+    (art ? '<img src="' + img(art, 640, 360) + '" alt="" loading="lazy" onerror="this.remove()">'
+         : "") +
+    '<div class="spcshade"></div><div class="spctitle">' + esc(it.title) + "</div></div>" +
+    '<div class="spcmore"><span class="spcfacts">' + esc(facts.join("  \u00b7  ")) +
+    '</span><span class="spcbtns"></span></div>';
+  const btns = el.querySelector(".spcbtns");
+  const playIt = document.createElement("button");
+  playIt.className = "spcbtn play";
+  playIt.textContent = it.offered ? "\u2913" : "\u25b6";
+  playIt.title = it.offered ? "Get it" : "Play";
+  playIt.onclick = (e) => {
+    e.stopPropagation();
+    if (music) shuffleDraw(it.ratingKey, true);
+    else if (it.offered || it.type !== "movie") open(it); else play(it);
+  };
+  const liked = document.createElement("button");
+  liked.className = "spcbtn";
+  liked.textContent = "\u2713";
+  liked.title = "More like this";
+  liked.onclick = async (e) => {
+    e.stopPropagation();
+    if (await startTell(it, "more")) liked.classList.add("on");
+  };
+  const notIt = document.createElement("button");
+  notIt.className = "spcbtn";
+  notIt.textContent = "\u2717";
+  notIt.title = "Don't recommend this";
+  notIt.onclick = async (e) => {
+    e.stopPropagation();
+    if (await startTell(it, "not")) gone();
+  };
+  btns.append(playIt, liked, notIt);
+  const go = () => (music ? shuffleDraw(it.ratingKey, true) : open(it));
+  el.onclick = go;
+  el.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  return el;
+}
+
+/* A series collection on the Start tab: its series' picture, its name, and a press that
+   draws from its hat and plays. */
+function startShuffleCard(it) {
+  const el = document.createElement("div");
+  el.className = "spcard spshuffle";
+  el.tabIndex = 0;
+  el.innerHTML = '<div class="spframe">' +
+    (it.art ? '<img src="' + img(it.art, 640, 360) + '" alt="" loading="lazy" onerror="this.remove()">'
+            : "") +
+    '<div class="spcshade"></div><div class="spcbadge">\u21c4 Shuffle</div>' +
+    '<div class="spctitle">' + esc(it.title) + "</div></div>";
+  const go1 = () => shuffleDraw(it.shelf, true);
+  el.onclick = go1;
+  el.onkeydown = (e) => { if (e.key === "Enter") go1(); };
+  return el;
+}
+
+/* Told from the Start tab: more like this one, or not this again. */
+async function startTell(it, what) {
+  try {
+    const r = await fetch("/start/feedback", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: it.ratingKey, what: what }) });
+    if (!r.ok) throw new Error(String(r.status));
+    toast(what === "not" ? "Won't suggest " + it.title + " again"
+                         : "More like " + it.title + " from now on");
+    return true;
+  } catch (e) {
+    toast("The server did not take that");
+    return false;
+  }
 }
 
 /* ---------------- categories ---------------- */
@@ -2596,7 +3203,7 @@ async function fetchCat(cat, start, size) {
     try {
       const [p, q] = cat.path(await sectionsOf(srv));
       if (p.indexOf("null") >= 0) return [];       // that server has no such library
-      const c = await api(p, { ...q, start: 0, count: start + size }, srv);
+      const c = await api(p, { ...q, start: 0, count: start + size }, srv, true);
       total += c.totalSize || c.size || 0;
       const list = items(c);
       list.forEach((it) => { it.__s = srv ? srv.id : ""; });
@@ -2611,6 +3218,7 @@ async function fetchCat(cat, start, size) {
 const HOME_ROW_MOST = 10;
 
 async function viewHome() {
+  const seq = ++sectionSeq;
   // the marks on the cards, asked for beside the rows rather than before them
   const marks = refreshMarks();
   CTX = null;
@@ -2621,12 +3229,16 @@ async function viewHome() {
   // Every row asked for at once, drawn from the top down: a row goes on the page once
   // every row above it is in, so nothing is put in above what is showing and the
   // page stays at its top. Continue watching is first, and on screen first.
+  if (seq !== sectionSeq) return;   // Settings pressed while it loaded: not drawn over it
   const asked = shelves.map((cat) => fetchCat(cat, 0, 24).catch(() => null));
   await marks;
+  if (seq !== sectionSeq) return;
   main.innerHTML = "";
   // gone from the page means somebody went elsewhere: the rest is not drawn into it
   const here = document.createElement("div");
   here.style.display = "none";
+  // and what says Home is on the page: no scrollbar beside it (style.css)
+  here.className = "homemark";
   main.appendChild(here);
   const edit = document.createElement("button");
   edit.className = "makecoll homeedit";
@@ -2635,7 +3247,7 @@ async function viewHome() {
   let any = false;
   for (let i = 0; i < shelves.length; i++) {
     const c = await asked[i];
-    if (!here.isConnected) return;
+    if (!here.isConnected || seq !== sectionSeq) return;
     let cat = shelves[i];
     // the season's shelf is called what its cards say it is
     if (cat.id === "seasonal" && c && items(c)[0] && items(c)[0].shelf)
@@ -2702,7 +3314,9 @@ async function openCategory(cat, push = true) {
   const all = items(first);
   let g;
   if (all.length >= total) {
-    const catSort = { key: cat.by === "addedAt" ? "added" : "released", dir: "desc" };
+    const listed = cat.by === "listRank";
+    const catSort = { key: listed ? "list" : cat.by === "addedAt" ? "added" : "released",
+                      dir: "desc" };
     const pickGenre = document.createElement("select");
     pickGenre.className = "sortpick";
     const rerender = () => {
@@ -2716,7 +3330,7 @@ async function openCategory(cat, push = true) {
       g = fresh;
       h.querySelector(".count").textContent = shown.length + " items";
     };
-    const bar = sortBar(rerender, catSort);
+    const bar = sortBar(rerender, catSort, null, listed ? [["list", "List order"]] : null);
     const counts = {};
     all.forEach((it) => (it.genres || []).forEach((x) => {
       counts[x] = (counts[x] || 0) + 1;
@@ -2770,7 +3384,8 @@ const SORT_KEYS = { added: "addedAt", name: "titleSort", year: "year",
    it answers anything else. Each order has a natural direction of its own - newest
    first, A first, oldest first - and pressing the one already chosen reverses it. */
 const SORT_DEFAULT_DIR = { added: "desc", name: "asc", year: "asc",
-                           released: "desc", quality: "desc", popular: "desc" };
+                           released: "desc", quality: "desc", popular: "desc",
+                           list: "desc" };
 // the shelves open on what came out last: "what is new in the world", which is a
 // better first question than "what did this server notice last"
 // Each shelf keeps its own order. Films open on what came out last; programmes
@@ -2795,6 +3410,8 @@ function sortLike(list, state) {
     }
     if (on.key === "added") return dir * ((a.addedAt || 0) - (b.addedAt || 0));
     if (on.key === "popular") return dir * ((a.popularity || 0) - (b.popularity || 0));
+    // a kept list's own order: listRank counts down from its first
+    if (on.key === "list") return dir * ((a.listRank || 0) - (b.listRank || 0));
     if (on.key === "quality") {
       // nothing measured is unknown rather than small, so it goes last either way
       const A = a.maxHeight || 0, B = b.maxHeight || 0;
@@ -2818,7 +3435,7 @@ function sortParam() {
   return SORT_KEYS[sortState.key] + ":" + sortState.dir;
 }
 
-function sortBar(rerender, state, dirs) {
+function sortBar(rerender, state, dirs, extra) {
   // the shelves keep one order between them; a collection keeps its own, which is
   // why the control is told which to read and write rather than assuming
   const on = state || sortState;
@@ -2829,8 +3446,8 @@ function sortBar(rerender, state, dirs) {
   // one control for the three orders; the arrow beside it turns the order round
   const sel = document.createElement("select");
   sel.className = "sortpick";
-  [["added", "Added"], ["released", "Released"], ["name", "Name"],
-   ["year", "Year"], ["quality", "Quality"]].forEach(([key, label]) => {
+  (extra || []).concat([["added", "Added"], ["released", "Released"], ["name", "Name"],
+   ["year", "Year"], ["quality", "Quality"]]).forEach(([key, label]) => {
     sel.add(new Option(label, key));
   });
   sel.value = on.key;
@@ -2887,7 +3504,10 @@ const decadeWanted = { movie: "", show: "" };
 const countryWanted = { movie: "", show: "" };
 //: the streaming services marked, catalogue numbers comma-joined: the shelf is then
 //: their catalogue in this country rather than the library. And how many pages shown.
-const serviceWanted = { movie: "", show: "" };
+//: the Service menu's two of this house - what is on its disks, what its packs carry -
+//: marked by default; nothing marked is everything there is, every service included
+const SRC_MINE = "-1", SRC_PACKS = "-2", SRC_HOUSE = "-1,-2";
+const serviceWanted = { movie: SRC_HOUSE, show: SRC_HOUSE };
 const servicePages = { movie: 1, show: 1 };
 //: a service's catalogue in the popular page's orders: how popular, how well rated,
 //: released, year, name - one for both tabs
@@ -3051,51 +3671,220 @@ async function svtSeriesInto(box, id, title) {
   show(0);
 }
 
-/* The services of this house's country, the catalogue's own order: [id, name]. */
-async function servicesFor() {
-  if (serviceList) return serviceList;
+/* The services of this house's country, the catalogue's own order: [id, name]. With
+   how many titles each holds of films or of series, for the menu: id -> count. */
+const serviceCounts = { movie: null, show: null };
+
+async function servicesFor(type) {
+  const kind = type === "show" ? "show" : "movie";
+  if (serviceList && (!type || serviceCounts[kind])) return serviceList;
   try {
-    serviceList = items(await api("/library/services", {})).map((s) => [String(s.id), s.name]);
+    const d = await api("/library/services", { type: kind });
+    const listed = items(d);
+    serviceList = listed.map((s) => [String(s.id), s.name]);
+    const counts = {};
+    listed.forEach((s) => { counts[String(s.id)] = +s.count || 0; });
+    counts[SRC_PACKS] = +(d && d.packs) || 0;
+    serviceCounts[kind] = counts;
+    // In packs beside My library: what the packs linked here carry
+    const at = serviceList.findIndex(([v]) => v === SRC_MINE);
+    serviceList.splice(at + 1, 0, [SRC_PACKS, "In packs"]);
   } catch (e) {
-    serviceList = [];
+    serviceList = serviceList || [];
   }
   return serviceList;
 }
 
+/* A service named with how many titles it holds: "Netflix · 3,104". */
+function serviceNamed(type, id, name) {
+  const n = (serviceCounts[type === "show" ? "show" : "movie"] || {})[id];
+  return n ? name + " \u00b7 " + Number(n).toLocaleString("en-US") : name;
+}
+
 function serviceBar(type, rerender) {
-  return genreMenu(serviceWanted[type] || "", servicesFor().then((pairs) => {
-    // the menu shows names; what is marked is a number, named again on the button
+  return genreMenu(serviceWanted[type] || "", servicesFor(type).then((pairs) => {
+    // the menu shows names, each with how many titles it holds; what is marked is a
+    // number, named again on the button
     const marked = String(serviceWanted[type] || "").split(",").filter(Boolean);
-    return pairs.filter(([v]) => true).concat(
+    return pairs.map(([v, n]) => [v, serviceNamed(type, v, n)]).concat(
       marked.filter((m) => !pairs.some(([v]) => v === m)).map((m) => [m, m]));
   }), (v) => {
     serviceWanted[type] = v;
     servicePages[type] = 1;
     (rerender || (() => viewSection(type)))();
-  }, -1, { label: "Service:", joins: "Titles on any marked", names: serviceList });
+  // named from the start: drawn before the list of services had come, the button read
+  // "-1 + -2" for My library and In packs
+  }, -1, { label: "Service:", joins: "Titles on any marked",
+           names: (serviceList || []).concat([[SRC_MINE, "My library"], [SRC_PACKS, "In packs"]]) });
 }
 
 /* A service's catalogue, every page shown so far: what is here plays, a pack downloads,
    the rest is asked for. */
-async function serviceCatalogue(type) {
-  const out = [];
-  let more = false, total = 0;
-  for (let p = 1; p <= servicePages[type]; p++) {
+//: Show all, part read: what has come and where it got to, so Continue after a pause
+//: carries on rather than starting over. One at a time, by the question it answers.
+let allRead = null;
+//: Pause pressed: the next page read is the last until Continue
+let allPaused = false;
+//: the last everything read whole, by the question less its order: another order of the
+//: same titles is a sort of what is here, not two minutes of asking again
+let allDone = null;
+
+/* What a Show all is reading, less its order: the same titles in any order. */
+function catalogueKey(type, providers) {
+  return [type, providers, genreWanted[type] || "", decadeWanted[type] || ""].join("|");
+}
+
+async function serviceCatalogue(type, providers, onPage) {
+  const every = servicePages[type] === "all";
+  const ids = String(providers || "").split(",").filter(Boolean);
+  // what is being read, less its order: every title comes in whatever the order, and the
+  // list is put in order at the end - so a new order neither starts it over nor ends a pause
+  const titles = catalogueKey(type, providers);
+  if (every && allDone && allDone.key === titles) {
+    return { list: inServiceOrder(allDone.list.slice()), more: false, total: allDone.total,
+             paused: false };
+  }
+  const st = every && allRead && allRead.key === titles ? allRead
+    : { key: titles, out: [], had: new Set(), at: 0, page: 1, total: 0, paused: false,
+        running: null };
+  if (every) allRead = st;
+  // one reading at a time: a new order arriving mid-page waits for that page to land
+  if (st.running) await st.running;
+  let release = () => {};
+  if (every) st.running = new Promise((done) => { release = done; });
+  try {
+    return await readCatalogue(type, providers, onPage, every, ids, st);
+  } finally {
+    if (every) st.running = null;
+    release();
+  }
+}
+
+/* The reading itself, carrying on from where `st` got to. */
+async function readCatalogue(type, providers, onPage, every, ids, st) {
+  // one page of one question, its titles added once
+  const ask = async (provider, p) => {
     const d = await api("/library/service", {
-      type: type, provider: serviceWanted[type], page: p,
+      type: type, provider: provider, page: p,
       sort: SERVICE_SORTS.find(([k]) => k === serviceSort.key)[2] + ":" + serviceSort.dir,
       ...(genreWanted[type] ? { genre: genreWanted[type] } : {}),
       ...(decadeWanted[type] ? { decade: decadeWanted[type] } : {}) });
     // api() hands back the MediaContainer itself: read as d.MediaContainer it was
     // always empty, and a service showed no titles at all
     const mc = d || {};
-    const had = new Set(out.map((x) => x.ratingKey));
-    (mc.Metadata || []).forEach((x) => { if (!had.has(x.ratingKey)) out.push(x); });
+    (mc.Metadata || []).forEach((x) => {
+      if (st.had.has(x.ratingKey)) return;
+      st.had.add(x.ratingKey);
+      st.out.push(x);
+    });
+    return mc;
+  };
+  const many = every && ids.length > 1;
+  const answer = (more, paused) => {
+    // read a service at a time, the total is what came: the catalogue's own count for
+    // all of them together stops at 20,001, and the list ran past it
+    if (many && !paused) st.total = st.out.length;
+    if (!paused && every) {
+      allRead = null;
+      allDone = { key: st.key, list: st.out.slice(), total: st.total };
+    }
+    return { list: every ? inServiceOrder(st.out.slice()) : st.out, more: more,
+             total: st.total, paused: paused };
+  };
+  // paused by somebody: another order is only a sort of what came, until Continue
+  if (every && st.paused) return answer(false, true);
+  // told how far it has got - and, a service at a time, which one it is on: "pause" is
+  // Pause pressed, false somebody gone elsewhere
+  const goOn = () => {
+    const said = onPage ? onPage(st.out.length, st.total,
+                                 many ? { at: Math.min(st.at + 1, ids.length), of: ids.length,
+                                          id: ids[Math.min(st.at, ids.length - 1)] } : null)
+      : true;
+    if (said === "pause") st.paused = true;
+    return said !== false && said !== "pause";
+  };
+  if (many) {
+    // The catalogue answers at most 10,000 titles to one question, and every service
+    // marked together is more than that, while each on its own has fewer. So a service
+    // at a time, each title once, put back in the order chosen.
+    while (st.at < ids.length) {
+      const mc = await ask(ids[st.at], st.page);
+      if (mc.more) st.page++;
+      else { st.at++; st.page = 1; }
+      if (!goOn()) return answer(false, true);
+    }
+    return answer(false, false);
+  }
+  if (every) {
+    // all of one service: page after page until it ends, counting up as it goes
+    for (;;) {
+      const mc = await ask(providers, st.page);
+      st.total = mc.totalSize || 0;
+      st.page++;
+      if (!mc.more) break;
+      if (!goOn()) return answer(false, true);
+    }
+    return answer(false, false);
+  }
+  let more = false;
+  for (let p = 1; p <= servicePages[type]; p++) {
+    const mc = await ask(providers, p);
     more = !!mc.more;
-    total = mc.totalSize || 0;
+    st.total = mc.totalSize || 0;
     if (!more) break;
   }
-  return { list: out, more: more, total: total };
+  return answer(more, false);
+}
+
+/* A catalogue read a service at a time, in the order the Sort menu says. */
+function inServiceOrder(list) {
+  const key = serviceSort.key;
+  const up = serviceSort.dir === "asc" ? 1 : -1;
+  const val = (x) => key === "popular" ? +x.popularity || 0
+    : key === "rating" ? +x.rating || 0
+    : key === "released" ? String(x.catalogDate || x.originallyAvailableAt || x.year || "")
+    : key === "year" ? +x.year || 0
+    : String(x.titleSort || x.title || "").toLowerCase();
+  // a tie - this house's titles carry no catalogue popularity - goes to the better rated,
+  // then by name: in the order they came, Popular began Zulu, Zootopia, Zoot Suit
+  const name = (x) => String(x.titleSort || x.title || "").toLowerCase();
+  return list.sort((a, b) => {
+    const p = val(a), q = val(b);
+    if (p < q) return -up;
+    if (p > q) return up;
+    const r = (+b.rating || 0) - (+a.rating || 0);
+    if (r) return r;
+    return name(a) < name(b) ? -1 : name(a) > name(b) ? 1 : 0;
+  });
+}
+
+/* What this house has, as the tab lists it: on its disks and in its packs. */
+async function libraryList(type, genre, decade) {
+  const list = await fromAll(async (srv) => {
+    const sec = await sectionsOf(srv);
+    if (!sec[type]) return [];
+    return api("/library/sections/" + sec[type] + "/all", {
+      sort: sortParam(), type: type === "movie" ? 1 : 2,
+      ...(genre ? { genre: genre } : {}),
+      ...(decade ? { decade: decade } : {}),
+      ...(type === "show" && countryWanted.show ? { country: countryWanted.show } : {}),
+    }, srv);
+  });
+  // A series one machine holds or carries in a pack, and the other offers only as a
+  // popular programme to ask for, stood twice: the other machine's card goes
+  const flat = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const real = new Set(list.filter((x) => !/^tv/.test(String(x.ratingKey))).map((x) => flat(x.title)));
+  const once = list.filter((x) => !/^tv/.test(String(x.ratingKey)) || !real.has(flat(x.title)));
+  // each server sorted its own share; one pass puts the joined list back in order
+  return sortLike(once);
+}
+
+/* Of a tab's list, the part My library and In packs stand for: on disk, in a pack. Both
+   marked leaves it as it is - what can be asked for included. */
+function ofHouse(list, house) {
+  if (house.mine && house.packs) return list;
+  return list.filter((x) => x.offered ? house.packs
+    : (x.addable || x.askable) ? false : house.mine);
 }
 
 async function viewSection(type) {
@@ -3104,40 +3893,139 @@ async function viewSection(type) {
   onResize = null;
   CTX = null;
   setBackdrop(null);
-  if (!genreKeep) main.innerHTML = '<div class="empty">Loading&hellip;</div>';
   const genre = genreWanted[type] || "";
   const decade = decadeWanted[type] || "";
-  if (serviceWanted[type]) {
-    await servicesFor();
+  const marked = String(serviceWanted[type] || "").split(",").filter(Boolean);
+  // nothing marked is everything there is: this house and every service - all of it
+  // at once, not a page with Show more under it
+  const everything = !marked.length;
+  if (everything) servicePages[type] = "all";
+  const loadingAll = servicePages[type] === "all";
+  if (!genreKeep) main.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  const services = marked.filter((v) => +v > 0);
+  const house = { mine: everything || marked.indexOf(SRC_MINE) >= 0,
+                  packs: everything || marked.indexOf(SRC_PACKS) >= 0 };
+  if (services.length || everything) {
+    const ids = everything ? (await servicesFor()).map(([v]) => v).filter((v) => +v > 0)
+      : services;
+    const providers = ids.join(",");
+    // what this house has, first, where My library or In packs is marked
+    let ours = [];
+    if (house.mine || house.packs) {
+      try { ours = ofHouse(await libraryList(type, genre, decade), house); } catch (e) { ours = []; }
+    }
+    if (seq !== sectionSeq) return;
+    const named = everything ? "every service"
+      : services.map((v) => ((serviceList || []).find(([id]) => id === v) || [v, v])[1])
+        .join(" + ");
+    // a service at a time there is no total until the end: which service it is on instead
+    let where = null;
+    const loadingWords = (n, total) => "Loading all: " + n.toLocaleString() +
+      (where ? " \u00b7 " + (((serviceList || []).find(([v]) => v === where.id) || [0, ""])[1] ||
+                             "service") + ", " + where.at + " of " + where.of
+             : " of " + (total || 0).toLocaleString());
+    // The page as it stands: this house's own, then the catalogue's - whole, paused, or
+    // as far as it has come while every title loads - in the order the Sort menu says.
+    // Returns the count, which counts up between drawings.
+    const draw = (got, state) => {
+      // one list in the order chosen: this house's own stood first in the library's order,
+      // so Year began with whatever the library sorted first. A title on a service as well
+      // is the service's card, which carries the catalogue's popularity.
+      const fromCat = new Set(got.list.map((x) => String(x.ratingKey)));
+      const shown = inServiceOrder(got.list.concat(
+        ours.filter((x) => !fromCat.has(String(x.ratingKey)))));
+      const at = window.scrollY;
+      main.innerHTML = "";
+      const h = document.createElement("h2");
+      h.innerHTML = '<span class="ct">' + (type === "movie" ? "Films" : "TV shows") + "</span>";
+      h.appendChild(serviceSortBar(() => viewSection(type)));
+      h.appendChild(serviceBar(type));
+      h.appendChild(genreBar(type, null, shown.length));
+      h.appendChild(decadeBar(type));
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = state === "loading" ? loadingWords(got.list.length, got.total)
+        : (state === "paused" ? "Paused \u00b7 " : "") +
+          (ours.length ? ours.length + " here \u00b7 " : "") +
+          got.list.length.toLocaleString() +
+          (got.total > got.list.length ? " of " + got.total.toLocaleString() : "") +
+          " on " + named;
+      h.appendChild(count);
+      // Pause beside the number counting up: what has come stays, Continue carries on
+      if (state === "loading") {
+        const pause = document.createElement("button");
+        pause.className = "btn ghost tiny allpause";
+        pause.textContent = allPaused ? "Pausing\u2026" : "\u275a\u275a Pause";
+        pause.disabled = allPaused;
+        pause.onclick = () => {
+          allPaused = true;
+          pause.disabled = true;
+          pause.textContent = "Pausing\u2026";
+        };
+        h.appendChild(pause);
+      }
+      // paused: the rest of it, from where it stopped
+      if (state === "paused") {
+        const on = document.createElement("button");
+        on.className = "btn ghost tiny allpause";
+        on.textContent = "\u25b6 Continue";
+        on.onclick = () => {
+          if (allRead) allRead.paused = false;
+          viewSection(type);
+        };
+        h.appendChild(on);
+      }
+      main.append(h, grid(shown, 0));
+      if (state === "done" && got.more) {
+        const more = document.createElement("button");
+        more.className = "btn ghost servicemore";
+        more.textContent = "Show more";
+        more.onclick = () => { servicePages[type]++; viewSection(type); };
+        // every title the service has, in one go
+        const all = document.createElement("button");
+        all.className = "btn ghost servicemore";
+        all.textContent = "Show all " + got.total;
+        all.onclick = () => {
+          all.disabled = more.disabled = true;
+          all.textContent = "Loading all…";
+          servicePages[type] = "all";
+          viewSection(type);
+        };
+        main.append(more, all);
+      }
+      // a drawing while it loads keeps the place somebody has scrolled to
+      if (state === "loading") window.scrollTo(0, at); else restoreListPlace();
+      return count;
+    };
+    allPaused = false;
+    let counter = null;
+    // While every title loads: what has come so far, in the order chosen - drawn at once,
+    // so a new order shows at once, then again as more comes in.
+    const key = catalogueKey(type, providers);
+    const mine = allRead && allRead.key === key ? allRead : null;
+    const sofar = () => ({ list: inServiceOrder((mine || allRead || { out: [] }).out.slice()),
+                           total: (mine || allRead || { total: 0 }).total });
+    if (loadingAll && !(allDone && allDone.key === key) && !(mine && mine.paused)) {
+      counter = draw(mine ? sofar() : { list: [], total: 0 }, "loading");
+    }
+    let pages = 0;
+    const progress = (n, total, at) => {
+      if (seq !== sectionSeq) return false;
+      if (allPaused) return "pause";
+      where = at;
+      pages++;
+      if (pages === 3 || pages % 25 === 0) counter = draw(sofar(), "loading");
+      else if (counter) counter.textContent = loadingWords(n, total);
+      return true;
+    };
     let got;
     try {
-      got = await serviceCatalogue(type);
+      got = await serviceCatalogue(type, providers, loadingAll ? progress : null);
     } catch (e) {
       got = { list: [], more: false, total: 0 };
     }
     if (seq !== sectionSeq) return;
-    main.innerHTML = "";
-    const h = document.createElement("h2");
-    h.innerHTML = '<span class="ct">' + (type === "movie" ? "Films" : "TV shows") + "</span>";
-    h.appendChild(serviceSortBar(() => viewSection(type)));
-    h.appendChild(serviceBar(type));
-    h.appendChild(genreBar(type, null, got.list.length));
-    h.appendChild(decadeBar(type));
-    const count = document.createElement("span");
-    count.className = "count";
-    count.textContent = got.list.length + " of " + got.total + " on " +
-      String(serviceWanted[type]).split(",").map((v) =>
-        ((serviceList || []).find(([id]) => id === v) || [v, v])[1]).join(" + ");
-    h.appendChild(count);
-    main.append(h, grid(got.list, 0));
-    if (got.more) {
-      const more = document.createElement("button");
-      more.className = "btn ghost servicemore";
-      more.textContent = "Show more";
-      more.onclick = () => { servicePages[type]++; viewSection(type); };
-      main.appendChild(more);
-    }
-    restoreListPlace();
+    draw(got, got.paused ? "paused" : "done");
     return;
   }
   if (sortState.key === "popular") {
@@ -3149,7 +4037,7 @@ async function viewSection(type) {
                             { all: 1 }, null));
     } catch (e) { all = []; }
     if (seq !== sectionSeq) return;
-    const list = sortLike(popularFilter(all, genre, decade, ""));
+    const list = ofHouse(sortLike(popularFilter(all, genre, decade, "")), house);
     main.innerHTML = "";
     const h = document.createElement("h2");
     h.innerHTML = '<span class="ct">' + (type === "movie" ? "Films" : "TV shows") + "</span>";
@@ -3168,19 +4056,8 @@ async function viewSection(type) {
     restoreListPlace();
     return;
   }
-  const list = await fromAll(async (srv) => {
-    const sec = await sectionsOf(srv);
-    if (!sec[type]) return [];
-    return api("/library/sections/" + sec[type] + "/all", {
-      sort: sortParam(), type: type === "movie" ? 1 : 2,
-      ...(genre ? { genre: genre } : {}),
-      ...(decade ? { decade: decade } : {}),
-      ...(type === "show" && countryWanted.show ? { country: countryWanted.show } : {}),
-    }, srv);
-  });
+  const list = ofHouse(await libraryList(type, genre, decade), house);
   if (seq !== sectionSeq) return;
-  // each server sorted its own share; one pass puts the joined list back in order
-  sortLike(list);
   main.innerHTML = "";
   const h = document.createElement("h2");
   h.innerHTML = '<span class="ct">' + (type === "movie" ? "Films" : "TV shows") + "</span>";
@@ -3291,6 +4168,7 @@ async function saveCollection(body) {
 }
 
 async function viewWatchlist() {
+  const seq = ++sectionSeq;
   onResize = null;
   dropStaleForm();
   // a collection being edited keeps its form through the redraw a sort or a filter makes:
@@ -3323,9 +4201,11 @@ async function viewWatchlist() {
       list = items(marked).filter((x) => !keptKeys.has(String(x.ratingKey)));
     }
   } catch (e) {
+    if (seq !== sectionSeq) return;
     main.innerHTML = '<div class="empty">Could not read the watchlist.</div>';
     return;
   }
+  if (seq !== sectionSeq) return;
   main.innerHTML = "";
   const here = shelves.filter((c) => c.id === collectionOn)[0];
   if (here && collDefaultsPending === here.id) {
@@ -3396,11 +4276,21 @@ async function viewWatchlist() {
     // promise about what pressing it does that pressing it does not keep.
     const playWord = () => (mixed && Number(here.resumeAt || 0) > 30
       ? "▶ Resume  " + clock(Number(here.resumeAt)) : "▶ Play");
-    const playIt = act(playWord(),
-        () => (mixed ? shuffleDraw(here.id, true)
-                     : playCollection(collectionItemsSorted(list).filter((x) => !x.offered),
-                                      false)),
+    // Play all, in the order the shelf is shown, and Play shuffle beside it
+    act("\u25b6 Play all",
+        () => playCollection(collectionItemsSorted(list).filter((x) => !x.offered), false),
         "btn");
+    mixed = true;
+    const playIt = act(playWord().replace("\u25b6 Play", "\u21c4 Play shuffle")
+                                 .replace("\u25b6 Resume", "\u21c4 Resume"),
+        () => shuffleDraw(here.id, true), "btn ghost");
+    // what the shuffle leaves out, washed red while Play shuffle is pointed at
+    main.classList.remove("shuflit");
+    const lit = (on) => () => main.classList.toggle("shuflit", on);
+    playIt.addEventListener("mouseenter", lit(true));
+    playIt.addEventListener("focus", lit(true));
+    playIt.addEventListener("mouseleave", lit(false));
+    playIt.addEventListener("blur", lit(false));
     const how = document.createElement("button");
     how.className = "btn ghost kind" + (mixed ? " on" : "");
     how.textContent = "↻ Shuffle";
@@ -3416,7 +4306,7 @@ async function viewWatchlist() {
       playIt.textContent = playWord();
       again.style.display = mixed ? "" : "none";
     };
-    bar.appendChild(how);
+    // no switch: Play all and Play shuffle stand side by side
     // Everything back in the hat, on the shelf it belongs to. A round plays each
     // episode once and only draws again when the hat is empty, so the only way to
     // start it over deliberately is to say so - and the only place that could be
@@ -3465,7 +4355,17 @@ async function viewWatchlist() {
   // television, each in the order the sort asks for.
   const films = shown.filter((x) => (x.type || "movie") === "movie");
   const telly = shown.filter((x) => (x.type || "movie") !== "movie");
-  if (here && films.length && telly.length) {
+  if (!here) {
+    // the watchlist: films, then television - the favorites follow the same two ways
+    [["Films", films], ["TV shows", telly]].forEach(([label, part]) => {
+      if (!part.length) return;
+      const h = document.createElement("h2");
+      h.innerHTML = '<span class="ct">' + label + '</span><span class="count">' +
+        part.length + "</span>";
+      main.appendChild(h);
+      main.appendChild(grid(part, 0, false, null));
+    });
+  } else if (here && films.length && telly.length) {
     [["Films", films], ["Series", telly]].forEach(([label, part]) => {
       const h = sectionTitle(label + "  " + part.length);
       h.className = "collpart";
@@ -3486,14 +4386,17 @@ async function viewWatchlist() {
   if (!here) {
     // a favorite stays on the watchlist when it is watched, and is kept on both
     // machines. Its own row, under the rest; right-click or hold a poster to set it.
-    const kept = favList.filter(passesListFilter);
-    if (kept.length) {
-      const fh = document.createElement("h2");
-      fh.innerHTML = '<span class="ct">Favorites</span><span class="count">' +
-        kept.length + "</span>";
-      main.appendChild(fh);
-      main.appendChild(grid(sortLike(kept.slice()), 0, false, null));
-    }
+    const kept = sortLike(favList.filter(passesListFilter));
+    [["Favorite films", kept.filter((x) => (x.type || "movie") === "movie")],
+     ["Favorite TV shows", kept.filter((x) => (x.type || "movie") !== "movie")]]
+      .forEach(([label, part]) => {
+        if (!part.length) return;
+        const fh = document.createElement("h2");
+        fh.innerHTML = '<span class="ct">' + label + '</span><span class="count">' +
+          part.length + "</span>";
+        main.appendChild(fh);
+        main.appendChild(grid(part, 0, false, null));
+      });
     main.querySelectorAll(".card[data-key]").forEach((c) => { c.dataset.watch = "1"; });
   }
   restoreListPlace();
@@ -3793,6 +4696,7 @@ function homeForm() {
 /* Every collection, drawn as a poster: the face it was given, or the first title it
    holds. A shelf of shelves. */
 async function viewCollections() {
+  const seq = ++sectionSeq;
   onResize = null;
   dropStaleForm();
   CTX = null;
@@ -3803,6 +4707,7 @@ async function viewCollections() {
   try {
     shelves = (await (await fetch("/collections")).json()).collections || [];
   } catch (e) { shelves = []; }
+  if (seq !== sectionSeq) return;
   main.innerHTML = "";
   const h = document.createElement("h2");
   h.innerHTML = '<span class="ct">Collections</span>';
@@ -3844,7 +4749,9 @@ async function viewCollections() {
       '<div class="poster"><span class="ph"></span>' +
       (c.art ? '<img loading="lazy" src="' + img(c.art, 300, 450) +
                '" alt="" onerror="this.remove()">' : "") +
-      '<div class="uhd">' + c.count + "</div></div>" +
+      '<div class="uhd">' + c.count + "</div>" +
+      // a collection with a shuffle wears its ribbon
+      (c.seriesShelf ? '<div class="ribbon"><span>Shuffle</span></div>' : "") + "</div>" +
       '<div class="t">' + esc(c.name) + "</div>" +
       '<div class="s">' + c.count + (c.count === 1 ? " title" : " titles") + "</div>";
     el.onclick = () => openCollection(c.id);
@@ -3858,8 +4765,15 @@ async function viewCollections() {
    wrong name over the right shelf. */
 function dropStaleForm() {
   const form = document.querySelector(".collform");
-  if (!form || form.dataset.shelf === (collectionOn || "")) return;
-  form.remove();
+  if (form && form.dataset.shelf === (collectionOn || "")) return;
+  // no form on the page is no edit either: its rule test and its shelf went with it
+  endCollectionEdit();
+}
+
+/* A collection edit over: the form, its rows, its rule test and the shelf it was on. */
+function endCollectionEdit() {
+  const form = document.querySelector(".collform");
+  if (form) form.remove();
   [].forEach.call(document.querySelectorAll(".collsplit"), (e) => e.remove());
   collTestOn = null;
   collEditing = "";
@@ -4016,6 +4930,8 @@ function collectionBar(shelves, here) {
 function collectionForm(shelf) {
   const old = document.querySelector(".collform");
   if (old) old.remove();
+  // the last form's rule test belongs to its shelf, not this one
+  collTestOn = null;
   const box = document.createElement("div");
   box.className = "setblock collform";
   // which shelf this form edits: it outlives the page it was opened on, and a form
@@ -4051,6 +4967,74 @@ function collectionForm(shelf) {
   why.className = "note";
   why.style.margin = "2px 0 6px 82px";
   box.appendChild(why);
+  // Manual: a search of its own under the name, and what it finds pressed in or out.
+  // A new collection's name is copied into it as it is typed, until the search is
+  // typed in itself.
+  const findRow = document.createElement("div");
+  findRow.className = "addrow subrow";
+  findRow.innerHTML = "<span class='sublabel'>Find</span>";
+  const find = document.createElement("input");
+  find.type = "text";
+  find.placeholder = "Search the library";
+  find.value = shelf ? shelf.name || "" : "";
+  findRow.appendChild(find);
+  box.appendChild(findRow);
+  const foundBox = document.createElement("div");
+  foundBox.className = "collfound";
+  box.appendChild(foundBox);
+  let findOwn = false, findRun = 0, findTick = null;
+  const runFind = async () => {
+    const mine = ++findRun;
+    const q = find.value.trim();
+    if (mode !== "manual" || q.length < 2) { foundBox.innerHTML = ""; return; }
+    let found = [];
+    try {
+      const got = await api("/hubs/search", { query: q, limit: 40 });
+      (got.Hub || []).forEach((h) => found.push(...items(h)));
+    } catch (e) { found = []; }
+    if (mine !== findRun) return;
+    const seen = new Set();
+    found = found.filter((m) => !m.askable
+      && ["movie", "show", "season", "episode"].indexOf(m.type || "movie") >= 0
+      && !seen.has(String(m.ratingKey)) && seen.add(String(m.ratingKey)));
+    foundBox.innerHTML = "";
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = found.length
+      ? "Press a poster to put it in the collection or take it out; green is in."
+      : "Nothing in the library answers \u201c" + q + "\u201d.";
+    foundBox.appendChild(note);
+    if (!found.length) return;
+    const inNow = () => new Set((stagePins || (shelf && shelf.pinned) || []).map(String));
+    const g = grid(found, 0, false, null);
+    [].forEach.call(g.children, (el, at) => {
+      const key = String(found[at].ratingKey);
+      const paint = () => el.classList.toggle("hazein", inNow().has(key));
+      paint();
+      // taken before the card's own handlers: here a press picks, it does not open
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (!stagePins) {
+          stagePins = ((shelf && shelf.pinned) || []).map(String);
+          stageHides = ((shelf && shelf.hidden) || []).map(String);
+        }
+        stage(key, !inNow().has(key));
+        paint();
+      }, true);
+    });
+    foundBox.appendChild(g);
+  };
+  const findSoon = () => {
+    clearTimeout(findTick);
+    findTick = setTimeout(runFind, 350);
+  };
+  find.addEventListener("input", () => { findOwn = true; findSoon(); });
+  name.addEventListener("input", () => {
+    if (shelf || findOwn) return;
+    find.value = name.value;
+    findSoon();
+  });
   const kindRow = document.createElement("div");
   kindRow.className = "addrow subrow";
   kindRow.innerHTML = "<span class='sublabel'>Holds</span>";
@@ -4183,6 +5167,16 @@ function collectionForm(shelf) {
     "Exclude", rule.seasonWithout || "", "s2 | s5e3-s5e9",
     "Taken back out of what the line above took, so a whole season can be left " +
     "out of a series that is otherwise on the shelf. " + SPAN_HELP);
+  // the shuffle's own part of the collection: the shelf holds the whole series,
+  // the hat only these seasons
+  const shuffleIn = row(
+    "Shuffle only", (shelf && shelf.shuffleSeason) || "", "s1-s8",
+    "Which episodes Play shuffle draws from, when not all of them: the collection " +
+    "still holds and plays everything else. Leave it empty and the shuffle draws " +
+    "from the whole collection. " + SPAN_HELP);
+  const shuffleOut = row(
+    "Shuffle not", (shelf && shelf.shuffleSeasonWithout) || "", "s9",
+    "Taken out of the shuffle only. " + SPAN_HELP);
   // said back in words, so a mistyped span is obvious before it is saved
   const seasonEcho = document.createElement("div");
   seasonEcho.className = "note ruleeg";
@@ -4313,6 +5307,9 @@ function collectionForm(shelf) {
     genreRow.classList.toggle("hidden", !on);
     yearsRow.classList.toggle("hidden", !on);
     decadeRow.classList.toggle("hidden", !on);
+    findRow.classList.toggle("hidden", on);
+    foundBox.classList.toggle("hidden", on);
+    runFind();
     why.textContent = on
       ? "Every word in a rule must appear in the title; a bar (|) starts another "
         + "rule and any of them will do. Matching titles join as the library gains "
@@ -4364,6 +5361,8 @@ function collectionForm(shelf) {
       },
     };
     if (shelf) body.id = shelf.id;
+    body.shuffleSeason = shuffleIn.value.trim();
+    body.shuffleSeasonWithout = shuffleOut.value.trim();
     // the sort, genre and decade showing now become how this collection opens
     body.view = { sort: SORT_KEYS[collSortState.key] || "", dir: collSortState.dir,
                   genre: listFilter.genre || "", decade: listFilter.decade || "" };
@@ -4740,6 +5739,8 @@ const FILL_IN_MS = 1500;
 const SEARCH_SIG = { q: "", sig: "" };
 
 async function viewSearch(q, again = 0) {
+  sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
+  pageMoved();
   SCREEN = { kind: "search", q: q };
   let asking = false;              // the tracker is still being asked about what was found
   let filling = false;             // the catalogue is still being asked: back in a moment
@@ -5659,8 +6660,140 @@ function offerVersion(it) {
   return o.state === "downloading" && o.version ? String(o.version) : "";
 }
 
+/* What a poster's download badge says, as HTML. */
+function offerBadgeText(it) {
+  return esc(offerWord(it)) +
+    (offerVersion(it) ? '<small class="ver">' + esc(offerVersion(it)) + "</small>" : "");
+}
+
+/* The badges on posters already drawn, moved on with each poll of what is coming in;
+   one no longer coming in has arrived. */
+let badgeKeys = new Set();
+function moveOfferBadges(rows) {
+  const now = new Set();
+  rows.forEach((r) => {
+    const key = String(r.ratingKey || "");
+    if (!key) return;
+    now.add(key);
+    document.querySelectorAll('.card[data-key="' + CSS.escape(key) + '"] .offerbadge span')
+      .forEach((s) => { s.innerHTML = offerBadgeText(r); });
+  });
+  badgeKeys.forEach((key) => {
+    if (now.has(key)) return;
+    document.querySelectorAll('.card[data-key="' + CSS.escape(key) + '"] .offerbadge span')
+      .forEach((s) => { s.textContent = "Arriving"; });
+  });
+  badgeKeys = now;
+}
+
+/* The film before and after this one in its series, under its buttons: pressed, or the
+   left and right arrow keys, open their pages. */
+async function sagaRow(wrap, key) {
+  let parts = [];
+  try { parts = items(await api("/library/saga", { key: key })) || []; } catch (e) { parts = []; }
+  const at = parts.findIndex((p) => p.at);
+  if (at < 0 || !wrap.isConnected) return;
+  const poster = wrap.querySelector(".poster");
+  if (!poster) return;
+  // where it stands in the series, under the poster: the poster and this line in a
+  // column of their own, at the poster's width
+  const col = document.createElement("div");
+  col.className = "sagacol";
+  poster.replaceWith(col);
+  col.appendChild(poster);
+  const foot = document.createElement("div");
+  foot.className = "sagaat";
+  col.appendChild(foot);
+  // Pressed, the poster steps through the series one film at a time - its arrows, the
+  // arrow keys, a swipe or a sideways scroll - and the line under it names the one on
+  // show. Pressed on another film, that film's page opens; on its own, it stops.
+  let shown = at, going = false;
+  const pic = poster.querySelector("img");
+  const own = pic ? pic.src : "";
+  const prev = document.createElement("button");
+  prev.className = "sagastep prev";
+  prev.textContent = "\u2039";
+  const next = document.createElement("button");
+  next.className = "sagastep next";
+  next.textContent = "\u203a";
+  poster.append(prev, next);
+  const show = (i) => {
+    shown = Math.max(0, Math.min(parts.length - 1, i));
+    const p = parts[shown];
+    if (pic) pic.src = shown === at ? own : (p.thumb ? img(p.thumb, 400, 600) : own);
+    prev.style.display = going && shown > 0 ? "" : "none";
+    next.style.display = going && shown < parts.length - 1 ? "" : "none";
+    prev.title = shown > 0 ? "Before it: " + parts[shown - 1].title : "";
+    next.title = shown < parts.length - 1 ? "After it: " + parts[shown + 1].title : "";
+    foot.textContent = going
+      ? p.title + " (" + p.year + ")  \u00b7  " + (shown + 1) + " of " + parts.length
+      : (at + 1) + " of " + parts.length;
+    poster.classList.toggle("sagaon", going);
+    poster.classList.toggle("sagaother", going && shown !== at);
+  };
+  const step = (d) => { if (going) show(shown + d); };
+  prev.onclick = (e) => { e.stopPropagation(); step(-1); };
+  next.onclick = (e) => { e.stopPropagation(); step(1); };
+  poster.style.cursor = "pointer";
+  poster.onclick = () => {
+    if (!going) { going = true; show(at); }
+    else if (shown !== at) openKey(parts[shown].ratingKey);
+    else if (!hovered) { going = false; show(at); }
+  };
+  // with a mouse, over the poster is enough: the arrows come up, and leaving it puts the
+  // poster back to this film's own
+  let hovered = false;
+  poster.addEventListener("mouseenter", () => { hovered = true; if (!going) { going = true; show(shown); } });
+  poster.addEventListener("mouseleave", () => { hovered = false; going = false; show(at); });
+  let x0 = null;
+  poster.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+  poster.addEventListener("touchend", (e) => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    x0 = null;
+    if (Math.abs(dx) > 40) step(dx < 0 ? 1 : -1);
+  });
+  let wheelAt = 0;
+  poster.addEventListener("wheel", (e) => {
+    if (!going || Math.abs(e.deltaX) < Math.abs(e.deltaY) || Math.abs(e.deltaX) < 20) return;
+    e.preventDefault();
+    if (Date.now() - wheelAt < 350) return;
+    wheelAt = Date.now();
+    step(e.deltaX > 0 ? 1 : -1);
+  }, { passive: false });
+  show(at);
+  SAGA_KEYS = { page: key, step: step, going: () => going, open: () => poster.onclick() };
+}
+
+/* Which page a key opens: a film here or one only on offer. */
+function openKey(key) {
+  if (typeof viewMovie === "function") viewMovie(key);
+}
+
+//: the film page's neighbours, for the arrow keys
+let SAGA_KEYS = {};
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement || {}).tagName || "")) return;
+  if (!SCREEN || (SCREEN.kind !== "movie" && SCREEN.kind !== "offer")
+      || String(SCREEN.key) !== String(SAGA_KEYS.page)) return;
+  // the arrow keys step the poster through the series once it is pressed; Enter opens
+  if (!SAGA_KEYS.going || !SAGA_KEYS.going()) return;
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    e.preventDefault();
+    SAGA_KEYS.step(e.key === "ArrowLeft" ? -1 : 1);
+  } else if (e.key === "Enter" && document.activeElement === document.body) {
+    SAGA_KEYS.open();
+  }
+});
+
 /* A film on offer from a torrent pack: its page, and the one thing to do about it. */
+//: a title page still waiting on the tracker asks again this often, this many times
+const CHECK_EVERY_MS = 5000, CHECK_TRIES = 12;
+
 async function viewOffer(m) {
+  sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
+  pageMoved();
   SCREEN = { kind: "offer", key: String(m.ratingKey) };
   main.innerHTML = "";
   const o = m.offer || {};
@@ -5686,6 +6819,8 @@ async function viewOffer(m) {
     // - and Request only where asking is genuinely all anybody can do.
     (fetches || m.onTracker
       ? '<div class="ribbon"><span>Download</span></div>'
+      // the tracker not answered yet: neither Download nor Request is known
+      : m.checking ? '<div class="ribbon"><span>Checking</span></div>'
       : '<div class="ribbon' + (m.asked ? " asked" : "") + '"><span>' +
         (m.asked ? "Requested" : "Request") + "</span></div>") +
     "</div>" +
@@ -5710,6 +6845,8 @@ async function viewOffer(m) {
     '<div class="actions">' +
     // on SVT Play, unprotected: played from there, first of the buttons
     (m.svt ? '<button class="btn" id="svtplay">▶ Play from SVT Play</button>' : "") +
+    // a copy of a film here already: that one plays while this one comes in
+    (o.heldKey ? '<button class="btn" id="offerheld">▶ Play</button>' : "") +
     '<button class="btn" id="offerget"></button>' +
     // The same button as the one above it, for the other place a film comes from:
     // the word, the arrow and the size beside it, in the same spot. It read as a
@@ -5735,13 +6872,22 @@ async function viewOffer(m) {
       : "Not in the library, and nothing to download yet. Requesting puts it on your "
         + "watchlist, and the request closes by itself once it can be downloaded.")
     + "</div></div>";
+  // on the watchlist or in a collection before it is here, as a film here can be
+  const marks = wrap.querySelector(".actions");
+  if (marks) marks.insertBefore(markControl(m), wrap.querySelector("#offersaid"));
   main.appendChild(wrap);
+  sagaRow(wrap, m.ratingKey);
   castRow(wrap.querySelector(".cast"), m);
   // Show more, as a film here has: what it is rated, how long, and everybody in it -
   // what decides whether it is worth downloading
   pressableText(wrap, m);
   const svt = document.getElementById("svtplay");
   if (svt) svt.onclick = () => playSvt(m);
+  const held = document.getElementById("offerheld");
+  if (held) held.onclick = async () => {
+    const it = items(await api("/library/metadata/" + o.heldKey))[0];
+    if (it) play(it, it.viewOffset ? Math.floor(it.viewOffset / 1000) : 0, {});
+  };
   // a stream's page is its Play button and its plot: who is in it is under Show more
   if (m.svt) wrap.querySelector(".cast").remove();
   const grab = document.getElementById("offertracker");
@@ -5754,12 +6900,35 @@ async function viewOffer(m) {
     // Asked of the tracker itself rather than read off the film: the film is handed
     // about between drawings of this page and the answer here is the same either way.
     (async () => {
-      let said = { versions: [] };
-      try {
-        said = await (await fetch("/tracker/list", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: m.title, year: m.year, key: m.ratingKey }) })).json();
-      } catch (e) { said = { versions: [] }; }
+      const ask = async () => {
+        try {
+          return await (await fetch("/tracker/list", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: m.title, year: m.year, key: m.ratingKey }) })).json();
+        } catch (e) { return { versions: [] }; }
+      };
+      let said = await ask();
+      // the tracker still being asked about it: asked again every few seconds for a
+      // minute, and the ribbon says what came of it. The page said Request for a film
+      // the tracker carried, because the answer came after it opened.
+      const ribbon = wrap.querySelector(".poster .ribbon span");
+      // Checking for as long as the server has not asked the tracker - five seconds
+      // apart for a minute, then thirty - and Request only once it has found nothing:
+      // giving up after a minute said Request for a film nobody had looked for yet
+      for (let n = 0; !(said.versions || []).length && m.checking && !fetches; n++) {
+        await new Promise((r) => setTimeout(r, n < CHECK_TRIES ? CHECK_EVERY_MS : 30000));
+        if (!SCREEN || SCREEN.kind !== "offer" || SCREEN.key !== String(m.ratingKey)) return;
+        try {
+          const now = items(await api("/library/metadata/" + m.ratingKey))[0];
+          if (now) m.checking = !!now.checking;
+        } catch (e) { /* asked again next time round */ }
+        said = await ask();
+      }
+      if (ribbon && !fetches) {
+        ribbon.textContent = (said.versions || []).length ? "Download"
+          : m.checking ? "Checking" : (m.asked ? "Requested" : "Request");
+      }
+      if (!fetches && !(said.versions || []).length && b) b._redraw && b._redraw();
       const rows = (said.versions || []).slice();
       // the pack's own copy is a version like any other: it belongs in the same list,
       // with its size, so choosing is one act rather than two different buttons
@@ -5776,12 +6945,11 @@ async function viewOffer(m) {
         // the figures first, seeders leading as the list is sorted, then the name
         o.textContent = [
           versionTag(v),
-          v.disk || v.seeds == null ? "" : v.seeds + " seeding",
+          v.have || v.disk || v.seeds == null ? "" : v.seeds + " seeding",
           v.mbit ? v.mbit + " Mbit/s" : "",
           v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
         ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
-          v.have ? "on disk already" : "",
-          v.pick && !v.have ? "recommended" : "",
+            v.pick && !v.have ? "recommended" : "",
           v.why || "",
         ].filter(Boolean).map((x) => "   ·   " + x).join("");
         // the one to take unless somebody wants otherwise: the preferred resolution,
@@ -5830,7 +6998,10 @@ async function viewOffer(m) {
             (free != null ? "  ·  " + free + " GB free" : "");
       };
       label();
+      grab._label = label;
       pick.onchange = label;
+      // a release of it coming in, whichever was picked: the progress button stays
+      if (["queued", "downloading", "done"].includes(o.state)) return;
       pick.style.display = "";
       grab.style.display = "";
       // and the asking steps aside: fetching it is the better answer to the same
@@ -5838,8 +7009,71 @@ async function viewOffer(m) {
       if (b) b.style.display = "none";
     })();
   }
+  // A release taken from the tracker for this page, queued or coming in: the Download
+  // button is its cancel - once to ask, again to stop - as in the app.
+  let takeArmed = false;
+  const followTake = async () => {
+    if (!grab || !document.body.contains(wrap)) return;
+    let rows = [];
+    try {
+      rows = ((await (await fetch("/tracker/active", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: "{}" })).json()).taking) || [];
+    } catch (e) { rows = []; }
+    const flat = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const one = rows.find((r) => !r.done && (r.key ? r.key === String(m.ratingKey)
+      : flat(r.title) && flat(r.title) === flat(m.title) &&
+        (!r.year || !m.year || Number(r.year) === Number(m.year))));
+    if (one) {
+      grab.dataset.hash = one.hash;
+      grab.disabled = false;
+      grab.style.display = "";
+      grab.textContent = takeArmed ? "Press again to cancel"
+        : one.words ? "\u2715 Cancel  \u00b7  " + one.words
+        : "\u2715 Cancel  \u00b7  " +
+          (/^queued/.test(one.state) || (/^stalledDL/.test(one.state) && !one.progress)
+            ? "Queued" : "Downloading " + Math.round((one.progress || 0) * 100) + "%") +
+          (one.mbit > 0 ? "  \u00b7  " + one.mbit.toFixed(1) + " Mbit/s" : "");
+      setTimeout(followTake, 3000);
+    } else if (grab.dataset.hash) {
+      // finished or gone: Download again, as the list says
+      delete grab.dataset.hash;
+      takeArmed = false;
+      if (grab._label) grab._label();
+      grab.disabled = false;
+    }
+  };
   if (grab) {
+    followTake();
     grab.onclick = async () => {
+      // coming in: this press is about stopping it
+      if (grab.dataset.hash) {
+        if (!takeArmed) {
+          takeArmed = true;
+          grab.textContent = "Press again to cancel";
+          setTimeout(() => { takeArmed = false; }, 4000);
+          return;
+        }
+        takeArmed = false;
+        grab.disabled = true;
+        let c = {};
+        try {
+          c = await (await fetch("/tracker/cancel", { method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ hash: grab.dataset.hash }) })).json();
+        } catch (e) { c = { ok: false, why: "The server did not answer" }; }
+        const said = document.getElementById("offersaid");
+        if (c.ok === false) {
+          grab.disabled = false;
+          said.textContent = c.why || "Could not cancel it";
+          return;
+        }
+        delete grab.dataset.hash;
+        said.textContent = "Cancelled";
+        toast("Cancelled " + m.title);
+        if (grab._label) grab._label();
+        grab.disabled = false;
+        return;
+      }
       grab.disabled = true;
       const said = document.getElementById("offersaid");
       said.textContent = "Starting the download…";
@@ -5850,7 +7084,7 @@ async function viewOffer(m) {
           ? await (await fetch("/tracker/get", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ id: pick.value, title: m.title,
-                                     year: m.year }) })).json()
+                                     year: m.year, key: m.ratingKey }) })).json()
           : await (await fetch("/torrents/get", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ key: m.ratingKey }) })).json();
@@ -5862,11 +7096,21 @@ async function viewOffer(m) {
         const waiting = r.state === "queued";
         grab.textContent = waiting
           ? "Queued" + (r.place ? "  \u00b7  " + r.place + " ahead" : "")
-          : "Downloading - arriving";
-        said.textContent = waiting
-          ? "It starts when the ones before it are done"
-          : "It appears in Films when it has arrived";
+          // not "arriving": that is a download finished, and the progress follows
+          : "Starting the download…";
+        said.textContent = waiting ? "It starts when the ones before it are done" : "";
         toast((waiting ? "Queued " : "Downloading ") + m.title);
+        // and from now on the button is its cancel
+        setTimeout(followTake, 1500);
+        // a pack release comes in as this film's offer: its progress on the pack button
+        if (fetches) setTimeout(async () => {
+          await follow();
+          if (["queued", "downloading", "done"].includes(o.state)) {
+            grab.style.display = "none";
+            pick.style.display = "none";
+            b.style.display = "";
+          }
+        }, 1500);
       } else {
         grab.disabled = false;
         said.textContent = r.error || "Could not download that one";
@@ -5887,7 +7131,10 @@ async function viewOffer(m) {
   const said = wrap.querySelector("#offersaid");
   const pct = wrap.querySelector("#offerpct");
   const stop = wrap.querySelector("#offercancel");
-  const draw = (state, progress, why, mbit, eta) => {
+  // Cancel asked once: the next press stops it
+  let packArmed = false;
+  // words: what the server says it is doing - looking for seeders, checking, adding it
+  const draw = (state, progress, why, mbit, eta, words) => {
     const coming = state === "queued" || state === "downloading";
     // across the poster too: how far, and how long is left
     pct.style.display = coming ? "" : "none";
@@ -5896,10 +7143,19 @@ async function viewOffer(m) {
     pct.textContent = (o.version ? o.version + " · " : "") +
       (state === "queued" ? "Queued" : Math.round((progress || 0) * 100) + "%") +
       (eta != null && eta >= 0 ? " \u00b7 " + etaShort(eta) : "");
-    // one from the tracker is stopped from the strip of what is coming in
-    stop.style.display = coming && !o.tracker ? "" : "none";
-    b.disabled = !!state && state !== "failed" && state !== "cancelled";
-    b.textContent = state === "downloading"
+    // the button itself stops it, as in the app: no second one beside it
+    stop.style.display = "none";
+    o.state = state;
+    b.disabled = state === "done" || (coming && !!o.tracker) ||
+      (!fetches && !coming && !!m.checking && !m.asked);         // nothing to press while it is asked
+    b.textContent = coming && !o.tracker && packArmed ? "Press again to cancel"
+      : coming && !o.tracker && words ? "✕ Cancel  ·  " + words
+      : (coming || state === "done") && words ? words
+      : coming && !o.tracker ?"\u2715 Cancel  \u00b7  " + (state === "queued"
+          ? "Queued" + (o.place ? " \u00b7 " + o.place + " ahead" : "")
+          : (o.version ? o.version + " · " : "") + Math.round((progress || 0) * 100) + "%" +
+            (mbit > 0 ? "  \u00b7  " + mbit.toFixed(1) + " Mbit/s" : ""))
+      : state === "downloading"
       ? "Downloading " + (o.version ? o.version + " · " : "") +
         Math.round((progress || 0) * 100) + "%" +
         (mbit > 0 ? "  \u00b7  " + mbit.toFixed(1) + " Mbit/s" : "") +
@@ -5910,6 +7166,8 @@ async function viewOffer(m) {
       // from the list below before anything starts
       : fetches ? "⤓ Download" +
           (o.size ? "  " + (o.size / 1e9).toFixed(1) + " GB" : "")
+      // the tracker not asked yet: Request is only for what it was asked about and lacks
+      : m.checking && !m.asked ? "Checking the tracker…"
       : (m.asked ? "Requested" : "Request")
         // and how many are waiting on it. One asking is the person reading this and
         // needs no saying; several is the thing worth knowing before deciding what
@@ -5921,6 +7179,8 @@ async function viewOffer(m) {
   };
   draw(o.state, o.progress, o.free != null && !o.state && o.size / 1e9 > o.free
     ? "Not enough room on the download drive for this film" : "");
+  // drawn again once the tracker has answered: Checking becomes Request
+  b._redraw = () => draw(o.state, o.progress, "", o.mbit, o.eta, o.words);
   if (o.refused) {
     b.disabled = true;
     b.textContent = "Cannot download";
@@ -5956,13 +7216,13 @@ async function viewOffer(m) {
     const off = (now && now.offer) || null;
     if (off) {
       o.place = off.place || 0;
-      draw(off.state, off.progress, "", off.mbit, off.eta);
+      draw(off.state, off.progress, "", off.mbit, off.eta, off.words);
       if (off.state !== "queued" && off.state !== "downloading" && off.state !== "done") return;
     }
     setTimeout(follow, 5000);
   };
   if (o.state === "queued" || o.state === "downloading" || o.state === "done") {
-    draw(o.state, o.progress, "", o.mbit, o.eta);
+    draw(o.state, o.progress, "", o.mbit, o.eta, o.words);
     setTimeout(follow, 5000);
   }
   stop.onclick = async () => {
@@ -5985,6 +7245,17 @@ async function viewOffer(m) {
     }
   };
   b.onclick = async () => {
+    // coming in from the pack: the press is about stopping it, once to ask
+    if ((o.state === "queued" || o.state === "downloading") && !o.tracker) {
+      if (!packArmed) {
+        packArmed = true;
+        b.textContent = "Press again to cancel";
+        setTimeout(() => { packArmed = false; }, 4000);
+        return;
+      }
+      packArmed = false;
+      return stop.onclick();
+    }
     b.disabled = true;
     let r = {};
     // one film off the pack, and the page follows it in from here
@@ -6041,6 +7312,7 @@ async function drawDownloadBanner() {
   try {
     const got = await (await fetch("/torrents/active")).json();
     rows = (got.MediaContainer || got).Metadata || [];
+    moveOfferBadges(rows);
   } catch (e) {
     rows = [];
   }
@@ -6057,6 +7329,10 @@ async function drawDownloadBanner() {
   }
   const words = (x) => {
     const o = x.offer || {};
+    // not coming in yet - looking for seeders, checking, stuck: the server's own words
+    if (o.words && o.stage && o.stage !== "downloading" && o.stage !== "queued") {
+      return x.title + " · " + o.words;
+    }
     return x.title + (o.version ? " " + o.version : "") + " " + (o.state === "queued"
       ? "queued" + (o.place ? " \u00b7 " + o.place + " ahead" : "")
       : Math.round((o.progress || 0) * 100) + "%" +
@@ -6075,6 +7351,18 @@ async function drawDownloadBanner() {
   };
 }
 setTimeout(drawDownloadBanner, 1500);
+/* A film on this viewer's watchlist that has got a source: said on opening the page -
+   the server keeps it from whenever it happened - and while the page is open. */
+async function watchNews() {
+  let news = [];
+  try { news = ((await (await fetch("/watchlist/news")).json()).news) || []; }
+  catch (e) { news = []; }
+  news.filter((n) => n.title).forEach((n, i) => setTimeout(() => toast(n.title +
+    (n.how === "here" ? " is here - it was on your watchlist"
+                      : " can be downloaded now - it was on your watchlist")), i * 4000));
+}
+setTimeout(watchNews, 3000);
+setInterval(watchNews, 60000);
 /* A second while anything is arriving, so the percentage and the rate move as
    they happen; ten when nothing is, because an idle library has nothing to say
    and the answer is read from memory either way. */
@@ -6128,16 +7416,31 @@ function tellMe(title, text, m) {
   }
   // and who is in it, each name a way into everything else they are in
   castRow(back.querySelector(".cast"), m || {});
-  const shut = () => back.remove();
+  // A step in the history of its own, so the mouse's back button closes it. Closed any
+  // other way, the step is taken back first, and then whatever was pressed is done.
+  history.pushState({ sheet: 1 }, "");
+  sheetPop = () => back.remove();
+  const shut = (then) => {
+    if (!back.isConnected) return;
+    back.remove();
+    sheetPop = then || (() => {});
+    history.back();
+  };
   back.onclick = (e) => { if (e.target === back) shut(); };
   // the Close button by name: the first button in the sheet is the first actor now,
   // and taking that one made their name close the sheet instead of opening them
   const close = back.querySelector(".sheetclose");
-  close.onclick = shut;
-  // an actor pressed opens their films, and the sheet goes out of the way
+  close.onclick = () => shut();
+  // an actor pressed opens their films once the sheet's step is gone, or their page
+  // would be the step the sheet's going took back
+  let passing = false;
   back.querySelector(".cast").addEventListener("click", (e) => {
-    if (e.target.closest("button")) shut();
-  });
+    const b = e.target.closest("button");
+    if (!b || passing) return;
+    e.stopPropagation();
+    e.preventDefault();
+    shut(() => { passing = true; b.click(); passing = false; });
+  }, true);
   document.addEventListener("keydown", function esc(e) {
     if (e.key !== "Escape") return;
     document.removeEventListener("keydown", esc);
@@ -6249,6 +7552,8 @@ function initial(name) {
 
 /** Everything this house holds with one person in it. */
 async function viewPerson(who) {
+  sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
+  pageMoved();
   SCREEN = { kind: "person", who: who };
   pushView(() => viewPerson(who));
   $("#back").classList.add("on");
@@ -6263,7 +7568,7 @@ async function viewPerson(who) {
   main.innerHTML = "";
   const h = document.createElement("h2");
   h.innerHTML = '<span class="ct">' + esc(who.tag) + "</span>" +
-    '<span class="count">' + list.length + (list.length === 1 ? " film" : " films") + "</span>";
+    '<span class="count">' + list.length + (list.length === 1 ? " title" : " titles") + "</span>";
   main.appendChild(h);
   if (!list.length) {
     const none = document.createElement("div");
@@ -6272,7 +7577,19 @@ async function viewPerson(who) {
     main.appendChild(none);
     return;
   }
-  main.appendChild(grid(list, 0));
+  // films, then series, each newest first: one grid by date mixed them
+  const films = list.filter((x) => (x.type || "movie") === "movie");
+  const telly = list.filter((x) => (x.type || "movie") !== "movie");
+  if (!films.length || !telly.length) {
+    main.appendChild(grid(list, 0));
+    return;
+  }
+  [["Films", films], ["TV shows", telly]].forEach(([label, part]) => {
+    const sub = sectionTitle(label + "  " + part.length);
+    sub.className = "collpart";
+    main.appendChild(sub);
+    main.appendChild(grid(part, 0));
+  });
 }
 
 /* What the tracker is fetching for this film, if anything, drawn as a line that
@@ -6373,9 +7690,8 @@ async function fillDownloads(m, sel) {
     // what each colour means, in words on the line: green recommended, blue in a
     // pack here, yellow already on disk, red cannot be downloaded
     // recommended and where it comes from, both: "Recommended" alone hid that it was a pack's
-    o.textContent = [v.have ? "On disk already" : v.pick ? "Recommended" : "",
-                     v.pack ? "In a pack here" : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker",
-      v.seeds == null ? "" : v.seeds + " seeding",
+    o.textContent = [v.pick && !v.have ? "Recommended" : "", versionTag(v),
+      v.have || v.seeds == null ? "" : v.seeds + " seeding",
       v.mbit ? v.mbit + " Mbit/s" : "",
       v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
       .join("  \u00b7  ") + "   \u2014   " +
@@ -6413,6 +7729,20 @@ function offerDownload(m, sel) {
   const go = document.createElement("button");
   go.className = "btn";
   go.textContent = "\u2913 Download" + (gb ? "  " + gb : "");
+  // a version here already: it is one of the copies above, chosen as they are - the
+  // page's own Play plays it
+  if (v.have) {
+    const flat = (x) => String(x || "").toLowerCase().replace(/\.(mkv|mp4|avi|m4v|ts)$/, "")
+      .replace(/[^a-z0-9]+/g, "");
+    const at = [...sel.options].findIndex((o) => /^\d+$/.test(o.value) &&
+      flat(o.textContent).includes(flat(v.name)));
+    box.remove();
+    if (at >= 0) {
+      sel.value = sel.options[at].value;
+      sel.dispatchEvent(new Event("change"));
+    }
+    return;
+  }
   const room = document.createElement("span");
   room.className = "roomleft";
   if (got.free != null) room.textContent = Math.round(got.free) + " GB free";
@@ -6450,22 +7780,61 @@ function offerDownload(m, sel) {
   box.append(go, room);
 }
 
+/* The row's number, picture and its watched and watchlist marks stay where they were
+   while the list under it is open: centred on the row, they slid down the length of
+   the list. */
+function keepTicks(row, on) {
+  [...row.children].filter((c) => !c.classList.contains("info")).forEach((t) => {
+    if (on) {
+      const top = t.getBoundingClientRect().top - row.getBoundingClientRect().top;
+      t.style.alignSelf = "flex-start";
+      t.style.marginTop = Math.max(0, top - (parseFloat(getComputedStyle(row).paddingTop) || 0)) + "px";
+    } else {
+      t.style.alignSelf = "";
+      t.style.marginTop = "";
+    }
+  });
+}
+
 /* The releases of an episode not here yet, under its row: each with its size and
    what its colour means, and a Download button. */
+//: how often a season's page looks for an episode it started downloading, while it is open
+const EPISODE_LANDS_EVERY = 20000;
+
+/* Until an episode asked for is in: then the season is drawn again, so it can be played
+   without reloading the page. Ends when the page has left that season. */
+async function reloadWhenIn(seasonKey, index) {
+  const at = $("#season");
+  if (!at || at.value !== seasonKey) return;
+  let c = null;
+  try { c = await api("/library/metadata/" + seasonKey + "/children"); } catch (e) { c = null; }
+  const ep = c && items(c).find((e) => e.index === index);
+  // a release list open is left alone: drawing the season again would close it
+  const list = $("#eplist");
+  if (ep && !ep.upcoming && !ep.offered && !(list && list.querySelector(".epdl"))) {
+    toast("Episode " + index + " is in - ready to play");
+    loadEpisodes(seasonKey, ep.ratingKey);
+    return;
+  }
+  setTimeout(() => reloadWhenIn(seasonKey, index), EPISODE_LANDS_EVERY);
+}
+
 async function episodeDownloads(row, ep) {
   const old = row.querySelector(".epdl");
-  if (old) { old.remove(); return; }
+  if (old) { old.remove(); keepTicks(row, false); return; }
+  keepTicks(row, true);
   const box = document.createElement("div");
   box.className = "epdl";
-  box.textContent = "Asking the tracker…";
   // presses in the list stay in it: the row under it plays the episode
   box.onclick = (e) => e.stopPropagation();
   row.querySelector(".info").appendChild(box);
+  const show = ep.grandparentTitle || "";
+  box.textContent = "Asking the tracker…";
   let said = {};
   try {
     said = await (await fetch("/tracker/list", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: ep.ratingKey, title: ep.grandparentTitle || "" }) })).json();
+      body: JSON.stringify({ key: ep.ratingKey, title: show }) })).json();
   } catch (e) { said = { versions: [] }; }
   const rows = said.versions || [];
   box.textContent = "";
@@ -6476,21 +7845,35 @@ async function episodeDownloads(row, ep) {
     room.textContent = Math.round(said.free) + " GB free";
     box.appendChild(room);
   }
-  rows.forEach((v) => {
+  // the pack already added first, then the episode on its own, then the season packs
+  // on the tracker that hold it - each under a heading saying which it is
+  [["From the pack you added", rows.filter((v) => v.pack)],
+   ["The episode on its own", rows.filter((v) => !v.pack && !v.box)],
+   ["In season packs on the tracker", rows.filter((v) => !v.pack && v.box)]]
+    .forEach(([heading, part]) => {
+  if (!part.length) return;
+  const named = document.createElement("div");
+  named.className = "note epdlhead";
+  named.textContent = heading;
+  box.appendChild(named);
+  part.forEach((v) => {
     const line = document.createElement("div");
     line.className = "epdlrow";
     const words = document.createElement("span");
-    words.textContent = [v.pick ? "Recommended" : "",
-      v.pack ? "In a pack" : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker",
-      v.seeds == null ? "" : v.seeds + " seeding",
+    words.textContent = [v.have ? "On disk" : v.pick ? "Recommended" : "",
+      // the heading says pack or single; a box still says which
+      !v.pack && v.box ? (v.seasonPack ? "Season pack" : "Box set") : "",
+      v.have || v.seeds == null ? "" : v.seeds + " seeding",
       v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
       .join("  ·  ") + "   —   " + releaseName(v.name) +
       (v.why ? "   ·   " + v.why : "");
-    words.style.color = v.why ? "#ff6b6b" : v.pick ? "#5fd08a" : "";
+    words.style.color = v.have ? "#e0b341" : v.why ? "#ff6b6b" : v.pick ? "#5fd08a" : "";
     const go = document.createElement("button");
     go.className = "btn ghost";
-    go.textContent = "⤓ Download";
-    go.disabled = !!v.why;
+    // the one here already: nothing to press, the button says so
+    go.classList.toggle("here", !!v.have);
+    go.textContent = v.have ? "On disk" : "⤓ Download";
+    go.disabled = !!v.why || !!v.have;
     go.onclick = async () => {
       go.disabled = true;
       go.textContent = "Starting…";
@@ -6498,19 +7881,180 @@ async function episodeDownloads(row, ep) {
       try {
         r = await (await fetch("/tracker/get", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: v.id, title: ep.grandparentTitle || "" }) })).json();
+          body: JSON.stringify({ id: v.id, title: show }) })).json();
       } catch (e) { r = { error: "The server did not answer" }; }
-      go.textContent = r.taken ? "Downloading" : (r.error || "Could not download it");
-      toast(go.textContent);
-      if (!r.taken) go.disabled = false;
+      if (!r.taken) {
+        go.textContent = r.error || "Could not download it";
+        toast(go.textContent);
+        go.disabled = false;
+        return;
+      }
+      toast("Downloading - it can be played here as soon as it is in");
+      // said on the row, the list closed: it stayed open as if nothing had happened
+      const on = row.querySelector(".info .s");
+      if (on) on.append("  \u00b7  Downloading");
+      box.remove();
+      keepTicks(row, false);
+      if (ep.offered || ep.upcoming) {
+        const at = $("#season");
+        if (at) setTimeout(() => reloadWhenIn(at.value, ep.index), EPISODE_LANDS_EVERY);
+      }
+    };
+    line.append(go);
+    // a season pack: added to the series as a link, the season's episodes then a
+    // press each - nothing downloaded
+    if (v.packId) {
+      const add = document.createElement("button");
+      add.className = "btn ghost";
+      add.textContent = "+ Add pack";
+      add.onclick = async () => {
+        add.disabled = true;
+        add.textContent = "Adding…";
+        let r = {};
+        try {
+          r = await (await fetch("/shows/usepack", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ show: show, id: v.packId }) })).json();
+        } catch (e) { r = { error: "The server did not answer" }; }
+        add.textContent = r.error ? r.error : "Pack added";
+        toast(r.error ? r.error : "Season pack added - nothing downloaded");
+        if (r.error) add.disabled = false;
+      };
+      line.append(add);
+    }
+    line.append(words);
+    box.appendChild(line);
+  });
+  });
+}
+
+/* One season's packs on the tracker, above its episodes: pressed, the pack is added as
+   a link and the season's episodes come from it. Nothing is downloaded. */
+async function seasonPacks(list, seasonKey, button) {
+  const had = $("#seasonpacks");
+  if (had) { had.remove(); return; }
+  const show = (showNow && showNow.title) || "";
+  const number = parseInt(String(seasonKey).split("-s").pop(), 10) || 0;
+  const box = document.createElement("div");
+  box.id = "seasonpacks";
+  box.className = "epdl";
+  list.parentNode.insertBefore(box, list);
+  // the packs this season already has, each with a way off
+  const added = document.createElement("div");
+  added.className = "epdl";
+  const found = document.createElement("div");
+  found.className = "epdl";
+  found.textContent = "Asking the tracker…";
+  box.append(added, found);
+  linkedSeasonPacks(added, show, number, list, seasonKey);
+  button.disabled = true;
+  let said = {};
+  try {
+    said = await (await fetch("/tracker/season", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ show: show, season: number }) })).json();
+  } catch (e) { said = {}; }
+  button.disabled = false;
+  const packs = said.packs || [];
+  found.textContent = "";
+  const head = document.createElement("div");
+  head.className = "note";
+  head.textContent = "On the tracker";
+  found.appendChild(head);
+  if (!packs.length) {
+    head.textContent = "The tracker has no pack of the whole season - its episodes are downloaded one at a time below.";
+    return;
+  }
+  // one added already stands above, with its Remove
+  packs.filter((p) => !p.held).forEach((p) => {
+    const line = document.createElement("div");
+    line.className = "epdlrow";
+    const words = document.createElement("span");
+    const runs = p.seasons || [];
+    words.textContent = [p.pick ? "Recommended" : "",
+      runs.length > 1 ? "S" + String(runs[0]).padStart(2, "0") + "\u2013S" +
+        String(runs[runs.length - 1]).padStart(2, "0") : "Season pack",
+      p.seeds + " seeding",
+      p.size ? (p.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
+      .join("  ·  ") + "   —   " + releaseName(p.name);
+    words.style.color = p.pick ? "#5fd08a" : "";
+    const go = document.createElement("button");
+    go.className = "btn ghost";
+    go.textContent = "+ Add pack";
+    go.onclick = async () => {
+      go.disabled = true;
+      go.textContent = "Adding…";
+      let r = {};
+      try {
+        r = await (await fetch("/shows/usepack", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ show: show, id: p.id, season: number }) })).json();
+      } catch (e) { r = { error: "The server did not answer" }; }
+      go.textContent = r.error ? r.error : "Pack added";
+      toast(r.error ? r.error : "Pack added - nothing downloaded");
+      if (r.error) { go.disabled = false; return; }
+      loadEpisodes(seasonKey);
+      linkedSeasonPacks(added, show, number, list, seasonKey);
     };
     line.append(go, words);
+    found.appendChild(line);
+  });
+}
+
+/* The packs linked that carry this season, the one it comes from first, each with a
+   button that takes the link off. The torrent and its files stay. */
+async function linkedSeasonPacks(box, show, number, list, seasonKey) {
+  box.textContent = "";
+  let said = {};
+  try {
+    said = await (await fetch("/shows/packs", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ show: show }) })).json();
+  } catch (e) { said = {}; }
+  const from = (said.seasonFrom || {})[String(number)] || "";
+  const here = (said.here || []).filter((p) => (p.seasons || []).indexOf(number) >= 0)
+    .sort((a, b) => (b.hash === from) - (a.hash === from));
+  const head = document.createElement("div");
+  head.className = "note";
+  head.textContent = !here.length ? "No pack added for this season yet."
+    : here.every((p) => p.single) ? "Added - single episodes, not a pack of the season"
+    : "Added";
+  box.appendChild(head);
+  here.forEach((p) => {
+    const line = document.createElement("div");
+    line.className = "epdlrow";
+    const words = document.createElement("span");
+    words.textContent = [p.single ? "One episode" : "",
+      p.hash === from ? "This season comes from it" : "",
+      p.seeds != null ? p.seeds + " seeding" : ""].filter(Boolean).join("  ·  ") +
+      "   —   " + releaseName(p.name);
+    words.style.color = p.hash === from ? "#5fd08a" : "";
+    const off = document.createElement("button");
+    off.className = "btn ghost";
+    off.textContent = "✕ Remove";
+    off.onclick = async () => {
+      off.disabled = true;
+      let r = {};
+      try {
+        r = await (await fetch("/shows/usepack", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ show: show, hash: p.hash, drop: true, unlink: true }) })).json();
+      } catch (e) { r = { error: "The server did not answer" }; }
+      toast(r.error || r.kept || "Pack removed - nothing deleted");
+      if (r.error) { off.disabled = false; return; }
+      linkedSeasonPacks(box, show, number, list, seasonKey);
+      loadEpisodes(seasonKey);
+    };
+    line.append(off, words);
     box.appendChild(line);
   });
 }
 
+// a version this house holds says On disk first, whether it came as a file, from a
+// pack or as the tracker's own upload
 function versionTag(v) {
-  return v.disk ? "On disk" : v.pack ? "In a pack here"
+  if (v.tag) return v.tag;
+  return v.disk || v.have ? "On disk" : v.pack ? "In a pack here"
     : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker";
 }
 
@@ -6555,11 +8099,10 @@ function switchVersion(m, label) {
       // the figures first, seeders leading as the list is sorted, then the name
       o.textContent = [
         versionTag(v),
-        v.disk || v.seeds == null ? "" : v.seeds + " seeding",
+        v.have || v.disk || v.seeds == null ? "" : v.seeds + " seeding",
         v.mbit ? v.mbit + " Mbit/s" : "",
         v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
       ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
-        v.have ? "on disk already" : "",
         v.pick && !v.have ? "recommended" : "",
         v.why || "",
       ].filter(Boolean).map((x) => "   ·   " + x).join("");
@@ -6643,12 +8186,46 @@ function switchVersion(m, label) {
   return wrap;
 }
 
+/* A film not out yet, where Play would be: "Out 15 Dec 2026". */
+function upcomingLine(released) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(released || ""));
+  const month = d && ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+                      "Nov", "Dec"][+d[2] - 1];
+  return month ? "Out " + +d[3] + " " + month + " " + d[1] : "Not out yet";
+}
+
+// the ribbon of a card not out yet: its date, "15 Dec" - the month and year when it is
+// most of a year off - and Upcoming when the date is not known or has passed
+function upcomingBand(it, today) {
+  if (it.band) return it.band;
+  const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(it.airDate || it.originallyAvailableAt || ""));
+  const month = d && ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+                      "Nov", "Dec"][+d[2] - 1];
+  const now = today || new Date();
+  const days = month ? (Date.UTC(+d[1], +d[2] - 1, +d[3]) -
+    Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())) / 864e5 : 0;
+  if (!month || days <= 0) return "Upcoming";
+  return days > 330 ? month + " " + d[1] : +d[3] + " " + month;
+}
+
 async function viewMovie(key) {
+  if (!keyed(key)) return;
+  sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
+  pageMoved();
   SCREEN = { kind: "movie", key: String(key) };
   onResize = null;
   main.innerHTML = '<div class="empty">Loading&hellip;</div>';
-  const m = items(await api("/library/metadata/" + key))[0];
-  if (m && (m.offered || m.askable)) return viewOffer(m);
+  // a key from a list that has moved on, or a download that has finished: said on
+  // the page, not thrown
+  let m = null;
+  try {
+    m = items(await api("/library/metadata/" + key))[0] || null;
+  } catch (e) { m = null; }
+  if (!m) {
+    main.innerHTML = '<div class="empty">That title is not listed here any more.</div>';
+    return;
+  }
+  if (m.offered || m.askable) return viewOffer(m);
   await refreshMarks();
   // filled in after the page is built, from the item the page was built from
   setTimeout(() => {
@@ -6660,6 +8237,7 @@ async function viewMovie(key) {
       // and all - which is a blink of everything for the sake of one word.
       // the favorite and collection marks next to Play, then the rest
       slot.appendChild(markControl(m));
+      if (m.upcoming) return;
       slot.appendChild(watchedButton(m, () => playFromStartOnly(m)));
       // the library's own idea of what this is, when it has it wrong
       if (!CFG.guest && isLocal()) {
@@ -6695,7 +8273,11 @@ async function viewMovie(key) {
     '<div class="sub">' + [m.year, mins(m.duration), m.contentRating]
       .filter(Boolean).map(esc).join(" &middot; ") + "</div>" +
     badgesRow([(md && (md.cut || md.edition)) || ""].concat(specs), m) +
-    playerBar(m, resume) +
+    // not out yet: no file to play, the date it comes out instead
+    (m.upcoming
+      ? '<div class="actions"><span class="btn ghost">' +
+        esc(upcomingLine(m.originallyAvailableAt)) + '</span><span id="watchedbtn"></span></div>'
+      : playerBar(m, resume)) +
     '<p class="summary tellme">' + esc(m.summary) + "</p></div>";
   wrap.querySelectorAll("[data-off]").forEach((b) => {
     b.onclick = () => play(m, +b.dataset.off, opts());
@@ -6751,6 +8333,7 @@ async function viewMovie(key) {
     };
   }
   main.appendChild(wrap);
+  sagaRow(wrap, m.ratingKey);
   tint(wrap.querySelector("#subpick"));
   // the film's extras, a row of their own under it
   if ((m.Extras || []).length) {
@@ -6837,6 +8420,10 @@ function opts() {
 let showNow = null;
 
 async function viewShow(key, wantSeason, wantEpisode) {
+  // no key - a card without its series: nothing to open, and asked for it was a 404
+  if (!keyed(key)) return;
+  sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
+  pageMoved();
   SCREEN = { kind: "show", key: String(key), season: wantSeason, episode: wantEpisode };
   onResize = null;
   main.innerHTML = '<div class="empty">Loading&hellip;</div>';
@@ -6876,8 +8463,10 @@ async function viewShow(key, wantSeason, wantEpisode) {
   // the whole programme, which is what somebody usually means by "later"
   const mark = $("#showmark");
   if (mark) {
+    // no Shuffle here: a series is shuffled from its collection and Start's row
     // the seasons inherit from it, so their rows say again what is true of them
-    mark.appendChild(markButtons(s, "Whole programme", repaintEpisodes));
+    // the watchlist and collection buttons, as a film's page has them
+    mark.appendChild(markControl(s, repaintEpisodes));
     if (!CFG.guest && isLocal()) {
       mark.appendChild(fixMatchButton(s, () => viewShow(key)));
     }
@@ -6936,8 +8525,8 @@ async function loadEpisodes(seasonKey, findKey) {
       const showBox = $("#showmark");
       if (showBox && showNow) {
         // only the marks: the button beside them that puts a wrong match right stays
-        const had = showBox.querySelector(".markgroup");
-        const now = markButtons(showNow, "Whole programme", repaintEpisodes);
+        const had = showBox.querySelector(".splitmark");
+        const now = markControl(showNow, repaintEpisodes);
         if (had) had.replaceWith(now); else showBox.insertBefore(now, showBox.firstChild);
       }
       if (bar.firstChild && at && at.value === seasonKey) {
@@ -6965,6 +8554,17 @@ async function loadEpisodes(seasonKey, findKey) {
       };
       bar.appendChild(b);
     });
+    // the tracker's packs of this season, each added as a link: the season's
+    // episodes then come from it, nothing downloaded
+    const oldPacks = $("#seasonpacks");
+    if (oldPacks) oldPacks.remove();
+    if ((!CFG.guest || CFG.mayFetch) && showNow) {
+      const add = document.createElement("button");
+      add.className = "btn ghost";
+      add.textContent = "+ Add pack";
+      add.onclick = () => seasonPacks(list, seasonKey, add);
+      bar.appendChild(add);
+    }
   }
   list.innerHTML = '<div class="empty">Loading&hellip;</div>';
   const c = await api("/library/metadata/" + seasonKey + "/children");
@@ -6982,10 +8582,10 @@ async function loadEpisodes(seasonKey, findKey) {
         '<div class="info"><div class="t">' + esc(ep.title) + "</div>" +
         '<div class="d">' + esc(ep.summary) + "</div>" +
         '<div class="s">' + esc(ep.airs || "Upcoming") + "</div></div>";
-      // on the tracker already, early releases included: pressed, its releases
-      if (ep.fetchable && (!CFG.guest || CFG.mayFetch)) {
-        row.classList.add("fetchable");
-        row.title = "Pick a release to download";
+      // pressed, its releases; with none matched, a search in words of one's own
+      if (!CFG.guest || CFG.mayFetch) {
+        if (ep.fetchable) row.classList.add("fetchable");
+        row.title = ep.fetchable ? "Pick a release to download" : "Find a release for it";
         row.onclick = (e) => {
           if (e.target.closest(".epdl")) return;
           episodeDownloads(row, ep);
@@ -7313,6 +8913,10 @@ window.openKey = async function (key) {
 
 function go(view, keep) {
   tabBelow = "";
+  // another tab ends an edit: a form left open drew its shelf under the next one opened
+  endCollectionEdit();
+  sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
+  pageMoved();
   SCREEN = { kind: "tab", view: view };
   inSearch = false;
   collSearchOn = "";
@@ -7360,6 +8964,7 @@ function go(view, keep) {
     return;
   }
   if (view === "home") viewHome();
+  else if (view === "start") viewStart();
   else if (view === "movies") viewSection("movie");
   else if (view === "watchlist") { collectionOn = ""; viewWatchlist(); }
   else if (view === "collections") viewCollections();
@@ -7399,9 +9004,20 @@ function genreMenu(chosen, options, apply, matching, named) {
   const shown = marked.length ? marked.map(say).join(" + ") : "All";
   btn.textContent = shown + (marked.length > 1 && matching >= 0 ? " \u00b7 " + matching : "") +
     " \u25be";
+  // what the button says, at once on a press: the list behind may take minutes to come
+  // and stands as it was meanwhile - everything loading kept the old marks on show
+  const relabel = () => {
+    btn.textContent = (marked.length ? marked.map(say).join(" + ") : "All") + " ▾";
+  };
   const menu = document.createElement("div");
   menu.className = "genremenu hidden";
-  const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+  // a press outside closes it - and a menu waiting to come back open after a mark
+  // stays shut, since somebody has moved on from it
+  const outside = (e) => {
+    if (wrap.contains(e.target)) return;
+    genreKeep = null;
+    close();
+  };
   const open = () => {
     menu.classList.remove("hidden");
     document.addEventListener("mousedown", outside, true);
@@ -7413,9 +9029,11 @@ function genreMenu(chosen, options, apply, matching, named) {
   };
   // every press redraws the shelf, which builds this control again: it reopens at the
   // same scroll, so marking several reads as one menu that stayed open
+  // Still listening while the list is read again: the menu stays on show until the new
+  // one is drawn, and it no longer heard a press outside it, so it could not be closed
+  // for as long as the list took.
   const press = () => {
     genreKeep = { scroll: menu.scrollTop };
-    document.removeEventListener("mousedown", outside, true);
     apply(marked.join(","));
   };
   btn.onclick = () => (menu.classList.contains("hidden") ? open() : close());
@@ -7431,7 +9049,16 @@ function genreMenu(chosen, options, apply, matching, named) {
   clear.type = "button";
   clear.className = "genreclear";
   clear.textContent = "Clear";
-  clear.onclick = () => { marked.length = 0; press(); };
+  clear.onclick = () => {
+    marked.length = 0;
+    menu.querySelectorAll(".genreopt").forEach((r) => {
+      r.classList.remove("on");
+      const b = r.querySelector("input");
+      if (b) b.checked = false;
+    });
+    relabel();
+    press();
+  };
   menu.appendChild(clear);
   const kept = genreKeep;
   genreKeep = null;
@@ -7454,6 +9081,7 @@ function genreMenu(chosen, options, apply, matching, named) {
         const at = marked.findIndex((m) => m.toLowerCase() === v.toLowerCase());
         if (box.checked && at < 0) marked.push(v);
         if (!box.checked && at >= 0) marked.splice(at, 1);
+        relabel();
         press();
       };
       row.append(box, document.createTextNode(t));
@@ -9351,7 +10979,7 @@ document.querySelectorAll(".tab").forEach((t) => {
     const aside = t.dataset.view === "settings" || t.dataset.view === "reports";
     // Films and TV open on Popular from their button; a marked service shows its own
     const kind = { movies: "movie", shows: "show" }[t.dataset.view];
-    if (kind && !serviceWanted[kind]) {
+    if (kind && serviceWanted[kind] === SRC_HOUSE) {
       SORT_BY_TAB[t.dataset.view].key = "popular";
       SORT_BY_TAB[t.dataset.view].dir = "desc";
     }
@@ -10773,6 +12401,8 @@ async function subtitleTrackPanel() {
   box.tabIndex = -1;
 
   const draw = () => {
+    // the film closed while the panel was open: nothing left to choose for
+    if (!S || !S.meta) { box.remove(); return; }
     const wasAt = box.scrollTop;
     box.innerHTML = "";
     // so a measurement that finishes while this is open can say so here - and so can
@@ -11676,7 +13306,10 @@ async function init2(stay) {
     const [where, which] = (location.hash || "").replace(/^#/, "").split("/");
     // the monitor is Now playing alone: home drawn under it, then Settings asked for
     // every 250 ms until it showed, drew the page over and over
-    if (where !== "monitor") go("home");
+    // on the tab this viewer chose to open on: Home, or Start
+    // unless a screen was opened while the page started: Settings pressed then came up,
+    // and a second later start-up opened Home over it
+    if (where !== "monitor" && SCREEN === FIRST_SCREEN) go(firstTab());
     // and then the screen the address asked for, on top. Not instead of home: the
     // front page draws itself without waiting to be asked, so a screen opened before
     // it was simply drawn over. Twice, because the first draw finishes when it
@@ -11744,6 +13377,16 @@ async function init2(stay) {
       // nothing drawn under it, so once is enough
       try { sessionStorage.removeItem("pd-screen"); } catch (e) { /* nothing kept */ }
       open();
+      // shown once it has drawn, or after twelve seconds whatever it has
+      const drawnBy = which === "log" ? ".setblock" : ".designbar";
+      let waited = 0;
+      const shown = setInterval(() => {
+        waited += 100;
+        if (document.querySelector(drawnBy) || waited >= 12000) {
+          clearInterval(shown);
+          document.documentElement.classList.remove("monitorwait");
+        }
+      }, 100);
     } else if (saved) {
       // after Home has drawn, or it draws over what is opened
       setTimeout(() => { restoreScreen(); }, 400);

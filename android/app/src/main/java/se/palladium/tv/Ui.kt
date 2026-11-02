@@ -55,6 +55,54 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 
 /** The look of the thing, in one place so the TV and the phone stay consistent. */
+/** How every list slides when the remote moves: unbouncy springs, quick off the mark,
+ *  a page up or down settled in Route.START_SLIDE_DOWN_MS and a row along in
+ *  START_SLIDE_ALONG_MS. Springs, since the scroll restarts its spec every frame. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+object Slide {
+    val down: androidx.compose.animation.core.AnimationSpec<Float> =
+        androidx.compose.animation.core.spring(stiffness = Route.slideStiffness(Route.START_SLIDE_DOWN_MS))
+    val along: androidx.compose.animation.core.AnimationSpec<Float> =
+        androidx.compose.animation.core.spring(stiffness = Route.slideStiffness(Route.START_SLIDE_ALONG_MS))
+
+    /** [base]'s places - on a television Compose's own, the focus at a fixed point of
+     *  the screen - reached on [spring]. Scrolling as little as possible instead moved
+     *  Home's rows to other places and left posters cut at the edges. */
+    fun keeping(base: androidx.compose.foundation.gestures.BringIntoViewSpec,
+                spring: androidx.compose.animation.core.AnimationSpec<Float>) =
+        object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+            override val scrollAnimationSpec = spring
+            override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) =
+                base.calculateScrollDistance(offset, size, containerSize)
+        }
+}
+
+/** The downloads somebody asked for coming in, said once on whichever screen is up -
+ *  the shelves or the picture - and not again on the other. */
+object Arrivals {
+    private var since = 0L
+    private val said = HashSet<String>()
+
+    /** What has come in since the last look, each said once. The first look only reads
+     *  the server's clock: what came in before the app started is not news. */
+    suspend fun fresh(): List<String> {
+        if (BuildConfig.PLAY) return emptyList()
+        // a watchlist's film that has got a source - said on opening the app as well,
+        // where it happened while nobody was looking: the server keeps it until then
+        val watched = Api.watchNews().filter { it.first.isNotEmpty() }
+            .map { (title, how) -> Route.watchNewsSaid(title, how) }
+        val got = Api.downloadsReady(since) ?: return watched
+        val first = since == 0L
+        since = maxOf(since, got.first - 120)
+        if (first) return watched
+        return watched + got.second.filter { said.add(it.first) }
+            .map { it.second + " is ready to watch" }
+    }
+
+    /** How often a screen looks: a film in is said within seconds of it being whole. */
+    const val EVERY_MS = 8_000L
+}
+
 object Skin {
     /**
      * The look this screen is wearing, as the server hands it over.
@@ -322,9 +370,16 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
            this is the grey a missing one leaves behind; a backdrop is fitted rather
            than cropped, and the grey either side of it reads as a band down the edge
            of the screen - which is what it was doing. */
-        ground: androidx.compose.ui.graphics.Brush = Skin.Empty) {
-    Box(modifier.background(ground), contentAlignment = Alignment.Center) {
-        if (mark > 0) {
+        ground: androidx.compose.ui.graphics.Brush? = Skin.Empty,
+        /* how much of the picture shows: painted faint, not faded as a layer - a faded
+           layer is the whole screen drawn twice, once aside and once blended back */
+        alpha: Float = 1f) {
+    // the grey under the picture only until the picture is there: under a poster that
+    // has loaded it is a layer more for the television's graphics to fill each frame
+    var shown by remember(url) { mutableStateOf(false) }
+    Box(if (shown || ground == null) modifier else modifier.background(ground),
+        contentAlignment = Alignment.Center) {
+        if (mark > 0 && !shown) {
             Text("P", color = Skin.Line, fontSize = mark.sp,
                  fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
         }
@@ -346,8 +401,11 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
             // Crop fills a poster-shaped slot; Fit is for the backdrop, where cropping
             // a tall poster into a squarish box pushes its head and feet off the screen
             AsyncImage(model = asked, contentDescription = title, imageLoader = imageLoader(),
-                       contentScale = scale, modifier = Modifier.fillMaxSize(),
+                       contentScale = scale, modifier = Modifier.fillMaxSize(), alpha = alpha,
                        colorFilter = tint?.let { androidx.compose.ui.graphics.ColorFilter.tint(it) },
+                       // a picture Fit leaves room beside keeps its ground: that is
+                       // where the grey shows
+                       onSuccess = { if (scale != ContentScale.Fit) shown = true },
                        onError = { failed = true })
         }
     }
@@ -399,6 +457,8 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             *  where every episode wears the same season poster and a line under it
             *  fell below the edge of a television's screen */
            onPicture: String? = null,
+           /** left out of the collection's shuffle: 1 part of it, 2 all of it - red */
+           shuffleOff: Int = 0,
            onClick: () -> Unit) {
     // Tied to the film, because a lazy grid reuses these.
     //
@@ -536,8 +596,10 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 .clip(shape)
                 // white, not accent: half the things on screen are already accent, and
                 // on a television the only question is which one the remote is pointing at
-                .border(if (ring) 3.dp else 0.dp,
-                        if (ring) Color.White else Color.Transparent, shape)
+                .border(if (ring || shuffleOff > 0) 3.dp else 0.dp,
+                        if (ring) Color.White
+                        else if (shuffleOff > 0) Color(0xFFD64A40) else Color.Transparent,
+                        shape)
         ) {
             // A film on offer is shown in full colour like any other: the artwork is
             // what makes it recognisable, and drained of it a shelf of them read as
@@ -549,6 +611,8 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 Modifier.fillMaxSize().then(if (m.upcoming) Modifier.alpha(
                     if (m.fetchable) 0.75f else 0.38f) else Modifier),
                 mark = width / 3)
+            if (shuffleOff == 2)
+                Box(Modifier.fillMaxSize().background(Color(0x5CD64A40)))
             // A band across the corner for anything that is not here and cannot be
             // played: it reads at a glance on a shelf where everything else can be.
             // The poster is clipped, so the band ends at its edges.
@@ -578,7 +642,11 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // the mark always, and words only when there are some: a film nobody
             // has asked for yet said nothing but a character, and on a television
             // that was a smudge in the corner of the picture
-            val said = if (!coming) "" else Route.posterDownload(state, progress.toDouble(), mbit.toDouble())
+            // come in since this shelf was read: a film now, whatever the shelf still
+            // says. The ribbon said Download over a film that was already here.
+            val arrived = (m.offered || m.askable) && live == null && Api.cameIn(m.ratingKey)
+            val said = if (!coming || arrived) "" else
+                Route.posterDownload(state, progress.toDouble(), mbit.toDouble())
             // The same band across the corner for the three things a poster says
             // about itself; only the word in it changes. One band, chosen: three
             // conditions each drawing their own put two words over each other in
@@ -593,6 +661,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // something on the tracker for it: the band says what pressing it
             // does, and asking is not what it does any more
             if (m.askable && said.isNotEmpty()) { /* coming in: the badge says how far */ }
+            else if (arrived) CornerBand("NEW", bandW, Color(0xFFD9A21B))
             // on SVT Play: it streams from there, which beats asking or downloading
             else if (Route.streamBand(m.askable, m.addable, m.svtId))
                 CornerBand("STREAM", bandW, Color(0xFF1E9E6A))
@@ -607,8 +676,10 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             else if (m.upcoming && m.missing) CornerBand("MISSING", bandW, Skin.Dim)
             // out today, and not on the tracker yet
             else if (m.upcoming && m.airsToday) CornerBand("TODAY", bandW, Color(0xFFE6E8EB), Color(0xFF111111))
-            else if (m.upcoming) CornerBand("UPCOMING", bandW, Skin.Dim)
-            else if (m.shuffle.isNotEmpty()) CornerBand("SHUFFLE", bandW)
+            else if (m.upcoming) CornerBand(m.band.uppercase().ifEmpty { Route.upcomingBand(m.airDate.ifEmpty { m.released },
+                java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())) },
+                bandW, Skin.Dim)
+            else if (m.shuffle.isNotEmpty()) CornerBand(Route.shuffleBand(m.shuffleId), bandW)
             // here, and aired this past week
             else if (m.fresh) CornerBand("NEW", bandW, Color(0xFFD9A21B))
             // off the popular list and not held yet: pressing it adds it
@@ -617,7 +688,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 "REQUEST" -> CornerBand("REQUEST", bandW, Skin.Accent)
                 else -> CornerBand("ADD", bandW)
             }
-            else if (m.offered && said.isEmpty()) CornerBand("DOWNLOAD", bandW)
+            else if (m.offered && said.isEmpty() && !arrived) CornerBand("DOWNLOAD", bandW)
             if (coming && said.isNotEmpty()) {
                 Row(Modifier.align(Alignment.TopStart).padding(5.dp)
                         .background(Color(0xD9070A0E), RoundedCornerShape(Skin.round(5.dp)))
@@ -735,8 +806,11 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
         // nobody anything the artwork had not. Except where the caller asks for a
         // line - a season, an episode - because "Season 3" is nowhere in the art: one
         // programme's seasons are the same picture four times over.
-        if (instead != null && instead.isNotEmpty()) {
-            Text(instead, color = if (ring) Skin.Fg else Color(0xFFD3DAE2),
+        // a season with no line of its own still says which: its picture is often the
+        // programme's, and a favourite or a Home card said only the programme
+        val line = Route.posterLine(m.type, m.index, instead, m.grandparentTitle)
+        if (line != null && line.isNotEmpty()) {
+            Text(line, color = if (ring) Skin.Fg else Color(0xFFD3DAE2),
                  fontSize = if (width < 110) 11.sp else 12.5.sp,
                  // the theme's 24sp line left a blank line's gap inside a wrapped name
                  lineHeight = if (width < 110) 13.sp else 15.sp,

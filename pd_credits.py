@@ -16,6 +16,7 @@ which has the GPU libraries the compiled server does not. It runs by day, one fi
 a time, and only while nobody is watching and the card is idle.
 """
 
+import pd_log
 import json
 import os
 import re
@@ -186,8 +187,9 @@ def _script():
     return ""
 
 
-def _make(args, timeout=1200):
-    """Run the maker script in the system's Python: (what it said, why not)."""
+def _make(args, timeout=1200, path=""):
+    """Run the maker script in the system's Python: (what it said, why not). Reading path,
+    it stops when STATE["stop"](path) says the drive is wanted elsewhere."""
     import pd_ai_subs
     python = pd_ai_subs.tool()
     script = _script()
@@ -203,14 +205,16 @@ def _make(args, timeout=1200):
         pass
     air = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
     air["PALLADIUM_FFMPEG"] = STATE["ffmpeg"] or "ffmpeg"
+    import pd_workers
+    stop = STATE.get("stop")
     try:
-        out = subprocess.run([python, "-P", script] + list(args), cwd=data,
-                             capture_output=True, timeout=timeout, env=air, text=True,
-                             encoding="utf-8", errors="replace",
-                             stdin=subprocess.DEVNULL,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        _, out, stopped = pd_workers.run_yielding(
+            [python, "-P", script] + list(args), (lambda: stop(path)) if stop and path else None,
+            timeout, cwd=data, env=air, text=True, encoding="utf-8", errors="replace")
     except Exception as e:
         return None, str(e)[:120]
+    if stopped:
+        return None, "stopped: " + stopped
     last = [ln for ln in (out or "").splitlines() if ln.startswith("OK ")]
     if not last:
         return None, ((out or "").strip().splitlines() or ["nothing said"])[-1][:120]
@@ -219,7 +223,7 @@ def _make(args, timeout=1200):
 
 def picture_and_speech(path, dur):
     """(credits start by the picture, last words by the sound), from the maker script."""
-    said, why = _make([path, str(dur)])
+    said, why = _make([path, str(dur)], path=path)
     if not said:
         return None, None, why
     return said.get("picture"), said.get("speech"), said.get("why") or ""
@@ -227,7 +231,7 @@ def picture_and_speech(path, dur):
 
 def speech_windows(path, dur):
     """Where people speak, in windows across the file: ([[start, length, spans]], why)."""
-    said, why = _make(["--speech", path, str(dur)], timeout=900)
+    said, why = _make(["--speech", path, str(dur)], timeout=900, path=path)
     return ((said or {}).get("windows") or []), why
 
 
@@ -246,6 +250,8 @@ def measure(key):
         store(key, at, dur, "chapter")
         return True
     picture, speech, why = picture_and_speech(path, dur)
+    if (why or "").startswith("stopped: "):
+        return False                       # its drive was wanted: not a fault, tried again
     if why:
         STATE["why"] = why
         _say("ending %s: %s" % (os.path.basename(path)[:50], why))
@@ -284,8 +290,7 @@ def _say(text):
     if not root:
         return
     try:
-        with open(os.path.join(root, "debug.log"), "a", encoding="utf-8") as f:
-            f.write("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)))
+        pd_log.raw("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)), os.path.join(root, "debug.log"))
     except OSError:
         pass
 
@@ -361,12 +366,12 @@ def _all_rows():
         con.close()
 
 
-def start(lib, ffmpeg, file_for, order, free, copy, root=""):
+def start(lib, ffmpeg, file_for, order, free, copy, root="", stop=None):
     """lib: the library getter; file_for(key) -> (path, seconds); order() -> keys, most
     wanted first; free() -> whether the machine is idle; copy() -> whether this machine
     follows another; root: where debug.log is."""
     STATE.update(lib=lib, ffmpeg=ffmpeg, file_for=file_for, order=order, free=free,
-                 copy=copy, root=root)
+                 copy=copy, root=root, stop=stop)
     got = lib() if lib else None
     if got and not copy():
         con = got.db()

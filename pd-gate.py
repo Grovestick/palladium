@@ -19,6 +19,7 @@ Exit code 0 when nothing shrank, nothing answered 500 and nothing was written to
 fault log; 1 otherwise. Nothing is installed while this fails.
 """
 import json
+import re
 import os
 import shutil
 import socket
@@ -277,7 +278,8 @@ MAY_FALL = {
     ("sittings.json", "bytes"), ("notified.json", "bytes"),
     # copies of a catalogue, read again from it: the popular list and the release list
     # come back one or two shorter when the outside list does. Half gone is still a fault.
-    ("top_shows.json", ".shows"), ("streaming.json", ".rows"),
+    ("top_shows.json", ".shows"), ("top_films.json", ".films"), ("top_films.json", "bytes"),
+    ("streaming.json", ".rows"),
 }
 
 
@@ -288,6 +290,48 @@ EXPIRES = {"sittings.json", "subcheck_asked.json",
            # the critics' scores of the New on streaming titles: they come and go with
            # the twelve-hour streaming read, an unscored one replaced when it is read
            "meters.json"}
+
+
+def live_rows():
+    """The installed server's library as it is now, read-only: rows per table, films and
+    series. What it changes by itself while the gate runs - a download coming in, a
+    file held back while it is checked - happens in the copy too, and is no fault of
+    the build."""
+    out = {}
+    db = os.path.join(LIVE, "library.db")
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True)
+        for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            out["." + t] = con.execute('SELECT COUNT(*) FROM "%s"' % t).fetchone()[0]
+        for kind, n in con.execute("SELECT type, COUNT(*) FROM item GROUP BY type"):
+            out[str(kind)] = n
+        # files known to be unfinished, and films with no other: a scan takes them out,
+        # and the copy scans at once where the installed server may not have yet
+        out["hollow"] = con.execute("SELECT COUNT(*) FROM file WHERE hollow = 1").fetchone()[0]
+        out["hollowFilms"] = con.execute(
+            "SELECT COUNT(*) FROM item i WHERE i.type = 'movie' AND EXISTS "
+            "(SELECT 1 FROM file f WHERE f.item_id = i.id) AND NOT EXISTS "
+            "(SELECT 1 FROM file f WHERE f.item_id = i.id AND COALESCE(f.hollow, 0) = 0)").fetchone()[0]
+        con.close()
+    except Exception:
+        pass
+    return out
+
+
+def excused(bad, live_before, live_after):
+    """The faults left once a library number that fell just as far in the live library
+    over the same minutes is set aside."""
+    out = []
+    for line in bad:
+        m = re.match(r"library\.db (\.\w+) fell from (\d+) to (\d+)$", line)
+        if m:
+            k, was, now = m.group(1), int(m.group(2)), int(m.group(3))
+            if live_before.get(k, 0) - live_after.get(k, 0) >= was - now:
+                continue
+            if k == ".file" and was - now <= live_before.get("hollow", 0):
+                continue                # unfinished files a scan took out
+        out.append(line)
+    return out
 
 
 def compare(before, after):
@@ -537,6 +581,7 @@ def main():
     except Exception:
         pass
     before = measure(root)
+    live_before = live_rows()
     token = ""
     try:
         with open(os.path.join(root, "settings.json"), encoding="utf-8") as f:
@@ -571,7 +616,13 @@ def main():
             # asked again at the end: still the same server
             bad, n, shows2, films2, _ = walk(base, token)
             failed += bad
-            if (shows2, films2) != (shows, films):
+            live_now = live_rows()
+            # the same change in the installed server's own library is its doing, not this build's
+            same = (films2 - films == live_now.get("movie", 0) - live_before.get("movie", 0)
+                    and shows2 - shows == live_now.get("show", 0) - live_before.get("show", 0))
+            # or only films whose every file is unfinished, taken out by the copy's scan
+            same = same or (shows2 == shows and 0 <= films - films2 <= live_before.get("hollowFilms", 0))
+            if (shows2, films2) != (shows, films) and not same:
                 failed.append("the library changed while it ran: %d/%d series, %d/%d films"
                               % (shows, shows2, films, films2))
             if proc.poll() is not None:
@@ -588,7 +639,7 @@ def main():
     time.sleep(1)
     after = measure(root)
     bad, rows = compare(before, after)
-    failed += bad
+    failed += excused(bad, live_before, live_rows())
     print("gate: state files, before -> after")
     for name, changed in rows:
         print("   %-22s %s" % (name, "; ".join(changed) if changed else "unchanged"))

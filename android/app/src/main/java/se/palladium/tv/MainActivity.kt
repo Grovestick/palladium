@@ -51,6 +51,17 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -117,6 +128,10 @@ class MainActivity : AppCompatActivity() {
 
         /** Bumped whenever the app comes back to the front, so screens can refresh. */
         val returned = androidx.compose.runtime.mutableStateOf(0)
+
+        /** The count `returned` reaches at this activity's first resume: that one is the
+         *  app opening, on its own tab, not a return to Home. */
+        var openedAt = 0
 
         /**
          * The episode a season page should open standing on.
@@ -244,6 +259,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        openedAt = returned.value + 1
         Crash.install(applicationContext)      // before anything that might throw
         watchOpenings(application)
         KnownHosts.load(applicationContext)   // the addresses names last resolved to
@@ -287,7 +303,11 @@ class MainActivity : AppCompatActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Skin.Accent,
                                                         background = Skin.Bg)) {
-                CompositionLocalProvider(LocalIndication provides PressOnly) { App() }
+                @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+                CompositionLocalProvider(LocalIndication provides PressOnly,
+                    androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides
+                        Slide.keeping(androidx.compose.foundation.gestures.LocalBringIntoViewSpec.current,
+                                      Slide.down)) { App() }
             }
         }
     }
@@ -336,7 +356,15 @@ private fun App() {
     val stack = remember { mutableStateListOf<Media>() }
     // a popular programme not held yet, whose page is open for choosing a version
     var adding by remember { mutableStateOf<Media?>(null) }
-    val browse = remember { Browse() }          // outlives the detail screen
+    // outlives the detail screen; opens on the tab chosen last time, so Home is not drawn
+    // and then left for Start a second later
+    val browse = remember { Browse().also { it.tab = Api.lastStartTab(ctx) } }
+    // and the server's word on it, once, as the app starts: moved only if it changed
+    LaunchedEffect(Unit) {
+        val was = Api.lastStartTab(ctx)
+        val now = runCatching { Api.startTab(ctx) }.getOrDefault(was)
+        if (now != was && browse.tab == was) browse.tab = now
+    }
 
     // Words from Google: searched over everything, from Home. "Play" that names one
     // title here exactly opens its page; anything else stays the list of what matched.
@@ -427,7 +455,13 @@ private fun App() {
                                onServers = { cameFrom = "settings"; screen = "setup" },
                                onPeople = { screen = "people" },
                                onMonitor = { screen = "monitor" },
-                               onLog = { screen = "log" })
+                               onLog = { screen = "log" },
+                               onReports = { screen = "reports" },
+                               onHealth = { screen = "health" })
+            }
+            screen == "health" -> {
+                BackHandler { screen = "settings" }
+                HealthScreen(onBack = { screen = "settings" })
             }
             screen == "monitor" -> {
                 BackHandler { screen = "settings" }
@@ -438,8 +472,8 @@ private fun App() {
                 MonitorScreen(onBack = { screen = "settings" }, page = "monitor/log")
             }
             screen == "reports" -> {
-                BackHandler { screen = "home" }
-                ReportsScreen(onBack = { screen = "home" })
+                BackHandler { screen = "settings" }
+                ReportsScreen(onBack = { screen = "settings" })
             }
             stack.isNotEmpty() -> {
                 BackHandler { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
@@ -464,7 +498,8 @@ private fun App() {
                              // A name from the cast: everything this house holds with
                              // them in it, opened as a shelf of its own. Asked of the
                              // library, so what comes back can be watched tonight.
-                             onPerson = { who -> openPerson(ctx, browse, stack, who) })
+                             onPerson = { who -> openPerson(ctx, browse, stack, who) },
+                             onGoTo = { where -> goToShelf(ctx, browse, stack, where) })
             }
             else -> {
                 // Back from a title's page. The list underneath is the same list, so
@@ -494,6 +529,24 @@ private fun App() {
                 // the menu's download line, pressed: that film's page
                 LaunchedEffect(Api.openWanted.value) {
                     Api.openWanted.value?.let { Api.openWanted.value = null; stack.add(it) }
+                }
+                // a shuffle started from Continue watching drew an episode a pack has to
+                // bring: its collection, with the remote on that poster
+                LaunchedEffect(Api.openDrawn.value) {
+                    val (id, m) = Api.openDrawn.value ?: return@LaunchedEffect
+                    Api.openDrawn.value = null
+                    val shelves = runCatching { Api.collections(ctx) }.getOrDefault(emptyList())
+                    val it0 = shelves.firstOrNull {
+                        it.ratingKey.removePrefix("coll:") == id.removePrefix("coll:")
+                    }
+                    if (it0 == null) {
+                        stack.add(runCatching { Api.metadata(m) }.getOrNull() ?: m)
+                    } else {
+                        stack.clear()
+                        browse.collectionOn = it0
+                        browse.tab = "collections"
+                        drawnComing(ctx, browse, m)
+                    }
                 }
                 // or, with more than one coming in, the queue: reorder, or open one
                 if (Api.queueOpen.value) {
@@ -533,7 +586,6 @@ private fun App() {
                            onSettings = { cameFrom = "home"; screen = "setup" },
                            onPeople = { screen = "people" },
                            onPrefs = { screen = "settings" },
-                           onReports = { screen = "reports" },
                            onPerson = { who -> openPerson(ctx, browse, stack, who) })
                 adding?.let { one ->
                     AddShowPage(one, onClose = { adding = null }, onAdded = { key ->
@@ -951,8 +1003,7 @@ private fun showable(r: Api.Report, view: String, tab: String): Boolean {
 /**
  * Reports: what is new, what has gone wrong, and what people have asked for.
  *
- * A place of its own rather than a heading inside the settings, because none of the
- * three is a setting and nobody looks for them under a gear.
+ * A page of its own, reached from Settings.
  */
 @Composable
 private fun ReportsScreen(onBack: () -> Unit) {
@@ -1149,12 +1200,78 @@ private fun SettingsChoices(title: String, value: String,
     })
 }
 
+@Composable
+private fun HealthScreen(onBack: () -> Unit) {
+    var said by remember { mutableStateOf<Api.Health?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    // read again every half minute while the page is open
+    LaunchedEffect(Unit) {
+        while (true) {
+            val got = Api.health()
+            if (got != null) said = got
+            failed = got == null
+            kotlinx.coroutines.delay(30_000)
+        }
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+               .padding(horizontal = 24.dp, vertical = 20.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Pill("Back") { onBack() }
+            Text("Health", color = Skin.Fg, fontSize = 22.sp,
+                 fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 12.dp))
+        }
+        val h = said
+        if (h == null) {
+            Text(if (failed) "The server did not answer." else "Asking…", color = Skin.Dim,
+                 fontSize = 15.sp, modifier = Modifier.padding(top = 20.dp))
+            return@Column
+        }
+        Text(Route.healthTitle(h.problems.size),
+             color = if (h.problems.isEmpty()) Color(0xFF5FD08A) else Color(0xFFE0A43B),
+             fontSize = 20.sp, fontWeight = FontWeight.SemiBold,
+             modifier = Modifier.padding(top = 18.dp, bottom = 6.dp))
+        h.problems.forEach {
+            Text("•  $it", color = Skin.Fg, fontSize = 15.sp, modifier = Modifier.padding(vertical = 3.dp))
+        }
+        SettingsHeading("SERVERS")
+        h.machines.forEach { (name, build, up) ->
+            HealthLine(name, if (up) build else "not answering", if (up) Color(0xFF5FD08A) else Color(0xFFFF6B6B))
+        }
+        SettingsHeading("DISKS")
+        h.disks.forEach { (drive, free, downloads) ->
+            HealthLine(drive, "$free GB free" + if (downloads) "  ·  downloads land here" else "", null)
+        }
+        SettingsHeading("BACKUP")
+        HealthLine(if (h.backupAt <= 0) "Never" else if (h.backupOk) "Last ran" else "Failed",
+                   if (h.backupAt <= 0) "no backup has run"
+                   else Route.agoWords(System.currentTimeMillis() / 1000 - h.backupAt), null)
+        if (h.torrents.isNotEmpty()) {
+            SettingsHeading("QBITTORRENT")
+            h.torrents.forEach { (name, state) -> HealthLine(name, state, Color(0xFFE0A43B)) }
+        }
+    }
+}
+
+@Composable
+private fun HealthLine(what: String, value: String, dot: Color?) {
+    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (dot != null) {
+            Box(Modifier.size(9.dp).clip(androidx.compose.foundation.shape.CircleShape).background(dot))
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(what, color = Skin.Fg, fontSize = 15.sp, modifier = Modifier.width(220.dp))
+        Text(value, color = Skin.Dim, fontSize = 15.sp)
+    }
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                            onPeople: (() -> Unit)? = null,
                            onMonitor: (() -> Unit)? = null,
-                           onLog: (() -> Unit)? = null) {
+                           onLog: (() -> Unit)? = null,
+                           onReports: (() -> Unit)? = null,
+                           onHealth: (() -> Unit)? = null) {
     val ctx = LocalContext.current as AppCompatActivity
     var editing by remember { mutableStateOf<String?>(null) }
     var looks by remember { mutableStateOf<Map<String, Api.SubLook>>(emptyMap()) }
@@ -1168,6 +1285,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
     var films by remember { mutableStateOf(Api.FilmsShow()) }
     var tvPop by remember { mutableStateOf("always") }
     var tvAsk by remember { mutableStateOf("hide") }
+    var opensOn by remember { mutableStateOf("start") }
     var meters by remember { mutableStateOf(Api.Meters()) }
     // what this server takes us for, which is not the same as whose server it is:
     // the owner reaching their own machine from outside is a guest to it
@@ -1205,6 +1323,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         films = Api.filmsShow()
         tvPop = Api.tvPopular()
         tvAsk = Api.tvRequest()
+        opensOn = Api.startTab(ctx)
         meters = Api.meters()
         guest = Api.amGuest()
         server = runCatching { Api.serverBuild() }.getOrNull()
@@ -1239,6 +1358,22 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                 SettingsRow("Log", "What was watched, on both servers, with transfers and downloads") {
                     Pill("Log") { log() }
                 }
+            }
+        }
+
+        // both machines at a glance: the owner's, as the server answers nobody else
+        if (owner && onHealth != null) {
+            SettingsHeading("HEALTH")
+            SettingsRow("Health", "Both servers, stuck downloads, disks and the backup") {
+                Pill("Health") { onHealth() }
+            }
+        }
+
+        // what is new, errors and requests: a guest's as much as the owner's
+        onReports?.let { open ->
+            SettingsHeading("REPORTS")
+            SettingsRow("Reports", "What is new, errors, and requests") {
+                Pill("Reports") { open() }
             }
         }
 
@@ -1424,13 +1559,16 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
             Triple("disk", "On disk", "Films this house holds a file for. These play."),
             Triple("download", "Download",
                    "Films a pack or the tracker carries. Downloading one is a button."),
-            Triple("request", "Request",
+            Triple("request", "Missing",
                    "New on streaming, nowhere in the house and not on the tracker. " +
-                   "All anybody can do is ask."))
+                   "All anybody can do is ask."),
+            Triple("upcoming", "Upcoming",
+                   "Films not out yet, with their date."))
             .forEach { (name, label, note) ->
                 val on = when (name) {
                     "disk" -> films.disk
                     "download" -> films.download
+                    "upcoming" -> films.upcoming
                     else -> films.request
                 }
                 SettingsRow(label, note) {
@@ -1438,6 +1576,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                         films = when (name) {
                             "disk" -> films.copy(disk = !on)
                             "download" -> films.copy(download = !on)
+                            "upcoming" -> films.copy(upcoming = !on)
                             else -> films.copy(request = !on)
                         }
                         ctx.lifecycleScope.launch { films = Api.setFilmsShow(films) }
@@ -1453,6 +1592,17 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                 Pill(word, active = tvPop == want, small = true, narrow = true) {
                     tvPop = want
                     ctx.lifecycleScope.launch { tvPop = Api.setTvPopular(want) }
+                }
+            }
+        }
+        // which tab the app and the page open on
+        SettingsChoices("Opens on", if (opensOn == "start")
+            "The app and the page open on Start: this week's pick, and something chosen for your mood."
+            else "The app and the page open on Home, with its shelves.") {
+            listOf("home" to "Home", "start" to "Start").forEach { (want, word) ->
+                Pill(word, active = opensOn == want, small = true, narrow = true) {
+                    opensOn = want
+                    ctx.lifecycleScope.launch { opensOn = Api.setStartTab(want, ctx) }
                 }
             }
         }
@@ -1944,6 +2094,14 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                 }
             }
         }
+        // the Play build: Play updates it, so its version and the credits its
+        // catalogue data asks for, in place of the update check
+        if (BuildConfig.PLAY) {
+            SettingsRow("This app", "Version " + BuildConfig.VERSION_NAME, extra = {
+                Text(Route.PLAY_CREDITS, color = Skin.Dim, fontSize = 11.5.sp,
+                     lineHeight = 15.sp)
+            })
+        } else {
         SettingsRow("This app",
                     "Version " + BuildConfig.VERSION_NAME +
                     (if (skipped > 0) "  \u00b7  skipping " + skipped else "") +
@@ -1994,6 +2152,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                     Updates.setSkipped(ctx, next); Updates.skip = next; next
                 }
             }
+        }
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -2456,6 +2615,7 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
             onTab(id)
         }
     }
+    tabPill("start", "Start")
     tabPill("home", "Home")
     tabPill("films", "Films")
     tabPill("tv", "TV")
@@ -2464,10 +2624,6 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
     picks?.let { it() }
     tabPill("watchlist", "Watchlist")
     tabPill("collections", "Collections")
-    // Not while looking through the library: Films and TV carry a sort, a genre and a
-    // search box on the same line, and nobody goes looking for the noticeboard
-    // halfway down a list of films. It is on Home, where it belongs.
-    if (tab != "films" && tab != "tv") tabPill("reports", "Reports")
 }
 
 /** Something downloading: what, how far, how fast, how long and who asked, on a line of
@@ -2479,8 +2635,12 @@ private fun DownloadLine(up: FocusRequester? = null, inline: Boolean = false) {
     val more = coming.size - 1
     // progress and ETA first, title after: the pill clips at its edge, and beside search on a
     // television the title took the width and the numbers were cut off
-    val state = if (d.offerState == "queued")
+    val state = if (Route.shortLine(d.offerStage, d.offerWords, "").isNotEmpty())
+                    d.offerWords
+                else if (d.offerState == "queued")
                     "queued" + (if (d.offerPlace > 0) " · ${d.offerPlace} ahead" else "")
+                else if (d.offerState == "unpacking")
+                    "unpacking ${(d.offerProgress * 100).toInt()}%"
                 else "${(d.offerProgress * 100).toInt()}%" +
                      (if (d.offerEta >= 0) " · " + etaShort(d.offerEta) else "") +
                      (if (d.offerMbit > 0)
@@ -2529,6 +2689,25 @@ private fun CastButton() {
 
 /** How many titles are fetched at a time; the rest follow as the grid is scrolled. */
 private const val PAGE = 120
+/** this house's whole list, read once beside a service's catalogue */
+private const val HOUSE_ALL = 20000
+
+/** The services a tab's marks ask the catalogue for: those marked, or every one when
+ *  nothing is marked. */
+private fun serviceIds(browse: Browse): String {
+    val src = Route.sources(browse.service)
+    val ids = if (src.everything) browse.services.map { it.first }
+              else src.services
+    return ids.filter { (it.toIntOrNull() ?: 0) > 0 }.joinToString(",")
+}
+
+/** Of a tab's list, the part My library and In packs stand for. */
+private fun housed(browse: Browse, list: List<Media>): List<Media> {
+    val src = Route.sources(browse.service)
+    return if (src.mine && src.packs) list
+           else list.filter { Route.keptByHouse(it.offered, it.askable || it.addable,
+                                                src.mine, src.packs) }
+}
 
 /**
  * What the browsing screen is showing, kept outside it.
@@ -2544,6 +2723,19 @@ private data class Filters(
     val genre: String, val decade: String,
     val genres: List<Pair<String, Int>>, val decades: List<Pair<String, Int>>,
     val sortKey: String, val sortAsc: Boolean)
+
+/** A shuffle's draw a pack still has to bring: the grid fetched again so its poster wears
+ *  the download, the remote put on it, and the live download list asked at once. */
+private fun drawnComing(ctx: Context, browse: Browse, m: Media) {
+    browse.notice = "Downloading " + m.title
+    browse.openedKey = m.ratingKey
+    browse.openedAt = null
+    browse.loaded = ""
+    browse.cameBack = browse.cameBack + 1
+    (ctx as AppCompatActivity).lifecycleScope.launch {
+        runCatching { Api.refreshDownloading(ctx) }
+    }
+}
 
 private class Browse {
     var tab by mutableStateOf("home")
@@ -2571,6 +2763,8 @@ private class Browse {
     var rowNow by mutableStateOf(0)
     /** A row opened whole, by its name: the page shows everything it holds. */
     var moreRow by mutableStateOf<String?>(null)
+    /** the page open is a kept list, in its own order */
+    var moreList by mutableStateOf(false)
     /** The shelf opened whole is live channels or their groups: no film sort, genre,
      *  decade or country above it - the groups are the cards themselves. */
     var liveView by mutableStateOf(false)
@@ -2586,6 +2780,8 @@ private class Browse {
      *  front page: somebody who pressed a name was reading about a film and wants to
      *  carry on reading about it. */
     var personFrom by mutableStateOf<Media?>(null)
+    /** The name on the shelf when it is one person's titles, null for any other. */
+    var personRow by mutableStateOf<String?>(null)
 
     /** Leave a row opened whole, putting back the filters and the order it borrowed.
      *  This row sets its own in fields the tabs read as well, so a category picked
@@ -2599,6 +2795,7 @@ private class Browse {
 
     fun leaveMoreRow() {
         moreRow = null
+        moreList = false
         liveView = false
         grid = emptyList()
         moreWas?.let {
@@ -2609,6 +2806,7 @@ private class Browse {
         moreWas = null
         moreAll = emptyList()
         personFrom = null
+        personRow = null
     }
     /** How many times a title's page has been left. What is under it does not change
      *  while it is open, so nothing else says the list is being looked at again. */
@@ -2653,7 +2851,7 @@ private class Browse {
     /** the streaming services marked, catalogue numbers comma-joined: Films and TV then
      *  show their catalogue in this country rather than the library. The services to
      *  choose among, (id, name), and how many pages of the catalogue are in the grid. */
-    var service by mutableStateOf("")
+    var service by mutableStateOf(Route.SRC_HOUSE)
     /** and its own order, the popular page's: the library's order is kept apart */
     var serviceSortKey by mutableStateOf("popularity")
     var serviceSortAsc by mutableStateOf(false)
@@ -2702,6 +2900,8 @@ private class Browse {
     var favs by mutableStateOf<List<Media>>(emptyList())
     /** a watchlist poster being held: favorite it or not */
     var favHeld by mutableStateOf<Media?>(null)
+    /** Play shuffle focused on a collection: what it leaves out is shown red */
+    var shuffleLit by mutableStateOf(false)
     /** the poster a title was opened from, so back returns the grid to it */
     var openedKey by mutableStateOf("")
     /** and where the grid was scrolled to then: first row shown, and how far into it */
@@ -2790,7 +2990,6 @@ private const val RESUME_FROM = 30
 @Composable
 private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -> Unit,
                        onPeople: () -> Unit, onPrefs: () -> Unit,
-                       onReports: () -> Unit,
                        /** a name a search found: everything held with them in it */
                        onPerson: (Media.Player) -> Unit = {}) {
     val ctx = LocalContext.current
@@ -2854,6 +3053,23 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             }
         }
     }
+    // a download this viewer asked for has come in: said on the shelves - and only
+    // while they are in front; under a film the player says it over the picture
+    val shelvesUp = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (!shelvesUp.lifecycle.currentState.isAtLeast(
+                    androidx.lifecycle.Lifecycle.State.RESUMED)) {
+                kotlinx.coroutines.delay(Arrivals.EVERY_MS)
+                continue
+            }
+            for (line in Arrivals.fresh()) {
+                Toast.makeText(ctx, line, Toast.LENGTH_LONG).show()
+                kotlinx.coroutines.delay(4_000)
+            }
+            kotlinx.coroutines.delay(Arrivals.EVERY_MS)
+        }
+    }
     // and a word from the server itself, asked for while the library is on screen:
     // the owner saying something to the room rather than to a machine
     LaunchedEffect(Unit) {
@@ -2861,20 +3077,41 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // that the connection is held open and the answer arrives when somebody
         // writes. A server that cannot be reached is tried again in ten seconds.
         while (true) {
+            val first = !browse.noticeAsked
             val word = Api.notice(MainActivity.noticeSeen.value,
                                   if (browse.noticeAsked) 45 else 0)
             browse.noticeAsked = true
             if (word != null && word.id != MainActivity.noticeSeen.value) {
                 MainActivity.noticeSeen.value = word.id
+                // the first ask only learns where the server is: what it was last told
+                // to play was for the screens listening then, not one opened since
+                if (first) {
+                    browse.notice = word.text.ifEmpty { null }
+                    continue
+                }
                 // and no words takes it off the screen
                 browse.notice = word.text.ifEmpty { null }
                 // and a title to open, sent from the server: the one thing a screen
                 // in the house could not be asked to do. Opened the same way as
                 // pressing it here, so everything after it - the round, the place it
                 // keeps, what plays next - is the same as if somebody had.
-                if (word.play.isNotEmpty()) {
+                if (word.shelf.isNotEmpty()) {
+                    // a shuffle to carry on: drawn as its card draws it
+                    startShuffle(ctx, word.shelf, onOpen)
+                } else if (word.play.isNotEmpty()) {
+                    // with the subtitles this viewer last chose for it, as pressing Play
+                    // here starts it: sent from the server it came up with them off
                     runCatching { Api.item(word.play) }.getOrNull()?.let { m ->
-                        play(ctx, m, word.at)
+                        // the details asked for again before giving up on them: without
+                        // them the film had no part to read and was encoded
+                        var full: Media? = null
+                        for (attempt in 0 until 3) {
+                            full = runCatching { Api.metadata(m) }.getOrNull()
+                            if (full?.partKey != null) break
+                            kotlinx.coroutines.delay(2000)
+                        }
+                        val use = full ?: m
+                        play(ctx, use, word.at, use.startSub())
                     }
                 }
             } else if (word == null) {
@@ -2929,8 +3166,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // the TV tab's country filter is gone (the Service filter stands in its place)
         browse.tvCountry = ""
         browse.tvCountries = emptyList()
-        if (browse.services.isEmpty() && browse.tab in setOf("films", "tv"))
-            browse.services = Api.services()
+        // the services, and how many titles each holds of this tab's kind
+        if (browse.tab in setOf("films", "tv")) {
+            val kind = if (browse.tab == "tv") "show" else "movie"
+            if (browse.services.isEmpty() || Api.serviceCounts[kind] == null)
+                browse.services = Api.services(kind)
+        }
         browse.decades = when (browse.tab) {
             "films" -> Api.decades("movie", browse.genre)
             "tv" -> Api.decades("show", browse.genre)
@@ -2989,9 +3230,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // once for each time the app came to the front: this screen is drawn again
         // after every title page, and taking that for a return sent back from the
         // middle of Films to the top of Home
-        if (cameBack > 0 && cameBack != browse.returnSeen) {
+        if (cameBack > 0 && cameBack != browse.returnSeen &&
+            !Route.isOpening(cameBack, MainActivity.openedAt)) {
             browse.returnSeen = cameBack
             browse.collectionOn = null
+            // back to Home: Start is only where the app opens
             browse.tab = "home"
             // after the film has said where it got to. Both happen at once when
             // somebody backs out, and this read was winning - so the shelf was drawn
@@ -3055,11 +3298,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // one letter is a title too: V
                 query.trim().isNotEmpty() -> {
                     val found = Api.search(ctx, query.trim())
-                    browse.grid = when (tab) {
-                        "films" -> found.filter { it.type == "movie" }
-                        "tv" -> found.filter { it.type == "show" || it.type == "episode" }
-                        else -> found
-                    }
+                    // everything the words found, as the web page shows it, the tab's
+                    // own kind first: from the TV tab a search for a film found nothing
+                    browse.grid = Route.tabFirst(found.map { it.type }, tab).map { found[it] }
                     // and the names the words spell, above the titles
                     browse.people = runCatching {
                         Api.searchPeople(ctx, query.trim())
@@ -3075,6 +3316,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // own and they were asked in order, so the screen waited for the sum
                 // of seven round trips - and for every retry of a slow one - before it
                 // drew anything. Asked together it waits for the slowest.
+                // the Start tab asks for its own, as it is drawn
+                tab == "start" -> {
+                    browse.grid = emptyList()
+                    browse.more = false
+                }
                 tab == "home" -> coroutineScope {
                     // A shelf nobody answered for was dropped without a word, which
                     // with one machine off reads as a library that has lost half of
@@ -3091,14 +3337,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         "Popular shows" to { Api.popularShows(ctx) },
                         // races and games on the tracker, newest first
                         "Sports" to { Api.sports(ctx) },
-                    ) + (Api.pluginRows.ifEmpty {
-                        // the first time: asked before the rows, after that alongside
-                        runCatching { Api.pluginRowsNow(ctx) }.getOrDefault(emptyList())
-                    }).map { (title, path) ->
-                        // a row a server plugin adds
-                        title to suspend { Api.pluginRow(ctx, path) }
-                    }
-                    if (Api.pluginRows.isNotEmpty()) launch { runCatching { Api.pluginRowsNow(ctx) } }
+                    )
+                    // a plugin's row - My channels - stands at the foot of Start instead
                     // Drawn from the top down as they arrive, rather than the whole page
                     // waiting for the slowest: a row shows once every row above it is in,
                     // so nothing is ever put in above what is on screen and the page
@@ -3142,14 +3382,35 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                   else narrowed(Api.collectionItems(open))
                     browse.more = false
                 }
-                tab in setOf("films", "tv") && browse.service.isNotEmpty() -> {
-                    // a streaming service's catalogue in this country, a page at a time
+                tab in setOf("films", "tv") && Route.sources(browse.service).catalogue -> {
+                    // the marked services' catalogue in this country, a page at a time -
+                    // every service when nothing is marked - after what this house has,
+                    // where My library or In packs is marked
+                    val src = Route.sources(browse.service)
                     browse.servicePage = 1
+                    // this house's titles in the catalogue's order: the library's own
+                    // order key ("popular") is not one the server sorts by, and it
+                    // answered by name, turned round - Z first
+                    val svcOrder = browse.serviceSortKey +
+                        if (browse.serviceSortAsc) ":asc" else ":desc"
                     val (got, more) = Api.serviceList(
-                        if (tab == "films") "movie" else "show", browse.service, 1,
-                        browse.serviceSortKey + if (browse.serviceSortAsc) ":asc" else ":desc",
-                        browse.genre, browse.decade)
-                    browse.grid = got
+                        if (tab == "films") "movie" else "show", serviceIds(browse), 1,
+                        svcOrder, browse.genre, browse.decade)
+                    val ours = if (!src.mine && !src.packs) emptyList() else housed(browse,
+                        patiently {
+                            if (tab == "films") Api.movies(ctx, svcOrder, 0, HOUSE_ALL,
+                                                           browse.genre, browse.decade)
+                            else Api.shows(ctx, svcOrder, 0, HOUSE_ALL, browse.genre,
+                                           browse.decade, country = browse.tvCountry)
+                        })
+                    val had = ours.mapTo(HashSet()) { it.ratingKey }
+                    // and one list, as the web has it: the house's and the catalogue's
+                    // together in that order, not the house's first
+                    browse.grid = Route.inServiceOrder(ours + got.filter { it.ratingKey !in had },
+                        browse.serviceSortKey, browse.serviceSortAsc,
+                        { it.popularity.toDouble() }, { it.rating.toDouble() },
+                        { it.released.ifEmpty { if ((it.year ?: 0) > 0) "%04d".format(it.year) else "" } },
+                        { it.year ?: 0 }, { it.titleSort.ifEmpty { it.title } })
                     browse.more = more
                 }
                 tab in setOf("films", "tv") && browse.sortKey == "popular" -> {
@@ -3158,32 +3419,35 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     val all = patiently {
                         if (tab == "films") Api.popularFilms(ctx) else Api.popularAll(ctx)
                     }
-                    browse.grid = Route.narrowPopular(all, { it.genres }, { it.year ?: 0 },
-                                                      { it.popularity }, browse.genre,
-                                                      browse.decade, browse.sortAsc)
+                    browse.grid = housed(browse, Route.narrowPopular(
+                        all, { it.genres }, { it.year ?: 0 }, { it.popularity },
+                        browse.genre, browse.decade, browse.sortAsc))
                     browse.more = false
                 }
                 tab == "films" -> {
-                    browse.grid = patiently { Api.movies(ctx, order, genre = browse.genre,
+                    // the page as it came; My library or In packs alone keeps part of it
+                    val page = patiently { Api.movies(ctx, order, genre = browse.genre,
                                              decade = browse.decade,
                                              diskOnly = browse.diskOnly) }
+                    browse.grid = housed(browse, page)
                     // a machine that said nothing holds films that are not on this
                     // shelf, and the shelf is short rather than complete
                     if (Api.silent.isNotEmpty())
                         browse.failed = Api.silent + " did not answer - this is only part of the library"
-                    browse.more = browse.grid.size >= PAGE
+                    browse.more = page.size >= PAGE
                     // the grid is one page; the count comes from the server's totalSize
                     if (browse.genre.contains(","))
                         browse.matching = Api.shelfCount(ctx, 1, browse.genre, browse.decade)
                 }
                 tab == "tv" -> {
-                    browse.grid = patiently { Api.shows(ctx, order, genre = browse.genre,
+                    val page = patiently { Api.shows(ctx, order, genre = browse.genre,
                                             decade = browse.decade,
                                             diskOnly = browse.diskOnly,
                                             country = browse.tvCountry) }
+                    browse.grid = housed(browse, page)
                     if (Api.silent.isNotEmpty())
                         browse.failed = Api.silent + " did not answer - this is only part of the library"
-                    browse.more = browse.grid.size >= PAGE
+                    browse.more = page.size >= PAGE
                     if (browse.genre.contains(","))
                         browse.matching = Api.shelfCount(ctx, 2, browse.genre, browse.decade)
                 }
@@ -3254,7 +3518,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // one per tab, kept for the life of this screen: back needs to hand the focus to
     // the tab it came from, and a requester has to be the same object to work
     val tabFocus = remember {
-        listOf("home", "films", "tv", "watchlist", "collections", "reports")
+        listOf("start", "home", "films", "tv", "watchlist", "collections")
             .associateWith { FocusRequester() }
     }
     //: where each of those ended up across the screen. A card at the top of a list
@@ -3272,7 +3536,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             .minByOrNull { kotlin.math.abs(it.value - x) } ?: return null
         return tabFocus[near.key]
     }
-    // and the remote starts on Home. It started wherever the framework put it, which
+    // and the remote starts on the tab shown. It started wherever the framework put it, which
     // on a television is nowhere in particular: the first press of any direction went
     // hunting instead of moving.
     val remoteHere = onTv()
@@ -3283,8 +3547,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             // Not over an offer to install: a build waiting to be put on is the reason
             // the bar is there, and the remote belongs on it. The bar asks for the
             // remote itself when it appears, so a slower answer is covered too.
+            // on the tab it opened on: Start, or Home where that was chosen
             if (browse.update == null) {
-                runCatching { tabFocus["home"]?.requestFocus() }
+                runCatching { tabFocus[browse.tab]?.requestFocus() }
             }
         }
     }
@@ -3339,7 +3604,20 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // On a tab that is not Home, the rung above the tabs is Home itself. Only from
     // there does back start to mean leaving: quitting from Films because the cursor
     // happened to be on the tab row is not what anybody means by back.
+    // Back always leads to Home, Start included: Start is where the app opens, not a
+    // rung of its own
+    // On a phone a scrolled Films or TV list goes to its top first; Home is the press
+    // after that. With a remote the first back has already put it on the tab, the list
+    // left where it was - pressing the tab is what takes a list to its top.
+    val topScope = androidx.compose.runtime.rememberCoroutineScope()
     BackHandler(enabled = !inContent && browse.tab != "home") {
+        val grid = browse.gridFor(browse.tab)
+        if (!remoteHere &&
+            Route.backToTop(browse.tab, grid.firstVisibleItemIndex, grid.firstVisibleItemScrollOffset)) {
+            topScope.launch { runCatching { grid.scrollToItem(0) } }
+            runCatching { tabFocus[browse.tab]?.requestFocus() }
+            return@BackHandler
+        }
         browse.tab = "home"
         runCatching { tabFocus["home"]?.requestFocus() }
     }
@@ -3427,84 +3705,87 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // Faint on purpose: every poster drawn over it has to stay legible.
     // Fitted, not cropped: filling the screen with a 2:3 poster blew it up until only
     // the middle of it was left, and what somebody stopped watching was unrecognisable.
-    if (behind != null && Skin.BackdropBehind) {
-        Art(Api.artUrl(behind), behind.title, Modifier.fillMaxSize().alpha(0.16f),
+    // Painted faint rather than faded as a layer, and on nothing of its own - the window
+    // is that colour already: faded, it was the whole screen drawn twice every frame.
+    // Not on Start, whose own picture across the top is the backdrop there.
+    if (behind != null && Skin.BackdropBehind && browse.tab != "start") {
+        Art(Api.artUrl(behind), behind.title, Modifier.fillMaxSize(),
             mark = 0, scale = androidx.compose.ui.layout.ContentScale.Fit,
-            ground = Brush.verticalGradient(listOf(Skin.Bg, Skin.Bg)))
+            ground = null, alpha = 0.16f)
     }
     Column(Modifier.fillMaxSize()) {
         TopBar(browse.tab,
                { chosen ->
-                   // Reports is a place, not a shelf: the tab leads to it and the
-                   // library stays on whichever tab it was
-                   if (chosen == "reports") onReports() else {
-                       // Home means the front page as it is met: the shelves at the
-                       // top and every one of them back at its own beginning. Left
-                       // where they were, pressing Home from halfway down the page
-                       // changed nothing anybody could see.
-                       if (chosen == "home") {
-                           browse.column = 0
-                           browse.rowNow = 0
-                           // requested, not awaited: a suspended scroll on a shelf off
-                           // the page held up every shelf after it, and a shelf drawn
-                           // meanwhile changed the map under the loop
-                           browse.shelfWas.clear()
-                           runCatching { browse.rowsState.requestScrollToItem(0) }
-                           browse.rowStates.values.toList().forEach {
-                               runCatching { it.requestScrollToItem(0) }
-                           }
-                       }
-                       // Where this tab was left, so pressing it again comes back
-                       // to it rather than to the top. One grid state serves every
-                       // tab, so it cannot hold four places at once.
-                       if (browse.tab != chosen && browse.moreRow == null &&
-                           browse.tab in setOf("films", "tv", "watchlist", "collections")) {
-                           browse.tabAt[browse.tab] =
-                               browse.gridFor(browse.tab).firstVisibleItemIndex to
-                               browse.gridFor(browse.tab).firstVisibleItemScrollOffset
-                       }
-                       if (browse.tab != chosen) {
-                           browse.tabPut = ""
-                           // opened from the bar, not off a shelf: the whole library
-                           browse.diskOnly = false
-                           // what was on the screen belongs to the tab being left, and
-                           // what the tab being opened had is what it should show
-                           // again - at the place it was left, with no blank frame in
-                           // between and nothing of the other tab under its heading.
-                           if (browse.moreRow == null) {
-                               browse.grids[browse.tab] = browse.grid
-                           }
-                           browse.grid = browse.grids[chosen] ?: emptyList()
-                           browse.loaded = ""
-                       } else if (chosen in setOf("films", "tv", "watchlist",
-                                                  "collections")) {
-                           // The tab it is already on, pressed again: back to the top,
-                           // the way Home behaves. Arriving at a tab keeps the place
-                           // it was left at; pressing the one you are standing on is
-                           // how you say you want the beginning of it.
-                           browse.tabAt.remove(chosen)
-                           browse.tabPut = chosen   // nothing to put back any more
-                           browse.column = 0
-                           browse.rowNow = 0
-                           backScope.launch {
-                               runCatching { browse.gridFor(chosen).scrollToItem(0) }
-                           }
-                       }
-                       // the order the shelf being left was in is kept for it, and
-                       // the one being opened comes back in its own
-                       browse.takeTabOrder(chosen)
-                       browse.tab = chosen; browse.query = ""
-                       // and closes a row that was opened whole, so a tab pressed
-                       // while that page is up cannot leave the front page showing it
-                       if (browse.moreRow != null) browse.leaveMoreRow()
-                       // TV and Films open on Popular from their button - an order of
-                       // the tab, not a page over it; a marked service shows its own
-                       if (Route.tvOpensPopular(chosen, browse.service)) {
-                           browse.sortKey = "popular"; browse.sortAsc = false
-                       }
-                       // leaving the tab closes whatever shelf was open in it
-                       if (chosen != "collections") browse.collectionOn = null
+                   // Home means the front page as it is met: the shelves at the
+                   // top and every one of them back at its own beginning. Left
+                   // where they were, pressing Home from halfway down the page
+                   // changed nothing anybody could see.
+                   // Start the same: the page at its top, each row at its start
+                   if (chosen == "start" && browse.tab == "start") {
+                       StartChoice.top.value = StartChoice.top.value + 1
                    }
+                   if (chosen == "home") {
+                       browse.column = 0
+                       browse.rowNow = 0
+                       // requested, not awaited: a suspended scroll on a shelf off
+                       // the page held up every shelf after it, and a shelf drawn
+                       // meanwhile changed the map under the loop
+                       browse.shelfWas.clear()
+                       runCatching { browse.rowsState.requestScrollToItem(0) }
+                       browse.rowStates.values.toList().forEach {
+                           runCatching { it.requestScrollToItem(0) }
+                       }
+                   }
+                   // Where this tab was left, so pressing it again comes back
+                   // to it rather than to the top. One grid state serves every
+                   // tab, so it cannot hold four places at once.
+                   if (browse.tab != chosen && browse.moreRow == null &&
+                       browse.tab in setOf("films", "tv", "watchlist", "collections")) {
+                       browse.tabAt[browse.tab] =
+                           browse.gridFor(browse.tab).firstVisibleItemIndex to
+                           browse.gridFor(browse.tab).firstVisibleItemScrollOffset
+                   }
+                   if (browse.tab != chosen) {
+                       browse.tabPut = ""
+                       // opened from the bar, not off a shelf: the whole library
+                       browse.diskOnly = false
+                       // what was on the screen belongs to the tab being left, and
+                       // what the tab being opened had is what it should show
+                       // again - at the place it was left, with no blank frame in
+                       // between and nothing of the other tab under its heading.
+                       if (browse.moreRow == null) {
+                           browse.grids[browse.tab] = browse.grid
+                       }
+                       browse.grid = browse.grids[chosen] ?: emptyList()
+                       browse.loaded = ""
+                   } else if (chosen in setOf("films", "tv", "watchlist",
+                                              "collections")) {
+                       // The tab it is already on, pressed again: back to the top,
+                       // the way Home behaves. Arriving at a tab keeps the place
+                       // it was left at; pressing the one you are standing on is
+                       // how you say you want the beginning of it.
+                       browse.tabAt.remove(chosen)
+                       browse.tabPut = chosen   // nothing to put back any more
+                       browse.column = 0
+                       browse.rowNow = 0
+                       backScope.launch {
+                           runCatching { browse.gridFor(chosen).scrollToItem(0) }
+                       }
+                   }
+                   // the order the shelf being left was in is kept for it, and
+                   // the one being opened comes back in its own
+                   browse.takeTabOrder(chosen)
+                   browse.tab = chosen; browse.query = ""
+                   // and closes a row that was opened whole, so a tab pressed
+                   // while that page is up cannot leave the front page showing it
+                   if (browse.moreRow != null) browse.leaveMoreRow()
+                   // TV and Films open on Popular from their button - an order of
+                   // the tab, not a page over it; a marked service shows its own
+                   if (Route.tvOpensPopular(chosen, browse.service)) {
+                       browse.sortKey = "popular"; browse.sortAsc = false
+                   }
+                   // leaving the tab closes whatever shelf was open in it
+                   if (chosen != "collections") browse.collectionOn = null
                }, onSettings,
                onChat = { chatting = true },
                onPeople = if (owner) ({ onPeople() }) else null,
@@ -3527,7 +3808,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                        else if (Route.tabControls(browse.moreRow, browse.tab)) ({
                    // a streaming service's list in the popular page's orders, kept apart
                    // from the library's own
-                   if (browse.service.isNotEmpty()) SortControl(
+                   if (Route.sources(browse.service).catalogue) SortControl(
                        browse.serviceSortKey, browse.serviceSortAsc,
                        onSort = { key ->
                            browse.serviceSortKey = key
@@ -3549,12 +3830,17 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                        onFlip = { browse.sortAsc = !browse.sortAsc },
                        then = Route.tabExtraOrders(browse.tab))
                    // a streaming service's catalogue in this country instead of the library
-                   DecadeControl(browse.service, browse.services.map { it.first to 0 },
+                   DecadeControl(browse.service, browse.services.map { it.first to
+                                     (Api.serviceCounts[if (browse.tab == "tv") "show" else "movie"]
+                                         ?.get(it.first) ?: 0) },
                                  onDecade = { browse.service = it },
                                  name = "Service", joins = "Titles on any marked",
                                  say = { id -> browse.services.firstOrNull { it.first == id }
                                              ?.second ?: id },
-                                 counted = false)
+                                 // how many titles each holds, beside its name
+                                 counted = Api.serviceCounts[if (browse.tab == "tv") "show"
+                                                             else "movie"] != null,
+                                 menuWidth = 300.dp)
                    GenreControl(browse.genre, browse.genres, matching = browse.matching,
                                 onGenre = { browse.genre = it })
                    DecadeControl(browse.decade, browse.decades,
@@ -3569,14 +3855,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                            browse.collSortAsc = key !in Route.SORT_HIGH_FIRST
                        },
                        onFlip = { browse.collSortAsc = !browse.collSortAsc },
-                       extra = Route.extraOrders(browse.moreRow))
+                       extra = Route.extraOrders(browse.moreRow, browse.moreList))
                    // a streaming service from the popular page too: marking one leaves
                    // it for that service's catalogue
                    if (Route.popularPage(browse.moreRow)) {
                        DecadeControl(browse.service, browse.services.map { it.first to 0 },
                                      onDecade = {
                                          browse.service = it
-                                         if (it.isNotEmpty()) browse.leaveMoreRow()
+                                         if (it != Route.SRC_HOUSE) browse.leaveMoreRow()
                                      },
                                      name = "Service", joins = "Titles on any marked",
                                      say = { id -> browse.services.firstOrNull { it.first == id }
@@ -3605,7 +3891,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                    DecadeControl(browse.decade, browse.decades,
                                  onDecade = { browse.decade = it })
                }) else null,
-               search = if (browse.tab in setOf("home", "films", "tv")) ({
+               // and on Start: a search there answers over everything, as from Home
+               search = if (browse.tab in setOf("start", "home", "films", "tv")) ({
                    // new words close a person's shelf: it stood over the new results
                    FilterControls(browse.query, {
                                       if (browse.moreRow != null && it != browse.query)
@@ -4000,7 +4287,26 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // on this shelf was left somewhere. Play on a button that
                         // carries on from eight minutes in is a promise about what
                         // pressing it does that pressing it does not keep.
-                        val carryOn = browse.shuffled && open.shelfResumeAt > 30
+                        val carryOn = open.shelfResumeAt > 30
+                        // Play all: the shelf in the order it is shown, one after
+                        // another - a season card is its episodes
+                        Pill("\u25b6 Play all", primary = true,
+                             narrow = tightRow, small = tightRow) {
+                            val keys = Route.playAllKeys(order.filter { !it.offered }
+                                .map { it.ratingKey to it.holds })
+                            val srv = order.firstOrNull { !it.offered }?.srv
+                            if (keys.isNotEmpty()) (ctx as AppCompatActivity).lifecycleScope.launch {
+                                val first = runCatching { Api.item(keys[0], srv) }.getOrNull()
+                                    ?: return@launch
+                                val full = (runCatching { Api.metadata(first) }.getOrNull() ?: first)
+                                    .let { Api.atHome(ctx, it) ?: it }
+                                ctx.startActivity(
+                                    playIntent(ctx, full, full.viewOffsetMs, full.startSub(),
+                                               fresh = true)
+                                        .putStringArrayListExtra("queue", ArrayList(keys.drop(1))))
+                            }
+                        }
+                        Spacer(Modifier.width(if (tightRow) 4.dp else 8.dp))
                         // One draw at a time. With a server off, every press waited
                         // out a connection and the presses stacked up behind it - and
                         // when one finally got through they all did, each one drawing
@@ -4009,11 +4315,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         var drawing by remember(open.ratingKey) { mutableStateOf(false) }
                         Pill(if (drawing) "Drawing…"
                              else if (carryOn)
-                                 "▶ Resume  " + fmt(open.shelfResumeAt.toLong())
-                             else "▶ Play",
-                             primary = true,
-                             narrow = tightRow, small = tightRow) {
-                            if (browse.shuffled && !drawing) {
+                                 "\u21c4 Resume  " + fmt(open.shelfResumeAt.toLong())
+                             else "\u21c4 Play shuffle",
+                             narrow = tightRow, small = tightRow,
+                             modifier = Modifier.onFocusChanged {
+                                 browse.shuffleLit = it.isFocused || it.hasFocus
+                             }) {
+                            if (!drawing) {
                                 drawing = true
                                 (ctx as AppCompatActivity).lifecycleScope.launch {
                                     val drew = try {
@@ -4025,16 +4333,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                         browse.notice = "Nothing to play on that shelf"
                                     } else if (drew.media.offered ||
                                                drew.media.ratingKey.startsWith("o")) {
-                                        // Drawn from a pack rather than the library.
-                                        // The server has already asked for it, and
-                                        // there is nothing to open a player on until
-                                        // it arrives - so its own page instead, which
-                                        // is where how far along it is can be seen.
-                                        val full = (runCatching {
-                                            Api.metadata(drew.media)
-                                        }.getOrNull() ?: drew.media)
-                                        browse.notice = "Downloading " + drew.media.title
-                                        onOpen(full)
+                                        // Drawn from a pack rather than the library: the
+                                        // server has already asked for it. The collection
+                                        // stays, its poster showing the download.
+                                        drawnComing(ctx, browse, drew.media)
                                     } else {
                                         // the shelf's copy carries no streams: the
                                         // full answer decides the soundtrack and the
@@ -4057,12 +4359,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                                               .removePrefix("coll:")))
                                     }
                                 }
-                            } else order.firstOrNull { !it.offered }?.let { start(it) }
-                        }
-                        Spacer(Modifier.width(if (tightRow) 4.dp else 8.dp))
-                        Pill("↻ Shuffle", active = browse.shuffled,
-                             narrow = tightRow, small = tightRow) {
-                            browse.shuffled = !browse.shuffled
+                            }
                         }
                         Spacer(Modifier.width(if (tightRow) 4.dp else 8.dp))
                     }
@@ -4089,6 +4386,88 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             browse.failed != null -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                 Text(browse.failed!!, color = Skin.Dim, fontSize = 15.sp)
             }
+            browse.tab == "start" && browse.query.trim().isEmpty() ->
+                // the remote in Start's rows is in the content: back puts it on the Start
+                // tab, as on Films and TV, and the next back goes Home
+                Box(Modifier.fillMaxSize().padding(horizontal = 16.dp)
+                        .onFocusChanged { inContent = it.hasFocus }) {
+                    // a row's Show more: its tab, ordered and narrowed as the row is
+                    StartScreen(onOpen) { more ->
+                        if (more.live.isNotEmpty()) {
+                            // My channels: the whole playlist, its groups to narrow it by
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                val all = runCatching {
+                                    Api.pluginRow(ctx, more.live, all = true)
+                                }.getOrDefault(emptyList())
+                                if (all.isEmpty()) return@launch
+                                browse.moreWas = Filters(
+                                    browse.genre, browse.decade,
+                                    browse.genres, browse.decades,
+                                    browse.collSortKey, browse.collSortAsc)
+                                browse.grid = all
+                                browse.moreAll = all
+                                browse.genres = Route.countOf(all.map { it.genres })
+                                    .sortedBy { it.first.lowercase() }
+                                browse.decades = emptyList()
+                                browse.genre = ""; browse.decade = ""
+                                browse.country = ""; browse.countries = emptyList()
+                                browse.collSortKey = "popularity"
+                                browse.collSortAsc = false
+                                browse.liveView = true
+                                browse.query = ""
+                                browse.tab = "home"
+                                browse.moreRow = more.name
+                                browse.moreList = false
+                                browse.focusKey = all.first().ratingKey
+                            }
+                            return@StartScreen
+                        }
+                        if (more.list.isNotEmpty()) {
+                            // a kept list: a page of its own, in the list's order, the
+                            // categories and decades of what it holds to narrow it by
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                val all = Api.keptList(more.list)
+                                if (all.isEmpty()) return@launch
+                                browse.moreWas = Filters(
+                                    browse.genre, browse.decade,
+                                    browse.genres, browse.decades,
+                                    browse.collSortKey, browse.collSortAsc)
+                                browse.grid = all
+                                browse.moreAll = all
+                                browse.genres = Route.countOf(all.map { it.genres })
+                                    .sortedBy { it.first.lowercase() }
+                                browse.decades = all.mapNotNull { m ->
+                                    (m.year ?: 0).takeIf { it > 0 }?.let { (it / 10 * 10).toString() }
+                                }.groupingBy { it }.eachCount().toList()
+                                    .sortedByDescending { it.first }
+                                browse.genre = ""; browse.decade = ""
+                                browse.country = ""; browse.countries = emptyList()
+                                browse.collSortKey = "popularity"
+                                browse.collSortAsc = false
+                                browse.query = ""
+                                browse.tab = "home"
+                                browse.moreRow = more.name
+                                browse.moreList = true
+                                browse.focusKey = all.first().ratingKey
+                            }
+                            return@StartScreen
+                        }
+                        browse.takeTabOrder(more.tab)
+                        if (more.sort.isNotEmpty()) {
+                            browse.sortKey = more.sort
+                            browse.sortAsc = false
+                        }
+                        browse.service = more.service.ifEmpty { Route.SRC_HOUSE }
+                        browse.diskOnly = false
+                        browse.genre = more.genre
+                        browse.decade = ""
+                        browse.query = ""
+                        browse.collectionOn = null
+                        browse.grid = emptyList()
+                        browse.loaded = ""
+                        browse.tab = more.tab
+                    }
+                }
             browse.tab == "home" && browse.moreRow == null &&
                 browse.query.trim().isEmpty() -> androidx.compose.foundation.layout.BoxWithConstraints {
               // On a television the posters are sized to the height left under the tabs,
@@ -4096,7 +4475,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
               // (18), the poster at 1.5 its width, and 8 of air.
               val short = LocalConfiguration.current.screenHeightDp < 560
               val homeW = if (short && focusShows())
-                  Route.homePoster(maxHeight.value, browse.bars.values.sum())
+                  Route.homePoster(maxHeight.value)
                   else shelfPoster()
               LazyColumn(
                 state = browse.rowsState,
@@ -4141,8 +4520,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             browse.takeTabOrder(toTab.first)
                             browse.sortKey = toTab.second
                             browse.sortAsc = false
-                            // the tab itself, nothing marked but what the shelf is
-                            browse.service = ""
+                            // the tab itself, this house's own marked and nothing else
+                            browse.service = Route.SRC_HOUSE
                             // what arrived here, on the shelf that
                             // is about arriving here
                             browse.diskOnly = toTab.second == "addedAt"
@@ -4187,29 +4566,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // somewhere else.
                         browse.collSortKey = "originallyAvailableAt"
                         browse.collSortAsc = false
-                        // a plugin's row opens whole, in its
-                        // order, its groups to narrow it by
-                        val plugged = Api.pluginRows
-                            .firstOrNull { it.first == title }?.second
-                        if (plugged != null) {
-                            browse.collSortKey = "popularity"
-                            browse.liveView = true
-                            (ctx as AppCompatActivity).lifecycleScope
-                                .launch {
-                                val all = runCatching {
-                                    Api.pluginRow(ctx, plugged, all = true)
-                                }.getOrDefault(emptyList())
-                                if (all.isNotEmpty() &&
-                                    browse.moreRow == title) {
-                                    browse.grid = all
-                                    browse.moreAll = all
-                                    browse.genres = Route.countOf(
-                                        all.map { it.genres })
-                                        .sortedBy { it.first.lowercase() }
-                                }
-                            }
-                        }
                         browse.moreRow = title
+                        browse.moreList = false
                         // and the remote on the first of them.
                         // Nothing asking for it means the page
                         // opens with the ring in the corner, on
@@ -4259,6 +4617,21 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     // the same margin either side; on a phone a little in from the edge.
                     val inset = if (onTv()) Route.centredInset(maxWidth.value, w + POSTER_SIDES)
                                 else Route.shelfInset(false).toFloat()
+                    // sideways only when the card needs it: the TV default put every card
+                    // the remote came down onto at its own point, and the row slid under it
+                    val room = inset * androidx.compose.ui.platform.LocalDensity.current.density
+                    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+                    val along = remember(room) {
+                        object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+                            override val scrollAnimationSpec = Slide.along
+                            override fun calculateScrollDistance(offset: Float, size: Float,
+                                                                 containerSize: Float) =
+                                Route.calmAlong(offset, size, containerSize, room)
+                        }
+                    }
+                    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides along) {
                     LazyRow(state = rowState,
                             contentPadding = PaddingValues(horizontal = inset.dp),
                             modifier = Modifier.focusGroup()) {
@@ -4302,15 +4675,15 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                                browse.rowNow = shelf
                                            }
                                        }
-                                       // up and down go shelf to shelf, to the card
-                                       // each one was left on - the shelves scroll
-                                       // under the remote, so nearest is rarely the
-                                       // same column. Off the top shelf it is not
-                                       // ours: up goes straight up, to whatever is
-                                       // over that card.
+                                       // Up and down go to the card straight above or
+                                       // below, as on Start: the shelves slide only
+                                       // when a card is off the screen now, so what
+                                       // is nearest is the one in line. Going to the
+                                       // card a shelf was left on, or to the same
+                                       // number on it, slid a shelf scrolled another
+                                       // way under the remote.
                                        .edge(up = {
-                                                if (shelf > 0)
-                                                    moveTo(browse.shelfAsk[shelf - 1])
+                                                if (shelf > 0) false
                                                 // Off the top shelf, up is the tab
                                                 // standing over this card. What the
                                                 // framework finds instead is the
@@ -4319,7 +4692,6 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                                 else moveTo(tabOver(
                                                     browse.cardAt[m.ratingKey] ?: 0f))
                                             },
-                                            down = { moveTo(browse.shelfAsk[shelf + 1]) },
                                             // The first card of a shelf is the end of
                                             // it. Left from there had nothing beside
                                             // it, so the search took the nearest thing
@@ -4398,15 +4770,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                 // round on a row of round cards: live channels
                                 val round = list.firstOrNull()?.let {
                                     it.live || it.liveGroup.isNotEmpty() } == true
-                                val moreShape = if (round) androidx.compose.foundation.shape.CircleShape
-                                                else RoundedCornerShape(Skin.round(10.dp))
-                                Box(Modifier.padding(horizontal = 5.dp, vertical = 8.dp)
+                                // the card's slot holds its place in the row; the
+                                // highlight is a rectangle round the words
+                                val words = RoundedCornerShape(Skin.round(8.dp))
+                                // in line with the posters, padded as Poster pads them: four
+                                // lower and down from any card in the row found it first
+                                Box(Modifier.padding(horizontal = 5.dp,
+                                        vertical = if (LocalConfiguration.current.screenHeightDp < 560) 4.dp else 8.dp)
                                         .width(w.dp).height((if (round) w * 1.0 else w * 1.5).dp)
-                                        .clip(moreShape)
-                                        .background(Skin.Panel)
-                                        .border(if (lit) 3.dp else 0.dp,
-                                                if (lit) Color.White else Color.Transparent,
-                                                moreShape)
                                         .onFocusChanged { lit = it.isFocused }
                                         // clickable brings its own focus node. Adding
                                         // focusable() as well put two on one item, and
@@ -4416,12 +4787,19 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                         // any quick move along the shelves.
                                         .clickable { openMore() },
                                     contentAlignment = Alignment.Center) {
-                                    Text("Show more  \u203a", color = Skin.Dim,
+                                    Text("Show more  \u203a",
+                                         color = if (lit) Skin.Fg else Skin.Dim,
                                          fontSize = 14.sp,
-                                         modifier = Modifier.padding(8.dp))
+                                         modifier = Modifier.clip(words)
+                                             .background(Skin.Panel)
+                                             .border(if (lit) 3.dp else 0.dp,
+                                                     if (lit) Color.White else Color.Transparent,
+                                                     words)
+                                             .padding(horizontal = 14.dp, vertical = 10.dp))
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
@@ -4447,24 +4825,28 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         if (browse.more && !paging && browse.query.isBlank() &&
                             last >= browse.grid.size - 24) {
                             paging = true
+                            // the page as it came, before My library or In packs kept
+                            // part of it: whether there is another is its own size
+                            var read = 0
                             val next = runCatching {
-                                if (browse.service.isNotEmpty()) {
+                                if (Route.sources(browse.service).catalogue) {
                                     val (got, more) = Api.serviceList(
                                         if (browse.tab == "films") "movie" else "show",
-                                        browse.service, browse.servicePage + 1,
+                                        serviceIds(browse), browse.servicePage + 1,
                                         browse.serviceSortKey +
                                             if (browse.serviceSortAsc) ":asc" else ":desc",
                                         browse.genre, browse.decade)
                                     browse.servicePage++
                                     serviceMore = more
                                     got
-                                } else if (browse.tab == "films")
+                                } else housed(browse, (if (browse.tab == "films")
                                     Api.movies(ctx, order, browse.grid.size, PAGE,
                                                browse.genre, browse.decade,
                                                browse.diskOnly)
                                 else Api.shows(ctx, order, browse.grid.size, PAGE,
                                                browse.genre, browse.decade,
-                                               browse.diskOnly, browse.tvCountry)
+                                               browse.diskOnly, browse.tvCountry))
+                                    .also { read = it.size })
                             }.getOrDefault(emptyList())
                             // Never the same key twice: a keyed grid throws on a
                             // repeat rather than drawing, and a page is a window
@@ -4473,8 +4855,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             browse.grid = browse.grid + next.filter {
                                 it.ratingKey !in had
                             }
-                            browse.more = if (browse.service.isNotEmpty()) serviceMore
-                                          else next.size >= PAGE
+                            browse.more = if (Route.sources(browse.service).catalogue) serviceMore
+                                          else read >= PAGE
                             paging = false
                         }
                     }
@@ -4555,6 +4937,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
                 val steady = remember {
                     object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+                        override val scrollAnimationSpec = Slide.down
                         override fun calculateScrollDistance(
                             offset: Float, size: Float, containerSize: Float
                         ): Float {
@@ -4586,13 +4969,17 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         onItsSide -> GridCells.Fixed(5)
                         else -> GridCells.Adaptive(cell)
                     },
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    // Room for the ring a poster grows into, and no more: on a television
+                    // the sides were 38 points of nothing, more than twice the margin of
+                    // the tabs above and of Start, and the posters stood in a narrow column
+                    contentPadding = PaddingValues(horizontal = if (onTv()) 4.dp else 14.dp,
+                                                   vertical = 8.dp),
                     // On a television the grid stops short of the screen's edges: a TV
                     // trims its edges, and a poster scrolled to the bottom-left corner
                     // had its ring on the very edge, cut off left and below
                     modifier = Modifier.fillMaxSize()
-                        .padding(start = Route.tvSafe(onTv()).first.dp,
-                                 end = Route.tvSafe(onTv()).first.dp,
+                        .padding(start = Route.gridSide(onTv()).dp,
+                                 end = Route.gridSide(onTv()).dp,
                                  bottom = Route.tvSafe(onTv()).second.dp)
                         .onFocusChanged { inContent = it.hasFocus }
                         .focusGroup()
@@ -4655,8 +5042,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     }
                     // the cards of one list; `top` when it is the first on the page, whose
                     // first row hands up to the tabs
+                    // `above` and `below` are the lists under the headings either side,
+                    // so up and down go on into them in the same column rather than
+                    // leaving the framework to guess - which jumped
                     fun androidx.compose.foundation.lazy.grid.LazyGridScope.cards(
-                            list: List<Media>, top: Boolean) =
+                            list: List<Media>, top: Boolean,
+                            above: List<Media> = emptyList(),
+                            below: List<Media> = emptyList()) =
                     itemsIndexed(list, key = { _, m -> m.ratingKey },
                                     contentType = { _, m -> m.ratingKey }) { at, m ->
                         // Nothing under the card but its own line. Sorted by
@@ -4671,8 +5063,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // by number: a season's title is its programme's, which said
                         // the programme's name under all thirty of them
                         val instead: String? = when {
+                            // inside one programme's collection the number says it all;
+                            // on the watchlist a season stands among films, and
+                            // "Season 1" alone did not say which programme
                             m.type == "season" ->
-                                if (m.index != null) "Season " + m.index else m.title
+                                Route.seasonLine(m.index, m.title,
+                                                 if (browse.collectionOn == null)
+                                                     m.grandparentTitle else null)
                             // and its own name - `title` is the programme's
                             m.type == "episode" && m.parentIndex != null && m.index != null ->
                                 String.format(java.util.Locale.US, "S%02dE%02d",
@@ -4689,6 +5086,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             }
                         }
                         Poster(m, fill = true, instead = instead,
+                               shuffleOff = Route.shuffleOff(
+                                   browse.shuffleLit && browse.collectionOn != null,
+                                   m.notShuffled, m.shuffleOut),
                                modifier = Modifier.focusRequester(here)
                                    .onFocusChanged {
                                        if (it.isFocused) browse.gridAt = at
@@ -4713,14 +5113,19 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                    .edge(up = {
                                        val across = columnsNow(gridState.layoutInfo)
                                        val x = browse.cardAt[m.ratingKey]
-                                       if (top && at < maxOf(across, 1) && x != null) {
+                                       val step = Route.gridStep(at, across, list.size,
+                                                                 above.size, below.size,
+                                                                 down = false)
+                                       if (step == null && top && x != null) {
                                            moveTo(tabOver(x))
-                                       } else {
-                                           // Straight up, by name.
-                                           stepTo(at - maxOf(across, 1), list,
+                                       } else if (step != null) {
+                                           // Straight up, by name - into the list above
+                                           // where this one starts
+                                           stepTo(step.second,
+                                                  if (step.first < 0) above else list,
                                                   browse, gridState, gridScope,
                                                   down = false)
-                                       }
+                                       } else false
                                    }, down = {
                                        // Straight down: the one in this column, a row
                                        // on.
@@ -4734,8 +5139,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                        // column.
                                        val across = maxOf(
                                            columnsNow(gridState.layoutInfo), 1)
-                                       stepTo(at + across, list, browse, gridState,
-                                              gridScope, down = true)
+                                       val step = Route.gridStep(at, across, list.size,
+                                                                 above.size, below.size,
+                                                                 down = true)
+                                       if (step == null) false
+                                       else stepTo(step.second,
+                                                   if (step.first > 0) below else list,
+                                                   browse, gridState, gridScope,
+                                                   down = true)
                                    }),
                                // held: the menu. On the watchlist that is the one
                                // about the watchlist; anywhere else it is the title's,
@@ -4761,30 +5172,55 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             }
                         }
                     }
-                    // A search from Home that finds both: the films, then the programmes,
-                    // each under its own heading. Mixed, they were sorted by date together.
+                    // A search that finds both, on any tab: the films and the programmes
+                    // each under its own heading, as the web page has them - on the TV
+                    // tab the programmes first. Mixed, they were sorted by date together.
                     val films = shown.filter { it.type == "movie" }
                     val tv = shown.filter { it.type != "movie" }
-                    if (Route.splitSearch(browse.query, browse.tab, films.size, tv.size)) {
-                        item(span = {
-                            androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan)
-                        }, key = "films-head") {
-                            SectionTitle("Films", Modifier.padding(start = 7.dp, bottom = 2.dp))
+                    val ownList = browse.tab == "watchlist" && browse.collectionOn == null &&
+                        browse.query.isBlank()
+                    if (ownList) {
+                        // the watchlist: films, then television, then the favorites the
+                        // same two ways - each under its own heading, an empty one left out
+                        val favs = collectionOrder(browse.favs, browse.collSortKey,
+                                                   browse.collSortAsc)
+                        val groups = Route.watchlistGroups(
+                            films, tv, favs.filter { it.type == "movie" },
+                            favs.filter { it.type != "movie" })
+                        groups.forEachIndexed { at, (name, list) ->
+                                item(span = {
+                                    androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan)
+                                }, key = "wl-" + name) {
+                                    SectionTitle(name, Modifier.padding(start = 7.dp,
+                                        top = if (at == 0) 0.dp else 18.dp, bottom = 2.dp))
+                                }
+                                cards(list, top = at == 0,
+                                      above = groups.getOrNull(at - 1)?.second ?: emptyList(),
+                                      below = groups.getOrNull(at + 1)?.second ?: emptyList())
+                            }
+                    } else if (Route.splitSearch(browse.query, browse.tab, films.size, tv.size,
+                                                 person = browse.moreRow != null &&
+                                                     browse.moreRow == browse.personRow)) {
+                        val groups = if (Route.tvFirst(browse.tab))
+                            listOf("TV shows" to tv, "Films" to films)
+                        else listOf("Films" to films, "TV shows" to tv)
+                        groups.forEachIndexed { at, (name, list) ->
+                            item(span = {
+                                androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan)
+                            }, key = "head-" + name) {
+                                SectionTitle(name, Modifier.padding(start = 7.dp,
+                                    top = if (at == 0) 0.dp else 18.dp, bottom = 2.dp))
+                            }
+                            cards(list, top = at == 0,
+                                  above = groups.getOrNull(at - 1)?.second ?: emptyList(),
+                                  below = groups.getOrNull(at + 1)?.second ?: emptyList())
                         }
-                        cards(films, top = true)
-                        item(span = {
-                            androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan)
-                        }, key = "tv-head") {
-                            SectionTitle("TV", Modifier.padding(start = 7.dp, top = 18.dp,
-                                                                bottom = 2.dp))
-                        }
-                        cards(tv, top = false)
                     } else {
                         cards(shown, top = true)
                     }
-                    // favorites: a row of their own under the watchlist
+                    // favorites: a row of their own under a search of the watchlist
                     if (browse.tab == "watchlist" && browse.collectionOn == null &&
-                        browse.favs.isNotEmpty()) {
+                        browse.favs.isNotEmpty() && !ownList) {
                         item(span = {
                             androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan)
                         }) {
@@ -4862,12 +5298,6 @@ private fun ReportDialog(startAs: String = "problem", onClose: () -> Unit) {
  * Sorted here rather than asked for: a collection arrives whole, so turning it round
  * is arithmetic on a list already in hand and needs no second fetch.
  */
-/** A download's time left, the way a person says it. */
-private fun etaWords(seconds: Long): String = when {
-    seconds < 60 -> "$seconds s left"
-    seconds < 3600 -> "${seconds / 60} min left"
-    else -> "${seconds / 3600} h ${seconds % 3600 / 60} min left"
-}
 
 /** A collection opened: the sort and filters it was saved with come with it. */
 /** One sport's races or games, as a shelf opened whole: newest event first. */
@@ -5259,7 +5689,7 @@ private fun stepTo(to: Int, shown: List<Media>, browse: Browse,
         val over = on.offset.y + on.size.height - info.viewportEndOffset
         val under = on.offset.y - info.viewportStartOffset
         val by = if (over > 0) over.toFloat() else if (under < 0) under.toFloat() else 0f
-        if (by != 0f) scope.launch { runCatching { grid.animateScrollBy(by) } }
+        if (by != 0f) scope.launch { runCatching { grid.animateScrollBy(by, Slide.down) } }
         return true
     }
     // One row, not a screenful.
@@ -5280,7 +5710,7 @@ private fun stepTo(to: Int, shown: List<Media>, browse: Browse,
         return true
     }
     scope.launch {
-        runCatching { grid.animateScrollBy(if (down) row.toFloat() else -row.toFloat()) }
+        runCatching { grid.animateScrollBy(if (down) row.toFloat() else -row.toFloat(), Slide.down) }
     }
     return true
 }
@@ -5296,6 +5726,9 @@ private fun RowScope.DecadeControl(
     say: (String) -> String = { it + "s" },
     // a count beside each line; a service's is not known until it is asked
     counted: Boolean = true,
+    // how wide the list opens: "Amazon Prime Video" and its count broke over two lines
+    // in the 200 points a decade needs
+    menuWidth: androidx.compose.ui.unit.Dp = 200.dp,
 ) {
     if (decades.isEmpty()) return
     var open by remember { mutableStateOf(false) }
@@ -5335,7 +5768,7 @@ private fun RowScope.DecadeControl(
         DropdownMenu(
             expanded = open, onDismissRequest = { open = false },
             modifier = Modifier.background(Skin.Panel)
-                .width(200.dp).heightIn(max = 360.dp)) {
+                .width(menuWidth).heightIn(max = 360.dp)) {
             // the opposite of the genres, and for a reason worth one line: a film has
             // one year, so asking for all the marked decades at once answers nothing
             Text(joins, color = Skin.Dim, fontSize = 11.sp,
@@ -5361,10 +5794,15 @@ private fun RowScope.DecadeControl(
                     modifier = Modifier.focusRequester(here)
                         .edge(left = { open = false; true },
                               right = { open = false; true }),
-                    text = { Text((if (on) "✓  " else "     ") + say(era) +
-                                      (if (counted) "  (" + count + ")" else ""),
-                                  fontSize = 14.sp,
+                    // one line each: the name, and its count apart at the end
+                    text = { Text((if (on) "✓  " else "     ") + say(era),
+                                  fontSize = 14.sp, maxLines = 1,
+                                  overflow = TextOverflow.Ellipsis,
                                   color = if (on) Skin.Accent else Skin.Fg) },
+                    trailingIcon = if (counted) ({
+                        Text("%,d".format(count), fontSize = 12.sp, maxLines = 1,
+                             color = Skin.Dim)
+                    }) else null,
                     // toggles and stays open, so several can be marked in one visit
                     onClick = {
                         touched = era
@@ -5430,7 +5868,6 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
     var trackerEps by remember(m.ratingKey) { mutableStateOf<List<Api.TrackerEpisode>>(emptyList()) }
     // what that menu has chosen: "p:<pack>", "find", or "e:<episode>"; null for the default
     var chosen by remember(m.ratingKey) { mutableStateOf<String?>(null) }
-    var pickOpen by remember(m.ratingKey) { mutableStateOf(false) }
     // the tracker did not answer, and how many times it has been asked again
     var lookFailed by remember(m.ratingKey) { mutableStateOf(false) }
     var lookAgain by remember(m.ratingKey) { mutableStateOf(0) }
@@ -5445,7 +5882,7 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
         full = runCatching { Api.metadata(m) }.getOrNull() ?: m
     }
     LaunchedEffect(m.ratingKey, lookAgain) {
-        val found = Api.showFind(m.title)
+        val found = Api.showFind(m)
         lookFailed = found == null
         if (found != null) {
             packs = found.first
@@ -5572,13 +6009,14 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                 }
                 packs?.let { list ->
                     // one download menu: the packs, letting it find them, the single episodes
-                    val choice = chosen ?: ((list.firstOrNull { it.pick } ?: list.firstOrNull())
+                    val choice = chosen ?: ((list.firstOrNull { it.pick } ?: list.firstOrNull { !it.unsure })
                                                 ?.let { "p:" + it.id } ?: "find")
                     val gb = { n: Long -> String.format(java.util.Locale.US, "%.1f GB", n / 1073741824.0) }
                     val packSays = { one: Api.ShowPack ->
                         listOfNotNull(one.name, if (one.complete) "complete" else span(one.seasons),
                                       one.size.takeIf { it > 0 }?.let(gb),
-                                      one.seeds.takeIf { it > 0 }?.let { "$it seeding" })
+                                      one.seeds.takeIf { it > 0 }?.let { "$it seeding" },
+                                      "could be another series of this name".takeIf { one.unsure })
                             .joinToString("  ·  ") }
                     val epSays = { e: Api.TrackerEpisode ->
                         listOfNotNull("S%02dE%02d".format(e.season, e.episode), e.name,
@@ -5588,33 +6026,26 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                     val find = "Let it find packs by itself, a season at a time"
                     val pack = list.firstOrNull { "p:" + it.id == choice }
                     val ep = trackerEps.firstOrNull { "e:" + it.id == choice }
+                    // every choice on show, not a menu: closed, it read as one pack on offer
                     val item = @Composable { words: String, mine: Boolean, green: Boolean, pick: () -> Unit ->
-                        DropdownMenuItem(contentPadding = MENU_PAD,
-                            text = { Text(words, fontSize = 13.sp, lineHeight = 17.sp,
-                                          color = if (mine) Skin.Accent
-                                                  else if (green) Color(0xFF5FD08A) else Skin.Fg) },
-                            onClick = { pick(); pickOpen = false })
-                    }
-                    Box {
-                        PackChoice(onPress = { pickOpen = true }) { lit ->
-                            Text((pack?.let(packSays) ?: ep?.let(epSays) ?: find) + "  ▾",
-                                 fontSize = 13.sp, lineHeight = 17.sp,
-                                 color = if (lit) Skin.OnAccent
-                                         else if (pack?.pick == true) Color(0xFF5FD08A) else Skin.Fg)
+                        PackChoice(onPress = pick) { lit ->
+                            Text((if (mine) "✓  " else "") + words, fontSize = 13.sp, lineHeight = 17.sp,
+                                 color = if (lit) Skin.OnAccent else if (mine) Skin.Accent
+                                         else if (green) Color(0xFF5FD08A) else Skin.Fg)
                         }
-                        DropdownMenu(expanded = pickOpen, onDismissRequest = { pickOpen = false },
-                                     modifier = Modifier.background(Skin.Panel).heightIn(max = 420.dp)) {
-                            list.forEach { one ->
-                                item(packSays(one), "p:" + one.id == choice, one.pick) { chosen = "p:" + one.id }
-                            }
-                            item(find, choice == "find", false) { chosen = "find" }
-                            if (trackerEps.isNotEmpty()) {
-                                Text("Single episodes", color = Skin.Dim, fontSize = 12.sp,
-                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                            }
-                            trackerEps.forEach { e ->
-                                item(epSays(e), "e:" + e.id == choice, false) { chosen = "e:" + e.id }
-                            }
+                    }
+                    Column(Modifier.fillMaxWidth().heightIn(max = 300.dp)
+                               .verticalScroll(rememberScrollState())) {
+                        list.forEach { one ->
+                            item(packSays(one), "p:" + one.id == choice, one.pick) { chosen = "p:" + one.id }
+                        }
+                        item(find, choice == "find", false) { chosen = "find" }
+                        if (trackerEps.isNotEmpty()) {
+                            Text("Single episodes", color = Skin.Dim, fontSize = 12.sp,
+                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                        }
+                        trackerEps.forEach { e ->
+                            item(epSays(e), "e:" + e.id == choice, false) { chosen = "e:" + e.id }
                         }
                     }
                     Spacer(Modifier.height(4.dp))
@@ -5627,7 +6058,7 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                         when {
                             ep != null -> (ctx as AppCompatActivity).lifecycleScope.launch {
                                 val (ok, said) = Api.takeFromTracker(full, ep.id)
-                                Toast.makeText(ctx, if (ok) "Downloading $said" else said,
+                                Toast.makeText(ctx, if (ok) "Downloading" else said,
                                                Toast.LENGTH_SHORT).show()
                             }
                             pack != null -> add(pack.id)
@@ -5689,6 +6120,31 @@ private fun PackChoice(onPress: () -> Unit,
  * Asked of the library, so what comes back can be watched tonight. Pressed from a
  * film's cast row, and from the row of names a search found.
  */
+/** From a title's page to the watchlist or one of its collections: the page closed and
+ *  that tab opened on it. */
+private fun goToShelf(ctx: Context, browse: Browse,
+                      stack: androidx.compose.runtime.snapshots.SnapshotStateList<Media>,
+                      where: String) {
+    if (where == "watchlist") {
+        stack.clear()
+        browse.collectionOn = null
+        browse.query = ""
+        browse.loaded = ""
+        browse.tab = "watchlist"
+        return
+    }
+    (ctx as AppCompatActivity).lifecycleScope.launch {
+        val shelves = runCatching { Api.collections(ctx) }.getOrDefault(emptyList())
+        val it0 = shelves.firstOrNull {
+            it.ratingKey.removePrefix("coll:") == where.removePrefix("coll:")
+        } ?: return@launch
+        stack.clear()
+        browse.query = ""
+        openShelf(browse, it0)
+        browse.tab = "collections"
+    }
+}
+
 private fun openPerson(ctx: Context, browse: Browse,
                        stack: androidx.compose.runtime.snapshots.SnapshotStateList<Media>,
                        who: Media.Player) {
@@ -5716,6 +6172,7 @@ private fun openPerson(ctx: Context, browse: Browse,
         browse.collSortKey = "originallyAvailableAt"
         browse.collSortAsc = false
         browse.moreRow = who.name
+        browse.personRow = who.name
         browse.focusKey = theirs.first().ratingKey
         // the page being read, to come back to. The shelf needs the title's page off
         // the stack to be seen at all, so back had nothing left to return to and
@@ -5783,10 +6240,118 @@ private val MENU_PAD = androidx.compose.foundation.layout.PaddingValues(
     horizontal = 12.dp, vertical = 2.dp)
 
 // FocusRequester.Cancel - refusing a direction - is still marked experimental
+/** A film's series, as its poster steps through it: the films, the one on show, and
+ *  whether the poster has been pressed to step. */
+private class SagaState {
+    var parts by mutableStateOf<List<Api.SagaPart>>(emptyList())
+    var shown by mutableStateOf(0)
+    var going by mutableStateOf(false)
+    val at get() = parts.indexOfFirst { it.at }
+}
+
+@Composable
+private fun rememberSaga(full: Media): SagaState {
+    val saga = remember(full.ratingKey) { SagaState() }
+    LaunchedEffect(full.ratingKey) {
+        if (full.type == "movie") {
+            saga.parts = Api.saga(full.ratingKey)
+            saga.shown = saga.at.coerceAtLeast(0)
+        }
+    }
+    return saga
+}
+
+/**
+ * A film's poster. In a series it is pressed to step through the series one film at a
+ * time - left and right on the remote, or a swipe - and pressed on another film opens
+ * that film's page; pressed on its own again it stops. Until pressed it takes no left
+ * or right from the remote.
+ */
+@Composable
+private fun SagaPoster(full: Media, saga: SagaState, mark: Int, onOpen: (Media) -> Unit) {
+    val ctx = LocalContext.current
+    val at = saga.at
+    var lit by remember { mutableStateOf(false) }
+    if (at < 0) {
+        Art(Api.coverUrl(full), full.title, Modifier.fillMaxSize(), mark = mark)
+        return
+    }
+    val press = {
+        val p = saga.parts.getOrNull(saga.shown)
+        if (!saga.going) saga.going = true
+        else if (p != null && !p.at) (ctx as AppCompatActivity).lifecycleScope.launch {
+            Api.item(p.key, full.srv)?.let { onOpen(it) }
+        } else saga.going = false
+    }
+    var drag by remember { mutableStateOf(0f) }
+    Box(Modifier.fillMaxSize()
+            .onFocusChanged { lit = it.isFocused; if (!it.isFocused) { saga.going = false; saga.shown = at } }
+            .focusable()
+            .onKeyEvent { e ->
+                if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (e.key) {
+                    Key.DirectionLeft -> if (saga.going && saga.shown > 0) {
+                        saga.shown = Route.sagaStep(saga.shown, saga.parts.size, -1); true } else false
+                    Key.DirectionRight -> if (saga.going && saga.shown < saga.parts.size - 1) {
+                        saga.shown = Route.sagaStep(saga.shown, saga.parts.size, 1); true } else false
+                    Key.DirectionCenter, Key.Enter -> { press(); true }
+                    else -> false
+                }
+            }
+            .pointerInput(saga.parts.size) {
+                detectHorizontalDragGestures(onDragEnd = {
+                    if (saga.going && kotlin.math.abs(drag) > 60)
+                        saga.shown = Route.sagaStep(saga.shown, saga.parts.size, if (drag < 0) 1 else -1)
+                    drag = 0f
+                }) { _, by -> drag += by }
+            }
+            .pointerInput(saga.shown, saga.going) { detectTapGestures { press() } }
+            .border(if (lit || saga.going) 3.dp else 0.dp,
+                    if (lit || saga.going) Skin.Accent else Color.Transparent,
+                    RoundedCornerShape(Skin.round(10.dp)))) {
+        val p = saga.parts[saga.shown]
+        Art(if (p.at || p.thumb.isEmpty()) Api.coverUrl(full) else Api.artUrl(full, 0, p.thumb),
+            p.label, Modifier.fillMaxSize(), mark = mark)
+        if (saga.going && saga.shown > 0) SagaChevron(true, Modifier.align(Alignment.CenterStart))
+        if (saga.going && saga.shown < saga.parts.size - 1) SagaChevron(false, Modifier.align(Alignment.CenterEnd))
+    }
+}
+
+/** One of the poster's two arrows: a drawn chevron in a box the same size either way, so
+ *  the pair sits even - a font's two arrows do not. */
+@Composable
+private fun SagaChevron(back: Boolean, modifier: Modifier) {
+    androidx.compose.foundation.Canvas(modifier.padding(horizontal = 6.dp).width(28.dp).height(44.dp)
+            .background(Color(0x8C0B0D10), RoundedCornerShape(6.dp))) {
+        val w = size.width; val h = size.height; val r = 7.dp.toPx()
+        val tip = if (back) w / 2 - r / 2 else w / 2 + r / 2
+        val tail = if (back) tip + r else tip - r
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(tail, h / 2 - r); lineTo(tip, h / 2); lineTo(tail, h / 2 + r) }
+        drawPath(path, Color.White, style = androidx.compose.ui.graphics.drawscope.Stroke(
+            width = 3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            join = androidx.compose.ui.graphics.StrokeJoin.Round))
+    }
+}
+
+/** Under the poster: its place in the series, and while stepping, the film on show. */
+@Composable
+private fun SagaCaption(saga: SagaState, width: androidx.compose.ui.unit.Dp) {
+    val at = saga.at
+    if (at < 0) return
+    val p = saga.parts.getOrNull(saga.shown) ?: return
+    Text(Route.sagaCaption(saga.going, p.label, saga.shown, saga.parts.size, p.at),
+         color = if (saga.going) Skin.Fg else Skin.Dim, fontSize = 13.sp, maxLines = 2,
+         overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+         modifier = Modifier.width(width).padding(top = 6.dp))
+}
+
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                          onFilter: (String, List<String>) -> Unit = { _, _ -> },
+                         /** "watchlist", or a collection's id: that page, this one closed */
+                         onGoTo: (String) -> Unit = {},
                          /** a name pressed in the cast: everything held with them in it */
                          onPerson: (Media.Player) -> Unit = {}) {
     val ctx = LocalContext.current
@@ -5813,6 +6378,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     var children by remember(m.ratingKey) { mutableStateOf<List<Media>>(emptyList()) }
     //: which mark is waiting to be confirmed: true for watched, false for unwatched
     var marking by remember(m.ratingKey) { mutableStateOf<Boolean?>(null) }
+    // a season's page: the tracker's packs of it, to add one as a link
+    var addingPack by remember(m.ratingKey) { mutableStateOf(false) }
     // index of the chosen subtitle stream, or null for none
     var sub by remember(m.ratingKey) { mutableStateOf<Int?>(null) }
     var styling by remember(m.ratingKey) { mutableStateOf(false) }
@@ -5847,6 +6414,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     // and of the watchlist mark, for the same reason
     var listed by remember(m.ratingKey) { mutableStateOf(false) }
     var picking by remember(m.ratingKey) { mutableStateOf(false) }
+    var listing by remember(m.ratingKey) { mutableStateOf(false) }
     var inCollection by remember(m.ratingKey) { mutableStateOf(false) }
 
     // More like this: the genres this film carries, asked of the library the same way
@@ -5860,6 +6428,24 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     val firstAlike = remember(m.ratingKey) { FocusRequester() }
     //: where this film falls among them in time, so the row can be cut around it
     var alikeAt by remember(m.ratingKey) { mutableStateOf(0) }
+
+    // In from its download while the page is open: read again until the library has
+    // it, so Download turns into Play. It kept the Download button it opened with.
+    val inList = Api.downloading.value.any { it.ratingKey == m.ratingKey }
+    var wasComing by remember(m.ratingKey) { mutableStateOf(false) }
+    LaunchedEffect(m.ratingKey, inList) {
+        if (inList) { wasComing = true; return@LaunchedEffect }
+        if (!wasComing) return@LaunchedEffect
+        wasComing = false
+        repeat(24) {
+            val got = runCatching { Api.metadata(m) }.getOrNull()
+            if (got != null && !got.askable && !got.offered) {
+                full = got
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(5000)
+        }
+    }
 
     // and again on the way back from the player: the button says "Resume 7:19", and
     // after watching another twenty minutes it should not still say 7:19
@@ -5906,8 +6492,17 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             // nothing tagged action, comedy, horror and science fiction is older than
             // 1987 - it takes more from the newer side. Letting a word go instead put
             // films in the row that were not this kind of film at all.
-            val words = genres
-            val found = carrying(words)
+            var words = genres
+            var found = carrying(words)
+            // nothing carries them all: one word fewer, the set that finds the most,
+            // and so on down to two; the tags above the row say which were kept
+            for (size in Route.genreFewer(words.size)) {
+                if (found.isNotEmpty()) break
+                val sets = Route.genreSets(words, size)
+                val got = coroutineScope { sets.map { async { carrying(it) } }.map { it.await() } }
+                val best = got.indices.filter { got[it].isNotEmpty() }.maxByOrNull { got[it].size }
+                if (best != null) { words = sets[best]; found = got[best] }
+            }
             val mine = full.year ?: 0
             likeOn = words
             android.util.Log.i("Palladium", "more like " + full.title + " (" + mine +
@@ -6056,22 +6651,35 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     // this film's own download, not everything coming in
                     val flat = { t: String -> t.lowercase().filter { it.isLetterOrDigit() } }
                     taking = Api.trackerTaking(full.srv).filter {
-                        flat(it.title) == flat(full.title) &&
-                            (it.year == 0 || full.year == null || it.year == full.year)
+                        Route.takingIsFor(it.key, it.title, it.year,
+                                          full.ratingKey, full.title, full.year)
                     }
                     kotlinx.coroutines.delay(
                         if (taking.isEmpty()) 15000 else 5000)
                 }
             }
+            // and another copy coming in from a pack: the same line, its own Cancel. Only
+            // the tracker's were here, so a copy taken from a pack started unseen.
+            Api.downloading.value.filter {
+                Route.takingIsFor("", it.title, it.year ?: 0, full.ratingKey, full.title, full.year) &&
+                    it.offerState in setOf("queued", "downloading")
+            }.forEach { d ->
+                Pill("✕ Cancel  ·  " +
+                         Route.offerLine(d.offerState, d.offerVersion, d.offerProgress, d.offerMbit,
+                                         d.offerEta, d.offerPlace, d.offerWords),
+                     small = true) {
+                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                        val (ok, words) = Api.torrentCancel(d)
+                        otherSaid = words
+                        if (ok) Api.refreshDownloading(ctx)
+                    }
+                }
+            }
             taking.forEach { one ->
                 val pct = (one.progress * 100).toInt()
-                if (one.done) {
-                    // finished: cancelling now would delete the file, so
-                    // there is nothing to press - only what it did
-                    Text("Done  ·  " + one.name, color = Skin.Dim,
-                         fontSize = 12.sp)
-                    return@forEach
-                }
+                // finished: gone from the page - the film is in the library now, and
+                // a line saying so only sat there
+                if (one.done) return@forEach
                 Pill("✕ Cancel " +
                          (if (one.state == "queued") "queued"
                           else "$pct%") +
@@ -6181,32 +6789,40 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
      * the shuffle without ever being something anybody is waiting to watch.
      */
     val marks: @Composable () -> Unit = {
+        // each button a popup: Add or Remove as it stands, and Go to
+        val favorite = m.ratingKey in Api.favKeys.value
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // one button stepping through three: off, on the watchlist, a favorite
-            val favorite = m.ratingKey in Api.favKeys.value
             MarkControl(
                 listed = listed, favorite = favorite, inCollection = inCollection,
-                onList = {
-                    MainActivity.marksTouched.value++
-                    (ctx as AppCompatActivity).lifecycleScope.launch {
-                        when {
-                            favorite -> {
-                                Api.favorite(full, false)
-                                Api.mark(full, false)
-                                listed = false
-                            }
-                            listed -> Api.favorite(full, true)
-                            else -> {
-                                Api.mark(full, true)
-                                listed = true
-                            }
-                        }
-                    }
-                },
+                onList = { listing = true },
                 onCollection = { picking = true })
         }
+        if (listing) {
+            WatchlistPicker(listed, favorite, onClose = { listing = false },
+                onList = { on ->
+                    MainActivity.marksTouched.value++
+                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                        if (!on && favorite) Api.favorite(full, false)
+                        Api.mark(full, on)
+                        listed = on
+                    }
+                },
+                onFavorite = { on ->
+                    MainActivity.marksTouched.value++
+                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                        // a favorite is on the watchlist as well
+                        if (on && !listed) {
+                            Api.mark(full, true)
+                            listed = true
+                        }
+                        Api.favorite(full, on)
+                    }
+                },
+                onGoTo = { onGoTo("watchlist") })
+        }
         if (picking) {
-            ShelfPicker(full, emptyList(), onClose = { picking = false }) { now ->
+            ShelfPicker(full, emptyList(), onClose = { picking = false },
+                        onGoTo = { id -> onGoTo(id) }) { now ->
                 inCollection = now.any { it.state != "none" }
                 MainActivity.marksTouched.value++
             }
@@ -6339,7 +6955,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     // offer with the film, and this page becomes it
                     LaunchedEffect(full.ratingKey, full.offerState) {
                         while (full.offered &&
-                               full.offerState in setOf("queued", "downloading", "done")) {
+                               full.offerState in setOf("queued", "downloading", "unpacking", "done")) {
                             kotlinx.coroutines.delay(5000)
                             runCatching { Api.metadata(full) }.getOrNull()?.let { full = it }
                         }
@@ -6352,19 +6968,48 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     val showing = if (live === full && Api.cameIn(full.ratingKey)) "done"
                                   else live.offerState
                     val busy = full.offerRefused.isNotEmpty() ||
-                        showing in setOf("queued", "downloading", "done")
+                        showing in setOf("queued", "downloading", "unpacking", "done")
                     val press = Route.offerPress(live.offerState, armed)
+                    // a copy of a film here already: that one plays while this one comes in
+                    if (full.offerHeldKey.isNotEmpty()) {
+                        Pill("▶ Play", primary = true,
+                             modifier = Modifier.focusRequester(playFocus)) {
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                Api.item(full.offerHeldKey, full.srv)?.let { held ->
+                                    ctx.startActivity(playIntent(ctx, held, held.viewOffsetMs,
+                                                                 held.startSub()))
+                                }
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    if (press.isNotEmpty()) {
+                        // coming in: how far and how fast on the first button, read live
+                        // every 3 s; stopping it is its own button beside it
+                        Pill(Route.offerLine(showing, live.offerVersion, live.offerProgress,
+                                             live.offerMbit, live.offerEta, live.offerPlace,
+                                             live.offerWords),
+                             modifier = Modifier.focusRequester(actFocus)) {
+                            Api.queueOpen.value = true
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Pill(if (armed) "Press again to cancel" else "✕ Cancel",
+                             active = armed) {
+                            if (!armed) armed = true
+                            else {
+                                armed = false
+                                (ctx as AppCompatActivity).lifecycleScope.launch {
+                                    val (ok, words) = Api.torrentCancel(full)
+                                    said = words
+                                    if (ok) Api.metadata(full)?.let { full = it }
+                                    Api.refreshDownloading(ctx)
+                                }
+                            }
+                        }
+                    } else
                     Pill(if (full.offerRefused.isNotEmpty()) "Cannot download"
-                         else if (press == "cancel") "Press again to cancel" else when (showing) {
-                             "downloading" -> "Downloading " +
-                                 (if (live.offerVersion.isNotEmpty()) live.offerVersion + "  ·  " else "") +
-                                 (live.offerProgress * 100).toInt() + "%" +
-                                 (if (live.offerMbit > 0)
-                                      String.format(java.util.Locale.US, "  \u00b7  %.1f Mbit/s",
-                                                    live.offerMbit) else "") +
-                                 (if (live.offerEta >= 0) "  \u00b7  " + etaWords(live.offerEta) else "")
-                             "queued" -> "Queued" +
-                                 (if (live.offerPlace > 0) " · ${live.offerPlace} ahead" else "")
+                         else when (showing) {
+                             "unpacking" -> "Unpacking " + (live.offerProgress * 100).toInt() + "%"
                              "done" -> "Downloaded - arriving"
                              else -> "\u2913 Download"
                          } + (if (full.offerSize > 0)
@@ -6375,21 +7020,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                                 full.offerFree) else ""),
                          primary = !busy,
                          modifier = Modifier.focusRequester(actFocus)) {
-                        // Downloading or queued, the button is the way to stop it: once
-                        // to ask, again to cancel. Every version to choose from otherwise,
-                        // the pack's copies and the tracker's releases alike - one
-                        // included, so a download is always something somebody confirmed.
-                        if (press == "arm") {
-                            armed = true
-                        } else if (press == "cancel") {
-                            armed = false
-                            (ctx as AppCompatActivity).lifecycleScope.launch {
-                                val (ok, words) = Api.torrentCancel(full)
-                                said = words
-                                if (ok) Api.metadata(full)?.let { full = it }
-                                Api.refreshDownloading(ctx)
-                            }
-                        } else if (!busy) (ctx as AppCompatActivity).lifecycleScope.launch {
+                        // Every version to choose from, the pack's copies and the
+                        // tracker's releases alike - one included, so a download is
+                        // always something somebody confirmed.
+                        if (!busy) (ctx as AppCompatActivity).lifecycleScope.launch {
                             said = "Looking…"
                             offerChoices = Api.trackerVersions(full)
                             said = ""
@@ -6397,7 +7031,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                 choosingOffer = true
                             } else {
                                 val (ok, words) = Api.torrentGet(full)
-                                said = if (ok) "Downloading - it appears in Films when it has arrived"
+                                said = if (ok) ""
                                        else words
                                 Api.metadata(full)?.let { full = it }
                                 Api.refreshDownloading(ctx)
@@ -6448,8 +7082,25 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     // about a title, and gating this on what the index already held
                     // meant a film nobody had swept yet offered only a Request -
                     // for something the tracker was carrying all along.
+                    // and while the tracker is still being asked, asked again every few
+                    // seconds for a minute: the page said Request for a film the
+                    // tracker carried, because the answer came after it opened
+                    var stillChecking by remember(m.ratingKey) { mutableStateOf(full.checking) }
                     LaunchedEffect(m.ratingKey, full.onTracker) {
                         if (versions.rows.isEmpty()) {
+                            versions = Api.trackerVersions(full)
+                        }
+                        // Checking for as long as the server has not asked the tracker:
+                        // Request only once it has, and found nothing. Giving up after a
+                        // minute said Request for a film nobody had looked for yet.
+                        var tries = 0
+                        while (versions.rows.isEmpty() && !full.onTracker && stillChecking) {
+                            kotlinx.coroutines.delay(Route.checkGap(tries))
+                            tries++
+                            runCatching { Api.metadata(full) }.getOrNull()?.let {
+                                stillChecking = it.checking
+                                if (it.onTracker) full = it
+                            }
                             versions = Api.trackerVersions(full)
                         }
                     }
@@ -6457,23 +7108,91 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     // between fetching it and asking somebody for it
                     val carried = full.onTracker || versions.rows.isNotEmpty()
                     var picking by remember(m.ratingKey) { mutableStateOf(false) }
+                    // pressed and on its way to qBittorrent: the button says so at once
+                    // rather than standing yellow until the next look finds it
+                    var starting by remember(m.ratingKey) { mutableStateOf(false) }
                     if (picking) {
                         DownloadPicker(full, versions.rows, free = versions.free,
                                        onClose = { picking = false },
-                                       onSaid = { said = it })
+                                       onSaid = { word ->
+                                           val begun = word == "Starting the download…"
+                                           if (begun) starting = true
+                                           else if (word.isNotEmpty()) starting = false
+                                           said = if (begun) "" else word
+                                       })
                     }
                     // how many are waiting on it, beside the button: one is the
                     // person holding the remote and goes without saying
                     // one press each: the count is people, not presses, so it
                     // says at least one as soon as this viewer is one of them
                     val waiting = maxOf(full.asks, if (askedAlready) 1 else 0)
+                    // a release of it already taken from the tracker - waiting in the
+                    // queue or coming in: the button is its cancel, not another Download
+                    var coming by remember(full.ratingKey) {
+                        mutableStateOf<Api.Taking?>(null) }
+                    var cancelArmed by remember(full.ratingKey) { mutableStateOf(false) }
+                    // the first look answered: until then the button is not lit, or a
+                    // film already coming in showed a yellow Download for a moment
+                    var looked by remember(full.ratingKey) { mutableStateOf(false) }
+                    // whole in qBittorrent and not in the library yet: arriving, not a
+                    // Download button again for the minute the library takes
+                    var landed by remember(full.ratingKey) { mutableStateOf(false) }
+                    LaunchedEffect(full.ratingKey, said, picking, starting) {
+                        while (true) {
+                            val mine = Api.trackerTaking(full.srv).filter {
+                                Route.takingIsFor(it.key, it.title, it.year,
+                                                  full.ratingKey, full.title, full.year)
+                            }
+                            coming = mine.firstOrNull { !it.done }
+                            landed = coming == null && mine.any { it.done }
+                            looked = true
+                            if (coming != null) starting = false
+                            kotlinx.coroutines.delay(if (coming != null) 3000
+                                                     else if (starting) 1000 else 6000)
+                        }
+                    }
+                    // the same download as the app-wide list has it, before this page's
+                    // own look has answered
+                    val listed = Api.downloading.value.firstOrNull {
+                        (it.ratingKey == full.ratingKey || it.ratingKey == m.ratingKey) &&
+                            it.offerState in setOf("downloading", "unpacking", "queued")
+                    }
                     // something to fetch for it: the asking can be skipped, and
                     // what comes into the house is still only the owner's to start
                     // Shown wherever there is something to fetch. Whether this
                     // viewer may is the server's to answer, and it says so in the
                     // line under the buttons - working it out here as well only
                     // meant a button that hid itself for the wrong reasons.
-                    if (carried) {
+                    val going = coming
+                    if (going == null && landed) {
+                        Pill("Downloaded - arriving", modifier = Modifier.focusRequester(actFocus)) { }
+                    } else if (going == null && (listed != null || starting)) {
+                        // known to be coming in, this page's look not in yet: what it is
+                        // doing, and Cancel as soon as the look brings its number
+                        Pill(if (listed == null) "Starting the download…"
+                             else Route.offerLine(listed.offerState, "", listed.offerProgress,
+                                                  listed.offerMbit, listed.offerEta,
+                                                  listed.offerPlace, listed.offerWords),
+                             modifier = Modifier.focusRequester(actFocus)) { }
+                    } else if (going != null && going.state == "unpacking") {
+                        Pill("Unpacking " + (going.progress * 100).toInt() + "%",
+                             modifier = Modifier.focusRequester(actFocus)) { }
+                    } else if (going != null) {
+                        Pill(if (cancelArmed) "Press again to cancel"
+                             else "\u2715 Cancel  \u00b7  " +
+                                 Route.takingLine(going.state, going.progress, going.mbit,
+                                                  going.words),
+                             modifier = Modifier.focusRequester(actFocus)) {
+                            if (!cancelArmed) cancelArmed = true
+                            else (ctx as AppCompatActivity).lifecycleScope.launch {
+                                cancelArmed = false
+                                if (Api.trackerCancel(going.hash, full.srv)) {
+                                    said = "Cancelled"
+                                    coming = null
+                                }
+                            }
+                        }
+                    } else if (carried) {
                         // The same button as a film on a pack wears: the arrow, the
                         // word and the size beside it. Fetching from the tracker is
                         // the same act, and it read as a lesser one.
@@ -6489,7 +7208,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                  (if (versions.free >= 0)
                                       String.format(java.util.Locale.US, "  ·  %.0f GB free",
                                                     versions.free) else ""),
-                             primary = true,
+                             primary = looked,
                              modifier = Modifier.focusRequester(actFocus)) {
                             (ctx as AppCompatActivity).lifecycleScope.launch {
                                 if (versions.rows.isEmpty()) {
@@ -6502,7 +7221,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                             }
                         }
                     }
-                    if (!carried) Pill((if (askedAlready) "Requested" else "Request") +
+                    if (!carried && stillChecking) Pill("Checking the tracker…",
+                                                        modifier = Modifier.focusRequester(actFocus)) { }
+                    else if (!carried) Pill((if (askedAlready) "Requested" else "Request") +
                          (if (waiting > 0) "  \u00b7  $waiting" else ""),
                          primary = !askedAlready,
                          modifier = Modifier.focusRequester(actFocus)) {
@@ -6526,13 +7247,17 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                              modifier = Modifier.padding(start = 4.dp, top = 8.dp))
                     }
                 }
-                if (!full.offered && !full.askable) Pill(if (resume > RESUME_FROM) "Resume " + fmt(resume) else "Play", primary = true,
+                // not out yet: no file to play, the date it comes out instead
+                if (full.upcoming) Pill(Route.upcomingLine(full.released),
+                                        modifier = Modifier.focusRequester(playFocus)) { }
+                else if (!full.offered && !full.askable) Pill(if (resume > RESUME_FROM) "Resume " + fmt(resume) else "Play", primary = true,
                      narrow = narrowRow && resume > RESUME_FROM, small = smallRow && resume > RESUME_FROM,
                      modifier = Modifier.focusRequester(playFocus)) {
                     startIt(resume)
                 }
                 // the favorite and collection marks next to Play, then the rest
                 if (!full.offered && !full.askable) marks()
+
                 if (resume > RESUME_FROM && !full.offered && !full.askable) Pill("From start", narrow = narrowRow,
                                      small = smallRow) {
                     startIt(0)
@@ -6600,7 +7325,33 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             containerColor = Skin.Panel,
             title = { Text(full.title, color = Skin.Fg, fontSize = 18.sp) },
             text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
+                // The words take the remote first, and up and down read through them
+                // before going on to the cast. Nothing above the cast could be focused,
+                // so the remote landed on the first face, the window scrolled down to
+                // it, and a long plot could not be read at all.
+                val readScroll = rememberScrollState()
+                val readAt = remember { FocusRequester() }
+                val readScope = rememberCoroutineScope()
+                var textEnd by remember { mutableStateOf(0f) }
+                LaunchedEffect(Unit) { runCatching { readAt.requestFocus() } }
+                Column(Modifier.verticalScroll(readScroll)) {
+                    Column(Modifier.focusRequester(readAt).focusable()
+                        .onSizeChanged { textEnd = it.height.toFloat() }
+                        .onPreviewKeyEvent { e ->
+                            if (e.type != androidx.compose.ui.input.key.KeyEventType.KeyDown)
+                                return@onPreviewKeyEvent false
+                            val down = when (e.key) {
+                                androidx.compose.ui.input.key.Key.DirectionDown -> true
+                                androidx.compose.ui.input.key.Key.DirectionUp -> false
+                                else -> return@onPreviewKeyEvent false
+                            }
+                            val by = Route.readStep(down, readScroll.value.toFloat(),
+                                readScroll.viewportSize.toFloat(), textEnd,
+                                readScroll.viewportSize * 0.6f)
+                            if (by == 0f) return@onPreviewKeyEvent false
+                            readScope.launch { readScroll.animateScrollBy(by, Slide.down) }
+                            true
+                        }) {
                     val rated = listOfNotNull(
                         full.rating.takeIf { it > 0f }
                             ?.let { "★ " + String.format("%.1f", it) + " of 10" },
@@ -6625,6 +7376,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     }
                     Text(full.summary, color = Skin.Fg.copy(alpha = 0.82f), fontSize = 14.sp,
                          lineHeight = 21.sp, modifier = Modifier.padding(bottom = 14.dp))
+                    }
                     // the studios behind it, under the plot and over the cast
                     if (full.studios.isNotEmpty()) {
                         Box(Modifier.padding(bottom = 14.dp)) { studios() }
@@ -6687,7 +7439,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
         // the marks stand on the Play row; a series or season has them here, under its
         // year and episode count
         if (full.isFolder) {
-            Box(Modifier.padding(top = 10.dp)) { marks() }
+            // no Shuffle here: a series is shuffled from its collection and Start's row
+            Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                marks()
+            }
             // a series' versions are its packs: the Version picker films and episodes
             // have, saying the one in use, to change it or add another
             if (full.type == "show") {
@@ -6814,20 +7569,23 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
         VersionPanel(
             media = full,
             inUse = packs?.let { (chosen, rows) ->
-                chosen.map { h -> rows.firstOrNull { it.hash == h }?.let { p ->
+                Route.addedPacks(chosen, rows.map { it.hash }).map { h -> rows.firstOrNull { it.hash == h }?.let { p ->
                     p.name to listOfNotNull(
+                        Route.packWord(h, chosen),
                         Route.seasonSpan(p.seasons).ifEmpty { null },
                         p.size.takeIf { it > 0 }?.let {
                             String.format(java.util.Locale.US, "%.1f GB", it / 1073741824.0) },
                         p.seeds.takeIf { it > 0 }?.let { "$it seeding" }).joinToString("  ·  ")
                 } ?: (h to "") } } ?: emptyList(),
             onPick = { at ->
-                // a pack in use, pressed: its episodes no longer come from it
-                val hash = packs?.first?.getOrNull(at) ?: return@VersionPanel
+                // an added pack, pressed: its link goes. Only un-choosing it left it in use by
+                // itself, so it could not be removed
+                val hash = packs?.let { (chosen, rows) ->
+                    Route.addedPacks(chosen, rows.map { it.hash }).getOrNull(at) } ?: return@VersionPanel
                 versions = false
                 (ctx as AppCompatActivity).lifecycleScope.launch {
-                    val error = Api.usePack(full.title, hash = hash, drop = true)
-                    otherSaid = error.ifEmpty { "Dropped" }
+                    val error = Api.removePack(full.title, hash)
+                    otherSaid = error.ifEmpty { "Pack removed - nothing deleted" }
                     packsAgain++
                 }
             },
@@ -6842,10 +7600,12 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         return@launch
                     }
                     seriesPacks = got
-                    other = Api.Carrying(rows = got.second.filter { it.hash !in got.first }.map {
+                    other = Api.Carrying(rows = got.second.sortedBy { it.hash !in got.first }.map {
                         Api.Carried(if (it.hash.isNotEmpty()) "h:" + it.hash else "t:" + it.id,
-                                    it.name, it.seeds, size = it.size, pick = it.pick,
-                                    pack = it.hash.isNotEmpty(), box = true, seasonPack = true)
+                                    it.name + (if (it.unsure) "  ·  could be another series of this name" else ""),
+                                    it.seeds, size = it.size, pick = it.pick,
+                                    pack = it.hash.isNotEmpty(), box = true, seasonPack = true,
+                                    word = Route.packWord(it.hash, got.first))
                     })
                     otherSaid = if (other.rows.isEmpty()) "Nothing on the tracker for it" else ""
                     packList = other.rows.isNotEmpty()
@@ -6870,7 +7630,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             },
             onClose = { versions = false },
             // the tracker's list, from the foot of the panel
-            onOther = if ((full.type == "movie" || full.type == "episode") &&
+            onOther = if (!BuildConfig.PLAY && (full.type == "movie" || full.type == "episode") &&
                           !full.offered && !full.askable && !full.upcoming) ({
                 versions = false
                 (ctx as AppCompatActivity).lifecycleScope.launch {
@@ -6889,14 +7649,18 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
         DownloadPicker(full, other.rows, onClose = { packList = false },
                        onSaid = { otherSaid = it },
                        onTake = { one ->
-                           (ctx as AppCompatActivity).lifecycleScope.launch {
-                               otherSaid = "Adding the pack…"
-                               val error = if (one.id.startsWith("h:"))
-                                   Api.usePack(full.title, hash = one.id.removePrefix("h:"))
-                               else Api.usePack(full.title, id = one.id.removePrefix("t:"))
-                               otherSaid = error.ifEmpty {
-                                   "Added as a link - its episodes can come from it now" }
-                               packsAgain++
+                           if (one.word == "In use") {
+                               otherSaid = "Already in use - remove it under Version"
+                           } else {
+                               (ctx as AppCompatActivity).lifecycleScope.launch {
+                                   otherSaid = "Adding the pack…"
+                                   val error = if (one.id.startsWith("h:"))
+                                       Api.usePack(full.title, hash = one.id.removePrefix("h:"))
+                                   else Api.usePack(full.title, id = one.id.removePrefix("t:"))
+                                   otherSaid = error.ifEmpty {
+                                       "Added as a link - its episodes can come from it now" }
+                                   packsAgain++
+                               }
                            }
                        })
     }
@@ -6966,26 +7730,31 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
         ) {
             Row { Pill("Back") { onBack() } }
             if (portrait) {
+                val saga = rememberSaga(full)
                 Box(Modifier.padding(top = 14.dp).width(120.dp).height(180.dp)
                         .clip(RoundedCornerShape(Skin.round(10.dp)))) {
-                    Art(Api.coverUrl(full), full.title, Modifier.fillMaxSize(), mark = 44)
+                    SagaPoster(full, saga, mark = 44) { onOpen(it) }
                     OfferProgress(full)
                 }
+                SagaCaption(saga, 120.dp)
                 Text(full.title, color = Skin.Fg, fontSize = 24.sp,
                      fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp))
                 // the year belongs to the title, so it goes with it; then the button
                 when_(); buttons(); marksAndSubs(); facts(); blurb()
             } else {
                 Row(Modifier.padding(top = if (cramped || roomForShelf) 4.dp else 12.dp)) {
-                    Box(Modifier
-                            .width(if (cramped) 110.dp
-                                   else if (roomForShelf) 150.dp else 180.dp)
-                            .height(if (cramped) 165.dp
-                                    else if (roomForShelf) 225.dp else 270.dp)
-                            .clip(RoundedCornerShape(Skin.round(10.dp)))) {
-                        Art(Api.coverUrl(full), full.title, Modifier.fillMaxSize(),
-                            mark = if (cramped) 40 else 60)
-                        OfferProgress(full)
+                    val saga = rememberSaga(full)
+                    val posterW = if (cramped) 110.dp else if (roomForShelf) 150.dp else 180.dp
+                    Column {
+                        Box(Modifier
+                                .width(posterW)
+                                .height(if (cramped) 165.dp
+                                        else if (roomForShelf) 225.dp else 270.dp)
+                                .clip(RoundedCornerShape(Skin.round(10.dp)))) {
+                            SagaPoster(full, saga, mark = if (cramped) 40 else 60) { onOpen(it) }
+                            OfferProgress(full)
+                        }
+                        SagaCaption(saga, posterW)
                     }
                     Column(Modifier.padding(start = if (cramped) 16.dp else 24.dp)) {
                         Text(full.title, color = Skin.Fg,
@@ -7035,7 +7804,16 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                 Api.item(show, full.srv)?.let { onOpen(it) }
                             }
                         }
+                        // the tracker's packs of this season, added as a link
+                        if (!BuildConfig.PLAY) Pill("+ Add pack") { addingPack = true }
                     }
+                }
+                if (addingPack) {
+                    SeasonPacks(full, onAdded = {
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            children = runCatching { Api.children(full) }.getOrDefault(children)
+                        }
+                    }) { addingPack = false }
                 }
                 marking?.let { seen ->
                     val many = children.size
@@ -7080,9 +7858,29 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 val episodes = rememberLazyListState()
                 // an episode not here that the tracker has: its releases, in a dialog
                 var fetchingEp by remember { mutableStateOf<Media?>(null) }
+                // the episodes asked for from here, by number, and not in yet
+                var coming by remember(full.ratingKey) { mutableStateOf(emptySet<Int>()) }
                 fetchingEp?.let { ep ->
-                    EpisodeDownloads(ep, onPage = if (ep.offered) ({ onOpen(ep) }) else null) {
+                    EpisodeDownloads(ep, onPage = if (ep.offered) ({ onOpen(ep) }) else null,
+                                     onTaken = {
+                                         ep.index?.takeIf { ep.offered || ep.upcoming }
+                                             ?.let { coming = coming + it }
+                                     }) {
                         fetchingEp = null
+                    }
+                }
+                // until they are in: the row then plays without reloading the page
+                LaunchedEffect(coming.isNotEmpty()) {
+                    while (coming.isNotEmpty()) {
+                        kotlinx.coroutines.delay(Route.EPISODE_LANDS_EVERY_MS)
+                        val now = runCatching { Api.children(full) }.getOrNull() ?: continue
+                        val left = Route.episodesStillComing(coming, now
+                            .filter { !it.upcoming && !it.offered }.mapNotNull { it.index }.toSet())
+                        if (left != coming) {
+                            children = now
+                            coming = left
+                            Toast.makeText(ctx, "In - ready to play", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
                 // Arrived from an episode's own page: stand on that episode rather
@@ -7159,11 +7957,13 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                               Modifier.focusRequester(standOn)
                                           else Modifier) {
                             if (c.upcoming && c.type == "episode") {
-                                if (c.fetchable) fetchingEp = c
+                                // matched or not: with nothing matched, its search -
+                                // and in the Play build, nothing
+                                if (!BuildConfig.PLAY) fetchingEp = c
                             } else if (Route.episodeOpensReleases(c.type, c.offered)) {
                                 // not downloaded: the same release list, the pack's
                                 // copy one of its rows
-                                fetchingEp = c
+                                if (!BuildConfig.PLAY) fetchingEp = c
                             } else onOpen(c)
                         }
                     }
@@ -7180,7 +7980,18 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // its words and the shelf itself have had their share is the gap.
                 // A little smaller than a shelf on the home page: this row shares
                 // its screen with a whole film's worth of words above it.
-                val likeWide = if (roomForShelf) shelfPoster() * 5 / 8 else shelfPoster()
+                // On a television as large as the room under the words allows, the row
+                // at the foot of the screen: a small row with a hand's width of nothing
+                // under it looked lost. Measured from where the words end, which the
+                // posters' size does not move.
+                var wordsEnd by remember(m.ratingKey) { mutableStateOf(0f) }
+                val likeWide = when {
+                    tvPage && roomForShelf -> Route.likeWide(
+                        if (wordsEnd > 0f) LocalConfiguration.current.screenHeightDp - wordsEnd
+                        else 0f, shelfPoster())
+                    roomForShelf -> shelfPoster() * 5 / 8
+                    else -> shelfPoster()
+                }
                 // On a television the shelf follows the words rather than the foot of
                 // the screen: measuring the gap from what was left meant that every
                 // point taken off the cards was handed straight back as air above
@@ -7197,11 +8008,22 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 var shelfTall by remember(m.ratingKey) { mutableStateOf(0f) }
                 val dpx = androidx.compose.ui.platform.LocalDensity.current.density
                 val screenTall = LocalConfiguration.current.screenHeightDp.toFloat()
+                // Measured in the page, not on the screen: the screen position moves as the
+                // page scrolls, the gap was worked out again from it, and the poster, the
+                // words and the row jumped about at every press. The page's own height is
+                // the window it scrolls in, less its padding above and below.
+                val pageTall = if (scroll.viewportSize > 0)
+                    scroll.viewportSize / dpx - (if (roomForShelf) 24f else 44f) else screenTall
                 val footGap = if (tvPage && shelfFrom > 0f && shelfTall > 0f)
-                    Route.footGap(screenTall, shelfFrom / dpx, shelfTall / dpx, 24f)
+                    Route.footGap(pageTall, shelfFrom / dpx, shelfTall / dpx, 14f)
                 else gap.toFloat()
                 Spacer(Modifier.height(footGap.dp).onGloballyPositioned {
-                    shelfFrom = it.boundsInWindow().top
+                    // where it stands, not what of it shows: an empty spacer's visible
+                    // bounds read as nought, and the row stayed its smallest
+                    shelfFrom = it.positionInParent().y
+                    // where the words end now: read once, it was taken while the page
+                    // was still filling in, lower than it settles, and the row stayed small
+                    wordsEnd = shelfFrom / dpx
                 })
                 Column(Modifier.onGloballyPositioned { shelfTall = it.size.height.toFloat() }) {
                 FlowRow(Modifier.fillMaxWidth()
@@ -7229,9 +8051,17 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // the tail of air is for a remote, which scrolls the row under a
                 // fixed point; a finger drags the row itself and the gap is waste
                 androidx.compose.foundation.layout.BoxWithConstraints {
-                // whole posters, centred, the same margin either side on a television
-                val likeInset = if (onTv()) Route.centredInset(maxWidth.value, likeWide + POSTER_SIDES)
-                                else 7f
+                // On a television ten, from the big poster's left edge to the same
+                // distance from the right, one size that fills it - and a row that
+                // never scrolls: sized by the room under the words, they changed size
+                // as the page settled and slid along under the remote.
+                val tenWide = if (onTv()) Route.likeTen(maxWidth.value, POSTER_SIDES) else null
+                val likeInset = if (onTv()) 0f else 7f
+                @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides
+                        if (onTv()) StartChoice.still
+                        else androidx.compose.foundation.gestures.LocalBringIntoViewSpec.current) {
                 LazyRow(modifier = Modifier.focusGroup()
                             .focusProperties {
                                 right = FocusRequester.Cancel
@@ -7248,10 +8078,11 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         .reversed()
                     itemsIndexed(shown, key = { _, m -> m.ratingKey },
                                     contentType = { _, m -> m.ratingKey }) { at, m ->
-                        Poster(m, width = likeWide,
+                        Poster(m, width = tenWide ?: likeWide,
                                modifier = if (at == 0) Modifier.focusRequester(firstAlike)
                                           else Modifier) { onOpen(m) }
                     }
+                }
                 }
                 }
                 }

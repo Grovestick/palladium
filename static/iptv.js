@@ -3,9 +3,11 @@
    which is harmless. It adds the My channels row, the row's page, and its settings. */
 (function () {
   if (typeof CATS === "undefined") return;
-  CATS.push({ id: "mylive", title: "My channels", by: "popularity",
-              path: (sec) => ["/library/live/own", {}],
-              open: () => viewMyChannels() });
+  // at the foot of Start, not on Home
+  window.PD_START_ROWS = (window.PD_START_ROWS || []).concat([
+    { id: "mylive", title: "My channels", by: "popularity",
+      path: (sec) => ["/library/live/own", {}],
+      open: () => viewMyChannels() }]);
 
   /* The owner's own playlist, whole: a group to narrow it to and words to look for,
      both asked of the server - a provider's list runs to thousands of channels. */

@@ -6,6 +6,7 @@
 <title>Palladium</title>
 <link rel="icon" href="/palladium.ico" sizes="any">
 <link rel="stylesheet" href="style.css">
+<script>if (/^#monitor/.test(location.hash)) document.documentElement.classList.add("monitorwait");</script>
 <!-- Kept on a home screen it opens without Safari around it, which on an iPhone is as
      close to an app as Apple allows anything to get without the App Store. -->
 <link rel="manifest" href="/manifest.webmanifest">
@@ -26,7 +27,8 @@
   <div id="srvlist" class="srvlist hidden"></div>
   <button class="back" id="back" title="Back">&#8592;</button>
   <nav>
-    <button data-view="home" data-label="Home" class="tab active">Home</button>
+    <button data-view="start" data-label="Start" class="tab">Start</button>
+    <button data-view="home" data-label="Home" class="tab">Home</button>
     <button data-view="movies" data-label="Films" class="tab">Films</button>
     <button data-view="shows" data-label="TV" class="tab">TV</button>
     <button data-view="watchlist" data-label="Watchlist" class="tab">Watchlist</button>

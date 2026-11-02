@@ -42,7 +42,7 @@ JUNK = re.compile(
 # a consuming pattern eats the separator and finds only the first
 YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 EPISODE_PATTERNS = [
-    re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})"),          # S01E02
+    re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,4})(?!\d)"),   # S01E02, S06E0013
     re.compile(r"(?:^|[^\d])(\d{1,2})x(\d{1,3})(?:[^\d]|$)"),   # 1x02
     re.compile(r"[Ss]eason[\s._-]*(\d{1,2}).*?[Ee]p?(?:isode)?[\s._-]*(\d{1,3})", re.I),
 ]
@@ -83,6 +83,26 @@ def alone_in_folder(path):
         return seen == 1
     except OSError:
         return False
+
+
+#: a folder of this name holds music videos: their own names, never matched to a film,
+#: kept off the film lists and shown in Start's Music videos row
+MUSIC_FOLDER = "music videos"
+
+
+def is_music_video(path):
+    parts = re.split(r"[\\/]+", os.path.dirname(str(path or "")))
+    return any(p.strip().lower() == MUSIC_FOLDER for p in parts)
+
+
+def music_cover(path):
+    """The cover.jpg yt-dlp writes beside a music video, or ""."""
+    folder = os.path.dirname(str(path or ""))
+    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+        here = os.path.join(folder, "cover" + ext)
+        if os.path.exists(here):
+            return here
+    return ""
 
 
 def parse_movie(path):
@@ -225,7 +245,8 @@ def file_episode(path, season=None):
     Only when it agrees about the season: "S02E05" beside a season 3 episode says
     nothing about season 3.
     """
-    m = re.search(r"s(\d{1,2})[\s._-]?e(\d{1,3})|(\d{1,2})x(\d{1,3})",
+    # four digits: "S06E0013" is episode 13, and cut at three it was linked to episode 1
+    m = re.search(r"s(\d{1,2})[\s._-]?e(\d{1,4})(?!\d)|(\d{1,2})x(\d{1,3})",
                   os.path.basename(path or ""), re.I)
     if not m:
         return None
@@ -234,6 +255,31 @@ def file_episode(path, season=None):
     if season is not None and said_season != int(season):
         return None
     return said_number
+
+
+def titles_plan(rows, named):
+    """[(episode id, number)] that puts each row on the number whose title its file names:
+    rows are (episode id, number now, title in the file's name or ""); named is {number:
+    title}. Only when it is a clean reordering - each title found once, no two rows on one
+    number, every number taken already one of these rows' own - otherwise nothing."""
+    want = {}
+    for eid, number, said in rows:
+        if not said:
+            continue
+        hits = [n for n, t in named.items() if t and same_title(said, t)]
+        if len(hits) != 1:
+            continue
+        if hits[0] != number:
+            want[eid] = hits[0]
+    if not want:
+        return []
+    numbers = list(want.values())
+    if len(set(numbers)) != len(numbers):
+        return []
+    mine = {number for eid, number, _ in rows if eid in want}
+    if set(numbers) != mine:
+        return []
+    return sorted(want.items(), key=lambda x: x[1])
 
 
 def title_in_name(path):
@@ -302,6 +348,29 @@ def parse_episode(path):
     return None
 
 
+#: "Dune.The.Miniseries.Part1.2000": a miniseries released as parts, each a film by its
+#: name - the word says it is one series, and the part which episode
+MINISERIES = re.compile(r"(?i)^(.+?)[ ._-]+(?:the[ ._-]+)?mini[ ._-]?series[ ._-]+"
+                        r"(?:part|pt|episode|ep)[ ._-]?(\d{1,2})(?!\d)")
+
+
+def parse_miniseries(path):
+    """(show, 1, part, year) for a part of a miniseries, by its file's name or its
+    folder's, or None. The year goes with it: a series is matched by its name and the
+    year decides which - "Dune" of 2000 is not the Dune series of 2024."""
+    base = os.path.splitext(os.path.basename(path))[0]
+    for name in (base, os.path.basename(os.path.dirname(path))):
+        m = MINISERIES.search(name or "")
+        if not m:
+            continue
+        show = clean_title(m.group(1))
+        if len(show) < 2:
+            continue
+        year = re.search(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", name[m.end():])
+        return show, 1, int(m.group(2)), int(year.group(1)) if year else None
+    return None
+
+
 # "Angels.of.Death.01.Blood.mkv" in a folder called "...S01..." - the number is in the
 # file and the season is in the folder, which is a common shape for a ripped season
 LOOSE_NUMBER = re.compile(r"(?i)(?:^|[ ._-])(?:e|ep|episode|part)?[ ._-]?(\d{1,3})"
@@ -338,6 +407,7 @@ EDITIONS = [
     (r"(?<![a-z])criterion", "Criterion"),
     (r"open[ ._-]matte", "Open Matte"),
     (r"(?<![a-z])remastered", "Remastered"),
+    (r"(?<![a-z])superfan", "Superfan"),
 ]
 #: any other named cut: "The Legacy Cut", "Ulysses Cut", "Final Cut"
 NAMED_CUT = re.compile(r"(?i)(?<![a-z])([a-z]{3,})[ ._-]cut(?![a-z])")
@@ -346,8 +416,18 @@ NOT_A_CUT = {"director", "directors", "dir", "ext", "extended", "theatrical", "t
 
 def edition_of(path):
     """Which cut a file is, from its name: "Director's Cut", "Ulysses Cut", "Extended ·
-    Remastered". Empty for a release that does not say."""
-    name = os.path.splitext(os.path.basename(path or ""))[0]
+    Remastered". A file whose own name says nothing is asked of its folder: a pack's
+    episodes are often named plainly, "S04E15.Some.Name.mp4", inside "S04 Superfan" -
+    two versions of one episode both read "1080p HEVC" (2026-11-01). Empty when neither
+    says."""
+    said = _edition_in(os.path.splitext(os.path.basename(path or ""))[0])
+    if not said and path:
+        said = _edition_in(os.path.basename(os.path.dirname(path)))
+    return said
+
+
+def _edition_in(name):
+    """The cut a name says it is, release group left out; "" when it says none."""
     # the release group at the end is who packed it, never which cut it is:
     # "...x264-TIMECUT", "...- JBENT)[TAoE]"
     name = re.sub(r"(?i)[ ._]*-[ ._]*[a-z0-9]+\)?(\[[^\]]*\])?(\s*\(\d\))?$", "", name)
@@ -465,6 +545,30 @@ CLASHES = []
 #: server's, not the library's, and a watchlist lives in it - so the library says what
 #: moved and the server carries it. Set at startup.
 CARRY = None
+
+
+def carry_rows(con, keys):
+    """What the library files under an episode's key - each viewer's place in it, its
+    subtitle checks, where its credits start - moved with the file onto the episode it
+    now is. keys: old episode key -> new. All read first and written after, so files
+    trading places do not overwrite each other."""
+    if not keys:
+        return
+    for table in ("progress", "subcheck", "ending", "forgot"):
+        try:
+            cols = [c[1] for c in con.execute("PRAGMA table_info(%s)" % table)]
+        except Exception:
+            continue
+        if "key" not in cols:
+            continue
+        marks = ",".join("?" * len(keys))
+        rows = [dict(zip(cols, r)) for r in con.execute(
+            "SELECT %s FROM %s WHERE key IN (%s)" % (",".join(cols), table, marks), list(keys))]
+        con.execute("DELETE FROM %s WHERE key IN (%s)" % (table, marks), list(keys))
+        for r in rows:
+            r["key"] = keys[r["key"]]
+            con.execute("INSERT OR REPLACE INTO %s (%s) VALUES (%s)" % (
+                table, ",".join(cols), ",".join("?" * len(cols))), [r[c] for c in cols])
 
 
 def move_key(moved, key):
@@ -596,28 +700,42 @@ def ffprobe_beside(ffmpeg):
     return shutil.which("ffprobe") or "ffprobe"
 
 
+#: places read through a file to tell a film from the empty shell of a download
+SAMPLES = 16
+
+
 def hollow_file(path, look=65536):
     """Whether that file is an empty space with a name on it.
 
     A download client asks for the whole size before it has any of it, and what it
     leaves if it never finishes is a file of the right name, the right size and the
     right date with nothing inside. Windows calls it sparse; reading it gives zeros.
-    Cheap to ask - the first block and one in the middle - and it is only asked of
-    files nothing has been able to read.
+    Cheap to ask - the first block, the middle and sixteen places through it - and it
+    is asked of a file before it is probed.
     """
     try:
         size = os.path.getsize(path)
         if size <= 0:
             return True
         with open(path, "rb") as f:
-            if any(f.read(look)):
-                return False
+            head = any(f.read(look))
             f.seek(size // 2)
-            if any(f.read(look)):
+            middle = any(f.read(look))
+            if not head and not middle:
+                return True
+            if size <= look * SAMPLES:
                 return False
+            # A header and little else: a download stopped after its first pieces has
+            # the film's start, so it reads as the film and plays a moment. Sixteen
+            # places through it, most of them empty, is a shell; a real film has none.
+            empty = 0
+            for n in range(1, SAMPLES + 1):
+                f.seek(size * n // (SAMPLES + 1))
+                if not any(f.read(look)):
+                    empty += 1
+            return empty * 4 >= SAMPLES * 3
     except OSError:
         return False                      # unreadable is a different complaint
-    return True
 
 
 # a file a download has not finished, left out until it has; set by the server
@@ -1240,7 +1358,8 @@ class Library:
                             st = os.stat(full)
                         except OSError:
                             continue
-                        if st.st_size < 50 * 1024 * 1024:     # samples, trailers, extras
+                        # samples, trailers, extras; a music video is often 25-50 MB
+                        if st.st_size < 50 * 1024 * 1024 and not is_music_video(full):
                             continue
                         yield full, st
 
@@ -1322,6 +1441,9 @@ class Library:
         # and the episodes of a programme that has just gone: left behind, one with a
         # place in it stood on Continue watching as a card with no programme's name
         con.execute("DELETE FROM episode WHERE item_id NOT IN (SELECT id FROM item)")
+        # a music video's cover is its backdrop too: the app's Start card draws the backdrop
+        con.execute("UPDATE item SET backdrop=poster WHERE poster LIKE 'file:%' "
+                    "AND COALESCE(backdrop, '') = ''")
         self.mend_links(con)
         con.commit()
         con.close()
@@ -1441,6 +1563,7 @@ class Library:
                    [(f, "show") for f in cfg.get("tv", [])] +
                    [(f, "mixed") for f in cfg.get("mixed", [])])
         took = 0
+        added = []
         con = self.db()
         try:
             for path in paths or []:
@@ -1452,6 +1575,7 @@ class Library:
                 if con.execute("SELECT 1 FROM file WHERE path=?", (path,)).fetchone():
                     continue
                 self._index_file(con, kind, path, os.stat(path))
+                added.append(path)
                 took += 1
             if took:
                 self.mend_links(con)
@@ -1463,10 +1587,20 @@ class Library:
                 self.keep_numbering()
             except Exception:
                 pass
+        # read for its length and codecs at once, scan running or not: played before
+        # that, a film had no length to seek in and its empty fields read "null"
+        if added:
+            try:
+                self.probe_pending(paths=added)
+            except Exception:
+                pass
         if took and not self.scan_state.get("running"):
             was = dict(self.scan_state)
             try:
-                self.probe_pending(limit=took + 5)
+                # and matched now, so it has its poster and its name the moment it is
+                # here: left to the scan, a film just downloaded stood as a bare file
+                if self.config().get("tmdb_key"):
+                    self.identify_pending(limit=took + 5)
             finally:
                 self.scan_state = was
         return took
@@ -1500,14 +1634,20 @@ class Library:
         # says which season and episode it is, and what it is called.
         hook = getattr(self, "told_by_pack", None)
         told = hook(path) if hook else None
-        parsed = (told[0], told[1], told[2]) if told else parse_episode(path)
-        if parsed is None:
+        music = is_music_video(path)
+        parsed = None if music else             (told[0], told[1], told[2]) if told else parse_episode(path)
+        show_year = None
+        if parsed is None and not music:
             parsed = episode_from_folders(path)       # equally unambiguous
-        if parsed is None and (kind == "show" or in_a_season_folder(path)):
+        if parsed is None and not music:
+            mini = parse_miniseries(path)
+            if mini:
+                parsed, show_year = mini[:3], mini[3]
+        if parsed is None and not music and (kind == "show" or in_a_season_folder(path)):
             parsed = parse_episode_loose(path)
         if parsed:
             show, season, number = parsed
-            item_id = self._upsert_item(con, "show", show, None)
+            item_id = self._upsert_item(con, "show", show, show_year)
             episode_id = episode_key(item_id, season, number)
             con.execute(
                 "INSERT OR IGNORE INTO episode (id, item_id, season, number) "
@@ -1530,12 +1670,21 @@ class Library:
         elif kind == "show":
             return                       # nothing in the name or the folders to go on
         else:
-            title, year = parse_movie(path)
+            # year 0 for a music video: with no year the title alone would join it to a film
+            title, year = ((os.path.splitext(os.path.basename(path))[0], 0) if music
+                           else parse_movie(path))
             if not title:
                 return
             had = con.execute("SELECT item_id FROM file WHERE path=?", (path,)).fetchone()
             item_id = self._upsert_item(con, "movie", title, year,
                                         stay=had["item_id"] if had else None)
+            if music:
+                # never looked up on the catalogue; its cover beside it is its poster
+                cover = music_cover(path)
+                art = "file:" + cover if cover else None
+                con.execute("UPDATE item SET identified=1, orig_lang=COALESCE(orig_lang, ''), "
+                            "poster=COALESCE(?, poster), backdrop=COALESCE(?, backdrop) "
+                            "WHERE id=?", (art, art, item_id))
             episode_id = None
         # re-parsing a filename must not discard what ffprobe already learned: that
         # costs minutes to rebuild and nothing about the file itself has changed
@@ -1653,13 +1802,18 @@ class Library:
         return mine
 
     # ---- media facts --------------------------------------------------------
-    def probe_pending(self, limit=100000):
-        """ffprobe whatever has not been probed: codecs decide how it can be played."""
+    def probe_pending(self, limit=100000, paths=None):
+        """ffprobe whatever has not been probed: codecs decide how it can be played.
+        With paths, those files only, and the scan's own count left alone."""
         from pd_gpu import FFMPEG
         ffprobe = ffprobe_beside(FFMPEG)
         con = self.db()
-        rows = con.execute("SELECT id, path FROM file WHERE probed=0 LIMIT ?", (limit,)).fetchall()
-        self.scan_state.update(phase="probing", total=len(rows), done=0)
+        if paths is not None:
+            rows = [r for p in paths for r in con.execute(
+                "SELECT id, path FROM file WHERE probed=0 AND path=?", (p,)).fetchall()]
+        else:
+            rows = con.execute("SELECT id, path FROM file WHERE probed=0 LIMIT ?", (limit,)).fetchall()
+            self.scan_state.update(phase="probing", total=len(rows), done=0)
         for row in rows:
             if hollow_file(row["path"]):
                 # nothing in it to probe. Left as unprobed so that finishing the
@@ -1691,12 +1845,14 @@ class Library:
                     fresh = False
                 if not fresh:
                     con.execute("UPDATE file SET probed=1 WHERE id=?", (row["id"],))
-            self.scan_state["done"] += 1
-            if self.scan_state["done"] % 25 == 0:
-                con.commit()
+            if paths is None:
+                self.scan_state["done"] += 1
+                if self.scan_state["done"] % 25 == 0:
+                    con.commit()
         con.commit()
         con.close()
-        self.scan_state.update(phase="idle")
+        if paths is None:
+            self.scan_state.update(phase="idle")
 
     @staticmethod
     def probe(ffprobe, path):
@@ -2197,7 +2353,7 @@ class Library:
         done = 0
         for name, mode in (said.items() if isinstance(said, dict) else []):
             key, _, season = str(name).rpartition("-s")
-            if mode not in ("doubles", "files") or not key or not season.isdigit():
+            if mode not in ("doubles", "files", "titles", "official") or not key or not season.isdigit():
                 continue
             con = self.db()
             try:
@@ -2286,6 +2442,10 @@ class Library:
                 (str(item_id), int(season))).fetchall()
             if mode == "doubles":
                 return self._renumber_doubles(con, str(item_id), int(season))
+            if mode == "official":
+                return self._renumber_official(con, str(item_id), int(season))
+            if mode == "titles":
+                return self._renumber_titles(con, str(item_id), int(season))
             if mode == "auto":
                 said = con.execute("SELECT tmdb_id FROM item WHERE id=?",
                                    (str(item_id),)).fetchone()
@@ -2336,6 +2496,100 @@ class Library:
         finally:
             con.close()
 
+    def _renumber_official(self, con, item_id, season):
+        """Each file on its official broadcast number - the one in its name, the one the
+        subtitles and the packs use - and each number named by the catalogue episode it
+        is: where the catalogue counts a double episode as one, doubles_map() says which.
+        Niagara is E04 and E05, Mafia E06 (owner, 2026-11-01: one order for every series,
+        the one that fits the subtitles). Rows left with no file under a title now on a
+        file go. Everything filed under an episode's key follows its file (carry_rows).
+        How many files moved."""
+        said = con.execute("SELECT tmdb_id FROM item WHERE id=?", (item_id,)).fetchone()
+        eps = []
+        if said and said["tmdb_id"]:
+            try:
+                eps = self.tmdb("/tv/%s/season/%s" % (said["tmdb_id"], season)).get("episodes") or []
+            except Exception:
+                eps = []
+        to = doubles_map(eps) or {}
+        named = {int(e["episode_number"]): e for e in eps if e.get("episode_number")}
+        rows = con.execute("""SELECT f.id fid, f.path, e.id eid, e.number FROM file f
+                              JOIN episode e ON e.id=f.episode_id
+                              WHERE e.item_id=? AND e.season=?""", (item_id, season)).fetchall()
+        by_number = {r["number"]: r["id"] for r in con.execute(
+            "SELECT id, number FROM episode WHERE item_id=? AND season=?", (item_id, season))}
+        moved, keys, used = 0, {}, set()
+        for r in rows:
+            n = file_episode(r["path"], season)
+            if not n:
+                continue
+            used.add(n)
+            if n not in by_number:
+                eid = episode_key(item_id, season, n)
+                con.execute("INSERT OR IGNORE INTO episode (id, item_id, season, number) VALUES (?,?,?,?)",
+                            (eid, item_id, season, n))
+                by_number[n] = con.execute("SELECT id FROM episode WHERE item_id=? AND season=? AND number=?",
+                                           (item_id, season, n)).fetchone()[0]
+            dest = by_number[n]
+            if dest != r["eid"]:
+                con.execute("UPDATE file SET episode_id=? WHERE id=?", (dest, r["fid"]))
+                keys.setdefault(r["eid"], dest)
+                moved += 1
+        # each official number named by the catalogue episode it is
+        for n in used:
+            ep = named.get(to.get(n, n))
+            if ep:
+                con.execute("UPDATE episode SET title=?, overview=?, aired=?, still=? WHERE id=?",
+                            (ep.get("name"), ep.get("overview"), ep.get("air_date"),
+                             ep.get("still_path"), by_number[n]))
+        # rows with no file whose title a filed row now carries: the catalogue's own numbers
+        held = {t for (t,) in con.execute(
+            "SELECT DISTINCT e.title FROM episode e JOIN file f ON f.episode_id=e.id "
+            "WHERE e.item_id=? AND e.season=?", (item_id, season)) if t}
+        for eid, title in con.execute(
+                "SELECT e.id, e.title FROM episode e WHERE e.item_id=? AND e.season=? AND NOT EXISTS "
+                "(SELECT 1 FROM file f WHERE f.episode_id=e.id)", (item_id, season)).fetchall():
+            if title in held and eid not in keys.values():
+                con.execute("DELETE FROM episode WHERE id=?", (eid,))
+        carry_rows(con, keys)
+        self.last_moves = keys
+        con.commit()
+        return moved
+
+    def _renumber_titles(self, con, item_id, season):
+        """Each episode row onto the number of the episode its file names: a release in
+        another order (a DVD's, say) whose files carry the episodes' own titles. The rows
+        move, not the files - where somebody got to belongs to the file. A file whose name
+        has no title, or one no episode has, stays where it is. How many moved."""
+        said = con.execute("SELECT tmdb_id FROM item WHERE id=?", (item_id,)).fetchone()
+        named = {}
+        if said and said["tmdb_id"]:
+            try:
+                data = self.tmdb("/tv/%s/season/%s" % (said["tmdb_id"], season))
+                named = {int(ep["episode_number"]): (ep.get("name") or "", ep)
+                         for ep in data.get("episodes") or [] if ep.get("episode_number")}
+            except Exception:
+                named = {}
+        if not named:
+            return 0
+        rows = con.execute("""SELECT f.path, e.id eid, e.number FROM file f
+                              JOIN episode e ON e.id=f.episode_id
+                              WHERE e.item_id=? AND e.season=?""", (item_id, season)).fetchall()
+        plan = titles_plan([(r["eid"], r["number"], title_in_name(r["path"])) for r in rows],
+                           {n: t for n, (t, _) in named.items()})
+        if not plan:
+            return 0
+        # through numbers nothing uses, so two rows can trade places
+        for eid, _ in plan:
+            con.execute("UPDATE episode SET number=-number-1000 WHERE id=?", (eid,))
+        for eid, number in plan:
+            title, ep = named[number]
+            con.execute("UPDATE episode SET number=?, title=?, overview=?, aired=?, still=? "
+                        "WHERE id=?", (number, title, ep.get("overview"), ep.get("air_date"),
+                                       ep.get("still_path"), eid))
+        con.commit()
+        return len(plan)
+
     def _renumber_doubles(self, con, item_id, season):
         """Each file onto the catalogue's episode it is, where the release counts double
         episodes as two: by doubles_map() over the catalogue's own runtimes. Files move
@@ -2357,14 +2611,26 @@ class Library:
                               WHERE e.item_id=? AND e.season=?""", (item_id, season)).fetchall()
         by_number = {r["number"]: r["id"] for r in con.execute(
             "SELECT id, number FROM episode WHERE item_id=? AND season=?", (item_id, season))}
+        # an episode of the catalogue's with no row yet - none of the files was numbered
+        # as it - is made, so the file that is it has somewhere to go. Without it that
+        # file stayed put and the next one landed on top of it (2026-11-01)
+        for target in sorted(set(to.values()) - set(by_number)):
+            eid = episode_key(item_id, season, target)
+            con.execute("INSERT OR IGNORE INTO episode (id, item_id, season, number) VALUES (?,?,?,?)",
+                        (eid, item_id, season, target))
+            by_number[target] = eid
         moved = 0
+        keys = {}
         for r in rows:
             n = file_episode(r["path"], season)
             target = to.get(n) if n else None
             dest = by_number.get(target) if target else None
             if dest and dest != r["eid"]:
                 con.execute("UPDATE file SET episode_id=? WHERE id=?", (dest, r["fid"]))
+                keys[r["eid"]] = dest
                 moved += 1
+        carry_rows(con, keys)
+        self.last_moves = keys
         # the catalogue's titles on its own numbers, and the numbers it has not gone
         known = {int(e["episode_number"]) for e in eps if e.get("episode_number")}
         for ep in eps:
@@ -2554,6 +2820,9 @@ class Library:
         """Fetch a TMDB image once and keep it; returns a local file path."""
         if not tmdb_path:
             return None
+        if tmdb_path.startswith("file:"):
+            # a picture on disk beside the video: a music video's cover
+            return tmdb_path[5:] if os.path.exists(tmdb_path[5:]) else None
         name = size + "_" + tmdb_path.strip("/").replace("/", "_")
         local = os.path.join(self.root, "cache", name)
         # Anything this small is not a picture of anything. One poster arrived at two

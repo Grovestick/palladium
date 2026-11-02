@@ -70,7 +70,8 @@ object Updates {
     @Volatile var skip: Int = 0                  // loaded once, so check() stays cheap
 
     suspend fun check(ignoreSkip: Boolean = false, ctx: Context? = null): Available? =
-        withContext(Dispatchers.IO) {
+        if (BuildConfig.PLAY) null                 // Play updates the Play build
+        else withContext(Dispatchers.IO) {
         // which servers answer, and where: asked at the very start, this ran before the
         // check had said, and away from home it knew only the house addresses
         Reach.awaitFirst(4000)

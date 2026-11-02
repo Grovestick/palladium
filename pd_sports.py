@@ -12,8 +12,8 @@ import hashlib
 import re
 import time
 
-#: how far back the row reaches
-DAYS = 30
+#: how far back the row reaches: a year of each sport, by when the event was run
+DAYS = 365
 #: how many events it holds
 MOST = 30
 #: and how many of them one sport may take
@@ -44,6 +44,35 @@ _OTHER = [
 ]
 SPORT_NAMES = {"f1": "Formula 1", "nfl": "NFL", "cycling": "Cycling", "dakar": "Dakar",
                "golf": "Golf"}
+
+
+def search_words(now=None):
+    """What the tracker is asked about, a phrase at a time in turn, so a year of these
+    sports is in the index and not only what the feeds carried this month."""
+    year = int(time.strftime("%Y", time.localtime(now or time.time())))
+    out = []
+    for y in (year, year - 1):
+        # the races by name: asked for the year alone, the forty answers were mostly
+        # practice and qualifying, and ten races of two seasons were found
+        out += ["Formula 1 %d Race" % y, "Formula1 %d Race" % y, "NFL %d" % y,
+                "Tour de France %d" % y, "PGA Tour %d" % y, "Dakar %d" % y]
+    return tuple(out)
+
+
+def run_on(e, now=None):
+    """When an event was run, as a time: its day where its name gives one, its year's
+    end where only a year is known, and when it was posted otherwise."""
+    if e.get("when"):
+        try:
+            return time.mktime(time.strptime(str(e["when"]), "%Y-%m-%d"))
+        except ValueError:
+            pass
+    if e.get("year"):
+        # a year alone: counted to its last day, so a race of last season stands a
+        # year from when the season ended rather than from New Year
+        return min(time.time() if now is None else now,
+                   time.mktime((int(e["year"]), 12, 31, 0, 0, 0, 0, 0, -1)))
+    return float(e.get("at") or 0)
 
 
 def _words(text):
@@ -119,7 +148,7 @@ def sport_cards(rows, now=None):
     """The Sports row: one card a sport that has anything, the sport with the newest
     posting first. Pressed, the sport's own events."""
     found = {}
-    for e in events(rows, now=now, most=10 ** 6):
+    for e in events(rows, now=now, most=10 ** 6, capped=False):
         found.setdefault(e["sport"], []).append(e)
     out = []
     for sport, these in found.items():
@@ -134,16 +163,20 @@ def sport_cards(rows, now=None):
     return sorted(out, key=lambda c: -c["addedAt"])
 
 
-def sport_events(rows, sport, now=None, most=40):
-    """One sport's events, newest event first, each with its place in that order."""
-    these = [e for e in events(rows, now=now, most=10 ** 6) if e["sport"] == sport]
+def sport_events(rows, sport, now=None, most=400):
+    """One sport's events, newest event first, each with its place in that order - the
+    year of them, not the few a mixed row would carry."""
+    these = [e for e in events(rows, now=now, most=10 ** 6, capped=False)
+             if e["sport"] == sport]
     these = sorted(these, key=newest_first)[:most]
     return these
 
 
-def events(rows, now=None, days=DAYS, most=MOST):
+def events(rows, now=None, days=DAYS, most=MOST, capped=True):
     """The newest events the index holds releases of, newest first, each with its
-    releases: [{key, sport, title, year, at, releases}]."""
+    releases: [{key, sport, title, year, at, releases}]. Within `days` of when the event
+    was run - its day or its year - not of when the index happened to see it: a search
+    stamps everything it finds with the day it was asked."""
     now = time.time() if now is None else now
     found = {}
     for row in rows or []:
@@ -151,7 +184,7 @@ def events(rows, now=None, days=DAYS, most=MOST):
         if not said:
             continue
         at = float(row.get("at") or 0)
-        if days and at and now - at > days * 86400:
+        if days and now - run_on(dict(said, at=at), now) > days * 86400:
             continue
         one = found.setdefault(said["event"], dict(said, key=said["event"], at=0.0,
                                                    releases=[]))
@@ -163,7 +196,7 @@ def events(rows, now=None, days=DAYS, most=MOST):
     # newest first, and no sport filling the row: a Sunday of football is sixteen games
     taken, out = {}, []
     for e in sorted(found.values(), key=newest_first):
-        if taken.get(e["sport"], 0) >= PER_SPORT.get(e["sport"], PER_SPORT_ELSE):
+        if capped and taken.get(e["sport"], 0) >= PER_SPORT.get(e["sport"], PER_SPORT_ELSE):
             continue
         taken[e["sport"]] = taken.get(e["sport"], 0) + 1
         out.append(e)

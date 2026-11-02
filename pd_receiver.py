@@ -1,4 +1,7 @@
-"""The amplifier in the house: a Yamaha receiver, reached over its own HTTP interface.
+"""The amplifier in the house: a Yamaha receiver, reached over its own HTTP interface -
+or a Denon or Marantz (telnet), an Onkyo, Integra or Pioneer (eISCP) or a Sony (its Audio
+Control API). The others are written from their makers' published protocols and have not
+been tried on a receiver here.
 
 Sound passed through to the receiver never reaches the player's own volume leveling, so
 a quiet Dolby track stayed quiet. While a film's sound is passed through, the receiver
@@ -10,6 +13,8 @@ presses of its volume button (each press is 0.5).
 """
 import json
 import os
+import socket
+import struct
 import threading
 import time
 import urllib.request
@@ -19,7 +24,15 @@ DEFAULTS = {"on": False, "ip": "192.168.0.140", "steps": 5,
             # "steps": by the steps set; "loudness": by what the film measured
             "mode": "steps",
             # the one screen whose passthrough moves it: the television in front of it
-            "device": "192.168.0.157"}
+            "device": "192.168.0.157",
+            # on the copy server: "main" takes the main server's settings, "own" keeps
+            # what is set here, "off" leaves the receiver alone
+            "from": "main",
+            # whose receiver: yamaha, denon (and Marantz), onkyo (Integra, Pioneer), sony
+            "brand": "yamaha"}
+#: the makers spoken to, as Settings names them
+BRANDS = (("yamaha", "Yamaha"), ("denon", "Denon / Marantz"), ("onkyo", "Onkyo / Pioneer"),
+          ("sony", "Sony"))
 #: the most it will be raised to, whatever the steps say: a mistake must not deafen
 CEILING = 130
 #: by loudness, the most it moves either way, in dB
@@ -92,7 +105,20 @@ def settings(stored):
     said["mode"] = "loudness" if said.get("mode") == "loudness" else "steps"
     said["ip"] = str(said["ip"] or "").strip()
     said["device"] = str(said["device"] or "").strip()
+    said["from"] = said.get("from") if said.get("from") in ("main", "own", "off") else "main"
+    said["brand"] = said.get("brand") if said.get("brand") in dict(BRANDS) else "yamaha"
+    if said["from"] == "off":
+        said["on"] = False
     return said
+
+
+def for_copy(main, here):
+    """The copy server's receiver settings: the main server's while it takes those, its
+    own otherwise - turned off with "off". `main` and `here` as stored."""
+    mine = settings({"receiver": here or {}})
+    if mine["from"] == "main" and isinstance(main, dict) and main:
+        mine = settings({"receiver": dict(main, **{"from": "main"})})
+    return mine
 
 
 def status(stored):
@@ -100,6 +126,15 @@ def status(stored):
     one = settings(stored)
     out = {"settings": one, "connected": False, "raised": dict(RAISED)}
     if not one["ip"]:
+        return out
+    if one.get("brand", "yamaha") != "yamaha":
+        try:
+            power, vol, most = _volume(one)
+        except Exception as e:
+            out["why"] = str(e)[:120]
+            return out
+        out.update(connected=True, model=dict(BRANDS).get(one["brand"]), power=power,
+                   volume=vol, shown=vol / 2.0, maxVolume=most)
         return out
     try:
         info = _ask(one["ip"], "system/getDeviceInfo")
@@ -114,12 +149,106 @@ def status(stored):
     return out
 
 
-def _volume(ip):
+#: per maker, the most it is ever raised to, in its half-decibel steps: about +1 dB on
+#: each one's own scale, so a mistake does not deafen
+CEILINGS = {"yamaha": CEILING, "denon": 162, "onkyo": 120, "sony": 60}
+
+
+def denon_volume(said):
+    """Denon/Marantz's answer to MV? in half-decibel steps: "MV50" 100, "MV505" 101; None
+    for anything else (its MVMAX line among them)."""
+    for line in str(said or "").replace(chr(13), chr(10)).split(chr(10)):
+        line = line.strip()
+        if line.startswith("MV") and line[2:].isdigit():
+            digits = line[2:]
+            return int(digits[:2]) * 2 + (1 if len(digits) > 2 and digits[2] == "5" else 0)
+    return None
+
+
+def denon_set(steps):
+    """The command that sets a Denon/Marantz to these half-decibel steps: "MV50", "MV505"."""
+    steps = max(0, int(steps))
+    return "MV%02d%s" % (steps // 2, "5" if steps % 2 else "")
+
+
+def iscp_packet(command):
+    """An eISCP message for Onkyo, Integra and Pioneer: "MVLQSTN" asks the volume."""
+    data = ("!1" + command + chr(13)).encode("ascii")
+    return b"ISCP" + struct.pack(">IIB3x", 16, len(data), 1) + data
+
+
+def iscp_volume(said):
+    """An eISCP answer's volume, in half-decibel steps: "!1MVL2A" is 42 steps of the
+    receiver's own, 84 here. None when it is not a volume."""
+    text = said.decode("ascii", "replace") if isinstance(said, bytes) else str(said or "")
+    at = text.find("!1MVL")
+    if at < 0:
+        return None
+    try:
+        return int(text[at + 5:at + 7], 16) * 2
+    except ValueError:
+        return None
+
+
+def sony_volume(said):
+    """Sony's getVolumeInformation answer: (volume, most), in half-decibel steps."""
+    one = ((said or {}).get("result") or [[{}]])[0][0]
+    return int(one.get("volume") or 0) * 2, int(one.get("maxVolume") or 50) * 2
+
+
+def _telnet(ip, command, port=23, timeout=4, wait=0.6):
+    """A line to a receiver's text port, and what it said back in the moment after."""
+    with socket.create_connection((ip, port), timeout=timeout) as s:
+        s.sendall(command if isinstance(command, bytes) else (command + chr(13)).encode("ascii"))
+        s.settimeout(wait)
+        got = b""
+        try:
+            while len(got) < 4096:
+                part = s.recv(1024)
+                if not part:
+                    break
+                got += part
+        except socket.timeout:
+            pass
+    return got
+
+
+def _sony(ip, service, method, params, timeout=4):
+    body = json.dumps({"method": method, "id": 1, "params": params, "version": "1.1"}).encode()
+    req = urllib.request.Request("http://%s:10000/sony/%s" % (ip, service), data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def _volume(one):
+    """(power "on"/"standby", volume, the most) of this receiver, in half-decibel steps."""
+    ip, brand = one["ip"], one.get("brand") or "yamaha"
+    if brand == "denon":
+        power = "on" if b"PWON" in _telnet(ip, "PW?") else "standby"
+        return power, int(denon_volume(_telnet(ip, "MV?").decode("ascii", "replace")) or 0), 196
+    if brand == "onkyo":
+        power = "on" if b"PWR01" in _telnet(ip, iscp_packet("PWRQSTN"), 60128) else "standby"
+        return power, int(iscp_volume(_telnet(ip, iscp_packet("MVLQSTN"), 60128)) or 0), 200
+    if brand == "sony":
+        state = ((_sony(ip, "system", "getPowerStatus", []).get("result") or [{}])[0] or {}).get("status")
+        vol, most = sony_volume(_sony(ip, "audio", "getVolumeInformation", [{}]))
+        return ("on" if state == "active" else "standby"), vol, most
     now = _ask(ip, "main/getStatus")
     return now.get("power"), int(now.get("volume") or 0), int(now.get("max_volume") or 161)
 
 
-def _set(ip, volume):
+def _set(one, volume):
+    ip, brand = one["ip"], one.get("brand") or "yamaha"
+    if brand == "denon":
+        _telnet(ip, denon_set(volume), wait=0.2)
+        return True
+    if brand == "onkyo":
+        _telnet(ip, iscp_packet("MVL%02X" % max(0, int(volume) // 2)), 60128, wait=0.2)
+        return True
+    if brand == "sony":
+        got = _sony(ip, "audio", "setAudioVolume", [{"volume": str(int(volume) // 2), "output": ""}])
+        return "error" not in got
     return _ask(ip, "main/setVolume?volume=%d" % int(volume)).get("response_code") == 0
 
 
@@ -146,9 +275,40 @@ def reading_for(known, codec):
     return known.get("lufs")
 
 
+#: readings of one file that failed at one size before it is left alone; it is tried
+#: again once its size changes
+GIVE_UP_AFTER = 3
+
+
+def gave_up(known, size=None):
+    """Whether a file's readings failed GIVE_UP_AFTER times at the size it has now."""
+    known = known or {}
+    return (int(known.get("failed") or 0) >= GIVE_UP_AFTER
+            and (size is None or int(known.get("failedSize") or 0) == int(size or 0)))
+
+
+def forget_failures(known):
+    """The failed readings dropped from `known`, so those files are measured again; how
+    many. A file with a reading keeps it."""
+    n = 0
+    for k in list(known):
+        one = known[k]
+        if isinstance(one, dict) and one.get("failed"):
+            n += 1
+            rest = {f: v for f, v in one.items() if f not in ("failed", "failedSize", "failedWhen")}
+            if rest:
+                known[k] = rest
+            else:
+                del known[k]
+    return n
+
+
 def wants_measuring(known, codec, size=None):
     """Whether a file still has a reading to make: none yet, one from a single window,
-    one of the file at another size, or - a Dolby track - none with compression off."""
+    one of the file at another size, or - a Dolby track - none with compression off.
+    Not one whose readings failed too often at this size."""
+    if gave_up(known, size):
+        return False
     if not known or known.get("how") != "spread" or known.get("lufs") is None:
         return True
     if size is not None and int(known.get("size") or 0) != int(size or 0):
@@ -166,6 +326,8 @@ def measure_order(rows, known):
     lack, window, none = [], [], []
     for ident, path, size, codec in rows:
         one = known.get(str(ident))
+        if gave_up(one, size):
+            continue
         if one is None:
             none.append((ident, path, size))
         elif one.get("how") != "spread":
@@ -265,7 +427,7 @@ def raise_for(stored, who, key, db=None):
         screen = who.rsplit("|", 1)[0]
         before = [k for k in RAISED if k.rsplit("|", 1)[0] == screen]
         try:
-            power, vol, most = _volume(one["ip"])
+            power, vol, most = _volume(one)
         except Exception as e:
             return {"ok": False, "why": "the receiver did not answer: " + str(e)[:80]}
         if power != "on":
@@ -279,8 +441,8 @@ def raise_for(stored, who, key, db=None):
         base = vol - sum(int(RAISED[k].get("by") or 0) for k in before)
         for k in before:
             RAISED.pop(k, None)
-        to = max(0, min(base + units, most, CEILING))
-        if to != vol and not _set(one["ip"], to):
+        to = max(0, min(base + units, most, CEILINGS.get(one.get("brand") or "yamaha", CEILING)))
+        if to != vol and not _set(one, to):
             _keep()
             return {"ok": False, "why": "the receiver refused"}
         if to != base:
@@ -327,7 +489,7 @@ def _lower_now(stored, who, tries=RETRIES):
             _keep()
             return {"ok": True, "nothing": True}
         try:
-            power, vol, _most = _volume(one["ip"])
+            power, vol, _most = _volume(one)
             if power != "on":
                 RAISED.pop(who, None)
                 _keep()
@@ -338,7 +500,7 @@ def _lower_now(stored, who, tries=RETRIES):
                 was["down"] = max(0, min(vol - int(was["by"]), CEILING))
                 _keep()
             to = int(was["down"])
-            if vol <= to or _set(one["ip"], to):
+            if vol <= to or _set(one, to):
                 RAISED.pop(who, None)
                 _keep()
                 return {"ok": True, "from": vol, "to": min(vol, to)}

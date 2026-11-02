@@ -12,7 +12,9 @@ Key space (the client only ever passes these back to us):
     season   "123-s2"       item id and season number
     episode  "e456"         episode.id
 """
+import pd_log
 import json
+import sqlite3
 import os
 import re
 from pd_library import edition_of, is_episode, is_title
@@ -62,8 +64,27 @@ def resolution_label(height, width):
             else ("%dp" % n if n else ""))
 
 
-#: not a title of its own: every list of titles leaves the extras out
-NOT_EXTRA = "id NOT IN (SELECT item_id FROM extra WHERE parent <> '')"
+#: an item filed from a "Music videos" folder (pd_library.MUSIC_FOLDER)
+MUSIC_VIDEO = ("id IN (SELECT item_id FROM file WHERE item_id IS NOT NULL AND "
+               "(path LIKE '%\\Music videos\\%' OR path LIKE '%/Music videos/%'))")
+
+
+def music_order(con, who, seed=""):
+    """The music videos in their row's order: this viewer's last played first, then the
+    never played, shuffled by the day and the reroll."""
+    import random
+    played = {str(r["key"]): r["at"] for r in con.execute(
+        "SELECT key, MAX(updated) at FROM progress WHERE who=? GROUP BY key", (who,))}
+    keys = [str(r["id"]) for r in con.execute(
+        "SELECT id FROM item WHERE type='movie' AND " + MUSIC_VIDEO + " ORDER BY id")]
+    fresh = [k for k in keys if k not in played]
+    random.Random("%s|music|%s" % (time.strftime("%Y-%m-%d"), seed)).shuffle(fresh)
+    return sorted((k for k in keys if k in played), key=lambda k: -float(played[k] or 0)) + fresh
+
+
+#: not a title of its own: every list of titles leaves the extras and music videos out
+NOT_EXTRA = ("id NOT IN (SELECT item_id FROM extra WHERE parent <> '') AND NOT "
+             + MUSIC_VIDEO)
 import threading
 import time
 
@@ -488,6 +509,17 @@ def closest_first(hubs, typed, want_year=0):
 FEW_FILMS = 3
 
 
+def films_shown(said, defaults):
+    """Which kinds of film a viewer has the shelf stand, from what they saved. Upcoming
+    was once shown only where Request was: unsaved, it follows their Request still."""
+    if not isinstance(said, dict):
+        said = {}
+    out = {k: bool(said.get(k, v)) for k, v in defaults.items()}
+    if "upcoming" not in said:
+        out["upcoming"] = out["request"]
+    return out
+
+
 def viewer_settings(who):
     """The part of settings.json belonging to one viewer - the owner keeps the top."""
     stored = _settings()
@@ -588,7 +620,22 @@ def cut_for(video, name):
     if ours == theirs:
         return True
     longer, shorter = (theirs, ours) if len(theirs) > len(ours) else (ours, theirs)
-    return longer.startswith(shorter) and len(longer) - len(shorter) <= 6
+    if longer.startswith(shorter) and len(longer) - len(shorter) <= 6:
+        return True
+    # "S09E01.HDTV.x264-EVOLVE" beside "Show.S09E01.720p.HDTV.x264-EVOLVE": every word
+    # of the subtitle's release in the video's name, the same group at the end, and at
+    # least two words that are not numbering. The WEB-DL and DVDRip ones beside the same
+    # episode had opened first and ran up to a minute out.
+    words = lambda t: [w for w in re.split(r"[^a-z0-9]+", re.sub(
+        r"\.(srt|vtt|ass|mkv|mp4|avi|m4v|ts)$", "", (t or "").lower())) if w]
+    vid = words(os.path.basename(video or ""))
+    sub = words(name)
+    if sub and sub[0] in ("english", "swedish", "danish", "norwegian", "finnish",
+                          "german", "french", "spanish"):
+        sub = sub[1:]
+    named = [w for w in sub if not re.fullmatch(r"s\d+e\d+|\d+", w)]
+    return bool(vid and sub and set(sub) <= set(vid) and sub[-1] == vid[-1]
+                and len(named) >= 2)
 
 
 _ENDS = {}
@@ -713,8 +760,10 @@ def best_first(rows):
     # Size first. Height put a trailer beside the film it came with at the top of the
     # list - a 1080p two-minute extra outranks a 720p feature on picture, and it is
     # the cache that got played. Nothing in a film folder is bigger than the film.
-    ordered = sorted(rows, key=lambda r: ((r["size"] or 0), (r["height"] or 0),
-                                          (r["bitrate"] or 0)),
+    # An extended cut before any other copy of the same title: the standard where one is
+    # held (owner, 2026-11-01). A copy somebody chose is still the one played.
+    ordered = sorted(rows, key=lambda r: (is_extended(r["path"]), (r["size"] or 0),
+                                          (r["height"] or 0), (r["bitrate"] or 0)),
                      reverse=True)
     out, seen = [], set()
     for r in ordered:
@@ -729,6 +778,17 @@ def best_first(rows):
     longest = max((float(r["duration"] or 0) for r in out), default=0.0)
     return ([r for r in out if not part_only(r["duration"], longest)] +
             [r for r in out if part_only(r["duration"], longest)])
+
+
+#: the cuts that are the standard over a plain copy of the same title
+EXTENDED = ("Extended", "Superfan")
+
+
+def is_extended(path):
+    """Whether a copy is an extended cut, by its name or its folder's."""
+    from pd_library import edition_of
+    said = edition_of(path or "")
+    return any(w in said for w in EXTENDED)
 
 
 #: a version this much shorter than the longest of a title is part of it, not all of it
@@ -1065,7 +1125,8 @@ def make_frame(path, kept, sec, want, idle=False):
 def stills_order(progress, files, done, now, recent_days=7, most=40):
     """The files the stills worker takes, in order: what is being watched (newest first)
     and the next episode after one watched, in the last fortnight, then files added in the
-    last `recent_days`, newest first; `most` of them, not every film anybody started. `progress` rows {key, position, duration, updated, marked}; `files`
+    last `recent_days`, newest first; `most` of them, not every film anybody started -
+    every one with most None, for counting. `progress` rows {key, position, duration, updated, marked}; `files`
     rows {id, item_id, episode_id, ctime, duration, next_of}; `done` the file ids
     finished. A file without a length is passed over."""
     by_key = {}
@@ -1098,6 +1159,24 @@ def stills_order(progress, files, done, now, recent_days=7, most=40):
         if (f.get("ctime") or 0) >= now - recent_days * 86400:
             take(f)
     return out[:most]
+
+
+def mark_unshuffled(cards, off, extra=None):
+    """A collection's cards marked for what its Play shuffle leaves out: notShuffled on one
+    it leaves whole, shuffleOut - how many - on a season it leaves part of."""
+    for card in cards:
+        if not card:
+            continue
+        holds = [str(k) for k in (card.get("holds") or (extra or {}).get(id(card)) or [])]
+        if holds:
+            n = sum(1 for k in holds if k in off)
+            if n == len(holds):
+                card["notShuffled"] = True
+            elif n:
+                card["shuffleOut"] = n
+        elif str(card.get("ratingKey") or "") in off:
+            card["notShuffled"] = True
+    return cards
 
 
 class LocalAPI:
@@ -1322,6 +1401,14 @@ class LocalAPI:
         return line
 
     @staticmethod
+    def missing_now(air_date, on_tracker, today=None):
+        """Out already and nowhere to get it from: the card says Missing, not Upcoming.
+        No date is not out."""
+        today = today or time.strftime("%Y-%m-%d")
+        day = str(air_date or "")[:10]
+        return bool(day) and day < today and not on_tracker
+
+    @staticmethod
     def watched_through(position, duration, key=None):
         """Whether a place is far enough in to call the thing finished."""
         return (bool(duration)
@@ -1485,6 +1572,7 @@ class LocalAPI:
             out.append({
                 "ratingKey": "upnext-%s-s%02de%02d" % (item["id"], season, number),
                 "type": "episode", "upcoming": True, "airs": word,
+                "missing": self.missing_now(one.get("air_date"), many),
                 # its air date is today: the card wears TODAY rather than Upcoming
                 "airsToday": str(one.get("air_date") or "") == time.strftime("%Y-%m-%d"),
                 "fetchable": many > 0,
@@ -1826,9 +1914,13 @@ class LocalAPI:
             import pd_boxsets
             # every film shown: one not asked about stood as Request, and opening it -
             # which asks - said Download
-            asking = (pd_streaming.ask_tracker_about(named_rows, self.lib, mine=True)
+            asking = (pd_streaming.ask_tracker_about(
+                [r for r in named_rows if not pd_streaming.not_out(r)], self.lib, mine=True)
                       or pd_boxsets.pending())
             named = [pd_streaming.item(r) for r in named_rows]
+            # a film not out yet only for a viewer who shows those
+            if not self.films_show().get("upcoming"):
+                named = [c for c in named if not c.get("upcoming")]
             if films_now:
                 films_now["Metadata"].extend(named)
             else:
@@ -1858,6 +1950,46 @@ class LocalAPI:
         else:
             hubs.insert(0, {"type": "movie", "title": "Films", "Metadata": cards})
         return asking
+
+    def _held_series(self, con, key):
+        """The library's series for a key of the same programme on offer. Both pages existed
+        for one series, the offer's without the episodes held (2026-11-01)."""
+        if not str(key).startswith("os"):
+            return None
+        import pd_torrents
+        for row in con.execute("SELECT id, title FROM item WHERE type='show'"):
+            if pd_torrents.show_key(row["title"] or "") == key:
+                return str(row["id"])
+        return None
+
+    def _offer_page(self, key, offer):
+        """An offer's own page. A series is drawn as a library series: same layout, Version
+        row and download buttons, with its episodes wearing the ribbon. Its cards stay
+        offered. A film gets who is in it: the page draws its cast and Show more from this."""
+        if offer and offer.get("type") == "show":
+            return {k: v for k, v in offer.items() if k not in ("offered", "offer")}
+        if offer and offer.get("type") == "movie":
+            try:
+                offer["Role"] = self._cast_of(key, "movie", offer.get("tmdb") or offer.get("tmdbId"))
+            except Exception:
+                offer["Role"] = []
+        return offer
+
+    def _held_key(self, con, key):
+        """A key of an offered series or season, as the library's if it holds that series."""
+        show, dash, season = str(key).partition("-")
+        held = self._held_series(con, show)
+        return held + dash + season if held else key
+
+    def _catalogue_in_search(self, spelt, hubs):
+        """Series by these words from the catalogue, beside whatever matched: the cache,
+        which held no pack of a programme, answered with three where this server answered
+        with one. Two letters for a series: "24" (2026-11-01). Then the films of a
+        collection the words name. Whether the collection is still being asked for."""
+        said = (spelt or "").strip()
+        if len(said) >= 2:
+            self._catalogue_shows_in_search(spelt, hubs)
+        return len(said) >= 3 and self._collection_in_search(spelt, hubs)
 
     def _catalogue_shows_in_search(self, spelt, hubs):
         """Series the catalogue knows by these words that this library does not hold, as
@@ -2148,7 +2280,10 @@ class LocalAPI:
             "genres": [g.strip() for g in (row["genres"] or "").split(",") if g.strip()],
             "summary": row["overview"] or "", "rating": row["rating"],
             "duration": dur or ((row["runtime"] or 0) * 60000),
-            "thumb": f"/art/{row['id']}/poster" if row["poster"] else None,
+            # until the catalogue has been asked, the poster its card had before it was
+            # downloaded: a film in from the tracker stood blank until the next scan
+            "thumb": (f"/art/{row['id']}/poster" if row["poster"]
+                      else self._poster_before_match(row["title"], row["year"])),
             "art": f"/art/{row['id']}/backdrop" if row["backdrop"] else None,
             "guid": f"imdb://{row['imdb_id']}" if row["imdb_id"] else None,
             "addedAt": row["added"],
@@ -2353,7 +2488,12 @@ class LocalAPI:
         """Returns (status, content_type, body_bytes). Path is everything after /local."""
         con = self.lib.db()
         try:
-            body = self.route(con, path, q)
+            # the films before and after one in its series, in the order they came out
+            body = ({"Metadata": self.saga_of(con, str((q.get("key") or [""])[0]))}
+                    if path == "/library/saga" else self.route(con, path, q))
+            # the words each card shows - its ribbon, its first button - decided here once
+            import pd_words
+            pd_words.dress(body)
             # a search with an "and" the title does not carry - "link and click", typed
             # or spoken: nothing found, so the words again without it
             if path == "/hubs/search" and isinstance(body, dict) and not body.get("Hub"):
@@ -2366,8 +2506,45 @@ class LocalAPI:
         if body is None:
             return 404, "application/json", b'{"error":"not found"}'
         if isinstance(body, tuple):                      # (content_type, bytes)
+            # Start's big picture asks for its shade painted in: one picture for the
+            # television to draw, not a picture and a shade over it every frame
+            if (path.startswith("/art/") and str(body[0]).startswith("image/")
+                    and str((q.get("shade") or [""])[0]) == "hero"):
+                try:
+                    import pd_shade
+                    aspect = float((q.get("a") or ["0"])[0] or 0)
+                    return 200, "image/jpeg", pd_shade.answer(
+                        path, (q.get("w") or ["0"])[0], aspect, body[1])
+                except Exception:
+                    pass
             return 200, body[0], body[1]
         return 200, "application/json", json.dumps({"MediaContainer": body}).encode()
+
+    def saga_of(self, con, key):
+        """The series of the film behind `key` - a film here, one on offer, one from the
+        catalogue: [{key, title, year, here}] in release order, the film itself marked
+        at; [] for a film standing alone."""
+        import pd_streaming
+        tmdb = 0
+        row = con.execute("SELECT tmdb_id FROM item WHERE id = ? AND type = 'movie'", (key,)).fetchone()
+        if row and row["tmdb_id"]:
+            tmdb = int(row["tmdb_id"])
+        elif key.startswith("rt"):
+            tmdb = int((pd_streaming.one_of(key) or {}).get("tmdb") or 0)
+        elif key.startswith("o"):
+            import pd_torrents
+            _, film = pd_torrents.by_key(key)
+            tmdb = int((film or {}).get("tmdb") or 0)
+        parts = pd_streaming.saga(self.lib, tmdb) if tmdb else []
+        out = []
+        for p in parts:
+            # its poster as its own page shows it: a film here by the library's, one not by
+            # the catalogue's
+            card = (self.metadata_for(con, p["key"], brief=True) or {}) if p["here"] else {}
+            out.append({"ratingKey": p["key"], "title": p["title"], "year": p["year"],
+                        "here": p["here"], "coming": p["coming"], "at": p["tmdb"] == tmdb,
+                        "thumb": card.get("thumb") or ("/art/%s/poster" % p["key"] if p.get("poster") else None)})
+        return out
 
     def route(self, con, path, q):
         one = lambda k, d=None: (q.get(k) or [d])[0]
@@ -2431,10 +2608,22 @@ class LocalAPI:
             # and this library, first: alone it is the library, with services marked
             # the titles here that they carry
             listed = [{"id": self.MINE, "name": "My library", "logo": ""}] + listed
-            return {"size": len(listed), "Directory": listed, "region": region}
+            # and how many titles each one stands for, of the kind asked: films or series
+            kind = "show" if one("type", "") in ("show", "2", "tv") else "movie"
+            counts = self.service_counts(con, kind, region,
+                                         [int(s["id"]) for s in listed if int(s["id"]) > 0])
+            listed = [dict(s, count=counts.get(int(s["id"]), 0)) for s in listed]
+            return {"size": len(listed), "Directory": listed, "region": region,
+                    "packs": counts.get(self.PACKS, 0)}
 
         if path in ("/library/service", "/library/popularFilms"):
             return self.catalogue_answer(con, path, one)
+
+        if path == "/library/start":
+            # the Start tab: this week's pick, the vibes, and one vibe's choices
+            return self.start_page(con, one)
+
+
 
         if path == "/library/countries":
             # where the shelf's titles were made, most first, counted among the genres
@@ -2828,6 +3017,12 @@ class LocalAPI:
                 return {"key": str(row["id"])}
             return {"key": ""}
 
+        if path == "/library/list":
+            # A list kept in the database, in its own order: what this house holds of
+            # it, what a pack carries, and what can only be asked for - each as this
+            # viewer's shelves show those.
+            return self.list_page(con, one("id", ""), q)
+
         if path == "/library/seasonal":
             # The season's shelf: the films the catalogue files under the holiday that
             # is switched on, of what this house holds or a pack can give, the best
@@ -2936,7 +3131,8 @@ class LocalAPI:
             con = self.lib.db()
             try:
                 if one("byseason", "") in ("1", "true", "yes"):
-                    items = self._by_season(con, keys)
+                    whole = set(one("whole", "").split(",")) - {""}
+                    items = self._by_season(con, keys, whole)
                 else:
                     items = [self.metadata_for(con, k, brief=True) for k in keys]
                 # A key can stop being the key. A film starred while a pack was the
@@ -2953,6 +3149,10 @@ class LocalAPI:
                 self.marks_moved = moved
             finally:
                 con.close()
+            # a collection's: what its Play shuffle leaves out, marked on each card
+            off = set(one("unshuffled", "").split(",")) - {""}
+            if off:
+                mark_unshuffled(items, off)
             return self._page([i for i in items if i], q)
 
         if path == "/library/onDeck":
@@ -2967,6 +3167,8 @@ class LocalAPI:
                 "SELECT key, position, duration, updated, COALESCE(marked, 0) marked, "
                 "       MAX(COALESCE(furthest, 0), COALESCE(position, 0)) reached "
                 "FROM progress WHERE who=? AND COALESCE(casual, 0) = 0 "
+                # a music video is played from its own row, never carried on
+                "AND key NOT IN (SELECT id FROM item WHERE " + MUSIC_VIDEO + ") "
                 "ORDER BY updated DESC LIMIT 600",
                 (self.who,)).fetchall()
             items, taken = [], set()
@@ -3161,7 +3363,8 @@ class LocalAPI:
                         break
                 if not one:
                     continue
-                name = (self._mine("shelf_names", {}) or {}).get(str(cid)) or "Shuffle"
+                name = self.round_name(
+                    cid, (self._mine("shelf_names", {}) or {}).get(str(cid)) or "Shuffle")
                 # The shelf's own place stands beside an ordinary one for the same
                 # film rather than replacing it. Putting something on and later
                 # choosing it are two viewings of one title at two different seconds,
@@ -3200,6 +3403,8 @@ class LocalAPI:
                                           max([when(v) for v in places.values()] or [0])
                                           ) or int(round_now.get("casualStamp") or 0) or 1
                 items.append(one)
+            # a film from the watchlist that has come in, first until it is started
+            self._deck_arrivals(con, items)
             # an episode, shuffled or not, wears its own season's poster
             for one in items:
                 if one and one.get("type") == "episode" and one.get("grandparentRatingKey"):
@@ -3241,17 +3446,9 @@ class LocalAPI:
                 # a film on offer from a torrent pack - and once it has come in, the film
                 # itself, so a page left open on the offer turns into the film's own
                 import pd_torrents
-                here = pd_torrents.arrived(key)
+                here = pd_torrents.arrived(key) or self._held_series(con, key)
                 if not here:
-                    offer = pd_torrents.metadata(key)
-                    # and who is in it, as a film here would say: the page draws its
-                    # cast and Show more from this
-                    if offer and offer.get("type") == "movie":
-                        try:
-                            offer["Role"] = self._cast_of(
-                                key, "movie", offer.get("tmdb") or offer.get("tmdbId"))
-                        except Exception:
-                            offer["Role"] = []
+                    offer = self._offer_page(key, pd_torrents.metadata(key))
                     return {"size": 1, "Metadata": [offer]} if offer else None
                 key = here
             try:
@@ -3279,6 +3476,7 @@ class LocalAPI:
         if m:
             key = m.group(1)
             # a programme on offer, and one of its seasons
+            key = self._held_key(con, key)
             if key.startswith("os"):
                 import pd_torrents
                 offer = re.match(r"^(os[0-9a-f]{10})-s(\d+)$", key)
@@ -3354,13 +3552,12 @@ class LocalAPI:
                             continue
                         many = len(onit.get(n) or [])
                         early = str(ep.get("air_date") or "9999") > today
-                        aired = str(ep.get("air_date") or "9999") < today
                         out.append({
                             "ratingKey": "upnext-%s-s%02de%02d" % (item["id"], number, n),
                             "type": "episode", "upcoming": True,
                             # out already, and nowhere to get it from: not upcoming,
                             # missing - the band says so rather than Upcoming
-                            "missing": aired and not many,
+                            "missing": self.missing_now(ep.get("air_date"), many, today),
                             # on the tracker: pressed, it lists the releases to download
                             "fetchable": many > 0,
                             "airs": (("Out early - on the tracker" if early
@@ -3392,6 +3589,11 @@ class LocalAPI:
                 named = self._seasons_named(show["title"] if show else "")
                 out = {"size": len(rows), "Metadata": [{
                     "ratingKey": "%s-s%d" % (key, r["season"]), "type": "season",
+                    # the series it belongs to, by name: a season page asks the tracker
+                    # with it, and without it the app asked for "Season 4"
+                    "parentTitle": show["title"] if show else "",
+                    "grandparentTitle": show["title"] if show else "",
+                    "parentRatingKey": key,
                     "viewedLeafCount": sum(
                         1 for e in con.execute(
                             "SELECT id FROM episode WHERE item_id=? AND season=?",
@@ -3445,10 +3647,14 @@ class LocalAPI:
                         out["Metadata"].append({
                             "ratingKey": "%s-s%d" % (key, n), "type": "season",
                             "title": "Season %d" % n, "index": n, "parentRatingKey": key,
+                            "parentTitle": show["title"] if show else "",
+                            "grandparentTitle": show["title"] if show else "",
                             "leafCount": int(one.get("episode_count") or 0),
                             "viewedLeafCount": 0, "upcoming": True,
+                            "missing": self.missing_now(one.get("air_date"), onit),
                             "fetchable": onit > 0,
                             "airs": season_words(onit, self._air_words(one.get("air_date"))),
+                            "airDate": str(one.get("air_date") or ""),
                             "thumb": self._season_thumb(key, n, show["poster"])})
                 out["Metadata"].sort(key=lambda s: int(s.get("index") or 0))
                 # and the extras, last, as a card of their own. Numbered -1 so nothing
@@ -3685,13 +3891,8 @@ class LocalAPI:
             # never The Cold Snap of 1990, which "the cold snap" did.
             self._filling.on = False
             asking = self._named_in_search(spelt, hubs, place)
-            # and series by that name from the catalogue, beside whatever matched: the
-            # cache, which held no pack of a programme, answered with three where this
-            # server answered with one
-            if spelt and len(spelt.strip()) >= 3 and not place:
-                self._catalogue_shows_in_search(spelt, hubs)
-                # and the films of a collection the words name, whatever else matched
-                asking = self._collection_in_search(spelt, hubs) or asking
+            if not place:
+                asking = self._catalogue_in_search(spelt, hubs) or asking
             # Names are searched for as well as titles: a word that is nobody's film
             # is often somebody's name, and the row of faces is one press from
             # everything held with them in it. Only people with something on the
@@ -4003,10 +4204,10 @@ class LocalAPI:
                     and one("casual", "") not in ("1", "true", "yes")):
                 self.half_way(key)
             if key and one("state", "playing") != "stopped":
-                self.log_watch(con, key, pos, dur, one("device", "") or "",
-                               one("client", ""),
-                               one("casual", "") in ("1", "true", "yes"),
-                               one("state", "playing"))
+                self.log_watch_quietly(con, key, pos, dur, one("device", "") or "",
+                                       one("client", ""),
+                                       one("casual", "") in ("1", "true", "yes"),
+                                       one("state", "playing"))
             # What the client says is what is recorded. A playing that is casual
             # says so in every report, including the last one; guessing on the
             # server's side would hide the truth from the watch log and from Now
@@ -4145,13 +4346,21 @@ class LocalAPI:
                               (self.who, str(key), int(time.time()) - 900)).fetchone()
             if not row:
                 return
-            with open(os.path.join(DATA, "debug.log"), "a", encoding="utf-8") as f:
-                f.write("%s casual leak key=%s state=%s device=%s client=%s app=%s "
-                        "(casual viewing open, logged by %s)%s" % (
-                            time.strftime("%H:%M:%S"), key, state, device, client,
-                            self.app_now or "", row["app"] or "", chr(10)))
+            pd_log.raw("%s casual leak key=%s state=%s device=%s client=%s app=%s "
+                    "(casual viewing open, logged by %s)%s" % (
+                        time.strftime("%H:%M:%S"), key, state, device, client,
+                        self.app_now or "", row["app"] or "", chr(10)), os.path.join(DATA, "debug.log"))
         except Exception:
             pass                       # a note is never worth failing a report over
+
+    def log_watch_quietly(self, con, *args):
+        """log_watch, for a report: one that waited its thirty seconds for a long write
+        and still found the file busy is let go - the next, a few seconds on, writes
+        the row - rather than answered with an error."""
+        try:
+            self.log_watch(con, *args)
+        except sqlite3.OperationalError:
+            con.rollback()
 
     def log_watch(self, con, key, position, duration, device, client, casual,
                   state="playing"):
@@ -4367,7 +4576,24 @@ class LocalAPI:
                 pass
         return out, offers
 
-    def _by_season(self, con, keys):
+    def _arrived_as(self, con, keys):
+        """Offered keys whose episode has since come in, as the library's episode key;
+        a key the shelf already holds once is dropped."""
+        offered = self._offered_homes([k for k in keys if str(k).startswith("o")])
+        out, have = [], set()
+        for k in keys:
+            k = str(k)
+            if k.startswith("o") and k not in offered:
+                got = self.metadata_for(con, k, brief=True) or {}
+                now = str(got.get("ratingKey") or "")
+                if got.get("type") == "episode" and is_episode(now):
+                    k = now
+            if k not in have:
+                have.add(k)
+                out.append(k)
+        return out
+
+    def _by_season(self, con, keys, entire=()):
         """The same shelf, gathered into seasons.
 
         Marking a programme now marks each of its episodes, which is right for taking
@@ -4380,6 +4606,9 @@ class LocalAPI:
         season: a programme half held and half offered read as two programmes.
         """
         out, seen = [], set()
+        # a pack's key for an episode downloaded since: no pack holds it, so it found
+        # no season and stood as a loose episode beside its own season
+        keys = self._arrived_as(con, keys)
         places, offers = self.episode_places(con, keys)
         home = {k: (where[0], where[1]) for k, where in places.items()}
         # how many episodes each season holds, so a part-marked season says so
@@ -4404,7 +4633,8 @@ class LocalAPI:
                     continue
                 seen.add(where)
                 mine = sorted(held[where], key=in_order)
-                if len(mine) == 1:
+                # one episode of a series the shelf holds whole is still its season
+                if len(mine) == 1 and where[0] not in entire:
                     one_card = self.metadata_for(con, mine[0], brief=True)
                     if one_card:
                         out.append(one_card)
@@ -4476,10 +4706,68 @@ class LocalAPI:
                         if card:
                             out.append(card)
                     continue
+            # a season put on the shelf with nothing linked yet: its card as the series
+            # page shows it, so what has no pack is seen - it read as the programme
+            if re.fullmatch(r"[0-9a-f]{12}-s\d+", str(key)):
+                card = self._season_from_page(con, str(key))
+                if card and not any(c.get("ratingKey") == card.get("ratingKey") for c in out):
+                    out.append(card)
+                if card:
+                    continue
             card = self.metadata_for(con, key, brief=True)
             if card:
                 out.append(card)
+        for show in entire:
+            out = self._every_season(con, out, str(show))
         return out
+
+    def _season_from_page(self, con, key):
+        """One season's card as the series page lists it, linked or not; None if unknown."""
+        show = str(key).rsplit("-s", 1)[0]
+        try:
+            every = (self.route(con, "/library/metadata/%s/children" % show, {}) or {}).get(
+                "Metadata") or []
+        except Exception:
+            every = []
+        card = next((s for s in every if str(s.get("ratingKey")) == str(key)), None)
+        if not card:
+            return None
+        row = con.execute("SELECT title FROM item WHERE id=?", (show,)).fetchone()
+        title = str(row["title"]) if row else ""
+        return dict(card, grandparentTitle=title, parentTitle=title, grandparentRatingKey=show)
+
+    def _every_season(self, con, out, show):
+        """A series held whole: every season the series page lists, those nothing here
+        covers yet too, in season order where its first card stood."""
+        mine = lambda c: str(c.get("ratingKey") or "").startswith(show + "-s")
+        have = {str(c.get("ratingKey")) for c in out if mine(c)}
+        try:
+            every = (self.route(con, "/library/metadata/%s/children" % show, {}) or {}).get(
+                "Metadata") or []
+        except Exception:
+            every = []
+        row = con.execute("SELECT title, year, sort_title, tmdb_id FROM item WHERE id=?",
+                          (show,)).fetchone()
+        title = str(row["title"]) if row else ""
+        # the year each season aired and the series' sort title, as a linked season's
+        # card carries them: a list ordered by those put every unlinked season first
+        aired = {}
+        if row and row["tmdb_id"]:
+            said = self._catalogue("/tv/%d" % int(row["tmdb_id"]), self._airs, row["tmdb_id"])
+            aired = {int(x.get("season_number") or 0): int(str(x.get("air_date") or "")[:4] or 0)
+                     for x in said.get("seasons") or []}
+        more = [dict(s, grandparentTitle=title, parentTitle=title, grandparentRatingKey=show,
+                     year=(s.get("year") or aired.get(int(s.get("index") or 0))
+                           or (row["year"] if row else None) or None),
+                     titleSort=s.get("titleSort") or (row["sort_title"] if row else None))
+                for s in every if s.get("type") == "season" and not s.get("extras")
+                and str(s.get("ratingKey")) not in have]
+        if not more:
+            return out
+        at = next((i for i, c in enumerate(out) if mine(c)), len(out))
+        its = sorted([c for c in out if mine(c)] + more, key=lambda c: int(c.get("index") or 0))
+        rest = [c for c in out if not mine(c)]
+        return rest[:at] + its + rest[at:]
 
     def _season_card(self, con, row):
         """One season, as a thing with a poster: what "a series was added" means.
@@ -4679,7 +4967,9 @@ class LocalAPI:
     #: What the film shelf stands, unless this viewer says otherwise: everything
     #: there is to watch, held, fetchable or only askable. The same defaults the
     #: server answers with.
-    FILMS_SHOW = {"disk": True, "download": True, "request": False}
+    FILMS_SHOW = {"disk": True, "download": True, "request": False,
+                  # films not out yet: a setting of their own, off like Request
+                  "upcoming": False}
     #: which of the two scores a new film must have satisfied, per viewer
     METERS = {"audience": True, "critics": True}
 
@@ -4715,6 +5005,8 @@ class LocalAPI:
     SERVICES_MOST = 14
     #: catalogue pages per page of a service's list: sixty titles
     SERVICE_PAGES = 3
+    #: the most catalogue pages Show all reads: all the catalogue gives, 500 pages
+    SERVICE_ALL = 500
 
     def svt_answer(self, con, path):
         """SVT Play's two addresses: a series' seasons and episodes, and one film's or
@@ -4783,7 +5075,10 @@ class LocalAPI:
             if self.keep_series_card(c["svt"], c["onTracker"], c["checking"], requests):
                 out.append(c)
         if ask:
+            # the first now, the rest of a long list behind and slowly - every one
+            # checked by the time somebody presses it, not ten a visit
             pd_streaming.ask_tracker_about_shows(ask[:10])
+            pd_streaming.ask_tracker_slowly_about_shows(ask[10:])
         return out
 
     @staticmethod
@@ -4818,8 +5113,10 @@ class LocalAPI:
                                          str(one("sort", "") or "popularity:desc"))
         if not providers:
             return {"size": 0, "Metadata": [], "more": False, "totalSize": 0}
+        # "all": every page the catalogue has, in one answer - up to SERVICE_ALL of them
+        whole = str(one("page", "1")) == "all"
         try:
-            page = max(1, int(one("page", "1") or 1))
+            page = 1 if whole else max(1, int(one("page", "1") or 1))
         except ValueError:
             page = 1
         what = "tv" if kind == "show" else "movie"
@@ -4837,7 +5134,8 @@ class LocalAPI:
         cards, rows, seen = [], [], set()
         pages = total = 0
         region = self.watch_region()
-        for n in range((page - 1) * self.SERVICE_PAGES + 1, page * self.SERVICE_PAGES + 1):
+        last = self.SERVICE_ALL if whole else page * self.SERVICE_PAGES
+        for n in range((page - 1) * self.SERVICE_PAGES + 1, last + 1):
             try:
                 results, pages, total = pd_streaming.service_page(
                     self.lib, what, providers, region, n, genres, years, order)
@@ -4858,6 +5156,12 @@ class LocalAPI:
                 if not number or number in seen:
                     continue
                 seen.add(number)
+                # how popular it is in the catalogue, on each card: lists read a service
+                # at a time are put back in one order by it
+                ranked = lambda card, r=r: dict(
+                    card, popularity=float(r.get("popularity") or 0),
+                    # and the day it came out, so the list can be ordered again by it
+                    catalogDate=str(r.get("release_date") or r.get("first_air_date") or ""))
                 held = by_tmdb.get((kind, number))
                 if held:
                     got = self.metadata_for(con, held, brief=True)
@@ -4866,14 +5170,14 @@ class LocalAPI:
                         # when it was matched: held titles stood out of order by Rating
                         if r.get("vote_average"):
                             got["rating"] = float(r["vote_average"])
-                        cards.append(got)
+                        cards.append(ranked(got))
                     continue
                 if not r.get("poster_path"):
                     continue
                 if kind == "show":
                     row = pd_streaming.show_row(r)
                     rows.append(row)
-                    cards.append({"ratingKey": row["key"], "type": "show", "title": row["show"],
+                    cards.append(ranked({"ratingKey": row["key"], "type": "show", "title": row["show"],
                                   "year": row["year"] or None, "summary": row["overview"],
                                   "thumb": "/art/%s/poster" % row["key"], "rating": row["rating"],
                                   "genres": [], "addable": True, "tmdb": number,
@@ -4881,7 +5185,7 @@ class LocalAPI:
                                   "svt": (self._svt_series(row["show"], row["year"],
                                                            r.get("original_name"))
                                           or self._svt_series(swedish.get(number, ""),
-                                                              row["year"]))})
+                                                              row["year"]))}))
                     continue
                 row = pd_streaming.film_row(r)
                 pack = next((o for o in offers.get(self._bare(row["title"]), [])
@@ -4889,12 +5193,12 @@ class LocalAPI:
                              or abs(int(o.get("year") or 0) - row["year"]) <= 1), None)
                 if pack:
                     if show.get("download"):
-                        cards.append(pack)
+                        cards.append(ranked(pack))
                     continue
                 rows.append(row)
                 card = pd_streaming.item(row)
                 if self.new_one_shown(card.get("onTracker"), show, card.get("checking")):
-                    cards.append(card)
+                    cards.append(ranked(card))
             if n >= pages:
                 break
         # kept, so a card's key opens its page; the films asked of the tracker behind it
@@ -4904,7 +5208,7 @@ class LocalAPI:
         if kind == "show":
             cards = self.with_sources(cards)
         return {"size": len(cards), "Metadata": cards, "totalSize": total,
-                "more": page * self.SERVICE_PAGES < pages}
+                "more": (pages > self.SERVICE_ALL) if whole else page * self.SERVICE_PAGES < pages}
 
     #: how long the catalogue's popular films are kept before being asked again
     TOP_FILMS_EVERY = 86400
@@ -4960,6 +5264,865 @@ class LocalAPI:
             pass
         return films
 
+    #: the Start tab's vibes: (id, name, tagline, genres wanted - any, genres kept out)
+    VIBES = (
+        ("laugh", "Make me laugh", "Comedies, nothing heavy",
+         {"Comedy"}, {"Horror", "War", "Documentary"}),
+        ("edge", "Edge of my seat", "Thrillers, heists and chases",
+         {"Thriller", "Action", "Crime", "Action & Adventure"}, {"Family", "Animation"}),
+        ("scare", "Scare me", "Lights off, sound up",
+         {"Horror"}, {"Family", "Animation"}),
+        ("cozy", "Something cozy", "Warm, kind and easy",
+         {"Family", "Animation", "Romance", "Music"}, {"Horror", "War", "Crime", "Thriller"}),
+        ("mind", "Bend my mind", "Strange worlds and twists",
+         {"Science Fiction", "Mystery", "Fantasy", "Sci-Fi & Fantasy"}, {"Family"}),
+        ("epic", "Something epic", "Big adventures for a long night",
+         {"Adventure", "War", "History", "Western", "War & Politics"}, set()),
+        ("true", "True stories", "It really happened",
+         {"Documentary", "History"}, set()),
+        ("trash", "So bad it's good", "Creature features and glorious nonsense",
+         {"Horror", "Comedy", "Science Fiction"}, {"Documentary", "Family"}),
+    )
+    #: how often each kept list is read again from where it comes from
+    LISTS_EVERY = 86400
+
+    def refresh_lists(self, con, only=None, force=False):
+        """Each kept list read again from its source once it is a day old - by the
+        server's own round every day, and by a page asking for one that is older. What
+        the catalogue says of its new titles is looked up behind."""
+        import pd_lists
+        for lid, (title, source) in pd_lists.KNOWN.items():
+            if only and lid != only:
+                continue
+            if source == "imdb":
+                top = self.imdb_top()
+                have = pd_lists.items(con, lid)
+                # a day old, or not the length of the chart it was filled from
+                if (not force and have and len(have) == len(top or have)
+                        and time.time() - pd_lists.updated(con, lid) < self.LISTS_EVERY):
+                    continue
+                if top:
+                    pd_lists.put(con, lid, title, source, top)
+                    pd_lists.resolve_behind(self.lib, lid)
+
+    def list_page(self, con, lid, q):
+        """One of the kept lists as cards, first first: `listRank` counts down the
+        list so a page sorted by it, highest first, stands in the list's order."""
+        import pd_lists
+        import pd_streaming
+        if lid not in pd_lists.KNOWN:
+            return dict(self._page([], q), title="", list="")
+        title = pd_lists.KNOWN[lid][0]
+        self.refresh_lists(con, only=lid)
+        rows = pd_lists.items(con, lid)
+        flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
+        pool = self._start_pool(con, "movie")
+        by_imdb = {p.get("imdb"): p for p in pool if p.get("imdb")}
+        by_name = {(flat(p.get("title")), int(p.get("year") or 0)): p for p in pool}
+        show = self.films_show()
+        offers = {}
+        if show.get("download"):
+            for o in self._offered_quietly():
+                offers.setdefault(self._bare(o.get("title")), []).append(o)
+        cards, asked, unknown = [], [], False
+        for r in rows:
+            year = int(r["year"] or 0)
+            p = by_imdb.get(r["imdb"]) or by_name.get((flat(r["title"]), year))
+            card = self.metadata_for(con, p["key"], brief=True) if p else None
+            if not card:
+                pack = next((o for o in offers.get(self._bare(r["title"]), [])
+                             if not year or not int(o.get("year") or 0)
+                             or abs(int(o.get("year") or 0) - year) <= 1), None)
+                card = dict(pack) if pack else None
+            if not card and r["tmdb"] is None:
+                unknown = True                # not looked up yet: asked behind the page
+            if not card and r["tmdb"] and show.get("request"):
+                row = {"key": pd_streaming.key_for("tmdb:%s" % r["tmdb"]), "title": r["title"],
+                       "year": year, "tmdb": r["tmdb"], "imdb": r["imdb"],
+                       "poster": r["poster"], "backdrop": r["backdrop"],
+                       "overview": r["overview"] or "", "rating": r["rating"],
+                       "released": r["released"] or "", "genres": [], "votes": 0}
+                asked.append(row)
+                card = pd_streaming.item(row)
+            if not card:
+                continue
+            card["listRank"] = len(rows) - int(r["rank"])
+            card["popularity"] = card["listRank"]
+            card["shelf"] = title
+            cards.append(card)
+        if asked:
+            pd_streaming._keep_searched(asked)
+        if unknown:
+            pd_lists.resolve_behind(self.lib, lid)
+        return dict(self._page(cards, q), title=title, list=lid)
+
+    #: what a mood's Show more opens: the Films and the TV tab each by one category of
+    #: the mood, as those tabs name them - TV calls its kinds differently
+    VIBE_GENRE = {"laugh": ("Comedy", "Comedy"), "edge": ("Thriller", "Action & Adventure"),
+                  "scare": ("Horror", "Mystery"), "cozy": ("Family", "Family"),
+                  "mind": ("Science Fiction", "Sci-Fi & Fantasy"),
+                  "epic": ("Adventure", "Action & Adventure"),
+                  "true": ("Documentary", "Documentary")}
+
+    @classmethod
+    def start_more(cls, rid):
+        """Where a Start row's Show more goes: the tab, its order, a category and a
+        service to mark - the row's own kind of thing, many more of it."""
+        rid = str(rid or "")
+        if rid == "music":
+            return None
+        if rid == "new-movie":
+            return {"tab": "films", "sort": "originallyAvailableAt"}
+        if rid == "new-show":
+            return {"tab": "tv", "sort": "originallyAvailableAt"}
+        if rid.startswith("svc-"):
+            return {"tab": "films", "sort": "popular", "service": rid[4:]}
+        if rid == "classic-movie":
+            # the whole chart the row is drawn from, in its order
+            return {"list": "imdb-top", "name": "IMDb Top 250"}
+        if rid == "kids-movie":
+            return {"tab": "films", "sort": "popular", "genre": "Family"}
+        vibe, _, kind = rid.partition("-")
+        pair = cls.VIBE_GENRE.get(vibe)
+        if pair and kind in ("movie", "show"):
+            return {"tab": "films" if kind == "movie" else "tv", "sort": "popular",
+                    "genre": pair[0] if kind == "movie" else pair[1]}
+        return None
+
+    #: how many choices one vibe hands back besides its feature
+    START_MORE = 18
+    #: and how many each mood's row on the front holds
+    START_ROW = 16
+
+    #: each viewer's Start front as last made: (who, kind, seed, era) -> (when, page)
+    _START_KEPT = {}
+    #: a kept front is answered for this long; the server's own round makes them again
+    #: well inside it for everyone who has watched anything in the last month
+    START_KEPT_FOR = 30 * 60
+    #: and how far back "active" reaches
+    START_ACTIVE_DAYS = 31
+
+    def start_page(self, con, one, fresh=False):
+        """The Start tab's front, made ahead: answered from what the server's round made
+        for this viewer, and made now only when there is none or it is old - opening
+        Palladium is loading a page, not building one. A mood asked for, or a reroll,
+        is made when asked."""
+        kind = "show" if one("kind", "movie") == "show" else "movie"
+        if not one("rows", "") or one("vibe", ""):
+            return self._start_page(con, one)
+        key = (str(self.who), kind, str(one("seed", "0") or "0"), str(one("era", "") or ""))
+        kept = self._START_KEPT.get(key)
+        if kept and not fresh and time.time() - kept[0] < self.START_KEPT_FOR:
+            return kept[1]
+        page = self._start_page(con, one)
+        self._START_KEPT[key] = (time.time(), page)
+        return page
+
+    def start_forget(self, who):
+        """A viewer's kept fronts dropped: what they told Start changes what it shows."""
+        for key in [k for k in self._START_KEPT if k[0] == str(who)]:
+            self._START_KEPT.pop(key, None)
+
+    def start_active(self, con):
+        """Who has watched anything in the last month: the viewers whose fronts are
+        made ahead."""
+        since = time.time() - self.START_ACTIVE_DAYS * 86400
+        return [str(r[0]) for r in con.execute(
+            "SELECT DISTINCT who FROM watchlog WHERE updated > ? AND who IS NOT NULL "
+            "AND who <> ''", (since,)).fetchall()]
+
+    def start_make_ahead(self, con, pause=None):
+        """Every active viewer's Start front made now - films and series, as it opens.
+        Whose it is is this thread's own, as a request's is, and put back after. How
+        many were made."""
+        made, was = 0, self.who
+        try:
+            for who in self.start_active(con):
+                self.who = who
+                for kind in ("movie", "show"):
+                    # a breath between two: fourteen made back to back held the server
+                    # for a minute, and Films and TV timed out under it
+                    if pause and made:
+                        pause()
+                    asked = {"rows": "1", "kind": kind, "seed": "0", "era": ""}
+                    try:
+                        self.start_page(con, lambda k, d="", a=asked: a.get(k, d), fresh=True)
+                        made += 1
+                    except Exception:
+                        pass
+        finally:
+            self.who = was
+        return made
+
+    def _start_page(self, con, one):
+        """This week's pick, the vibes with a picture each, and - asked for one - that
+        vibe's feature, why it was chosen, and more like it: films or series from this
+        library and its packs, unseen ones first, a different set each day and each
+        reroll."""
+        kind = "show" if one("kind", "movie") == "show" else "movie"
+        wanted = one("vibe", "")
+        taste = self.taste(con)
+        era = one("era", "")
+        if wanted:
+            pool = self._start_era(self._start_pool(con, kind), era)
+            vibe = next((v for v in self.VIBES if v[0] == wanted), None)
+            if not vibe:
+                return {"size": 0, "Metadata": []}
+            chosen = self._start_choose(con, pool, vibe, one("seed", "0"), self.START_MORE + 1,
+                                        taste)
+            feature = chosen[0] if chosen else None
+            return {"size": len(chosen), "vibe": vibe[0], "name": vibe[1],
+                    "feature": feature,
+                    "why": self._start_why(feature, vibe, taste) if feature else "",
+                    "Metadata": chosen[1:]}
+        stored = _settings()
+        said = stored.get("weekPick") if isinstance(stored.get("weekPick"), dict) else {}
+        pick_key = str(said.get("key") or "")
+        pick = self.metadata_for(con, self._held_series(con, pick_key) or pick_key, brief=False) \
+            if pick_key else None
+        # or a series offered from a pack and not downloaded yet: it can be the week's
+        # pick too, its page the place to ask for the episodes (owner, 2026-11-01)
+        if pick is None and str(said.get("key") or "").startswith("o"):
+            try:
+                import pd_torrents
+                pick = pd_torrents.metadata(str(said["key"]))
+            except Exception:
+                pick = None
+        # each vibe's picture, and whether there is anything in it - for films and series
+        films = self._start_era(self._start_pool(con, "movie"), era)
+        series = self._start_era(self._start_pool(con, "show"), era)
+        vibes = []
+        for v in self.VIBES:
+            # a reload's round draws each mood's picture afresh
+            film = self._start_choose(con, films, v, one("seed", "0"), 1, taste)
+            show = self._start_choose(con, series, v, one("seed", "0"), 1, taste)
+            vibes.append({"id": v[0], "name": v[1], "tagline": v[2],
+                          "art": (film[0].get("art") or film[0].get("thumb")) if film else "",
+                          "artShow": (show[0].get("art") or show[0].get("thumb")) if show else "",
+                          "movie": bool(film), "show": bool(show)})
+        # and, asked for, every mood as a row of its own for the kind asked: the page
+        # the services draw - a hero across the top, then a row for each
+        rows = self._start_rows(con, taste, one("seed", "0")) if one("rows", "") == "1" else []
+        # and the viewer's series collections, for a row that starts their shuffle
+        shuffles = []
+        hook = getattr(self, "series_shelves", None)
+        if one("rows", "") == "1" and callable(hook):
+            try:
+                shuffles = hook(str(self.who))
+            except Exception:
+                shuffles = []
+        if shuffles:
+            rows.insert(0, {"id": "shuffle", "name": "Shuffle",
+                            "tagline": "Your series collections, a random episode each time",
+                            "kind": "shuffle", "why": "", "Metadata": shuffles})
+        # in the viewer's order, without the ones they turned off
+        kept = self.start_kept(stored)
+        rows = [r for r in rows if r["id"] in kept]
+        rows.sort(key=lambda r: kept.index(r["id"]))
+        return {"size": len(vibes), "pick": pick, "pickNote": str(said.get("note") or ""),
+                "vibes": vibes, "rows": rows, "shuffles": shuffles,
+                "rowList": [{"id": i, "name": n, "on": i in kept}
+                            for i, n in self.start_list(kept)],
+                "rowsMine": bool(viewer_settings(self.who).get("startRows")
+                                 or viewer_settings(self.who).get("startRowsOff"))}
+
+    #: the series rows Start carries when nobody has said otherwise: one row in four is
+    #: series, a series row after each three of films. The rest are offered in Edit rows.
+    START_SERIES_ON = ("new-show", "laugh-show", "edge-show")
+    #: how many films a service's row gives for each series
+    START_FILMS_A_SERIES = 3
+
+    def start_row_names(self):
+        """Every row the Start tab can carry, (id, name), in the order it carries them
+        when nobody has said otherwise: a series row after each three of films, and the
+        series rows left off by default at the end."""
+        names = {"shuffle": "Shuffle", "new-movie": "New films", "new-show": "New series",
+                 "classic-movie": "IMDb Top 250", "kids-movie": "For the kids",
+                 "music": "Music videos"}
+        names.update({"svc-%d" % n: "Popular on " + name for n, name in self.START_SERVICES})
+        films, series = [], []
+        for v in self.VIBES:
+            if v[0] == "trash":
+                continue
+            names[v[0] + "-movie"] = v[1]
+            names[v[0] + "-show"] = v[1] + " \u00b7 series"
+            films.append(v[0] + "-movie")
+            series.append(v[0] + "-show")
+        films = (["new-movie"] + ["svc-%d" % n for n, _ in self.START_SERVICES] + films
+                 + ["classic-movie", "kids-movie"])
+        on = [s for s in self.START_SERIES_ON]
+        order, n = ["shuffle"], 0
+        for f in films:
+            order.append(f)
+            n += 1
+            if n % self.START_FILMS_A_SERIES == 0 and on:
+                order.append(on.pop(0))
+        order += on + [s for s in series if s not in order] + ["music"]
+        return [(i, names[i]) for i in order]
+
+    def start_off_by_default(self):
+        """The rows Start leaves off until somebody turns them on: the series rows past
+        one in four."""
+        return {i for i, _ in self.start_row_names()
+                if i.endswith("-show") and i not in self.START_SERIES_ON}
+
+    def start_kept(self, stored=None):
+        """The rows this viewer keeps on Start, in their order: their own arrangement, the
+        server's for everyone, or every row. A row the program gained later and nobody's
+        list names yet goes on the end."""
+        stored = _settings() if stored is None else stored
+        known = [i for i, _ in self.start_row_names()]
+        mine = viewer_settings(self.who)
+        # the viewer's own where they have one - every row off is one too - else the server's
+        if mine.get("startRows") or mine.get("startRowsOff"):
+            said, hidden = mine.get("startRows") or [], mine.get("startRowsOff") or []
+        else:
+            said = stored.get("startRowsDefault") or []
+            hidden = stored.get("startRowsDefaultOff") or []
+        said, hidden = [str(x) for x in said], [str(x) for x in hidden]
+        off = self.start_off_by_default()
+        if not said and not hidden:
+            return [i for i in known if i not in off]
+        kept = [i for i in said if i in known]
+        # a row the program gained since is added - unless it is one left off by default
+        return kept + [i for i in known if i not in kept and i not in hidden
+                       and i not in said and i not in off]
+
+    def start_list(self, kept):
+        """Every row for the editor: the kept ones in their order, then the rest."""
+        names = self.start_row_names()
+        return [(i, n) for i in kept for j, n in names if j == i] + \
+            [(i, n) for i, n in names if i not in kept]
+
+    #: In packs, as the Service menu numbers it
+    PACKS = -2
+
+    def service_counts(self, con, kind, region, providers):
+        """How many titles each choice of the Service menu stands for: the catalogue's
+        count for a service in this country, what is held here for My library, and
+        what the packs carry for In packs."""
+        import pd_streaming
+        out = {}
+        for p in providers:
+            try:
+                out[p] = int(pd_streaming.service_page(
+                    self.lib, "tv" if kind == "show" else "movie", [p], region, 1)[2])
+            except Exception:
+                out[p] = 0
+        out[self.MINE] = int(con.execute(
+            "SELECT COUNT(*) FROM item i WHERE i.type=? AND EXISTS "
+            "(SELECT 1 FROM file f WHERE f.item_id = i.id)", (kind,)).fetchone()[0])
+        offers = self._offered_shows_quietly() if kind == "show" else self._offered_quietly()
+        out[self.PACKS] = len(offers or [])
+        return out
+
+    def _start_pool(self, con, kind):
+        """Everything the Start tab may choose from: what is here and what a pack holds,
+        each with its genres, score, length and year, and whether it plays now."""
+        out = []
+        flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
+        held = set()
+        try:
+            import pd_streaming
+            dated = pd_streaming.held_dates() if kind == "movie" else {}
+        except Exception:
+            dated = {}
+        for r in con.execute(
+                "SELECT i.id, i.title, i.genres, i.rating, i.runtime, i.year, i.tmdb_id, i.imdb_id "
+                "FROM item i "
+                "WHERE i.type=? AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = i.id) "
+                "AND NOT i." + MUSIC_VIDEO, (kind,)):
+            held.add(flat(r["title"]))
+            out.append({"key": str(r["id"]), "here": True, "kind": kind,
+                        "genres": {g.strip() for g in str(r["genres"] or "").split(",") if g.strip()},
+                        "rating": float(r["rating"] or 0), "runtime": int(r["runtime"] or 0),
+                        "year": int(r["year"] or 0), "tmdb": int(r["tmdb_id"] or 0),
+                        "imdb": str(r["imdb_id"] or ""), "title": str(r["title"] or ""),
+                        "released": str(dated.get(str(r["id"])) or "")[:10]})
+        try:
+            import pd_torrents
+            offered = pd_torrents.offered() if kind == "movie" else pd_torrents.offered_shows()
+        except Exception:
+            offered = []
+        for o in offered:
+            # a pack's copy of something here already: the one here is the one to choose,
+            # and both stood in a row side by side
+            if flat(o.get("title")) in held:
+                continue
+            out.append({"key": str(o.get("ratingKey") or ""), "here": False, "kind": kind,
+                        "genres": {str(g).strip() for g in o.get("genres") or [] if str(g).strip()},
+                        "rating": float(o.get("rating") or 0),
+                        "runtime": int((o.get("duration") or 0) / 60000),
+                        "year": int(o.get("year") or 0), "tmdb": int(o.get("tmdb") or 0),
+                        "imdb": str(o.get("imdb") or ""), "title": str(o.get("title") or ""),
+                        "released": str(o.get("originallyAvailableAt") or "")[:10]})
+        return [p for p in out if p["key"]]
+
+    #: how far back New films reaches, in days
+    START_NEW_DAYS = 31
+    #: the streaming services Start gives a row each: (catalogue number, name)
+    START_SERVICES = ((8, "Netflix"), (1899, "HBO Max"), (350, "Apple TV"))
+
+    #: how long a service's list is kept for Start: built afresh it is two seconds of the
+    #: Start tab's answer for the three services
+    START_SERVICE_FOR = 600
+    _start_service_kept = {}
+    _start_service_lock = threading.Lock()
+
+    def _service_list(self, con, number, kind):
+        """A service's catalogue page for Start, kept a while. Past its time the kept one
+        is answered and a fresh one built behind it, so Start never waits on it again."""
+        key = (str(number), kind)
+        asked = {"type": kind, "provider": str(number), "page": "1", "sort": "popularity:desc"}
+
+        def build(db):
+            try:
+                got = self.service_catalogue(db, lambda k, d="", a=asked: a.get(k, d))
+            except Exception:
+                got = {}
+            rows = got.get("Metadata") or []
+            with self._start_service_lock:
+                self._start_service_kept[key] = (time.time(), rows, False)
+            return rows
+
+        with self._start_service_lock:
+            kept = self._start_service_kept.get(key)
+            if kept and time.time() - kept[0] < self.START_SERVICE_FOR:
+                return kept[1]
+            if kept and kept[2]:
+                return kept[1]                  # being built already
+            if kept:
+                self._start_service_kept[key] = (kept[0], kept[1], True)
+        if not kept:
+            return build(con)
+
+        def behind():
+            db = self.lib.db()
+            try:
+                build(db)
+            except Exception:
+                with self._start_service_lock:
+                    self._start_service_kept[key] = (kept[0], kept[1], False)
+            finally:
+                db.close()
+        threading.Thread(target=behind, daemon=True, name="start-service").start()
+        return kept[1]
+
+    def _start_service(self, con, number, taste):
+        """One service's row: its most watched films and series in this country now,
+        the two taken in turn - each as this house has it - rated as Start asks, the
+        children's films left to their own row."""
+        never = (taste or {}).get("never") or set()
+        lists = []
+        for kind in ("movie", "show"):
+            lists.append([c for c in self._service_list(con, number, kind)
+                          if str(c.get("ratingKey")) not in never
+                          and float(c.get("rating") or 0) >= self.START_FLOOR
+                          and not (kind == "movie" and self.for_kids(c.get("genres") or []))])
+        # three films to each series: a service's films lead, as the row's name says
+        films, series = lists
+        out, seen = [], set()
+        while (films or series) and len(out) < self.START_ROW:
+            take = [films.pop(0) for _ in range(self.START_FILMS_A_SERIES) if films]
+            if series:
+                take.append(series.pop(0))
+            for c in take:
+                if str(c.get("ratingKey")) not in seen and len(out) < self.START_ROW:
+                    seen.add(str(c.get("ratingKey")))
+                    out.append(c)
+        return out
+    #: how many of IMDb's best-rated films Classics draws from
+    CLASSICS_TOP = 250
+    #: and how long that chart is kept before it is asked again: a day, so the kept
+    #: list follows the chart as it moves
+    CLASSICS_FOR = 86400
+
+    def imdb_top(self):
+        """IMDb's top-rated films, best first: (number, title, year) each. Asked of
+        IMDb's chart once a week and kept; the last one kept when it does not answer."""
+        where = os.path.join(self.lib.root, "imdb_top.json")
+        try:
+            with open(where, encoding="utf-8") as f:
+                kept = json.load(f) or {}
+        except (OSError, ValueError):
+            kept = {}
+        rows = kept.get("rows") or []
+        # and a chart kept shorter than is asked for now is asked again
+        if (rows and len(rows) >= self.CLASSICS_TOP
+                and time.time() - float(kept.get("at") or 0) < self.CLASSICS_FOR):
+            return rows
+        import urllib.request
+        query = ("{ chartTitles(first: %d, chart: {chartType: TOP_RATED_MOVIES}) { edges { "
+                 "node { id titleText { text } releaseYear { year } } } } }" % self.CLASSICS_TOP)
+        try:
+            req = urllib.request.Request(
+                "https://caching.graphql.imdb.com/", data=json.dumps({"query": query}).encode(),
+                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
+                         "x-imdb-client-name": "imdb-web-next-localized"})
+            with urllib.request.urlopen(req, timeout=10) as answer:
+                said = json.loads(answer.read().decode("utf-8", "replace"))
+            got = [[str(e["node"]["id"]), str(e["node"]["titleText"]["text"]),
+                    int((e["node"].get("releaseYear") or {}).get("year") or 0)]
+                   for e in said["data"]["chartTitles"]["edges"]]
+        except Exception:
+            return rows                     # unanswered: last week's chart stands
+        if got:
+            try:
+                tmp = where + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"at": time.time(), "rows": got}, f)
+                os.replace(tmp, where)
+            except OSError:
+                pass
+            return got
+        return rows
+
+    def _start_classics(self, con, pool, taste, most):
+        """Classics: what this house holds or a pack carries of IMDb's top 250, in the
+        chart's order - by IMDb number, else by name and year."""
+        top = self.imdb_top()
+        if not top:
+            return []
+        flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
+        by_number = {n: at for at, (n, _t, _y) in enumerate(top)}
+        by_name = {(flat(t), int(y or 0)): at for at, (_n, t, y) in enumerate(top)}
+        never = (taste or {}).get("never") or set()
+        ranked = []
+        for p in pool:
+            if p["key"] in never:
+                continue
+            at = by_number.get(p.get("imdb") or "")
+            if at is None:
+                at = by_name.get((flat(p.get("title")), int(p.get("year") or 0)))
+            if at is not None:
+                ranked.append((at, p))
+        ranked.sort(key=lambda ap: ap[0])
+        seen = self._watched_all(con)
+        out, later, had = [], [], set()
+        for _at, p in ranked:
+            if len(out) >= most:
+                break
+            card = self.metadata_for(con, p["key"], brief=True)
+            if not card or flat(card.get("title")) in had:
+                continue
+            had.add(flat(card.get("title")))
+            (later if seen.get(p["key"]) or card.get("viewCount") else out).append(card)
+        return (out + later)[:most]
+
+    def _start_newest(self, con, pool, taste, most):
+        """New films: out in the last month, the most popular on the catalogue first -
+        what everybody is watching now, not what scores best."""
+        cut = time.strftime("%Y-%m-%d", time.localtime(time.time() - self.START_NEW_DAYS * 86400))
+        never = (taste or {}).get("never") or set()
+        # and rated as new titles must be to stand on Start at all
+        recent = [p for p in pool if p.get("released", "") >= cut and p["key"] not in never
+                  and p["rating"] >= self.START_FLOOR_NEW]
+        if not recent:
+            return []
+        scores = self.tmdb_popularity("movie", sorted({p["tmdb"] for p in recent if p.get("tmdb")}))
+        recent.sort(key=lambda p: (-scores.get(p.get("tmdb") or 0, -1.0), -p["rating"]))
+        seen = self._watched_all(con)
+        out, later = [], []
+        for p in recent:
+            if len(out) >= most:
+                break
+            card = self.metadata_for(con, p["key"], brief=True)
+            if not card:
+                continue
+            (later if seen.get(p["key"]) or card.get("viewCount") else out).append(card)
+        return (out + later)[:most]
+
+    #: a row with no mood: every genre, the best and the viewer's kind of thing first
+    ANY_VIBE = ("any", "", "", None, set())
+    #: a row needs this many to stand
+    START_ROW_LEAST = 4
+
+    def _start_rows(self, con, taste, seed):
+        """The front's rows, films and series mixed as the services mix theirs: what is
+        new, each mood for films and then for series, and the classics last. A row with
+        too little in it is left out."""
+        films, series = self._start_pool(con, "movie"), self._start_pool(con, "show")
+        # films for children have a row of their own and stand in no other
+        kids = [p for p in films if self.for_kids(p["genres"])]
+        films = [p for p in films if not self.for_kids(p["genres"])]
+        rows = []
+
+        def add(rid, name, tagline, pool, vibe, kind, floor=None):
+            chosen = self._start_choose(con, pool, vibe, seed, self.START_ROW, taste, floor)
+            if len(chosen) >= self.START_ROW_LEAST:
+                rows.append({"id": rid, "name": name, "tagline": tagline, "kind": kind,
+                             "why": self._start_why(chosen[0], vibe, taste),
+                             "Metadata": chosen})
+
+        newest = self._start_newest(con, films, taste, self.START_ROW)
+        if len(newest) >= self.START_ROW_LEAST:
+            rows.append({"id": "new-movie", "name": "New films",
+                         "tagline": "Out this last month, the most watched first",
+                         "kind": "movie", "why": "", "Metadata": newest})
+        add("new-show", "New series", "Started this year or last",
+            self._start_era(series, "fresh"), self.ANY_VIBE, "show", self.START_FLOOR_NEW)
+        # what the streaming services have on now, a row a service
+        for number, name in self.START_SERVICES:
+            on = self._start_service(con, number, taste)
+            if len(on) >= self.START_ROW_LEAST:
+                rows.append({"id": "svc-%d" % number, "name": "Popular on " + name,
+                             "tagline": "Films and series on %s here right now" % name,
+                             "kind": "mixed", "why": "", "Metadata": on})
+        for v in self.VIBES:
+            # bad on purpose is not the impression Start gives
+            if v[0] == "trash":
+                continue
+            add(v[0] + "-movie", v[1], v[2], films, v, "movie")
+            add(v[0] + "-show", v[1] + " \u00b7 series", v[2], series, v, "show")
+        classics = self._start_classics(con, films, taste, self.START_ROW)
+        if len(classics) >= self.START_ROW_LEAST:
+            rows.append({"id": "classic-movie", "name": "IMDb Top 250",
+                         "tagline": "The best rated films of all time, here or to get",
+                         "kind": "movie", "why": "", "Metadata": classics})
+        add("kids-movie", "For the kids", "Family films and animation",
+            kids, self.ANY_VIBE, "movie")
+        music = self._start_music(con, seed)
+        if music:
+            rows.append({"id": "music", "name": "Music videos",
+                         "tagline": "A playlist a card, played last first; round and round",
+                         "kind": "movie", "why": "", "Metadata": music})
+        for r in rows:
+            r["more"] = self.start_more(r["id"])
+        return rows
+
+    #: music videos a row holds
+    START_MUSIC = 50
+
+    @staticmethod
+    def round_name(cid, name):
+        """A round's name on Continue watching: a music round reads as music, not as a
+        film - "Music", and its playlist's name."""
+        cid = str(cid)
+        if cid != "music" and not cid.startswith("music:"):
+            return name
+        import pd_music
+        plist = pd_music.find(cid[6:]) if cid.startswith("music:") else None
+        return "Music · " + plist["name"] if plist else "Music"
+
+    def _start_music(self, con, seed):
+        """A card a playlist, the one played last first, and every music video last: each
+        plays as the shuffle shelf it names, "music:<id>" or "music"."""
+        import pd_music
+        every = music_order(con, self.who, seed)
+        if not every:
+            return []
+        here = set(every)
+        rounds = viewer_settings(self.who).get("shuffles") or {}
+        played = lambda sid: int((rounds.get(sid) or {}).get("casualStamp") or 0)
+
+        def card(sid, name, keys):
+            return {"ratingKey": sid, "key": "/music/" + sid, "type": "movie", "title": name,
+                    "summary": "%d videos" % len(keys) if len(keys) != 1 else "1 video",
+                    "musicShelf": sid, "_keys": keys}
+
+        lists = []
+        for p in pd_music.load() or []:
+            keys = [k for k in p["keys"] if k in here]
+            if keys:
+                lists.append(card("music:" + p["id"], p["name"] or "Playlist", keys))
+        lists.sort(key=lambda c: -played(c["ratingKey"]))
+        out = lists + [card("music", "All music videos", every)]
+        # each card's picture a video no card before it shows: lists that start alike
+        # stood side by side under one picture
+        used = set()
+        for c in out:
+            keys = c.pop("_keys")
+            face = next((k for k in keys if k not in used), keys[0])
+            used.add(face)
+            c["thumb"] = "/art/%s/poster" % face
+            c["art"] = "/art/%s/backdrop" % face
+        return out
+
+    #: what makes a film one for children: a family film, or animation that is not
+    #: also something no child should be put in front of
+    KIDS = {"Family"}
+    KIDS_DRAWN = {"Animation"}
+    NOT_KIDS = {"Horror", "Crime", "War", "Thriller"}
+
+    @classmethod
+    def for_kids(cls, genres):
+        """Whether a film, by its genres, is a children's film."""
+        genres = set(genres or [])
+        if genres & cls.NOT_KIDS:
+            return False
+        return bool(genres & (cls.KIDS | cls.KIDS_DRAWN))
+
+    #: a viewer's taste, kept a while: who -> (when, taste)
+    _TASTES = {}
+    #: kept this long: what somebody watched this afternoon counts tonight
+    TASTE_KEPT = 600
+
+    def taste(self, con):
+        """What this viewer watches, as a share per genre and per decade: each title they
+        put on counts once - a programme once, however many episodes - finished titles
+        three times what was given up on, and the last few weeks more than last year.
+        {"genres": {name: share}, "decades": {1990: share}, "top": [names, most first]}."""
+        who = str(self.who)
+        kept = self._TASTES.get(who)
+        if kept and time.time() - kept[0] < self.TASTE_KEPT:
+            return kept[1]
+        rows = con.execute(
+            "SELECT key, MAX(updated) at FROM watchlog WHERE who=? AND COALESCE(casual, 0) = 0 "
+            "GROUP BY key ORDER BY at DESC LIMIT 600", (who,)).fetchall()
+        finished = self._watched_all(con)
+        now = time.time()
+        weights = {}
+        for r in rows:
+            key = str(r["key"])
+            item = key
+            if is_episode(key):
+                got = con.execute("SELECT item_id FROM episode WHERE id=?", (key,)).fetchone()
+                item = str(got["item_id"]) if got else ""
+            if not item:
+                continue
+            days = max(0.0, (now - float(r["at"] or 0)) / 86400.0)
+            w = (1.0 if finished.get(key) else 0.35) / (1.0 + days / 60.0)
+            weights[item] = max(weights.get(item, 0.0), w)
+        # and what they said: more like this counts as one watched to the end and then
+        # some; not this weighs against its kind
+        said = viewer_settings(who)
+        for key in said.get("startMore") or []:
+            weights[str(key)] = max(weights.get(str(key), 0.0), 0.0) + 1.5
+        for key in said.get("startNot") or []:
+            weights[str(key)] = weights.get(str(key), 0.0) - 1.0
+        genres, decades = {}, {}
+        offered = None
+        for item, w in weights.items():
+            row = con.execute("SELECT genres, year FROM item WHERE id=?", (item,)).fetchone()
+            if not row and str(item).startswith("o"):
+                # a pack's film, told about from the Start tab: its genres from the pack
+                if offered is None:
+                    try:
+                        import pd_torrents
+                        offered = {str(o.get("ratingKey")): o for o in
+                                   list(pd_torrents.offered()) + list(pd_torrents.offered_shows())}
+                    except Exception:
+                        offered = {}
+                o = offered.get(str(item))
+                row = {"genres": ",".join(o.get("genres") or []), "year": o.get("year")} if o else None
+            if not row:
+                continue
+            names = [g.strip() for g in str(row["genres"] or "").split(",") if g.strip()]
+            for g in names:
+                genres[g] = genres.get(g, 0.0) + w / len(names)
+            if row["year"]:
+                era = int(row["year"]) // 10 * 10
+                decades[era] = decades.get(era, 0.0) + w
+        total_g = sum(v for v in genres.values() if v > 0) or 1.0
+        total_d = sum(v for v in decades.values() if v > 0) or 1.0
+        taste = {"genres": {g: v / total_g for g, v in genres.items()},
+                 "decades": {d: v / total_d for d, v in decades.items()},
+                 "top": [g for g, v in sorted(genres.items(), key=lambda gv: -gv[1]) if v > 0][:5],
+                 # titles they said never to suggest again
+                 "never": set(str(k) for k in said.get("startNot") or [])}
+        if len(self._TASTES) > 200:
+            self._TASTES.clear()
+        self._TASTES[who] = (time.time(), taste)
+        return taste
+
+    #: Fresh is this year and the last; Classic is everything before
+    FRESH_YEARS = 2
+
+    @classmethod
+    def _start_era(cls, pool, era):
+        """The pool narrowed to Fresh - out this year or last - or to Classic, all the rest.
+        Anything else is the whole of it."""
+        if era not in ("fresh", "classic"):
+            return pool
+        first = int(time.strftime("%Y")) - cls.FRESH_YEARS + 1
+        if era == "fresh":
+            return [p for p in pool if p["year"] >= first]
+        return [p for p in pool if 0 < p["year"] < first]
+
+    @staticmethod
+    def _taste_bonus(p, taste):
+        """How much a title is this viewer's kind of thing: its genres' shares of what they
+        watch, and its decade's. Nought for somebody who has watched nothing yet."""
+        if not taste or not taste.get("genres"):
+            return 0.0
+        shares = [taste["genres"].get(g, 0.0) for g in p["genres"]]
+        era = p["year"] // 10 * 10 if p["year"] else 0
+        return (sum(shares) * 6.0 + (taste["decades"].get(era, 0.0) * 2.0 if era else 0.0))
+
+    @staticmethod
+    def _start_score(p, vibe, floor=0.0):
+        """How well one title fits a vibe, or None when it does not - nor when it is
+        rated under `floor`: Start is the first impression, and puts its best foot
+        forward."""
+        _id, _name, _tag, want, avoid = vibe
+        # no mood at all: everything stands, on its score
+        hit = 1 if want is None else len(p["genres"] & want)
+        if not hit or p["genres"] & avoid:
+            return None
+        rating = p["rating"]
+        if _id == "trash":
+            # bad on purpose: a score under six, and something to laugh or scream at
+            if not 0 < rating < 6:
+                return None
+            return hit + (6 - rating) / 2
+        # a film for a long night; a series' runtime is an episode's, and says nothing
+        if _id == "epic" and p["kind"] == "movie" and p["runtime"] and p["runtime"] < 120:
+            return None
+        if rating < floor:
+            return None
+        # the score counts for more than the day's shake: the best of a mood come first
+        return hit * 0.5 + rating / 10 * 4 + (0.3 if p["here"] else 0)
+
+    #: the least a title on Start is rated: films and series alike, 0-10
+    START_FLOOR = 7.0
+    #: and for what came out this year or last, whose scores are still settling
+    START_FLOOR_NEW = 6.5
+
+    def _start_choose(self, con, pool, vibe, seed, most, taste=None, floor=None):
+        """The best fits of a vibe - leaning to what this viewer watches - shaken by the
+        day and the reroll so each visit is not the same list, unseen titles only while
+        there are any."""
+        import random
+        shake = random.Random("%s|%s|%s" % (time.strftime("%Y-%m-%d"), vibe[0], seed))
+        scored = []
+        never = (taste or {}).get("never") or set()
+        for p in pool:
+            if p["key"] in never:
+                continue
+            s = self._start_score(p, vibe, self.START_FLOOR if floor is None else floor)
+            if s is not None:
+                scored.append((s + self._taste_bonus(p, taste) + shake.random() * 0.8, p))
+        scored.sort(key=lambda sp: -sp[0])
+        seen = self._watched_all(con)
+        out, later = [], []
+        for _s, p in scored:
+            if len(out) >= most:
+                break
+            card = self.metadata_for(con, p["key"], brief=True)
+            if not card:
+                continue
+            if seen.get(p["key"]) or card.get("viewCount"):
+                later.append(card)
+                continue
+            out.append(card)
+        return (out + later)[:most]
+
+    @staticmethod
+    def _start_why(card, vibe, taste=None):
+        """One line on why this one: what it is, how it scores, how it plays - and, where
+        it is so, that it is the kind of thing this viewer watches."""
+        genres = ", ".join((card.get("genres") or [])[:2]).lower()
+        rating = float(card.get("rating") or 0)
+        bits = [genres] if genres else []
+        theirs = next((g for g in (taste or {}).get("top", [])[:3]
+                       if g in (card.get("genres") or [])), "")
+        if theirs:
+            bits.append("you watch a lot of " + theirs.lower())
+        if rating:
+            bits.append("rated %.1f" % rating)
+        bits.append("one press to download" if card.get("offered") else "here to play now")
+        return (vibe[1] + ": " if vibe[1] else "") + " \u00b7 ".join(bits)
+
     def catalogue_answer(self, con, path, one):
         """A streaming service's catalogue, or the films' Popular page."""
         if path == "/library/popularFilms":
@@ -4969,6 +6132,34 @@ class LocalAPI:
 
     #: how many the front page's Popular films row holds
     POPULAR_ROW = 40
+
+    def _deck_arrivals(self, con, items):
+        """A film from this viewer's watchlist that has come in: put first on Continue
+        watching until it is started - once it has any place of its own the shelf has
+        it as usual."""
+        try:
+            stored = _settings() or {}
+            corner = (stored if self.who == "me"
+                      else (stored.get("users") or {}).get(self.who) or {})
+            shown = {str((i or {}).get("ratingKey")) for i in items}
+            for came in sorted(corner.get("deckArrivals") or [],
+                               key=lambda d: -int(d.get("at") or 0)):
+                key = str(came.get("key") or "")
+                if not key or key in shown:
+                    continue
+                started = con.execute("SELECT 1 FROM progress WHERE who=? AND key=? "
+                                      "LIMIT 1", (self.who, key)).fetchone()
+                if started:
+                    continue
+                one = self.metadata_for(con, key, brief=True)
+                if not one:
+                    continue
+                one["lastViewedAt"] = int(came.get("at") or 0)
+                one["arrived"] = True
+                items.insert(0, one)
+                shown.add(key)
+        except Exception:
+            pass
 
     def popular_films(self, con, as_row=False):
         """The Films tab's Popular page: the films most watched now, most watched first,
@@ -4983,7 +6174,10 @@ class LocalAPI:
         for o in self._offered_quietly():
             offers.setdefault(self._bare(o.get("title")), []).append(o)
         out, rows, listed = [], [], set()
+        # the ones not out yet: kept with the rest, so their posters are found
+        soon = []
         from pd_library import flatten_title
+        today = time.strftime("%Y-%m-%d")
         for at, row in enumerate(films):
             year = int(row.get("year") or 0)
             held = (by_tmdb.get(("movie", int(row.get("tmdb") or 0)))
@@ -4995,6 +6189,12 @@ class LocalAPI:
                              or abs(int(o.get("year") or 0) - year) <= 1), None)
                 if pack:
                     got = dict(pack) if show.get("download") else None
+                elif str(row.get("released") or "")[:10] > today:
+                    # talked about before it is out: shown as upcoming, nothing to ask
+                    # for and nobody asked of the tracker until it is
+                    card = pd_streaming.item(row)
+                    got = card if show.get("upcoming") else None
+                    soon.append(row)
                 else:
                     rows.append(row)
                     card = pd_streaming.item(row)
@@ -5009,7 +6209,7 @@ class LocalAPI:
         if as_row:
             # the front page's row: the popular films, most watched first, each kind
             # shown as this viewer's film settings say - requests hidden unless asked for
-            pd_streaming._keep_searched(rows)
+            pd_streaming._keep_searched(rows + soon)
             pd_streaming.ask_tracker_about(rows[:12], self.lib, mine=True)
             return out[:self.POPULAR_ROW]
         # and every other film here after the popular ones, most popular on TMDB first
@@ -5041,8 +6241,9 @@ class LocalAPI:
                 numbers[key] = int(o.get("tmdb") or 0)
                 out.append(got)
         out = self.rank_popular(out, trending, "movie", numbers)
-        # kept, so a card's key opens its page; the films asked of the tracker behind it
-        pd_streaming._keep_searched(rows)
+        # kept, so a card's key opens its page and its poster is found - an upcoming
+        # one's too, which drew a blank; the films asked of the tracker behind it
+        pd_streaming._keep_searched(rows + soon)
         # the top of the page now, as this viewer; the rest in the background, slowly
         pd_streaming.ask_tracker_about(rows[:12], self.lib, mine=True)
         pd_streaming.ask_tracker_slowly(rows[12:])
@@ -5205,12 +6406,23 @@ class LocalAPI:
             c["popularity"] = len(ranked) - at
         return ranked
 
+    def _poster_before_match(self, title, year):
+        """The poster a film's card wore before it was downloaded, while the library has
+        not matched it yet: by name, a year either side. None when there was none."""
+        import pd_streaming
+        flat = self._bare(title)
+        if not flat:
+            return None
+        for r in pd_streaming.searched() or []:
+            if (r.get("poster") and r.get("key") and self._bare(r.get("title")) == flat
+                    and (not year or not r.get("year")
+                         or abs(int(r.get("year") or 0) - int(year)) <= 1)):
+                return "/art/%s/poster" % r["key"]
+        return None
+
     def films_show(self):
         """Which of the three kinds this viewer wants the film shelf to stand."""
-        said = viewer_settings(self.who).get("filmsShow")
-        if not isinstance(said, dict):
-            return dict(self.FILMS_SHOW)
-        return {k: bool(said.get(k, v)) for k, v in self.FILMS_SHOW.items()}
+        return films_shown(viewer_settings(self.who).get("filmsShow"), self.FILMS_SHOW)
 
     @staticmethod
     def _offered_quietly():
@@ -5231,6 +6443,32 @@ class LocalAPI:
     _PERSON_FILMS = {}
     #: whether the last person's films are still being asked of the tracker
     _person_asking = False
+
+    #: a whole name asked of the catalogue's people, kept ten minutes: (when, rows)
+    _PEOPLE_ASKED = {}
+
+    def _person_by_name(self, spelt):
+        """Somebody the catalogue knows by exactly this whole name, as a row of the faces:
+        a person on television only - a reality series' cast - is in no film's cast
+        here, and searching their name found nobody. [] for one word, or no such name."""
+        words = spelt.strip()
+        if len(words.split()) < 2:
+            return []
+        kept = self._PEOPLE_ASKED.get(words.lower())
+        if kept and time.time() - kept[0] < 600:
+            return kept[1]
+        try:
+            found = (self.lib.tmdb("/search/person", query=words) or {}).get("results") or []
+        except Exception:
+            return []
+        hit = next((r for r in found if r.get("id")
+                    and str(r.get("name") or "").strip().lower() == words.lower()), None)
+        rows = ([{"person": int(hit["id"]), "name": str(hit["name"]), "ord": 0,
+                  "profile": str(hit.get("profile_path") or ""), "held": 0}] if hit else [])
+        if len(self._PEOPLE_ASKED) > 200:
+            self._PEOPLE_ASKED.clear()
+        self._PEOPLE_ASKED[words.lower()] = (time.time(), rows)
+        return rows
 
     def _people_in_search(self, con, spelt, term, hubs):
         """The people a search's words name, as a row of faces, and for a whole name
@@ -5255,6 +6493,9 @@ class LocalAPI:
                      FROM credit WHERE LOWER(name) = LOWER(?) AND name <> ''
                     GROUP BY LOWER(name)""", (spelt.strip(),)).fetchall()
             people = list(named) + list(people)
+        if not any(str(r["name"] or "").strip().lower() == spelt.strip().lower()
+                   for r in people):
+            people = self._person_by_name(spelt) + list(people)
         if people:
             hubs.append({"type": "person", "title": "Actors", "Metadata": [
                 {"type": "person", "id": r["person"], "tag": r["name"],
@@ -5377,20 +6618,29 @@ class LocalAPI:
         # tracker behind the page, so the next look says Download where it can be had
         try:
             import pd_streaming
-            rest = [r for r in pd_streaming.credit_rows(self.lib, theirs)
-                    if self._bare(r.get("title")) not in seen]
-            self._person_asking = pd_streaming.ask_tracker_about(rest[:12], self.lib)
+            rest = pd_streaming.credit_rows(
+                self.lib, theirs, skip=lambda t: self._bare(t) in seen)
+            # the first few asked now, as the one searching; the rest of a long career
+            # behind them a few a minute, each card Checking until its answer comes
+            self._person_asking = pd_streaming.ask_tracker_about(rest[:8], self.lib)
+            if pd_streaming.ask_tracker_slowly(rest[8:]):
+                self._person_asking = True
             for r in rest:
                 card = pd_streaming.item(r)
                 if self.new_one_shown(card.get("onTracker"), show, card.get("checking")):
                     take(card)
             if person:
                 tv = (self.lib.tmdb("/person/%d/tv_credits" % int(person)) or {}).get("cast") or []
-                for r in pd_streaming.show_credit_rows(self.lib, tv):
-                    take({"ratingKey": r["key"], "type": "show", "title": r["show"],
-                          "year": r["year"] or None, "summary": r["overview"],
-                          "thumb": "/art/%s/poster" % r["key"], "rating": r["rating"],
-                          "genres": [], "addable": True, "tmdb": r["tmdb"]})
+                # each with its band as every other series card: Add, Stream, Checking
+                # while the tracker is asked, Request only for a viewer who shows those -
+                # straight from the catalogue they all said Request
+                for c in self.with_sources([
+                        {"ratingKey": r["key"], "type": "show", "title": r["show"],
+                         "year": r["year"] or None, "summary": r["overview"],
+                         "thumb": "/art/%s/poster" % r["key"], "rating": r["rating"],
+                         "genres": [], "addable": True, "tmdb": r["tmdb"]}
+                        for r in pd_streaming.show_credit_rows(self.lib, tv)]):
+                    take(c)
         except Exception:
             pass
         return out
@@ -5522,7 +6772,52 @@ class LocalAPI:
                                                else (x.get("year") or 0), named(x)))
         if field == "addedAt":
             return sorted(both, key=lambda x: x.get("addedAt") or 0, reverse=back)
+        if field == "popularity":
+            return self._by_popularity(both, kind, back)
+        if field == "rating":
+            return sorted(both, key=lambda x: (-float(x.get("rating") or 0) if back
+                                               else float(x.get("rating") or 0), named(x)))
         return sorted(both, key=named, reverse=back)
+
+    def _by_popularity(self, cards, kind, back=True):
+        """The library's own and the packs' titles by TMDB's popularity score, which
+        each card then carries for the clients to sort by. Titles not scored yet - asked
+        in the background - follow, the better rated first, then by name. Without
+        this the shelf fell back to the name, turned round: Popular began at Z."""
+        numbers = {str(c.get("ratingKey")): int(c.get("tmdb") or 0) for c in cards}
+        held = [k for k, n in numbers.items() if not n]
+        if held:
+            con = self.lib.db()
+            try:
+                for i in range(0, len(held), 400):
+                    part = held[i:i + 400]
+                    for r in con.execute("SELECT id, tmdb_id FROM item WHERE id IN (%s)"
+                                         % ",".join("?" * len(part)), part):
+                        numbers[str(r["id"])] = int(r["tmdb_id"] or 0)
+                # a pack's programme carries no number of its own: the library's entry
+                # of the same name has it - Friends, Severance, Breaking Bad all stood
+                # unscored at the bottom of Popular
+                named = {}
+                for r in con.execute("SELECT title, tmdb_id FROM item WHERE type=? AND tmdb_id",
+                                     (kind,)):
+                    named.setdefault(self._bare(r["title"]), int(r["tmdb_id"] or 0))
+                for c in cards:
+                    k = str(c.get("ratingKey"))
+                    if not numbers.get(k):
+                        numbers[k] = named.get(self._bare(c.get("title")), 0)
+            finally:
+                con.close()
+        scores = self.tmdb_popularity(kind, sorted({n for n in numbers.values() if n}))
+        for c in cards:
+            got = scores.get(numbers.get(str(c.get("ratingKey")), 0))
+            if got:
+                c["popularity"] = round(float(got), 3)
+        named = lambda x: (x.get("titleSort") or x.get("title") or "").lower()
+        scored = sorted((c for c in cards if c.get("popularity")),
+                        key=lambda c: float(c["popularity"]), reverse=back)
+        rest = sorted((c for c in cards if not c.get("popularity")),
+                      key=lambda c: (-float(c.get("rating") or 0), named(c)))
+        return scored + rest
 
     #: a film's studios, asked of the catalogue again after this long
     STUDIOS_AGE = 30 * 86400

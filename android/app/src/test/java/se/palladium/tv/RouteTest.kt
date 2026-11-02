@@ -106,6 +106,17 @@ class RouteTest {
     // ---- one look
 
     @Test
+    fun unknownCodecsArePlayedAsTheyAre() {
+        // details that came back without codecs: the file is tried as it is
+        assertTrue(Route.playAsIs(false, true, null))
+        assertTrue(Route.playAsIs(false, true, ""))
+        // a codec the device cannot decode is encoded, and so is a file with no part
+        assertFalse(Route.playAsIs(false, true, "mpeg2video"))
+        assertFalse(Route.playAsIs(false, false, null))
+        assertTrue(Route.playAsIs(true, true, "h264"))
+    }
+
+    @Test
     fun `an answer is believed at once`() {
         val had = Route.never(0)
         val now = Route.settle(had, Look(true, "M", 100, 1000), 1000, FRESH)
@@ -603,6 +614,28 @@ class RouteTest {
     }
 
     @Test
+    fun `a title's page says what its download is doing, and Cancel is its own button`() {
+        assertEquals("Downloading nikt0 · 34% · 112 Mbit/s · 6 min left",
+                     Route.offerLine("downloading", "nikt0", 0.345, 111.7, 401, 0))
+        assertEquals("Downloading 0%", Route.offerLine("downloading", "", 0.0, 0.0, -1, 0))
+        assertEquals("Downloading 5% · 1 h 2 min left",
+                     Route.offerLine("downloading", "", 0.05, 0.2, 3720, 0))
+        assertEquals("Queued · 2 ahead", Route.offerLine("queued", "x", 0.0, 50.0, 10, 2))
+        // the server's words win: it knows the torrent is looking for seeders
+        assertEquals("Looking for seeders",
+                     Route.offerLine("downloading", "", 0.0, 0.0, -1, 0, "Looking for seeders"))
+        assertEquals("Checking the files 30%",
+                     Route.takingLine("downloading", 0.3, 0.0, "Checking the files 30%"))
+        assertEquals("Downloading 42%  ·  12.0 Mbit/s", Route.takingLine("downloading", 0.42, 12.0, ""))
+        assertEquals("Waiting for seeders · 42%",
+                     Route.shortLine("waiting", "Waiting for seeders · 42%", "42%"))
+        assertEquals("42%", Route.shortLine("downloading", "Downloading 42% · 9 Mbit/s", "42%"))
+        assertEquals("arm", Route.offerPress("downloading", false))
+        assertEquals("cancel", Route.offerPress("queued", true))
+        assertEquals("", Route.offerPress("done", false))
+    }
+
+    @Test
     fun `the wait for the next title is black from 0,4 s and worded only from 2 s`() {
         assertEquals("a changeover of 0.3 s shows nothing", 0, Route.changeoverShows(300))
         assertEquals("black at 0.4 s", 1, Route.changeoverShows(400))
@@ -919,6 +952,42 @@ class RouteTest {
     }
 
     @Test
+    fun theHealthPageSaysHowManyThingsNeedYou() {
+        assertEquals("All good", Route.healthTitle(0))
+        assertEquals("1 thing needs you", Route.healthTitle(1))
+        assertEquals("3 things need you", Route.healthTitle(3))
+        assertEquals("just now", Route.agoWords(20))
+        assertEquals("12 min ago", Route.agoWords(720))
+        assertEquals("5 h ago", Route.agoWords(5 * 3600))
+        assertEquals("3 days ago", Route.agoWords(3 * 86_400))
+    }
+
+    @Test
+    fun aNoticeCutAfterWaitingIsNotASlowServer() {
+        assertFalse(Route.slowWorthSaying("/notice?since=1", 33_841, false))
+        assertFalse(Route.slowWorthSaying("/notice?since=1", 57_020, true))
+        assertTrue(Route.slowWorthSaying("/notice?since=1", 300, true))
+        assertTrue(Route.slowWorthSaying("/settings", 30_001, false))
+        assertTrue(Route.slowWorthSaying("/chat", 100, true))
+        assertFalse(Route.slowWorthSaying("/trace", 9_000, true))
+    }
+
+    @Test
+    fun aTitlePageWaitsAMinuteForTheTracker() {
+        assertEquals(60_000L, Route.CHECK_EVERY_MS * Route.CHECK_TRIES)
+        // and then keeps looking, slower: Checking until the tracker has answered
+        assertEquals(5_000L, Route.checkGap(0))
+        assertEquals(30_000L, Route.checkGap(Route.CHECK_TRIES))
+        assertEquals(30_000L, Route.checkGap(500))
+    }
+
+    @Test
+    fun aChannelHasLongerThanItsSlowestStartToAnswer() {
+        // 13.4 s for a channel's first playlist over the outside address, measured
+        assertTrue(Route.LIVE_READ_MS > 13_400L * 2)
+    }
+
+    @Test
     fun aPacksSeasons() {
         assertEquals("", Route.seasonSpan(emptyList()))
         assertEquals("S02", Route.seasonSpan(listOf(2)))
@@ -942,11 +1011,34 @@ class RouteTest {
 
     @Test
     fun tvOpensOnPopular() {
-        assertEquals(true, Route.tvOpensPopular("tv", ""))
+        assertEquals(true, Route.tvOpensPopular("tv", Route.SRC_HOUSE))
         assertEquals(false, Route.tvOpensPopular("tv", "1899"))
-        assertEquals(true, Route.tvOpensPopular("films", ""))
+        assertEquals(false, Route.tvOpensPopular("tv", ""))
+        assertEquals(true, Route.tvOpensPopular("films", Route.SRC_HOUSE))
         assertEquals(false, Route.tvOpensPopular("films", "8"))
-        assertEquals(false, Route.tvOpensPopular("home", ""))
+        assertEquals(false, Route.tvOpensPopular("home", Route.SRC_HOUSE))
+    }
+
+    @Test
+    fun serviceSources() {
+        // this house's two marked: no catalogue, all of the house
+        val house = Route.sources(Route.SRC_HOUSE)
+        assertEquals(false, house.catalogue)
+        assertEquals(true, house.mine && house.packs)
+        // nothing marked: everything, every service included
+        val none = Route.sources("")
+        assertEquals(true, none.everything && none.catalogue && none.mine && none.packs)
+        // a service and In packs: that catalogue, and the packs, not the disks
+        val mixed = Route.sources("-2,1899")
+        assertEquals(listOf("1899"), mixed.services)
+        assertEquals(true, mixed.catalogue && mixed.packs && !mixed.mine && !mixed.everything)
+        // what each keeps: disk for My library, pack for In packs, both everything
+        assertEquals(true, Route.keptByHouse(false, false, true, false))
+        assertEquals(false, Route.keptByHouse(true, false, true, false))
+        assertEquals(true, Route.keptByHouse(true, false, false, true))
+        assertEquals(false, Route.keptByHouse(false, false, false, true))
+        assertEquals(false, Route.keptByHouse(false, true, true, false))
+        assertEquals(true, Route.keptByHouse(false, true, true, true))
     }
 
     @Test
@@ -1017,12 +1109,15 @@ class RouteTest {
     }
 
     @Test
-    fun aPassingBarDoesNotShrinkThePosters() {
-        assertEquals(124, Route.homePoster(450f, 0f))
-        assertEquals(109, Route.homePoster(380f, 0f))
-        // a 50 dp update bar takes height, and is counted back in
-        assertEquals(109, Route.homePoster(330f, 50f))
-        assertEquals(96, Route.homePoster(100f, 0f))
+    fun twoWholeShelvesOnHome() {
+        // the streamer: 443 dp under the tabs; two shelves of 36 + 1.5w + 4 fit in it
+        val w = Route.homePoster(443f)
+        assertTrue(2 * (36f + 1.5f * w + 4f) <= 443f)
+        assertEquals(121, w)
+        // a notice bar of 55 dp over the shelves: smaller, and still two whole shelves
+        val under = Route.homePoster(388f)
+        assertTrue(under < w && 2 * (36f + 1.5f * under + 4f) <= 388f)
+        assertEquals(96, Route.homePoster(100f))
     }
 
     @Test
@@ -1044,7 +1139,8 @@ class RouteTest {
     @Test
     fun homeShelvesStartInLineWithTheirNames() {
         assertEquals(21, Route.shelfInset(true))
-        assertEquals(8, Route.shelfInset(false))
+        // on a phone the poster's edge - inset and its own 5 dp - under the shelf's name
+        assertEquals(Route.shelfNameInset(false), Route.shelfInset(false) + 5)
         assertEquals(Route.shelfInset(true), Route.shelfNameInset(true))
         assertTrue(Route.shelfNameInset(false) < 21)
     }
@@ -1196,9 +1292,25 @@ class RouteTest {
     @Test
     fun searchFromHomeSplitsFilmsAndTv() {
         assertTrue(Route.splitSearch("batman", "home", 3, 2))
-        assertFalse(Route.splitSearch("batman", "films", 3, 2))
+        // every tab now: the TV tab with its programmes first
+        assertTrue(Route.splitSearch("batman", "films", 3, 2))
+        assertTrue(Route.splitSearch("batman", "start", 3, 2))
+        assertTrue(Route.tvFirst("tv"))
+        assertFalse(Route.tvFirst("home"))
         assertFalse(Route.splitSearch("batman", "home", 3, 0))
         assertFalse(Route.splitSearch("", "home", 3, 2))
+        // one person's page: their films and their series apart, no words typed
+        assertTrue(Route.splitSearch("", "home", 3, 2, person = true))
+        // a music round on Continue watching wears MUSIC, any other shuffle SHUFFLE
+        assertEquals("MUSIC", Route.shuffleBand("music"))
+        assertEquals("MUSIC", Route.shuffleBand("music:81b8108e"))
+        assertEquals("SHUFFLE", Route.shuffleBand("coll:12"))
+        // AV1 from the file only where a hardware decoder takes it
+        assertTrue(Route.videoDirect("av1", true))
+        assertFalse(Route.videoDirect("av1", false))
+        assertTrue(Route.videoDirect("hevc", false))
+        assertFalse(Route.videoDirect("mpeg4", true))
+        assertFalse(Route.splitSearch("", "home", 3, 0, person = true))
     }
 
     @Test
@@ -1226,9 +1338,428 @@ class RouteTest {
     }
 
     @Test
+    fun anEpisodeAskedForIsWaitedForUntilItCanBePlayed() {
+        assertEquals(setOf(3), Route.episodesStillComing(setOf(3), setOf(1, 2)))
+        assertEquals(setOf(4), Route.episodesStillComing(setOf(3, 4), setOf(3)))
+        assertEquals(emptySet<Int>(), Route.episodesStillComing(setOf(3), setOf(3)))
+    }
+
+    @Test
+    fun aSeriesListsEveryPackItAddedAndSaysWhich() {
+        assertEquals(listOf("a", "b", "c"), Route.addedPacks(listOf("a"), listOf("b", "a", "", "c")))
+        assertEquals("In use", Route.packWord("a", listOf("a")))
+        assertEquals("Added", Route.packWord("b", listOf("a")))
+        assertEquals("", Route.packWord("", listOf("a")))
+    }
+
+    @Test
+    fun versionHeldSaysOnDiskWhereverItCameFrom() {
+        assertEquals("On disk", Route.versionTag(true, true, false, false, false))
+        assertEquals("On disk", Route.versionTag(false, true, true, false, false))
+        assertEquals("On disk", Route.versionTag(false, true, false, false, false))
+        assertEquals("Pack", Route.versionTag(false, false, true, false, false))
+        assertEquals("Season pack", Route.versionTag(false, false, false, true, true))
+        assertEquals("Tracker", Route.versionTag(false, false, false, false, false))
+    }
+
+    @Test
+    fun sagaCaptionSaysThePlaceAndWhileSteppingTheName() {
+        assertEquals("2 of 6", Route.sagaCaption(false, "B (2005)", 1, 6, true))
+        assertEquals("C (2020) · 3 of 6", Route.sagaCaption(true, "C (2020)", 2, 6, false))
+        assertEquals("B (2005) · 2 of 6", Route.sagaCaption(true, "B (2005)", 1, 6, true))
+    }
+
+    @Test
+    fun sagaPosterStepsStayWithinTheSeries() {
+        assertEquals(2, Route.sagaStep(1, 3, 1))
+        assertEquals(2, Route.sagaStep(2, 3, 1))
+        assertEquals(0, Route.sagaStep(0, 3, -1))
+        assertEquals(0, Route.sagaStep(0, 0, 1))
+    }
+
+    @Test
+    fun sagaStepsAreTheFilmsEitherSide() {
+        val parts = listOf(Triple("a", "A (1999)", false), Triple("b", "B (2005)", true),
+                           Triple("c", "C (2020)", false))
+        assertEquals(("a" to "‹ A (1999)") to ("c" to "C (2020) ›"), Route.sagaSteps(parts))
+        assertEquals(null to ("b" to "B (2005) ›"),
+                     Route.sagaSteps(listOf(Triple("a", "A (1999)", true), Triple("b", "B (2005)", false))))
+        assertEquals(null to null, Route.sagaSteps(emptyList()))
+    }
+
+    @Test
+    fun startSlidePlaysOnlyAFilmThatIsHere() {
+        assertEquals("Out 15 Dec 2026" to false, Route.heroAct(false, true, false, "movie", "2026-12-15"))
+        assertEquals("Request" to false, Route.heroAct(false, false, true, "movie", ""))
+        assertEquals("⤓ Get it" to false, Route.heroAct(true, false, false, "movie", ""))
+        assertEquals("▶ Play" to true, Route.heroAct(false, false, false, "movie", ""))
+        assertEquals("▶ Watch" to false, Route.heroAct(false, false, false, "show", ""))
+    }
+
+    @Test
+    fun upcomingCardWearsItsDateOnTheBand() {
+        val today = "2026-10-29"
+        assertEquals("15 DEC", Route.upcomingBand("2026-12-15", today))
+        assertEquals("3 JAN", Route.upcomingBand("2027-01-03T00:00:00", today))
+        assertEquals("OCT 2027", Route.upcomingBand("2027-10-01", today))
+        assertEquals("UPCOMING", Route.upcomingBand("", today))
+        assertEquals("UPCOMING", Route.upcomingBand("2026-10-29", today))
+        assertEquals("UPCOMING", Route.upcomingBand("2026-13-01", today))
+        assertEquals("1 MAR", Route.upcomingBand("2028-03-01", "2028-02-28"))
+    }
+
+    @Test
+    fun upcomingFilmSaysItsDateWherePlayWouldBe() {
+        assertEquals("Out 15 Dec 2026", Route.upcomingLine("2026-12-15"))
+        assertEquals("Out 3 Jan 2027", Route.upcomingLine("2027-01-03T00:00:00"))
+        assertEquals("Not out yet", Route.upcomingLine(""))
+        assertEquals("Not out yet", Route.upcomingLine("2026-13-01"))
+    }
+
+    @Test
+    fun followingEpisodeTakesTheServersSubtitle() {
+        val swe = SubTrack(-3, "srt", "Some.Show.S05E16.Some.Name.1080p.AMZN.WEB-DL-playWEB",
+                           "sv", decided = true)
+        val eng = SubTrack(-1, "srt", "Some-Show-S05E16-Some-194eda", "en",
+                           start = true, decided = true)
+        assertEquals(-1, Route.followOnSub(true, listOf(swe, eng)) { -3 })
+        // none wanted: none
+        assertNull(Route.followOnSub(false, listOf(swe, eng)) { -3 })
+        // decided, none marked: none
+        assertNull(Route.followOnSub(true, listOf(swe, eng.copy(start = false))) { -3 })
+        // an older server: the app's own rule
+        assertEquals(-3, Route.followOnSub(true, listOf(swe.copy(decided = false),
+                                                         eng.copy(decided = false))) { -3 })
+    }
+
+    @Test
     fun tvKeepsTheRingOffTheEdge() {
         // with the cell's own padding, a ring stays about 5% in from a TV's sides
         assertTrue(Route.tvSafe(true).first >= 20 && Route.tvSafe(true).second >= 16)
         assertEquals(0 to 0, Route.tvSafe(false))
+    }
+
+    @Test fun firstResumeIsTheOpening() {
+        // first launch: onCreate sees 0, so the first resume (1) is the opening
+        assertTrue(Route.isOpening(1, 1))
+        // a later resume, back from a film or the background, is a return
+        assertFalse(Route.isOpening(2, 1))
+        // a new activity in a living process: its own first resume is the opening
+        assertTrue(Route.isOpening(6, 6))
+        assertFalse(Route.isOpening(7, 6))
+    }
+
+    @Test fun moreLikeThisWidens() {
+        assertEquals(listOf(4, 3, 2), Route.genreFewer(5))
+        assertEquals(listOf(1), Route.genreFewer(2))
+        assertEquals(emptyList<Int>(), Route.genreFewer(1))
+        val sets = Route.genreSets(listOf("a", "b", "c"), 2)
+        assertEquals(listOf(listOf("a", "b"), listOf("a", "c"), listOf("b", "c")), sets)
+        assertEquals(5, Route.genreSets(listOf("a", "b", "c", "d", "e"), 4).size)
+    }
+
+    @Test fun backTakesAScrolledListToItsTop() {
+        assertTrue(Route.backToTop("films", 12, 0))
+        assertTrue(Route.backToTop("tv", 0, 40))
+        assertFalse(Route.backToTop("films", 0, 0))
+        assertFalse(Route.backToTop("start", 5, 0))
+    }
+
+    @Test fun catalogueOrderMixesTheHouseIn() {
+        // (name, popularity, rating): the house's two, then the catalogue's two
+        val list = listOf(Triple("Zulu", 0.0, 7.0), Triple("Arrival", 90.0, 7.9),
+                          Triple("Dune", 400.0, 8.1), Triple("Zootopia", 0.0, 7.6))
+        val pop = Route.inServiceOrder(list, "popularity", false, { it.second }, { it.third },
+                                       { "" }, { 0 }, { it.first }).map { it.first }
+        assertEquals(listOf("Dune", "Arrival", "Zulu", "Zootopia"), pop)
+        val byName = Route.inServiceOrder(list, "titleSort", true, { it.second }, { it.third },
+                                          { "" }, { 0 }, { it.first }).map { it.first }
+        assertEquals(listOf("Arrival", "Dune", "Zootopia", "Zulu"), byName)
+    }
+
+    @Test fun oneCardASeriesAcrossServers() {
+        // (title, key): the pack's card, the other machine's popular card, one alone
+        val list = listOf("Death in Paradise" to "os1", "Death in Paradise" to "tv41956",
+                          "Bluey" to "tv100")
+        val kept = Route.oneCardASeries(list, { it.first }, { it.second.startsWith("tv") })
+        assertEquals(listOf("os1", "tv100"), kept.map { it.second })
+    }
+
+    @Test fun gridSidesMatchStartOnTv() {
+        // the grid's own 4 points of ring room and these come to Start's 16
+        assertEquals(16, Route.gridSide(true) + 4)
+        assertEquals(0, Route.gridSide(false))
+    }
+
+    @Test fun aRowGoesToOnePlace() {
+        val screen = 885f
+        // a card met low on the screen and one met high both end at the same place
+        val low = Route.rowPivot(600f, 315f, screen)!!
+        val high = Route.rowPivot(120f, 315f, screen)!!
+        assertEquals(600f - low, 120f - high, 0.01f)
+        // the picture's buttons and the picture itself are left to the usual rule
+        assertNull(Route.rowPivot(500f, 60f, screen))
+        assertNull(Route.rowPivot(0f, 650f, screen))
+    }
+
+    @Test fun aSlideEndsInItsTime() {
+        for (ms in listOf(Route.START_SLIDE_DOWN_MS, Route.START_SLIDE_ALONG_MS)) {
+            val w = Math.sqrt(Route.slideStiffness(ms).toDouble())
+            fun left(t: Double) = (1 + w * t) * Math.exp(-w * t)
+            // 98% of the way at the slide's time, not yet at two thirds of it
+            assertTrue(left(ms / 1000.0) <= 0.021)
+            assertTrue(left(ms / 1500.0) > 0.03)
+        }
+    }
+
+    @Test fun aHomeRowSlidesOnlyWhenACardNeedsIt() {
+        val screen = 960f
+        val room = 20f
+        // a card on screen with its room: the row stays where it is
+        assertEquals(0f, Route.calmAlong(500f, 120f, screen, room), 0.01f)
+        // the next card half off the right: just enough to show it and its room
+        assertEquals(900f + 120f + room - screen, Route.calmAlong(900f, 120f, screen, room), 0.01f)
+        // back to the first card, scrolled 30 past the margin: the margin comes back
+        assertEquals(-10f - room, Route.calmAlong(-10f, 120f, screen, room), 0.01f)
+    }
+
+    @Test fun longWordsAreReadBeforeTheCast() {
+        // 900 of text in a 400 window: down reads on, a press at a time, to its end
+        assertEquals(240f, Route.readStep(true, 0f, 400f, 900f, 240f), 0.01f)
+        assertEquals(20f, Route.readStep(true, 480f, 400f, 900f, 240f), 0.01f)
+        // the end in view: down goes on to the cast
+        assertEquals(0f, Route.readStep(true, 500f, 400f, 900f, 240f), 0.01f)
+        // up reads back, and at the top it is nothing to do
+        assertEquals(-240f, Route.readStep(false, 300f, 400f, 900f, 240f), 0.01f)
+        assertEquals(0f, Route.readStep(false, 0f, 400f, 900f, 240f), 0.01f)
+    }
+
+    @Test fun aSearchShowsEverythingTheTabsKindFirst() {
+        val types = listOf("movie", "show", "movie", "episode")
+        assertEquals(listOf(1, 3, 0, 2), Route.tabFirst(types, "tv"))
+        assertEquals(listOf(0, 2, 1, 3), Route.tabFirst(types, "films"))
+        assertEquals(listOf(0, 1, 2, 3), Route.tabFirst(types, "home"))
+    }
+
+    @Test fun moreLikeThisFillsTheRoomUnderTheWords() {
+        // 250 dp under the words: home size, 121
+        assertEquals(121, Route.likeWide(250f, 121))
+        // 180 under them: (180 - 46) / 1.5 = 89
+        assertEquals(89, Route.likeWide(180f, 121))
+        // cramped, or not measured yet: the old small size
+        assertEquals(75, Route.likeWide(90f, 121))
+        assertEquals(75, Route.likeWide(0f, 121))
+    }
+
+    @Test fun moreLikeThisRunsEdgeToEdge() {
+        // 904 wide, room for 106 at most, 10 of air each: eight of 103
+        assertEquals(8 to 103, Route.likeFit(904f, 106, 10))
+        // little room: the full ten, as wide as ten fill it
+        assertEquals(10 to 80, Route.likeFit(904f, 60, 10))
+    }
+
+    @Test fun tenMoreLikeThisFillTheRow() {
+        // 904 wide, 10 of air each: ten of 80, filling it exactly
+        assertEquals(80, Route.likeTen(904f, 10))
+        assertTrue(10 * (Route.likeTen(904f, 10) + 10) in 895..904)
+    }
+
+    @Test fun playAllPlaysTheShelfInItsOrder() {
+        val cards = listOf("f1" to emptyList<String>(), "s2" to listOf("e1", "e2"),
+                           "f3" to emptyList())
+        assertEquals(listOf("f1", "e1", "e2", "f3"), Route.playAllKeys(cards))
+    }
+
+    @Test fun shuffleLeftOutIsRedOnlyWhileShuffleIsFocused() {
+        assertEquals(0, Route.shuffleOff(false, true, 0))
+        assertEquals(2, Route.shuffleOff(true, true, 0))
+        assertEquals(1, Route.shuffleOff(true, false, 3))
+        assertEquals(0, Route.shuffleOff(true, false, 0))
+    }
+
+    @Test fun startFitsTwoRowsOnATelevision() {
+        assertEquals(256f, Route.startCardW(960, true))
+        assertEquals(220f, Route.startCardW(400, false))
+        assertEquals(280f, Route.startCardW(800, false))
+    }
+
+    @Test fun aKeptListSortsInItsOwnOrderFirst() {
+        assertEquals("popularity" to "List order", Route.extraOrders("IMDb Top 250", true)[0])
+        assertEquals(emptyList<Pair<String, String>>(), Route.extraOrders("New on streaming"))
+    }
+
+    @Test fun anEpisodesReleasesStandUnderTheirHeadingsTheAddedPackFirst() {
+        val rows = listOf(false to true, true to false, false to false, false to true)
+        assertEquals(listOf("From the pack you added" to listOf(1),
+                            "The episode on its own" to listOf(2),
+                            "In season packs on the tracker" to listOf(0, 3)),
+                     Route.releaseGroups(rows))
+        assertEquals(listOf("The episode on its own" to listOf(0)),
+                     Route.releaseGroups(listOf(false to false)))
+    }
+
+    @Test fun markPopupsSayAddOrRemoveAsItStands() {
+        assertEquals("Remove", Route.shelfAct("all"))
+        assertEquals("Add", Route.shelfAct("some"))
+        assertEquals("Add", Route.shelfAct("none"))
+        assertEquals("Not on your watchlist", Route.watchlistSaid(false, false))
+        assertEquals("On your watchlist", Route.watchlistSaid(true, false))
+        assertTrue(Route.watchlistSaid(true, true).startsWith("A favorite"))
+    }
+
+    @Test fun startHoldsStillWhileTheRowIsOnScreenAndMovesOneRowBelowIt() {
+        val screen = 900f
+        // the lower row, all on screen: the page holds still
+        assertEquals(0f, Route.startRowMove(500f, 330f, screen, false)!!, 0.01f)
+        // below the foot: just far enough that it stands at the foot
+        assertEquals(950f + 330f + 13.2f - screen, Route.startRowMove(950f, 330f, screen, false)!!, 0.01f)
+        // down off the picture, and up: under the tabs
+        assertEquals(950f - 76.5f, Route.startRowMove(950f, 330f, screen, true)!!, 0.01f)
+        assertEquals(-300f - 76.5f, Route.startRowMove(-300f, 330f, screen, false)!!, 0.01f)
+        // its name cut off at the top: brought back under the tabs
+        assertEquals(40f - 76.5f, Route.startRowMove(40f, 330f, screen, false)!!, 0.01f)
+        // off the picture: under the tabs even once it is on screen part way up the slide
+        assertEquals(300f - 76.5f, Route.startRowMove(300f, 330f, screen, true)!!, 0.01f)
+        // the slide to the foot is not stopped short of its margin
+        assertTrue(Route.startRowMove(560f, 330f, screen, false)!! > 0f)
+        // the second row, its ring's room just on screen: still
+        assertEquals(0f, Route.startRowMove(550f, 330f, screen, false)!!, 0.01f)
+        // not a row's card
+        assertNull(Route.startRowMove(500f, 60f, screen, false))
+    }
+
+    @Test fun theBarComesFromTheFileWhenTheDecoderPadsTheFrame() {
+        // scope film, decoder hands over 1920x1080 with the bars in it
+        assertEquals(138, Route.barUnder(1920, 1080, 1920f / 1080f, 1920f / 804f))
+        // decoder reports the picture itself
+        assertEquals(138, Route.barUnder(1920, 1080, 1920f / 804f, 0f))
+        // a 16:9 film has none
+        assertEquals(0, Route.barUnder(1920, 1080, 1920f / 1080f, 1920f / 1080f))
+        assertEquals(0, Route.barUnder(1920, 1080, 0f, 0f))
+    }
+
+    // a 1080-line view: text 5% (54 px), leading 1.17, a scope film's band 12.8% (138 px)
+    private val subText = 0.05f
+    private val subLead = 1.17f
+    private val subRow = subText * subLead
+    private val subGap = subText * (subLead - 1f)
+
+    @Test fun anOffScreenLineHugsThePicturesEdge() {
+        val top = Route.subtitleTop(0.128f, subText, subLead, 1, "screen", 0f, 0.08f)
+        assertEquals(1f - 0.128f, top, 0.0001f)
+        // one row down
+        assertEquals(1f - 0.2f + subRow,
+                     Route.subtitleTop(0.2f, subText, subLead, 1, "screen", 0.08f, 0.08f), 0.0001f)
+    }
+
+    @Test fun twoRowsStartWhereOneDoesAndStayOnTheScreen() {
+        val one = Route.subtitleTop(0.128f, subText, subLead, 1, "screen", 0f, 0.08f)
+        val two = Route.subtitleTop(0.128f, subText, subLead, 2, "screen", 0f, 0.08f)
+        assertEquals(one, two, 0.0001f)
+        assertTrue(two + 2 * subRow <= 1f - Route.SUB_EDGE + 0.0001f)
+        // three rows in the same band would leave the screen: only then it moves up
+        val three = Route.subtitleTop(0.128f, subText, subLead, 3, "screen", 0f, 0.08f)
+        assertEquals(1f - Route.SUB_EDGE - 3 * subRow, three, 0.0001f)
+        // on the picture the safe edge holds
+        val wrapped = Route.subtitleTop(0.05f, subText, subLead, 3, "picture", 0f, -1f)
+        assertTrue(wrapped + 3 * subRow <= 1f - Route.SUB_SAFE + 0.0001f)
+    }
+
+    @Test fun offScreenWithNoBandGoesOnThePictureAtItsOwnHeight() {
+        // a 16:9 film: no band, so Off screen takes onPicture's height, one row up
+        val top = Route.subtitleTop(0f, subText, subLead, 1, "screen", 0f, 0.08f)
+        assertEquals(1f - subGap - subRow - subRow, top, 0.0001f)
+    }
+
+    @Test fun onScreenStepsUpFromThePicturesEdge() {
+        val bottom = Route.subtitleTop(0.128f, subText, subLead, 1, "picture", 0f, -1f) + subRow
+        assertEquals(1f - 0.128f - subGap, bottom, 0.0001f)
+        val high = Route.subtitleTop(0.128f, subText, subLead, 1, "picture", 0.28f, -1f) + subRow
+        assertEquals(1f - 0.128f - subGap - 3 * subRow, high, 0.0001f)
+    }
+
+    @Test fun veryBottomIsTheSafeEdgeNotThePanelsEdge() {
+        for (base in listOf("picture", "screen")) {
+            val top = Route.subtitleTop(0.128f, subText, subLead, 2, base, 0.99f, 0.08f)
+            assertEquals(1f - Route.SUB_SAFE - 2 * subRow, top, 0.0001f)
+        }
+    }
+
+    @Test fun aSubtitleThatWrapsCountsItsSecondRow() {
+        assertEquals(1, Route.cueRows(listOf(300f), 1000f))
+        assertEquals(2, Route.cueRows(listOf(1300f), 1000f))
+        assertEquals(3, Route.cueRows(listOf(1300f, 200f), 1000f))
+        assertEquals(1, Route.cueRows(emptyList(), 1000f))
+    }
+
+    @Test fun aSeasonCardSaysItsNumberWhereverItStands() {
+        assertEquals("Season 3", Route.posterLine("season", 3, null))
+        assertEquals("Specials", Route.posterLine("season", 0, "Specials"))
+        assertEquals("E2  Name", Route.posterLine("episode", 2, "E2  Name"))
+        assertNull(Route.posterLine("movie", null, null))
+        assertNull(Route.posterLine("season", 0, null))
+    }
+
+    @Test fun aTrackerDownloadBelongsToThePageItWasStartedFrom() {
+        assertTrue(Route.takingIsFor("rt1", "Se7en", 1995, "rt1", "Seven", 1995))
+        assertFalse(Route.takingIsFor("rt2", "Seven", 1995, "rt1", "Seven", 1995))
+        assertTrue(Route.takingIsFor("", "Seven", 1995, "rt1", "Seven", 1995))
+        assertFalse(Route.takingIsFor("", "Seven", 1960, "rt1", "Seven", 1995))
+        assertFalse(Route.takingIsFor("", "", 0, "rt1", "Seven", 1995))
+    }
+
+    @Test fun thePlayBuildShowsOnlyWhatTheServerHolds() {
+        assertTrue(Route.forStore(true, false, false, false))
+        assertFalse(Route.forStore(true, true, false, false))
+        assertFalse(Route.forStore(true, false, true, false))
+        assertFalse(Route.forStore(true, false, false, true))
+        assertTrue(Route.forStore(false, true, true, true))
+    }
+
+    @Test fun aWatchlistedFilmThatGotASourceIsSaidPlainly() {
+        assertEquals("X can be downloaded now - it was on your watchlist", Route.watchNewsSaid("X", "fetch"))
+        assertEquals("X is here - it was on your watchlist", Route.watchNewsSaid("X", "here"))
+    }
+
+    @Test fun aSeasonAmongFilmsSaysWhichProgramme() {
+        assertEquals("Foundation · Season 1", Route.seasonLine(1, "Season 1", "Foundation"))
+        assertEquals("Season 1", Route.seasonLine(1, "Season 1", null))
+        assertEquals("Foundation · Season 2", Route.posterLine("season", 2, null, "Foundation"))
+        assertEquals("Season 3", Route.posterLine("season", 3, null))
+    }
+
+    @Test fun theWatchlistStandsInFourRowsAnEmptyOneLeftOut() {
+        val got = Route.watchlistGroups(listOf("f"), emptyList(), listOf("ff"), listOf("ft"))
+        assertEquals(listOf("Films", "Favorite films", "Favorite TV shows"), got.map { it.first })
+    }
+
+    @Test fun upAndDownGoOnIntoTheListsAboveAndBelowInTheSameColumn() {
+        // 7 across: a list of 10 is a row of 7 and a row of 3
+        assertEquals(0 to 9, Route.gridStep(2, 7, 10, 0, 5, true))
+        assertEquals(0 to 9, Route.gridStep(5, 7, 10, 0, 5, true))      // short row: its last
+        assertEquals(1 to 2, Route.gridStep(9, 7, 10, 0, 5, true))       // on into the next
+        assertEquals(1 to 4, Route.gridStep(6, 7, 7, 0, 5, true))        // its last, shorter
+        assertEquals(-1 to 9, Route.gridStep(2, 7, 5, 10, 0, false))     // up: last row, col 2
+        assertEquals(-1 to 9, Route.gridStep(6, 7, 7, 10, 0, false))     // beyond: its last
+        assertEquals(null, Route.gridStep(2, 7, 5, 0, 0, false))         // nothing above
+        assertEquals(null, Route.gridStep(2, 7, 5, 0, 0, true))
+    }
+
+    @Test fun aGridsColumnsAreItsFullestRowNotAHeading() {
+        // a 1880-wide grid of 7 cells of 266: a heading, one card in a short row, three in another
+        assertEquals(7, Route.columnsOf(1880, listOf(0 to 1880, 0 to 266, 0 to 1880,
+                                                       0 to 266, 266 to 266, 532 to 266)))
+        assertEquals(7, Route.columnsOf(1880, listOf(0 to 266)))
+        assertEquals(0, Route.columnsOf(1880, emptyList()))
+    }
+
+    @Test fun soundIsJudgedOnlyOnceTheScreenHasSettled() {
+        // just back from Home: wait out the HDMI sound coming up again
+        assertEquals(10000L, Route.soundJudgedAfter(0L))
+        assertEquals(7000L, Route.soundJudgedAfter(3000L))
+        // on screen a while already: the usual short wait
+        assertEquals(2500L, Route.soundJudgedAfter(60000L))
+        assertEquals(2500L, Route.soundJudgedAfter(9000L))
+        assertTrue(Route.SOUND_AGAIN_MS > 0)
     }
 }

@@ -37,7 +37,7 @@ fun VersionPanel(
     onClose: () -> Unit,
     /** the versions the tracker carries, to download another; null where there are none */
     onOther: (() -> Unit)? = null,
-    /** a series: the packs its episodes come from, (name, facts) - pressed, dropped */
+    /** a series: the packs added to it, (name, facts) - pressed, removed */
     inUse: List<Pair<String, String>>? = null,
 ) {
     AlertDialog(
@@ -54,7 +54,7 @@ fun VersionPanel(
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(if (inUse == null) "Here - the one to play"
                      else if (inUse.isEmpty()) "No pack - its episodes come from none yet"
-                     else "In use - press one to stop taking episodes from it",
+                     else "Added - press one to remove it, nothing is deleted",
                      color = Skin.Dim, fontSize = 12.sp,
                      modifier = Modifier.padding(bottom = 2.dp))
                 inUse?.forEachIndexed { at, (name, facts) ->

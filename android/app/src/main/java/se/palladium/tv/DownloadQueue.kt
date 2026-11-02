@@ -35,9 +35,13 @@ fun DownloadQueue(onClose: () -> Unit, onOpen: (Media) -> Unit) {
     var failed by remember { mutableStateOf("") }
 
     fun line(d: Media): String {
-        val state = if (d.offerState == "queued") "waiting"
-                    else "${(d.offerProgress * 100).toInt()}%"
-        return state + "   " + d.title + (if (d.offerWho.isNotEmpty()) "  ·  " + d.offerWho else "")
+        val state = Route.shortLine(d.offerStage, d.offerWords,
+                                    if (d.offerState == "queued") "waiting"
+                                    else "${(d.offerProgress * 100).toInt()}%")
+        // an episode by its programme and its number: "S6 E6  Mafia"
+        val name = if (d.type == "episode" && d.subtitle.isNotEmpty()) d.title + "  " + d.subtitle
+                   else d.title
+        return state + "   " + name + (if (d.offerWho.isNotEmpty()) "  ·  " + d.offerWho else "")
     }
 
     fun move(at: Int, step: Int) {

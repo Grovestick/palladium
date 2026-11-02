@@ -1,0 +1,4 @@
+# Everything in this app compiled ahead of time at install: the screens, the lists and
+# the player are all on the path somebody presses through.
+HSPLse/palladium/tv/**->**(**)**
+Lse/palladium/tv/**;

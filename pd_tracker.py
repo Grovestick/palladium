@@ -26,6 +26,8 @@ EVERY = 20 * 60
 #: how long a release stays in the index. A film that was uploaded three months ago
 #: is still downloadable; the cap is about the file not growing without end.
 KEEP_DAYS = 120
+#: and how long the races and games stay, for the Sports row's year
+SPORT_KEEP_DAYS = 400
 KEEP = 20000
 
 #: the tracker's own search, which the feeds are not. A feed carries the newest
@@ -295,14 +297,45 @@ def keep_warm():
             "https://www.torrentleech.org/torrents/browse",
             headers={"User-Agent": "Mozilla/5.0", "Cookie": said})
         with urllib.request.urlopen(ask, timeout=30) as answer:
-            body = answer.read(4000).decode("utf-8", "replace")
+            body = answer.read(400000).decode("utf-8", "replace")
     except Exception:
         return False                      # the tracker being away is not the session
     gone = "Login ::" in body or "login-form" in body
     with LOCK:
         STATE["why"] = ("the session has expired - sign in again and hand it over"
                         if gone else "")
+        STATE["sessionGone"] = gone
+    # and the account's own figures, off the same page's header: what the race page
+    # showed was an estimate from the clients' counters, which run ahead of the tracker
+    said = None if gone else account_of(body)
+    if said and STATE.get("root"):
+        try:
+            with open(os.path.join(STATE["root"], ACCOUNT), "w", encoding="utf-8") as f:
+                json.dump(dict(said, at=int(time.time())), f)
+        except OSError:
+            pass
     return not gone
+
+
+#: the account's figures as last read off the tracker's own pages
+ACCOUNT = "tl_account.json"
+_SIZE = r"(\d+(?:[.,]\d+)?)\s*([KMGTP])i?B"
+_UNITS = {"K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15}
+
+
+def account_of(page):
+    """{up, down, buffer, ratio, hnr} from the header every page of the tracker carries:
+    "21.24 TB (928)  15.79 TB (28)  5.45 TB  1.345  1" - uploaded and how many, downloaded
+    and how many, the buffer, the ratio, the hit-and-runs. None when it is not there."""
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", page or ""))
+    m = re.search(_SIZE + r"\s*\(\d+\)\s+" + _SIZE + r"\s*\(\d+\)\s+(-?)" + _SIZE +
+                  r"\s+(\d+(?:[.,]\d+)?)\s+(\d+)", text)
+    if not m:
+        return None
+    size = lambda n, u: float(n.replace(",", ".")) * _UNITS[u.upper()]
+    return {"up": size(m.group(1), m.group(2)), "down": size(m.group(3), m.group(4)),
+            "buffer": (-1 if m.group(5) else 1) * size(m.group(6), m.group(7)),
+            "ratio": float(m.group(8).replace(",", ".")), "hnr": int(m.group(9))}
 
 
 def look_for(words, most=40):
@@ -592,7 +625,15 @@ def write():
     with LOCK:
         rows = dict(STATE["rows"])
     cut = time.time() - KEEP_DAYS * 86400
-    kept = {k: v for k, v in rows.items() if float(v.get("at") or 0) >= cut}
+    # a sport's releases for a year: the Sports row reaches that far back
+    long_cut = time.time() - SPORT_KEEP_DAYS * 86400
+    try:
+        import pd_sports
+        sport = lambda v: pd_sports.read_name(v.get("name")) is not None
+    except Exception:
+        sport = lambda v: False
+    kept = {k: v for k, v in rows.items()
+            if float(v.get("at") or 0) >= (long_cut if sport(v) else cut)}
     if len(kept) > KEEP:
         newest = sorted(kept.values(), key=lambda r: float(r.get("at") or 0),
                         reverse=True)[:KEEP]
@@ -924,7 +965,8 @@ def landing_now(log, done, held, now):
     return out
 
 
-def take(ident="", title="", year=0, most_gb=0.0, who="", auto=False, reason=""):
+def take(ident="", title="", year=0, most_gb=0.0, who="", auto=False, reason="", key="",
+         token=""):
     """Hand one release to the torrent client. Returns what happened.
 
     By its number where the caller has one, and otherwise the newest release for that
@@ -978,7 +1020,12 @@ def take(ident="", title="", year=0, most_gb=0.0, who="", auto=False, reason="")
         if mark:
             STATE.setdefault("taken", {})[mark] = {
                 "id": str(row.get("id") or ""), "name": row.get("name"),
-                "size": size, "at": time.time()}
+                "size": size, "at": time.time(),
+                # the page it was started from: "Seven" fetched as "Se7en" is still
+                # that page's download, and its button is its cancel
+                "key": str(key or ""),
+                # whose screens say it is ready when it has come in
+                "token": str(token or ""), "auto": bool(auto)}
         # and who asked for it, kept after the download is gone: a release taken
         # straight from the tracker left no name behind
         log = STATE.setdefault("log", [])
@@ -1180,6 +1227,34 @@ def how_often():
     return 86400.0 / max(1, min(500, said))
 
 
+def library_key(con, paths):
+    """The library's key for the film these files were taken in as, or ""."""
+    for p in paths or []:
+        row = con.execute("SELECT item_id FROM file WHERE lower(path) = lower(?) LIMIT 1",
+                          (os.path.normpath(str(p)),)).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    return ""
+
+
+def landed_key(said):
+    """library_key for a download taken in, through the server's library; "" before."""
+    if not said.get("in"):
+        return ""
+    try:
+        import pd_torrents
+        lib = pd_torrents.STATE["lib"]() if pd_torrents.STATE["lib"] else None
+        if not lib:
+            return ""
+        con = lib.db()
+        try:
+            return library_key(con, said.get("paths"))
+        finally:
+            con.close()
+    except Exception:
+        return ""
+
+
 def taking():
     """What this house is fetching from the tracker now, as the client sees it."""
     index = read() or {}
@@ -1205,17 +1280,32 @@ def taking():
         # One that finished is the library's now, not a download. It is shown for a
         # few minutes so whoever started it sees it land, and then it drops off the
         # list - otherwise everything ever fetched sits there for ever.
-        if done and now - float(said.get("at") or 0) > 600:
+        unpack = UNPACKING.get(mark)
+        if unpack:
+            done = False                  # whole, and still being unpacked
+        elif done and said.get("in") and now - float(said.get("inAt") or said.get("at") or 0) > 600:
             forget.append(mark)
             continue
         # which film it is, so a film's page shows its own download and no other
         row = index.get(str(said.get("id"))) or {}
+        mbit = round(float(held.get("dlspeed") or 0) * 8 / 1e6, 1)
+        stage, words = pd_torrents.stage_words(
+            "unpacking" if unpack else "done" if done else "downloading",
+            str(held.get("state") or ""),
+            unpack["progress"] if unpack else float(held.get("progress") or 0), mbit,
+            int(held.get("eta") or -1) if 0 <= int(held.get("eta") or -1) < 8640000 else None,
+            0, (unpack or {}).get("why") or "")
         out.append({"hash": mark, "id": said.get("id"), "name": said.get("name"),
+                    "stage": stage, "words": words,
+                    "key": str(said.get("key") or ""),
                     "title": row.get("title") or "", "year": int(row.get("year") or 0),
                     "size": int(held.get("size") or said.get("size") or 0),
-                    "state": str(held.get("state") or ""),
-                    "progress": float(held.get("progress") or 0),
+                    "state": "unpacking" if unpack else str(held.get("state") or ""),
+                    "progress": (unpack["progress"] if unpack
+                                 else float(held.get("progress") or 0)),
                     "done": done,
+                    # in the library, and the key its page plays it from
+                    "in": bool(said.get("in")), "libKey": landed_key(said) if done else "",
                     "eta": int(held.get("eta") or -1),
                     "mbit": round(float(held.get("dlspeed") or 0) * 8 / 1e6, 1)})
     if forget:
@@ -1235,14 +1325,70 @@ def take_in_finished(lib, qb=None):
     file is: the folder watch misses a file that lands while the server restarts, and
     the full scan is a day away. Returns how many files were added."""
     read()
-    with LOCK:
-        waiting = [m for m, s in (STATE.get("taken") or {}).items() if not s.get("in")]
-    if not waiting:
-        return 0
+    import pd_torrents
     if qb is None:
-        import pd_torrents
         qb = pd_torrents.QB(pd_torrents.load()["config"])
+    try:
+        everything = json.loads(qb._call("/api/v2/torrents/info", timeout=10) or b"[]")
+    except Exception:
+        everything = []
+    packs = {str(p.get("hash") or "") for p in pd_torrents.load()["packs"]}
+    # this house's downloads: the tracker's, filed under its category, and the packs,
+    # which are added with none - a pack stuck at 100% was never seen
+    held_all = [t for t in everything if t.get("category") == "palladium"]
+    # qBittorrent's 100% that never turns to seeding: started again, then read again
+    for t in ours(everything, packs):
+        mark, left = str(t.get("hash") or ""), int(t.get("amount_left") or 0)
+        # a remedy is spent on one stall: once the torrent fetched more, a later film of
+        # the same pack stalling gets its own
+        for done in (RESTARTED, RECHECKED):
+            if mark in done and done[mark] != left:
+                done.pop(mark)
+        if not glitched(t):
+            continue
+        do = stuck_remedy(time.time() - STUCK_SINCE.get(mark, time.time()),
+                          mark in RESTARTED, mark in RECHECKED, left <= 0)
+        try:
+            if do == "restart":
+                RESTARTED[mark] = left
+                qb.stop(mark)
+                time.sleep(3)
+                qb.start(mark)
+            elif do == "recheck":
+                RECHECKED[mark] = left
+                qb.recheck(mark)
+                qb.start(mark)
+        except Exception:
+            pass
+    with LOCK:
+        taken = STATE.setdefault("taken", {})
+        # fetched from the tracker and finished, with the note of it lost: taken in all the same
+        lost = orphans(held_all, taken, packs, time.time())
+        for t in lost:
+            taken[str(t["hash"])] = {"id": "", "name": str(t.get("name") or ""), "key": "",
+                                     "at": int(t.get("added_on") or time.time()), "auto": True}
+        waiting = [m for m, s in taken.items() if not s.get("in")]
+    if lost:
+        write()
     took, landed = 0, []
+    # taken in, then out again while qBittorrent read it over: back in once it is whole
+    whole = {str(t.get("hash") or "") for t in held_all
+             if float(t.get("progress") or 0) >= 1.0 and not str(t.get("state") or "").startswith("checking")}
+    try:
+        con = lib.db()
+        try:
+            here = lambda p: con.execute("SELECT 1 FROM file WHERE path=?", (p,)).fetchone() is not None
+            again = dropped(taken, whole, here, time.time())
+        finally:
+            con.close()
+        for paths in again:
+            for p in paths:
+                pd_torrents.UNFINISHED["paths"].discard(os.path.normcase(os.path.normpath(p)))
+            took += lib.take_in(paths)
+    except Exception:
+        pass
+    if not waiting:
+        return took
     for mark in waiting:
         try:
             held = qb.info(mark)
@@ -1255,15 +1401,228 @@ def take_in_finished(lib, qb=None):
         paths = [os.path.join(root, *str(f.get("name") or "").split("/")) for f in files
                  if str(f.get("name") or "").lower().endswith(VIDEO_ENDS)
                  and "sample" not in str(f.get("name") or "").lower()]
+        if not paths:
+            # a release packed in RAR parts: the film is unpacked beside them, which
+            # stay to be seeded, and taken in once it is out
+            first = first_volume([os.path.join(root, *str(f.get("name") or "").split("/"))
+                                  for f in files])
+            if not first:
+                continue
+            got = unpacked(first)
+            if got is None:
+                start_unpacking(mark, first, mine_name(mark))
+                continue
+            paths = got
+        # whole now: off the list of files still coming at once, as a pack's film is -
+        # a scan in the next half minute took the film back out while it was playing
+        try:
+            import pd_torrents
+            for p in paths:
+                pd_torrents.UNFINISHED["paths"].discard(os.path.normcase(os.path.normpath(p)))
+        except Exception:
+            pass
         took += lib.take_in(paths)
+        LANDED_PATHS[mark] = paths
         landed.append(mark)
     if landed:
         with LOCK:
             for mark in landed:
                 if mark in (STATE.get("taken") or {}):
                     STATE["taken"][mark]["in"] = True
+                    STATE["taken"][mark]["inAt"] = int(time.time())
+                    STATE["taken"][mark]["paths"] = LANDED_PATHS.get(mark, [])[:4]
         write()
     return took
+
+
+#: torrents already read again for the stuck-at-100% state, once each
+RECHECKED = {}
+#: and those stopped and started for it first, once each
+RESTARTED = {}
+#: a restart is tried first: the pieces left half-fetched come in within a minute, where
+#: reading a 194 GB pack again took hours off the download drive. Read again only when
+#: the restart has not helped in this long.
+RECHECK_AFTER = 20 * 60
+
+
+def ours(held, packs):
+    """The torrents this house downloads into: its category, and its packs."""
+    return [t for t in held if t.get("category") == "palladium" or str(t.get("hash") or "") in packs]
+
+
+def stuck_remedy(stuck_for, restarted, rechecked, whole=True):
+    """What to do for a stuck torrent: "restart", "recheck" or "". One with data still to
+    fetch is only restarted: reading a pack again reads every film in it."""
+    if not restarted:
+        return "restart"
+    if whole and not rechecked and stuck_for >= RECHECK_AFTER:
+        return "recheck"
+    return ""
+
+
+#: when each torrent was first seen stuck at 100%
+STUCK_SINCE = {}
+#: how long it has to stay stuck: every torrent looks stuck for a moment as it finishes,
+#: and reading a just-finished film again took it out of the library while it was started
+STUCK_FOR = 300
+
+
+def glitched(t, now=None):
+    """qBittorrent stalled for five minutes with nothing left to fetch, or with seeds
+    connected: "Unexpected data detected" leaves amount_left below nothing and the torrent
+    at 100% for ever; a block asked of a peer that never sends it stalls a pack's last
+    piece with every seed there."""
+    mark = str(t.get("hash") or "")
+    left = int(t.get("amount_left") or 0)
+    stuck = (str(t.get("state") or "") in ("stalledDL", "forcedDL")
+             and (left <= 0 and float(t.get("progress") or 0) >= 0.999
+                  or left > 0 and int(t.get("num_seeds") or 0) > 0))
+    if not stuck:
+        STUCK_SINCE.pop(mark, None)
+        return False
+    now = time.time() if now is None else now
+    return now - STUCK_SINCE.setdefault(mark, now) >= STUCK_FOR
+
+
+def orphans(held, taken, packs, now):
+    """Finished downloads in this house's category that no pack and no note claims, from
+    the last week: a tracker download whose note was lost was never taken in."""
+    return [t for t in held
+            if str(t.get("hash") or "") not in taken and str(t.get("hash") or "") not in packs
+            and float(t.get("progress") or 0) >= 1.0
+            and now - float(t.get("added_on") or 0) < 7 * 86400]
+
+
+def dropped(taken, whole, here, now):
+    """The files of downloads taken in this last two days that are whole in qBittorrent and
+    no longer in the library: a scan while it was read over took them back out."""
+    return [list(s.get("paths") or []) for m, s in taken.items()
+            if s.get("in") and m in whole and now - float(s.get("inAt") or 0) < 2 * 86400
+            and s.get("paths") and not all(here(p) for p in s.get("paths") or [])]
+
+
+#: the video files each finished download handed to the library, for the ready line
+LANDED_PATHS = {}
+
+#: releases being unpacked now: hash -> {"name", "progress", "first", "why"}
+UNPACKING = {}
+#: beside the parts while they are being unpacked, so half a film is never taken in
+UNPACK_MARK = ".palladium-unpacking"
+#: where the unpacker is, if this machine has one
+UNRAR = (r"C:\Program Files\WinRAR\UnRAR.exe", r"C:\Program Files (x86)\WinRAR\UnRAR.exe")
+
+
+def mine_name(mark):
+    with LOCK:
+        return str(((STATE.get("taken") or {}).get(mark) or {}).get("name") or "")
+
+
+def first_volume(paths):
+    """The part an unpacker starts from: name.rar, or name.part01.rar, or name.r00
+    where there is no .rar at all."""
+    rars = sorted(p for p in paths if p.lower().endswith(".rar") and "sample" not in p.lower())
+    for p in rars:
+        if not re.search(r"\.part\d+\.rar$", p, re.I) or re.search(r"\.part0*1\.rar$", p, re.I):
+            return p
+    olds = sorted(p for p in paths if re.search(r"\.r00$", p, re.I))
+    return olds[0] if olds else ""
+
+
+def unpacked(first):
+    """The video files a release has unpacked to beside its parts, None while there
+    are none - or while one is still being unpacked."""
+    if any(u.get("first") == first for u in UNPACKING.values()):
+        return None
+    folder = os.path.dirname(first)
+    # a mark left by an unpacking a restart cut short: what is there is half a film
+    if os.path.exists(os.path.join(folder, UNPACK_MARK)):
+        return None
+    try:
+        got = [os.path.join(folder, n) for n in os.listdir(folder)
+               if n.lower().endswith(VIDEO_ENDS) and "sample" not in n.lower()]
+    except OSError:
+        return None
+    return got or None
+
+
+def unpack_progress(text):
+    """The last per cent in what the unpacker has written, or None."""
+    found = re.findall(r"(\d{1,3})%", text or "")
+    return min(100, int(found[-1])) if found else None
+
+
+def start_unpacking(mark, first, name):
+    """Unpack in the background, the per cent kept for every screen to show."""
+    if mark in UNPACKING:
+        return
+    tool = next((t for t in UNRAR if os.path.exists(t)), "")
+    UNPACKING[mark] = {"name": name, "progress": 0.0, "first": first, "why": ""}
+    if not tool:
+        UNPACKING[mark]["why"] = "no unpacker on this machine"
+        return
+
+    def work():
+        import subprocess
+        mark_file = os.path.join(os.path.dirname(first), UNPACK_MARK)
+        try:
+            open(mark_file, "w").close()
+            run = subprocess.Popen([tool, "x", "-o+", "-y", first, os.path.dirname(first) + os.sep],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            seen = ""
+            while True:
+                bit = run.stdout.read(64)
+                if not bit:
+                    break
+                seen = (seen + bit.decode("utf-8", "replace"))[-200:]
+                pc = unpack_progress(seen)
+                if pc is not None:
+                    UNPACKING[mark]["progress"] = pc / 100.0
+            run.wait()
+            if run.returncode not in (0, 1):
+                UNPACKING[mark]["why"] = "the unpacker stopped (%d)" % run.returncode
+                return
+        except Exception as why:
+            UNPACKING[mark]["why"] = str(why)[:120]
+            return
+        try:
+            os.remove(mark_file)
+        except OSError:
+            pass
+        UNPACKING.pop(mark, None)         # out: the next look takes it in
+
+    threading.Thread(target=work, name="palladium-unpack", daemon=True).start()
+
+
+def ready_for(tokens, since, lib):
+    """Releases these tokens took from the tracker by hand that have come into the
+    library since `since`: the same line on each screen a pack's film gets. A take with
+    no token was written before takes kept one, and was the owner's ("me")."""
+    out = []
+    with LOCK:
+        rows = [(m, dict(s)) for m, s in (STATE.get("taken") or {}).items()]
+    for mark, s in rows:
+        if (not s.get("in") or s.get("auto") or float(s.get("inAt") or 0) <= since
+                or (s.get("token") or "me") not in tokens):
+            continue
+        key, name = "", bare(str(s.get("name") or ""))[0]
+        con = lib.db()
+        try:
+            for p in s.get("paths") or []:
+                r = con.execute(
+                    "SELECT f.item_id, f.episode_id, i.title, e.season, e.number FROM file f "
+                    "JOIN item i ON i.id = f.item_id LEFT JOIN episode e ON e.id = f.episode_id "
+                    "WHERE f.path = ?", (p,)).fetchone()
+                if r:
+                    key = str(r[1] or r[0])
+                    name = str(r[2]) + (" S%02dE%02d" % (r[3], r[4]) if r[1] and r[3] else "")
+                    break
+        finally:
+            con.close()
+        if key:
+            out.append({"id": "t:" + mark, "key": key, "title": name,
+                        "done": int(float(s.get("inAt") or 0))})
+    return out
 
 
 def drop(mark):

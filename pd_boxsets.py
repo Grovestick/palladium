@@ -144,7 +144,10 @@ def waiting(rows, now=None):
     with LOCK:
         wanted = list(STATE["first"])
     out = [i for i in wanted if i in rows and due(i)]
-    rest = sorted(((i, r) for i, r in rows.items() if i not in out and is_boxset(r) and due(i)),
+    # a copy taken in one go: the index is the tracker's live one, and a search on
+    # another thread adding to it mid-walk stopped this step three times a day
+    pairs = list(rows.items())
+    rest = sorted(((i, r) for i, r in pairs if i not in out and is_boxset(r) and due(i)),
                   key=lambda kv: -int(kv[1].get("seeds") or 0))
     return out + [i for i, _ in rest]
 
@@ -288,6 +291,15 @@ def season_packs(rows, title, season, most=4):
     return out[:most]
 
 
+def episode_packs(title, season, number, skip=()):
+    """The season packs one episode is in, after asking the tracker about the season - as
+    the season's own list does. Asked only when none was known, one pack known already
+    left the episode's list at that one while the season's list showed them all."""
+    import pd_tracker
+    pd_tracker.ask_for("%s S%02d" % (title, int(season)), 0)
+    return episode_in_packs(title, season, number, skip)
+
+
 def episode_in_packs(title, season, number, skip=()):
     """One episode inside the tracker's season packs: [(id, pack, file)] as find() gives
     a film in a box set - so the version list offers it and Download takes that file.
@@ -340,7 +352,10 @@ def step(now=None, rows=None, fetch=None, look=None):
     now = now or time.time()
     if now >= STATE["scraped_at"] + SCRAPE_EVERY:
         STATE["scraped_at"] = now
-        word = SCRAPE_WORDS[STATE["word"] % len(SCRAPE_WORDS)]
+        # and the sports, a year of them: the feeds carry only this month's
+        import pd_sports
+        words = SCRAPE_WORDS + pd_sports.search_words()
+        word = words[STATE["word"] % len(words)]
         STATE["word"] += 1
         threading.Thread(target=pd_tracker.quietly(
             look or (lambda: pd_tracker.look_for(word, 100))), daemon=True).start()

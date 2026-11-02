@@ -23,6 +23,8 @@ import kotlinx.coroutines.launch
 /** The collections a title can go on: a tick for all of it, a half for some, and a new one. */
 @Composable
 fun ShelfPicker(m: Media, start: List<Api.ShelfMark>, onClose: () -> Unit,
+                /** a collection's own page, by its id: the popup closes first */
+                onGoTo: ((String) -> Unit)? = null,
                 onChanged: (List<Api.ShelfMark>) -> Unit) {
     val scope = rememberCoroutineScope()
     // From an episode or a season, which of it goes on or comes off. Ticking and unticking
@@ -80,13 +82,22 @@ fun ShelfPicker(m: Media, start: List<Api.ShelfMark>, onClose: () -> Unit,
                 if (shelves.isEmpty() && !naming)
                     Text("No collections yet", color = Skin.Dim, fontSize = 14.sp)
                 shelves.forEach { s ->
+                    // the name and whether this is on it, then what can be done: add or
+                    // remove as it stands, and the collection itself
                     val tick = when (s.state) { "all" -> "✓  "; "some" -> "◐  "; else -> "" }
-                    Pill(tick + s.name, primary = s.state == "all",
-                         modifier = Modifier.fillMaxWidth()) {
-                        if (!busy) {
-                            busy = true
-                            scope.launch { took(Api.markShelf(target, s.id, s.state != "all")) }
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(tick + s.name,
+                             color = if (s.state == "all" || s.state == "some") Skin.Fg else Skin.Dim,
+                             fontSize = 14.sp, maxLines = 2, modifier = Modifier.weight(1f))
+                        Pill(Route.shelfAct(s.state), primary = s.state != "all", small = true) {
+                            if (!busy) {
+                                busy = true
+                                scope.launch { took(Api.markShelf(target, s.id, s.state != "all")) }
+                            }
                         }
+                        if (onGoTo != null) Pill("Go to", small = true) { onClose(); onGoTo(s.id) }
                     }
                 }
                 if (naming) {

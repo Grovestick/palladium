@@ -43,6 +43,8 @@ GUEST_PREFIXES = (
     "/gpu/stream",      # play
     "/gpu/begins",      # where that play will start, asked first
     "/torrents/get",    # one film from a torrent pack, within their week's limit
+    "/watchlist/news",  # their own watchlist's films that have got a source
+    "/torrents/ready",  # their own downloads that have come in, for the word on screen
     "/torrents/active", # how far their own download has got: the handler already
                         # answers a guest with their own rows and nobody else's
     # Stopping one they asked for. cancel() already decides who may: the owner, or
@@ -114,6 +116,7 @@ GUEST_PREFIXES = (
     "/dash.all.min.js", "/favicon.ico", "/palladium.ico",
     "/hls.min.js",      # the live channel player, loaded when one is opened
     "/iptv.js",         # the IPTV plugin's part of the page
+    "/flags.woff2",     # the Region badge's flags: Windows draws none of its own
 )
 
 
@@ -311,7 +314,7 @@ class Invites:
     #: the app is on its way out and the key may not even be loaded - so it was
     #: refused at the door and the crash log stood a month stale while the app was
     #: crashing every few minutes.
-    GUEST_EXACT = ("/update", "/applog")
+    GUEST_EXACT = ("/warm", "/update", "/applog")
 
     @staticmethod
     def allowed(path):

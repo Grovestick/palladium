@@ -580,7 +580,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     check("16 Popular: most watched first, the rest after",
           Array.from(w.sortLike(list.slice())).map((x) => x.title[0].toUpperCase()).join("") === "AGBD");
     const body = SOURCE.slice(SOURCE.indexOf("async function viewSection(type)"),
-                              SOURCE.indexOf("async function viewSection(type)") + 6000);
+                              SOURCE.indexOf("async function viewSection(type)") + 14000);
     check("16 the tab draws Popular itself, with its own sort, service, genre and decade",
           body.includes('if (sortState.key === "popular") {') &&
           body.includes("h.appendChild(withPopular(sortBar(() => viewSection(type)), type));\n    h.appendChild(serviceBar(type));") &&
@@ -711,6 +711,11 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
           SOURCE.includes('b.onclick = () => playSvt({ svt: e.id, title: title + " \\u00b7 " + e.name });'));
   }
 
+  // ---- 20p. a title page still waiting on the tracker says Checking and asks again
+  {
+    // 20p, the title page saying Checking until the tracker has answered, is drawn and read in 45
+  }
+
   // ---- 20o. a tracker that did not answer leaves nothing to add, rather than no pack
   {
     check("20o no answer from the tracker: the add button stays off, and says so",
@@ -727,10 +732,195 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
           SOURCE.includes("if (before >= 0) out.splice(before + 1, 0, c);"));
   }
 
+  // ---- 20q. My library and In packs: on disk, in a pack; both marked keep everything
+  {
+    const w = page("", ["ofHouse"]);
+    const list = [{ ratingKey: "a" }, { ratingKey: "b", offered: true },
+                  { ratingKey: "c", askable: true }, { ratingKey: "d", addable: true }];
+    const keys = (h) => w.ofHouse(list, h).map((x) => x.ratingKey).join("");
+    check("20q My library keeps what is on disk, In packs what a pack carries, both all of it",
+          keys({ mine: true, packs: false }) === "a" && keys({ mine: false, packs: true }) === "b" &&
+          keys({ mine: true, packs: true }) === "abcd", keys({ mine: true, packs: false }));
+  }
+
+  // ---- 20r. a catalogue read a service at a time goes back into the chosen order
+  {
+    const w = page("", ["inServiceOrder"], { serviceSort: { key: "popular", dir: "desc" } });
+    const got = w.inServiceOrder([{ ratingKey: "a", popularity: 3 }, { ratingKey: "b", popularity: 90 },
+                                  { ratingKey: "c", popularity: 12 }]).map((x) => x.ratingKey).join("");
+    w.serviceSort = { key: "name", dir: "asc" };
+    const named = w.inServiceOrder([{ ratingKey: "x", title: "Zed" }, { ratingKey: "y", title: "abba" }])
+      .map((x) => x.ratingKey).join("");
+    check("20r services read one at a time are sorted back by popularity, or by name", got === "bca" && named === "yx",
+          got + " " + named);
+  }
+
+  // ---- 20s. Clear in a filter menu says All and unticks at once, before the list comes
+  {
+    const w = page("<div id='host'></div>", ["genreMenu"], { genreKeep: null });
+    let applied = null;
+    const bar = w.genreMenu("8,1899", Promise.resolve([["8", "Netflix"], ["1899", "HBO Max"]]),
+                            (v) => { applied = v; }, -1,
+                            { label: "Service:", joins: "x", names: [["8", "Netflix"], ["1899", "HBO Max"]] });
+    w.document.getElementById("host").appendChild(bar);
+    await tick();
+    const was = bar.querySelector(".genrepick").textContent;
+    bar.querySelector(".genreclear").click();
+    const now = bar.querySelector(".genrepick").textContent;
+    check("20s Clear says All and unticks before the list is read again",
+          was.startsWith("Netflix + HBO Max") && now.startsWith("All") && applied === "" &&
+          !bar.querySelector(".genreopt.on") && !bar.querySelector(".genreopt input:checked"), was + " / " + now);
+  }
+
+  // ---- 20t. everything read a service at a time: a pause keeps what came, Continue
+  //            carries on from the next page rather than from the start
+  {
+    const asked = [];
+    const pages = { "8,1899": 1, "8": 3, "1899": 2 };
+    const w = page("", ["catalogueKey", "serviceCatalogue", "readCatalogue", "inServiceOrder"], {
+      servicePages: { movie: "all" }, serviceSort: { key: "popular", dir: "desc" },
+      SERVICE_SORTS: [["popular", "Popular", "popularity"]], genreWanted: {}, decadeWanted: {},
+      allRead: null, allDone: null,
+      api: async (path, q) => {
+        asked.push(q.provider + ":" + q.page);
+        const n = pages[q.provider];
+        return { totalSize: 100, more: q.page < n,
+                 Metadata: [{ ratingKey: q.provider + "-" + q.page, popularity: 100 - asked.length }] };
+      } });
+    let stops = 0;
+    const first = await w.serviceCatalogue("movie", "8,1899", () => (++stops < 3 ? true : "pause"));
+    // another order while paused: the same titles sorted, nothing asked, still paused
+    const asks = asked.length;
+    w.serviceSort = { key: "popular", dir: "asc" };
+    const resorted = await w.serviceCatalogue("movie", "8,1899", () => true);
+    const stillPaused = resorted.paused === true && asked.length === asks &&
+      resorted.list[0].popularity <= resorted.list[resorted.list.length - 1].popularity;
+    w.allRead.paused = false;
+    const second = await w.serviceCatalogue("movie", "8,1899", () => true);
+    check("20t a pause keeps what came and Continue asks from the next page on",
+          first.paused === true && first.list.length === 3 && stillPaused && second.paused === false &&
+          asked.join(" ") === "8:1 8:2 8:3 1899:1 1899:2" && second.list.length === 5 &&
+          second.total === 5,
+          asked.join(" ") + " | " + first.list.length + "/" + second.list.length);
+  }
+
+  // ---- 20u. everything read once: a new order sorts it, nothing is asked again
+  {
+    const asked = [];
+    const w = page("", ["catalogueKey", "serviceCatalogue", "readCatalogue", "inServiceOrder"], {
+      servicePages: { movie: "all" }, serviceSort: { key: "popular", dir: "desc" },
+      SERVICE_SORTS: [["popular", "Popular", "popularity"], ["name", "Name", "titleSort"]],
+      genreWanted: {}, decadeWanted: {}, allRead: null, allDone: null,
+      api: async (path, q) => {
+        asked.push(q.provider + ":" + q.page);
+        return { totalSize: 2, more: false,
+                 Metadata: [{ ratingKey: "a", title: "Zed", popularity: 9 },
+                            { ratingKey: "b", title: "Abba", popularity: 1 }] };
+      } });
+    const first = await w.serviceCatalogue("movie", "8", () => true);
+    w.serviceSort = { key: "name", dir: "asc" };
+    const again = await w.serviceCatalogue("movie", "8", () => true);
+    check("20u a new order of what was read whole is a sort, not a reload",
+          asked.length === 1 && first.list.map((x) => x.ratingKey).join("") === "ab" &&
+          again.list.map((x) => x.ratingKey).join("") === "ba", asked.join(" "));
+  }
+
+  // ---- 20v. a new order while everything is loading carries on, it does not start over
+  {
+    const asked = [];
+    const w = page("", ["catalogueKey", "serviceCatalogue", "readCatalogue", "inServiceOrder"], {
+      servicePages: { movie: "all" }, serviceSort: { key: "popular", dir: "desc" },
+      SERVICE_SORTS: [["popular", "Popular", "popularity"], ["name", "Name", "titleSort"]],
+      genreWanted: {}, decadeWanted: {}, allRead: null, allDone: null,
+      api: async (path, q) => {
+        asked.push(q.provider + ":" + q.page);
+        return { totalSize: 50, more: q.page < 4,
+                 Metadata: [{ ratingKey: q.provider + "-" + q.page, title: "T" + q.page,
+                              popularity: q.page }] };
+      } });
+    // the first reading stops after two pages, as a reading overtaken does
+    let n = 0;
+    await w.serviceCatalogue("movie", "8", () => ++n < 2);
+    w.serviceSort = { key: "name", dir: "asc" };
+    const done = await w.serviceCatalogue("movie", "8", () => true);
+    check("20v a new order mid-load carries on from the page it got to",
+          asked.join(" ") === "8:1 8:2 8:3 8:4" && done.list.length === 4 && done.paused === false &&
+          done.list.map((x) => x.title).join("") === "T1T2T3T4", asked.join(" "));
+  }
+
+  // ---- 20x. a filter menu closes on a press outside, also while its list is read again
+  {
+    const w = page("<div id='host'></div><div id='elsewhere'>x</div>", ["genreMenu"], { genreKeep: null });
+    const bar = w.genreMenu("", Promise.resolve([["a", "A"], ["b", "B"]]), () => {}, -1, null);
+    w.document.getElementById("host").appendChild(bar);
+    await tick();
+    const menu = bar.querySelector(".genremenu");
+    bar.querySelector(".genrepick").click();
+    // a mark: the list is asked for again, and the menu stands until it is redrawn
+    const box = bar.querySelector(".genreopt input");
+    box.checked = true;
+    box.dispatchEvent(new w.Event("change"));
+    w.document.getElementById("elsewhere").dispatchEvent(new w.MouseEvent("mousedown", { bubbles: true }));
+    check("20x a press outside closes the menu while the list is read again, and it stays shut",
+          menu.classList.contains("hidden") && w.genreKeep === null);
+  }
+
+  // ---- 20aa. Popular with this house's titles in it: no popularity is a tie, broken by
+  //             the score and then the name - not the order they came in
+  {
+    const w = page("", ["inServiceOrder"], { serviceSort: { key: "popular", dir: "desc" } });
+    const got = w.inServiceOrder([{ ratingKey: "z", title: "Zulu", rating: 9 },
+                                  { ratingKey: "a", title: "Alien", rating: 8.2 },
+                                  { ratingKey: "p", title: "Pop", popularity: 40, rating: 5 },
+                                  { ratingKey: "b", title: "Brazil", rating: 8.2 }])
+      .map((x) => x.ratingKey).join("");
+    check("20aa titles without popularity follow by score, then name", got === "pzab", got);
+  }
+
+  // ---- 20ab. a mood's row: one line of wide cards, paged with arrows; Don't recommend
+  //             takes a card off and the next comes in
+  {
+    const told = [];
+    const w = page("", ["startShelf", "startCard"], {
+      main: { clientWidth: 1300 }, esc: (t) => String(t), img: (a) => a,
+      open: () => {}, play: () => {},
+      startTell: async (it, what) => { told.push(it.ratingKey + ":" + what); return true; } });
+    const list = Array.from({ length: 10 }, (_, i) => ({ ratingKey: "k" + i, title: "T" + i, type: "movie" }));
+    const row = w.startShelf({ id: "laugh", name: "Make me laugh", tagline: "x", Metadata: list });
+    // one strip that slides: every card is on it, and the place is how far along it is
+    const keys = () => Array.from(row.querySelectorAll(".spcard .spctitle")).map((c) => c.textContent).join(",");
+    const at = () => row.querySelector(".spcards").dataset.at;
+    const first = keys() + "@" + at();
+    row.querySelector(".sparrow.next").click();
+    const second = at();
+    const slid = row.querySelector(".spcards").style.transform;
+    row.querySelector(".sparrow.prev").click();
+    row.querySelectorAll(".spcard")[1].querySelectorAll(".spcbtn")[2].click();
+    await tick();
+    const after = keys() + "@" + at();
+    check("20ab a mood's row slides four along at a time, and Don't recommend takes a card off",
+          first === "T0,T1,T2,T3,T4,T5,T6,T7,T8,T9@0" && second === "4" && /translateX/.test(slid) &&
+          told.join() === "k1:not" && after === "T0,T2,T3,T4,T5,T6,T7,T8,T9@0" &&
+          row.querySelector(".sparrow.prev").hidden,
+          first + " | " + second + " | " + after);
+    // and a row that says where more is ends in Show more, its name a link to the same
+    const opened = [];
+    const w2 = page("", ["startShelf", "startCard"], {
+      main: { clientWidth: 1300 }, esc: (t) => String(t), img: (a) => a,
+      open: () => {}, play: () => {}, startTell: async () => true,
+      startMore: (m) => opened.push(m.genre) });
+    const row2 = w2.startShelf({ id: "laugh-movie", name: "Make me laugh", tagline: "x",
+                                 Metadata: list, more: { tab: "films", sort: "popular", genre: "Comedy" } });
+    row2.querySelector(".spmore").click();
+    row2.querySelector(".sphead").click();
+    check("20ab2 a Start row ends in Show more and its name opens the same",
+          opened.join() === "Comedy,Comedy", opened.join());
+  }
+
   // ---- 20m. Films opens on its popular page too, unless a service is marked
   {
     check("20m Films and TV open on Popular from their button unless a service is marked",
-          SOURCE.includes('if (kind && !serviceWanted[kind]) {\n      SORT_BY_TAB[t.dataset.view].key = "popular";') &&
+          SOURCE.includes('if (kind && serviceWanted[kind] === SRC_HOUSE) {\n      SORT_BY_TAB[t.dataset.view].key = "popular";') &&
           SOURCE.includes('const SORT_BY_TAB = { movies: { key: "popular", dir: "desc" },'));
   }
 
@@ -824,8 +1014,18 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const settings = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
     check("28 a plugin's row opens its own page, and a refused channel says why",
           SOURCE.includes("if (cat.open) return cat.open();")
-          && iptv.includes("open: () => viewMyChannels() });")
+          && iptv.includes("open: () => viewMyChannels() }]);")
           && SOURCE.includes("if (code !== 429 && code !== 504 && code !== 404) return;") && !SOURCE.includes("mylive"));
+    check("28 My channels stands at the foot of Start, not on Home",
+          iptv.includes("window.PD_START_ROWS = (window.PD_START_ROWS || []).concat([")
+          && !iptv.includes("CATS.push(")
+          && SOURCE.includes("for (const cat of (window.PD_START_ROWS || [])) {"));
+    const css28 = fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8");
+    check("28 Start and Home scroll with no scrollbar, other pages keep theirs",
+          css28.includes("html:has(#main > .sp),html:has(#main > .homemark){scrollbar-width:none}")
+          && SOURCE.includes('here.className = "homemark";'));
+    check("28 a music round on Continue watching wears Music, any other shuffle Shuffle",
+          SOURCE.includes(`(/^music(:|$)/.test(it.shuffleId || "") ? "Music" : "Shuffle")`));
     check("28 its settings are buttons in a tab of their own, each press redrawing its row alone",
           iptv.includes("if (data.liveList === undefined) {")
           && iptv.includes('b.className = "btn ghost kind" + (isOn(one) ? " on" : "");')
@@ -867,7 +1067,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
           && w.liveStep(L, "a", -1).ratingKey === "c" && w.liveStep(L, "x", 1).ratingKey === "a"
           && w.liveStep(L, "x", -1).ratingKey === "c" && w.liveStep([], "a", 1) === null);
     check("31 the monitor opens without the front page under it, once",
-          SOURCE.includes('if (where !== "monitor") go("home");')
+          SOURCE.includes('if (where !== "monitor" && SCREEN === FIRST_SCREEN) go(firstTab());')
           && SOURCE.includes('} else if (where === "settings" || where === "reports") {'));
     const set31 = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
     check("31 the queue moves one place up or down, and a series can be removed",
@@ -929,12 +1129,12 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
                                            "se", "palladium", "tv", "MainActivity.kt"), "utf8")
       .replace(/\r\n/g, "\n");
     const play35 = ma35.indexOf("startIt(resume)\n                }");
-    check("35 app: marks straight after Play, before From start and Mark watched; first on a series' row",
+    check("35 app: marks straight after Play, before From start and Mark watched; alone on a series' row",
           play35 > 0 && ma35.indexOf("if (!full.offered && !full.askable) marks()", play35) > play35
           && ma35.indexOf("if (!full.offered && !full.askable) marks()", play35)
              < ma35.indexOf('Pill("From start"', play35)
           && ma35.indexOf("marks()\n                        Pill(\"Mark all watched\")") < 0
-          && ma35.includes("        if (full.isFolder) {\n            Box(Modifier.padding(top = 10.dp)) { marks() }"));
+          && ma35.indexOf("verticalAlignment = Alignment.CenterVertically) {\n                marks()\n            }") > 0);
     check("35 web: the mark control before Mark watched",
           SOURCE.indexOf("slot.appendChild(markControl(m));")
           < SOURCE.indexOf("slot.appendChild(watchedButton(m, () => playFromStartOnly(m)));"));
@@ -955,6 +1155,452 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     check("37 film badges: no year chip, no Transcoded, streaming marks inside the badge row",
           !ma37.includes("full.year?.let { Chip(it.toString()) }") && !ma37.includes('else -> "Transcoded"')
           && ma37.indexOf("full.providers.forEach") > ma37.indexOf("// The badges in one row"));
+  }
+
+  // ---- 38. Start's Edit rows: a row hidden and one moved up are saved as shown
+  {
+    const sent = [];
+    let redrawn = 0;
+    const w = page('<div id="where"></div>', ["startForm"], {
+      CFG: { guest: true }, toast: () => {}, viewStart: () => { redrawn++; },
+      fetch: async (u, o) => { sent.push(JSON.parse(o.body)); return {}; } });
+    const d = w.document;
+    const front = { rowsMine: false, rowList: [
+      { id: "shuffle", name: "Shuffle", on: true }, { id: "new-movie", name: "New films", on: true },
+      { id: "new-show", name: "New series", on: true }, { id: "classic-movie", name: "Classics", on: false }] };
+    w.startForm(d.querySelector("#where"), front);
+    const rows = () => [...d.querySelectorAll(".homerow")];
+    check("38 every row listed, the hidden one struck", rows().length === 4
+          && rows()[3].querySelector(".homename").classList.contains("off"));
+    rows()[0].querySelector("button").click();                // hide Shuffle
+    rows()[2].querySelectorAll("button")[1].click();          // New series up
+    const save = [...d.querySelectorAll("button")].filter((b) => b.textContent === "Save")[0];
+    save.click();
+    await tick();
+    check("38 saved as shown: the kept in order, the hidden apart",
+          sent.length === 1 && JSON.stringify(sent[0].startRows) === '["new-show","new-movie"]'
+          && JSON.stringify(sent[0].startRowsOff) === '["shuffle","classic-movie"]' && redrawn === 1,
+          JSON.stringify(sent));
+  }
+
+  // ---- 39. More like this: nothing carries every genre, so the set that finds most
+  {
+    const asked = [];
+    const lib = [
+      { ratingKey: "a", genres: ["Thriller", "Action", "Science Fiction", "Adventure"] },
+      { ratingKey: "b", genres: ["Thriller", "Action", "Science Fiction", "Adventure"] },
+      { ratingKey: "c", genres: ["Thriller", "Romance", "Science Fiction", "Adventure"] }];
+    const w = page('<div id="main"></div>', ["genreFewer", "genreSets", "moreLikeThis"], {
+      esc: (x) => x, sectionsOf: async () => ({ movie: 1 }), fits: () => 10,
+      fromAll: async (f) => f(null),
+      api: async (u, q) => { asked.push(q.genre);
+        const ws = q.genre.split(",");
+        return lib.filter((x) => ws.every((g) => x.genres.indexOf(g) >= 0)); } });
+    w.grid = () => w.document.createElement("div");
+    const box = await w.moreLikeThis({ ratingKey: "s", type: "movie", year: 1997,
+      genres: ["Thriller", "Action", "Romance", "Science Fiction", "Adventure"] });
+    const tags = box ? [...box.querySelectorAll(".tag")].map((t) => t.textContent) : [];
+    check("39 widened to the four that find most, the tags saying so",
+          !!box && JSON.stringify(tags) === '["#thriller","#action","#science fiction","#adventure"]',
+          JSON.stringify(tags) + " " + asked.length);
+  }
+
+  // ---- 40. a film not out yet says its date where Play would be
+  {
+    const w = page("", ["upcomingLine"]);
+    check("40 the date, said short", w.upcomingLine("2026-12-15") === "Out 15 Dec 2026",
+          w.upcomingLine("2026-12-15"));
+    check("40 no date, no made-up one", w.upcomingLine(null) === "Not out yet" &&
+          w.upcomingLine("2026-13-01") === "Not out yet");
+    check("40 viewMovie draws no Play for it",
+          /m\.upcoming\s*\?[^:]*upcomingLine\(m\.originallyAvailableAt\)[\s\S]{0,120}:\s*playerBar\(m, resume\)/
+            .test(take("viewMovie")));
+  }
+
+  // ---- 41. a poster's download badge moves with each poll, and says Arriving once gone
+  {
+    const w = page(
+      '<div class="card" data-key="k1"><div class="offerbadge"><span>3%</span></div></div>' +
+      '<div class="card" data-key="k2"><div class="offerbadge"><span>Queued</span></div></div>',
+      ["offerWord", "offerVersion", "offerBadgeText", "moveOfferBadges"],
+      { esc: (s) => String(s == null ? "" : s), etaShort: (s) => Math.round(s / 60) + " min",
+        badgeKeys: new Set(), CSS: { escape: (s) => s } });
+    const d = w.document;
+    const kept = d.querySelector('[data-key="k1"] .offerbadge');
+    w.moveOfferBadges([{ ratingKey: "k1", offer: { state: "downloading", progress: 0.42, eta: 360,
+                                                   version: "1080p WEB-DL" } },
+                       { ratingKey: "k2", offer: { state: "queued" } }]);
+    const one = d.querySelector('[data-key="k1"] .offerbadge span');
+    check("41 the per cent moved on", /^42% · 6 min/.test(one.textContent), one.textContent);
+    check("41 with the version under it", !!one.querySelector("small.ver"));
+    check("41 the badge is the element it was", d.querySelector('[data-key="k1"] .offerbadge') === kept);
+    w.moveOfferBadges([{ ratingKey: "k2", offer: { state: "downloading", progress: 0.01 } }]);
+    check("41 one gone from the list says Arriving",
+          d.querySelector('[data-key="k1"] .offerbadge span').textContent === "Arriving");
+    check("41 the next one started",
+          /^1%/.test(d.querySelector('[data-key="k2"] .offerbadge span').textContent));
+  }
+
+  // ---- 42. a film not out yet opens its own page; a coming episode its series
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    w.fetch = () => new Promise(() => {});
+    w.eval(SOURCE);
+    const went = [];
+    w.open = (it) => went.push(["open", it.ratingKey]);
+    w.viewShow = (show) => went.push(["show", show]);
+    w.card({ ratingKey: "f1", type: "movie", title: "A Film", upcoming: true,
+             originallyAvailableAt: "2099-12-15" }).click();
+    w.card({ ratingKey: "e1", type: "episode", title: "An Episode", upcoming: true,
+             grandparentRatingKey: "s1", parentIndex: 2, airs: "Fri" }).click();
+    check("42 the film opens its page", JSON.stringify(went[0]) === '["open","f1"]', JSON.stringify(went));
+    check("42 the episode opens its series", JSON.stringify(went[1]) === '["show","s1"]', JSON.stringify(went));
+  }
+
+  // ---- 43. a film page whose release is coming in keeps its progress button
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    const answers = { "/tracker/list": { free: 100, versions: [{ id: "9", name: "F.2023.2160p", size: 8e9, seeds: 5 }] },
+                      "/tracker/active": { taking: [] } };
+    w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(answers[String(u)] || {}) });
+    w.eval(SOURCE);
+    w.moreLikeThis = () => Promise.resolve(null);
+    w.castRow = () => {};
+    w.api = () => new Promise(() => {});
+    w.document.body.appendChild(w.document.createElement("main"));
+    w.eval("main = document.querySelector('main')");
+    w.viewOffer({ ratingKey: "oA", type: "movie", title: "F", year: 2023, offered: true,
+                  offer: { size: 6e9, state: "downloading", progress: 0.4, file: "F.2023.WEB.mkv" } });
+    await new Promise((r) => setTimeout(r, 50));
+    const d = w.document;
+    check("43 the progress button shows", d.getElementById("offerget").style.display !== "none" &&
+          /40%/.test(d.getElementById("offerget").textContent), d.getElementById("offerget").textContent);
+    check("43 no second Download beside it", d.getElementById("offertracker").style.display === "none");
+    // the server's words: looking for seeders is not "Downloading 0%"
+    w.viewOffer({ ratingKey: "oB", type: "movie", title: "F", year: 2023, offered: true,
+                  offer: { size: 6e9, state: "downloading", progress: 0, file: "F.mkv",
+                           stage: "finding", words: "Looking for seeders" } });
+    await new Promise((r) => setTimeout(r, 50));
+    check("43 the button says what it is doing, and is its Cancel", /Cancel.*Looking for seeders/.test(d.getElementById("offerget").textContent),
+          d.getElementById("offerget").textContent);
+  }
+
+  // ---- 44. a series or film without a key is not asked for: it was a 404 on every restore
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    const asked = [];
+    w.fetch = (u) => { asked.push(String(u)); return new Promise(() => {}); };
+    w.eval(SOURCE);
+    w.viewShow(undefined); w.viewShow("undefined"); w.viewMovie(null);
+    w.sessionStorage.setItem("pd-screen", JSON.stringify({ kind: "show", key: "undefined" }));
+    await w.restoreScreen();
+    check("44 nothing asked for a missing key", !asked.some((u) => /undefined|null/.test(u)), JSON.stringify(asked));
+    check("44 the word for it", w.keyed("e12") && !w.keyed(undefined) && !w.keyed("undefined") && !w.keyed(""));
+  }
+
+  // ---- 45. a title the tracker has not been asked about says Checking, not Request
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(String(u) === "/tracker/list" ? { versions: [] }
+                                                                   : { taking: [] }) });
+    w.eval(SOURCE);
+    w.moreLikeThis = () => Promise.resolve(null);
+    w.castRow = () => {};
+    w.api = () => new Promise(() => {});
+    w.document.body.appendChild(w.document.createElement("main"));
+    w.eval("main = document.querySelector('main')");
+    w.viewOffer({ ratingKey: "t1", type: "movie", title: "New", year: 2026, askable: true, checking: true });
+    await new Promise((r) => setTimeout(r, 50));
+    const d = w.document;
+    check("45 the button says Checking while the tracker is asked", /Checking/.test(d.getElementById("offerget").textContent)
+          && d.getElementById("offerget").disabled, d.getElementById("offerget").textContent);
+    check("45 and the ribbon with it", /Checking/.test(d.querySelector(".poster .ribbon span").textContent));
+    w.viewOffer({ ratingKey: "t2", type: "movie", title: "Old", year: 2020, askable: true, checking: false });
+    await new Promise((r) => setTimeout(r, 50));
+    check("45 asked about and nothing found: Request", /^Request/.test(d.getElementById("offerget").textContent),
+          d.getElementById("offerget").textContent);
+  }
+
+  // ---- 46. a film coming in from a pack: its Download is its Cancel - once to arm, again to stop
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    const posted = [];
+    w.fetch = (u, o) => { if (o && o.method === "POST") posted.push(String(u));
+      return Promise.resolve({ json: () => Promise.resolve(String(u) === "/torrents/cancel" ? { ok: true }
+        : String(u) === "/tracker/list" ? { versions: [] } : { taking: [] }) }); };
+    w.eval(SOURCE);
+    w.moreLikeThis = () => Promise.resolve(null);
+    w.castRow = () => {};
+    w.api = () => new Promise(() => {});
+    w.toast = () => {};
+    w.drawDownloadBanner = () => {};
+    w.document.body.appendChild(w.document.createElement("main"));
+    w.eval("main = document.querySelector('main')");
+    w.viewOffer({ ratingKey: "oP", type: "movie", title: "P", year: 2020, offered: true,
+                  offer: { size: 5e9, state: "downloading", progress: 0.5, file: "P.mkv" } });
+    await new Promise((r) => setTimeout(r, 50));
+    const b = w.document.getElementById("offerget");
+    check("46 coming in: the button is its Cancel", /^✕ Cancel/.test(b.textContent), b.textContent);
+    b.click();
+    check("46 one press arms it, nothing stopped", /Press again/.test(b.textContent) && !posted.includes("/torrents/cancel"));
+    b.click();
+    await new Promise((r) => setTimeout(r, 30));
+    check("46 the second stops it", posted.includes("/torrents/cancel"), JSON.stringify(posted));
+  }
+
+  // ---- 47. Settings, Health: the problems first, or All good; then the machines and the rest
+  {
+    const SET = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8").replace(/\r\n/g, "\n");
+    const at = SET.indexOf("\n  function healthBlocks(");
+    const fn = SET.slice(at + 1, SET.indexOf("\n  }\n", at) + 4);
+    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+    const w = dom.window;
+    w.eval("const block = (t) => { const e = document.createElement('div'); e.className = 'setblock';" +
+           " e.innerHTML = '<h3>' + t + '</h3>'; return e; };" +
+           "const esc = (t) => String(t == null ? '' : t);\n" + fn + "\nwindow.healthBlocks = healthBlocks;");
+    const ok = w.healthBlocks({ machines: [{ name: "Main", build: "1.2", up: true }], problems: [],
+                                facts: { disks: [{ drive: "D:", freeGB: 100, downloads: true }],
+                                         backup: { at: 1000, ok: true, parts: {} }, torrents: [], workers: [] } }, 2000);
+    check("47 nothing wrong: All good, in green", ok.querySelector("h3").textContent === "All good"
+          && ok.querySelector(".setblock").classList.contains("good"));
+    check("47 the machines and the disks under it", /Main/.test(ok.textContent) && /1\.2/.test(ok.textContent)
+          && /100 GB free/.test(ok.textContent));
+    const bad = w.healthBlocks({ machines: [{ name: "Copy", up: false }],
+                                 problems: ["Copy is not answering", "D: has 5 GB free for downloads"],
+                                 facts: { torrents: [{ name: "T", state: "checkingDL", since: 1000 }] } }, 2200);
+    check("47 trouble: how many, each said, the machine down, the hung check",
+          bad.querySelector("h3").textContent === "2 things need you" && /Copy is not answering/.test(bad.textContent)
+          && /not answering/.test(bad.textContent) && /checkingDL/.test(bad.textContent) && /20 min/.test(bad.textContent)
+          && /no backup has run/.test(bad.textContent));
+    check("47 a server is a dot - green when it answers, red when not - and no word up",
+          ok.querySelector(".updot.up") !== null && bad.querySelector(".updot.down") !== null
+          && !/up/.test(ok.textContent));
+  }
+
+  // ---- 48. a pack copy of a film here already: Play plays the film here while it comes in
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(String(u) === "/tracker/list"
+                                                                   ? { versions: [] } : { taking: [] }) });
+    w.eval(SOURCE);
+    w.moreLikeThis = () => Promise.resolve(null);
+    w.castRow = () => {};
+    const played = [];
+    w.api = (p) => Promise.resolve(p === "/library/metadata/m1"
+      ? { Metadata: [{ ratingKey: "m1", type: "movie", title: "Held", viewOffset: 61000 }] } : {});
+    w.play = (it, at) => played.push([it.ratingKey, at]);
+    w.document.body.appendChild(w.document.createElement("main"));
+    w.eval("main = document.querySelector('main')");
+    w.viewOffer({ ratingKey: "oH", type: "movie", title: "Held", year: 2014, offered: true,
+                  offer: { size: 5e9, state: "downloading", progress: 0.5, file: "H.mkv", heldKey: "m1" } });
+    await new Promise((r) => setTimeout(r, 30));
+    const b = w.document.getElementById("offerheld");
+    check("48 a Play beside the download", !!b && /Play/.test(b.textContent));
+    if (b) b.click();
+    await new Promise((r) => setTimeout(r, 30));
+    check("48 it plays the copy here, from where it was left", JSON.stringify(played) === '[["m1",61]]',
+          JSON.stringify(played));
+    w.viewOffer({ ratingKey: "oN", type: "movie", title: "New", year: 2020, offered: true,
+                  offer: { size: 5e9, state: "", file: "N.mkv" } });
+    await new Promise((r) => setTimeout(r, 30));
+    check("48 nothing here: no Play", !w.document.getElementById("offerheld"));
+  }
+  // ---- 50. a version this house holds says On disk, from a pack or the tracker alike
+  {
+    const w = page("", ["versionTag"]);
+    const said = [{ disk: true, have: true }, { pack: true, have: true }, { have: true },
+                  { pack: true }, { box: true, seasonPack: true }, {}].map((v) => w.versionTag(v));
+    check("50 held versions say On disk, the rest where they come from",
+          JSON.stringify(said) === '["On disk","On disk","On disk","In a pack here","Season pack","Tracker"]',
+          JSON.stringify(said));
+    check("50 no list says it twice", !/on disk already/i.test(SOURCE), "");
+  }
+
+  // ---- 51. an episode's other versions: the one here says On disk, its button too
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    w.fetch = async () => ({ json: async () => ({ free: 50, versions: [
+      { id: "1", name: "Show S01E01 1080p WEB H264-A", size: 9e8, seeds: 30, have: true },
+      { id: "2", name: "Show S01E01 1080p x265-B", size: 4e8, seeds: 12 }] }) });
+    w.eval(SOURCE);
+    const row = w.document.createElement("div");
+    row.innerHTML = '<div class="info"></div><button class="eptick">x</button>';
+    await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
+    const tick = row.querySelector(".eptick");
+    const held = tick.style.alignSelf === "flex-start" && tick.style.marginTop !== "";
+    const lines = [...row.querySelectorAll(".epdlrow")];
+    const btn = (i) => lines[i] && lines[i].querySelector("button");
+    check("51 the one here: On disk, nothing to press; the other: Download",
+          lines.length === 2 && /^On disk/.test(lines[0].textContent) && btn(0).textContent === "On disk"
+          && btn(0).disabled && btn(1).textContent === "⤓ Download" && !btn(1).disabled,
+          lines.map((l) => l.textContent).join(" | "));
+    await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
+    check("51 the row's marks held at the top while the list is open, let go when it closes",
+          held && tick.style.alignSelf === "" && tick.style.marginTop === "" && !row.querySelector(".epdl"),
+          tick.style.cssText);
+  }
+
+  // ---- 52. the film page's version menu: a version here already is chosen as the copy it is
+  {
+    const w = page('<div class="verline"><select id="s"><option value="0">F.2000.1080p.x264-A.mkv · 1080p</option>' +
+                   '<option value="1">F.2000.2160p-B.mkv · 4K</option><option value="dl:1">a</option>' +
+                   '<option value="dl:2">b</option></select></div>', ["offerDownload"]);
+    w.Event = w.Event || Event;
+    const sel = w.document.getElementById("s");
+    let changed = "";
+    sel.addEventListener("change", () => { changed = sel.value; });
+    sel._downloads = { free: 40, rows: [{ id: "1", have: true, size: 5e9, name: "F.2000.2160p-B" },
+                                        { id: "2", size: 6e9, name: "F.2000.720p-C" }] };
+    sel.value = "dl:1";
+    w.offerDownload({ title: "F", year: 2000 }, sel);
+    const none = !w.document.querySelector(".dlhere");
+    sel.value = "dl:2";
+    w.offerDownload({ title: "F", year: 2000 }, sel);
+    const two = w.document.querySelector(".dlhere .btn");
+    check("52 the one here becomes the chosen copy, no button; another gets Download",
+          none && changed === "1" && /^⤓ Download/.test(two.textContent) && !two.disabled,
+          changed + " | " + (two && two.textContent));
+  }
+
+  // ---- 53. a download just started says so, not Arriving, until its progress comes
+  check("53 a started download is not said to be arriving",
+        !SOURCE.includes('"Downloading - arriving"') && /: "Starting the download\u2026";/.test(SOURCE), "");
+
+  // ---- 54. a Start slide plays only a film that is here; one not out yet says when
+  {
+    const w = page("", ["upcomingLine", "heroAct"]);
+    const said = [{ type: "movie", upcoming: true, originallyAvailableAt: "2026-12-15" },
+                  { type: "movie", askable: true }, { type: "movie", offered: true },
+                  { type: "movie" }, { type: "show" }]
+      .map((it) => { const a = w.heroAct(it); return a.word + (a.plays ? "+" : ""); });
+    check("54 not out: its date; not here: Request; a pack's: Get it; here: Play",
+          JSON.stringify(said) === JSON.stringify(["Out 15 Dec 2026", "Request", "\u2913 Get it", "\u25b6 Play+", "\u25b6 Watch"]),
+          JSON.stringify(said));
+  }
+
+  // ---- 55. a film not here can go on the watchlist and in a collection from its page
+  check("55 the offer page carries the watchlist and collection marks",
+        /async function viewOffer\(m\) \{[\s\S]*?marks\.insertBefore\(markControl\(m\), wrap\.querySelector\("#offersaid"\)\)[\s\S]*?main\.appendChild\(wrap\);/
+          .test(SOURCE), "");
+
+  // ---- 56. Settings: every section's tab is a tab there is, and every old tab name opens one
+  {
+    const SET = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
+    const owner = SET.match(/const OWNER_TABS = \[([\s\S]*?)\];/)[1];
+    const ids = [...owner.matchAll(/\["([a-z]+)",/g)].map((m) => m[1]);
+    const table = SET.match(/const SECTION_TAB = \{([\s\S]*?)\};/)[1];
+    const goes = [...table.matchAll(/": "([a-z]+)"/g)].map((m) => m[1]);
+    const old = SET.match(/const OLD_TAB = \{([\s\S]*?)\};/)[1];
+    const oldGoes = [...old.matchAll(/: \["([a-z]+)"/g)].map((m) => m[1]);
+    check("56 ten tabs, every section and every old name lands on one of them",
+          ids.length === 10 && goes.length >= 25 && goes.every((g) => ids.includes(g))
+          && oldGoes.every((g) => ids.includes(g)),
+          JSON.stringify({ ids, bad: goes.concat(oldGoes).filter((g) => !ids.includes(g)) }));
+  }
+
+  // ---- 57. Settings: a section put on a page puts it on one its tab has
+  {
+    const SET = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8");
+    const pagesSrc = SET.match(/const PAGES = \{([\s\S]*?)\};/)[1];
+    const named = new Set([...pagesSrc.matchAll(/\["([a-z]+)", "/g)].map((m) => m[1]).concat(["shelves", "library"]));
+    const placed = [...SET.match(/const SECTION_PAGE = \{([\s\S]*?)\};/)[1].matchAll(/": "([a-z]+)"/g)].map((m) => m[1]);
+    check("57 every page a section is put on exists", placed.length >= 10 && placed.every((p) => named.has(p)),
+          JSON.stringify(placed.filter((p) => !named.has(p))));
+  }
+
+  // ---- 58. a film's series on its poster: pressed it steps, the place and the name under it
+  {
+    const w = page('<div class="detail"><div class="poster"><img src="own.jpg"></div><div class="meta"><h1>B</h1></div></div>',
+                   ["sagaRow", "openKey"],
+                   { api: async () => ({ Metadata: [{ ratingKey: "a", title: "A", year: 1999, thumb: "/a" },
+                                                    { ratingKey: "b", title: "B", year: 2005, at: true },
+                                                    { ratingKey: "c", title: "C", year: 2020, thumb: "/c" }] }),
+                     items: (c) => c.Metadata, img: (p) => "img:" + p });
+    const wrap = w.document.querySelector(".detail");
+    await w.sagaRow(wrap, "b");
+    const P = wrap.querySelector(".poster");
+    const went = [];
+    w.openKey = (k) => went.push(k);
+    const foot = () => wrap.querySelector(".sagacol > .sagaat").textContent;
+    const quiet = foot() === "2 of 3" && P.querySelector(".sagastep.next").style.display === "none";
+    w.SAGA_KEYS.step(1);                                   // not pressed yet: no stepping
+    const still = P.querySelector("img").getAttribute("src") === "own.jpg";
+    P.click();                                             // pressed: it starts
+    const going = /^B \(2005\)/.test(foot()) && P.querySelector(".sagastep.next").style.display === "";
+    P.querySelector(".sagastep.next").click();             // stepped on: C on show, named under it
+    const onC = /^C \(2020\)/.test(foot()) && P.querySelector("img").getAttribute("src") === "img:/c";
+    P.click();                                             // chosen: C opens
+    check("58 the poster starts stepping only when pressed; the place and the name under it; another one opens",
+          quiet && still && going && onC && JSON.stringify(went) === '["c"]', foot() + " " + JSON.stringify(went));
+    // with a mouse: over it the arrows come up, off it the poster is its own again
+    P.dispatchEvent(new w.MouseEvent("mouseleave"));
+    const back = foot() === "2 of 3" && P.querySelector(".sagastep.next").style.display === "none";
+    P.dispatchEvent(new w.MouseEvent("mouseenter"));
+    const up = /^B \(2005\)/.test(foot()) && P.querySelector(".sagastep.next").style.display === "";
+    check("58 a mouse over the poster brings the arrows up, off it the poster is its own again", back && up, foot());
+  }
+
+  // ---- 49. a card not out yet wears its date on the ribbon, Upcoming without one
+  {
+    const w = page("", ["upcomingBand"]);
+    const today = new w.Date(2026, 9, 29);
+    const said = [{ originallyAvailableAt: "2026-12-15" }, { airDate: "2027-01-03" },
+                  { airDate: "2027-10-01" }, {}, { airDate: "2026-10-29" }, { airDate: "2026-13-01" }]
+      .map((it) => w.upcomingBand(it, today));
+    check("49 the date, short; month and year far off; Upcoming without a date to come",
+          JSON.stringify(said) === '["15 Dec","3 Jan","Oct 2027","Upcoming","Upcoming","Upcoming"]',
+          JSON.stringify(said));
+    check("49 the card's ribbon says it", /it\.upcoming \? '<div class="ribbon soon"><span>' \+ upcomingBand\(it\)/
+          .test(SOURCE), "");
+  }
+
+  // ---- 51. the Add page's packs are a list on show, a doubtful one saying so first
+  check("51 the list is open, not a menu", /pick\.size = Math\.min\(12, pick\.options\.length\);/.test(SOURCE) &&
+        /pick\.classList\.toggle\("openlist", pick\.size > 1\)/.test(SOURCE));
+  check("51 a pack of either series says so before its name",
+        /new Option\(\[p\.unsure \? "Either series" : "", p\.name,/.test(SOURCE));
+
+  // ---- 50. an episode asked for: the season is drawn again once it can be played
+  {
+    let answer = [{ index: 3, offered: true, ratingKey: "p3" }], drawn = [], again = 0, said = [];
+    const w = page('<select id="season"><option value="k1" selected>1</option><option value="k2">2</option></select>' +
+                   '<div id="eplist"></div>', ["reloadWhenIn"], {
+      api: async () => answer, items: (c) => c, toast: (t) => said.push(t),
+      loadEpisodes: (k, key) => drawn.push([k, key]), EPISODE_LANDS_EVERY: 1,
+      setTimeout: () => { again += 1; } });
+    await w.reloadWhenIn("k1", 3);
+    check("50 still only on offer: nothing drawn, looked at again", !drawn.length && again === 1);
+    answer = [{ index: 3, ratingKey: "e3" }];
+    w.document.getElementById("eplist").innerHTML = '<div class="epdl"></div>';
+    await w.reloadWhenIn("k1", 3);
+    check("50 a release list open is not closed under the reader", !drawn.length && again === 2);
+    w.document.getElementById("eplist").innerHTML = "";
+    await w.reloadWhenIn("k1", 3);
+    check("50 in: the season drawn on it, and said", JSON.stringify(drawn) === '[["k1","e3"]]' && said.length === 1 && again === 2);
+    w.document.getElementById("season").value = "k2";
+    await w.reloadWhenIn("k1", 3);
+    check("50 another season open: it stops", drawn.length === 1 && again === 2);
   }
 
   console.log(FAILS.length ? "WEB FAILED: " + FAILS.length : "WEB PASSED");

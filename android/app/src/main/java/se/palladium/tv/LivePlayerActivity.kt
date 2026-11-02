@@ -104,7 +104,21 @@ class LivePlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             android.view.ViewGroup.LayoutParams.MATCH_PARENT,
             android.view.ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(box)
-        val made = ExoPlayer.Builder(this).build()
+        // Connected as the film player is: the server's name by its last known address
+        // where this network will not resolve it, a short wait to connect and a long one
+        // for a channel's first playlist. The player's own source asked the network's DNS
+        // and waited 8 s - from away no channel ever played, on either machine.
+        val http = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(Route.LIVE_CONNECT_MS.toInt())
+            .setReadTimeoutMs(Route.LIVE_READ_MS.toInt())
+            .setDefaultRequestProperties(mapOf("X-Palladium-App" to Api.appName()))
+        val named = androidx.media3.datasource.ResolvingDataSource.Factory(http) { spec ->
+            spec.withUri(android.net.Uri.parse(KnownHosts.reachable(spec.uri.toString())))
+        }
+        val made = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(named))
+            .build()
         player = made
         view.player = made
         view.useController = false
@@ -282,7 +296,8 @@ class LivePlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     }
 
     private fun open(url: String): java.net.HttpURLConnection {
-        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        // by the last known address where this network will not resolve the name
+        val c = java.net.URL(KnownHosts.reachable(url)).openConnection() as java.net.HttpURLConnection
         c.connectTimeout = 8000
         c.readTimeout = 20000
         if (token.isNotEmpty()) c.setRequestProperty("X-Palladium-Token", token)

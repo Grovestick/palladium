@@ -167,7 +167,11 @@ def compile_one(script, name, console):
            "--include-module=pd_holidays", "--include-module=pd_leads",
            "--include-module=pd_release", "--include-module=pd_vtt",
            "--include-module=pd_safe", "--include-module=pd_repair",
-           "--include-module=pd_plugins", "--include-module=pd_svtplay"]
+           "--include-module=pd_plugins", "--include-module=pd_svtplay",
+           "--include-module=pd_board", "--include-module=pd_shade",
+           "--include-module=pd_lists", "--include-module=pd_health",
+           "--include-module=pd_disk", "--include-module=pd_workers",
+           "--include-module=pd_words", "--include-module=pd_log"]
     # the plugins: carried while their file is there, and simply left out once deleted
     cmd += ["--include-module=" + m for m in ("pd_iptv",)
             if os.path.exists(os.path.join(HERE, m + ".py"))]
@@ -336,7 +340,8 @@ def prove():
 
 
 #: the smallest a real installer has been. One short of this has lost something.
-LEAST_SETUP_MB = 28
+#: 22.5 MB since 0.19.280; one without the server is 5 MB short of that.
+LEAST_SETUP_MB = 20
 
 
 def wrap():

@@ -88,7 +88,9 @@ else:
     mine = [c for c in shelf if c.get("ratingKey") == key]
     check("1 on Recently added while it comes in", len(mine) == 1, "%d cards" % len(mine))
     if mine:
-        check("1 at the front of the shelf", shelf.index(mine[0]) <= 1,
+        # with the films coming in on the live state, if any: only those ahead of it
+        check("1 at the front of the shelf",
+              all(c.get("offer") for c in shelf[:shelf.index(mine[0])]),
               "at %d" % shelf.index(mine[0]))
         check("1 says how far", (mine[0].get("offer") or {}).get("progress") == 0.42
               and (mine[0].get("offer") or {}).get("state") == "downloading")
@@ -388,8 +390,17 @@ if check("9 a Dolby file and one that is not, to measure", bool(dolby) and bool(
     pd_gpu.loudness = lambda path, length=0, flat=False, **k: -70.0
     with m.LOUDNESS_LOCK:
         m.LOUDNESS.pop(d, None)
-    check("9 silence is no reading", not m.take_readings(dolby["id"], dolby["path"], dolby["size"], 3000.0)
-          and d not in m.LOUDNESS)
+    check("9 silence is no reading, counted as a failed one",
+          not m.take_readings(dolby["id"], dolby["path"], dolby["size"], 3000.0)
+          and (m.LOUDNESS.get(d) or {}).get("lufs") is None
+          and (m.LOUDNESS.get(d) or {}).get("failed") == 1, str(m.LOUDNESS.get(d)))
+    m.take_readings(dolby["id"], dolby["path"], dolby["size"], 3000.0)
+    m.take_readings(dolby["id"], dolby["path"], dolby["size"], 3000.0)
+    check("9 three failed at one size: left alone until the size changes",
+          not pd_receiver.wants_measuring(m.LOUDNESS.get(d), "ac3", dolby["size"])
+          and pd_receiver.wants_measuring(m.LOUDNESS.get(d), "ac3", dolby["size"] + 1))
+    with m.LOUDNESS_LOCK:
+        m.LOUDNESS.pop(d, None)
 pd_gpu.loudness, pd_gpu.dialnorm = real_l, real_d
 print("9. readings made for a file", flush=True)
 
@@ -478,7 +489,8 @@ finally:
     con.close()
 print("12. season posters on a shelf", flush=True)
 
-# ---- 13. background work waits for anybody watching, direct play included
+# ---- 13. background work runs under playback with a full buffer, and waits for a viewer
+#          falling behind, the cache copying, a download or a scan
 class _Live:
     rows = []
     def snapshot(self):
@@ -487,19 +499,95 @@ class _Engine:
     streams = []
     def status(self):
         return {"streams": list(self.streams)}
-_was = (m.WATCHING, m.engine)
-m.WATCHING, m.engine = _Live(), (lambda: _Engine())
+_was = (m.WATCHING, m.engine, m.disks_busy)
+m.WATCHING, m.engine, m.disks_busy = _Live(), (lambda: _Engine()), (lambda: "")
 try:
-    _Live.rows = [{"how": "direct play"}]
-    check("13 somebody on direct play: not quiet", m.quiet_now() is False)
+    _Live.rows = [{"how": "direct play", "seconds": 60, "average": 1.0, "mbit": 9.0}]
+    check("13 somebody on direct play with a full buffer: quiet", m.quiet_now() is True)
+    _Live.rows = [{"how": "direct play", "seconds": 60, "average": 1.0, "mbit": 0.1}]
+    m.Handler.DIPS["None/None"] = __import__("time").time() - 11   # behind for 11 s now
+    check("13 somebody falling behind: not quiet", m.quiet_now() is False)
     _Live.rows = [{"how": "syncing"}]
-    check("13 only a copy being made: quiet", m.quiet_now() is True)
+    check("13 a copy being made: not quiet", m.quiet_now() is False)
     _Live.rows = []
     check("13 nobody: quiet", m.quiet_now() is True)
+    m.disks_busy = lambda: "a download is coming in"
+    check("13 a download coming in: not quiet", m.quiet_now() is False)
+    m.disks_busy = lambda: ""
     _Engine.streams = ["gpu1"]
     check("13 an encode running: not quiet", m.quiet_now() is False)
 finally:
-    m.WATCHING, m.engine = _was
+    m.WATCHING, m.engine, m.disks_busy = _was
+# a release taken from the tracker wears the poster of the page it was started from
+import pd_tracker as _ptk
+_was_tc = (m.coming_in, m.landing, dict(_ptk.STATE.get("taken") or {}))
+try:
+    m.coming_in = lambda: [{"name": "Some.Gone.Film.2026.1080p.WEB.H264-GRP", "progress": 0.5,
+                            "mbit": 9.0, "eta": 60, "size": 5, "who": "Someone", "from": "tracker",
+                            "added": 1, "hash": "abc123", "state": "downloading"}]
+    m.landing = lambda: []
+    _ptk.STATE.setdefault("taken", {})["abc123"] = {"key": "rt0000000001"}
+    _tc = m.tracker_coming()
+    check("13 a tracker download's poster is its page's, by the key written when it was taken",
+          len(_tc) == 1 and _tc[0]["ratingKey"] == "rt0000000001"
+          and _tc[0]["thumb"] == "/art/rt0000000001/poster", str(_tc[:1]))
+finally:
+    m.coming_in, m.landing = _was_tc[0], _was_tc[1]
+    _ptk.STATE["taken"] = _was_tc[2]
+# a copy runs flat out while nothing is wrong, steps down by tenths when a viewer is short,
+# tests without a ceiling, and takes the best it reached; a player nearly out cuts it to a tenth
+import types as _tyC
+H_ = m.Handler
+_keepC = (H_.a_film_is_struggling, H_.disk_reading_slow, H_.how_thin, H_.link_seen, dict(H_.PACE), m.time)
+try:
+    _st = {"short": False, "thin": "", "t": 1000.0}
+    m.time = _tyC.SimpleNamespace(time=lambda: _st["t"], sleep=lambda s: None,
+                                  strftime=__import__("time").strftime, monotonic=__import__("time").monotonic)
+    H_.a_film_is_struggling = staticmethod(lambda rows, side=None: _st["short"])
+    H_.disk_reading_slow = classmethod(lambda cls, now=None: False)
+    H_.how_thin = staticmethod(lambda now=None, side=None: _st["thin"])
+    H_.link_seen = classmethod(lambda cls, mbit, side: 100.0)
+    H_.PACE.clear()
+    def at(t, syncing, short=False, thin=""):
+        _st.update(t=t, short=short, thin=thin)
+        return round(H_.sync_ceiling({}, 10, syncing, "home"), 1)
+    seq = [at(1000, 300), at(1001, 300, True), at(1002, 300, True), at(1003, 243),
+           at(1005, 400), at(1009, 400)]
+    H_.PACE.clear()
+    panic = [at(2000, 300), at(2001, 300, thin="panic")]
+    check("13 copy: free; -10%% a second when short; a free test; free again at the new best; panic to a tenth",
+          seq == [0.0, 270.0, 243.0, 0.0, 0.0, 0.0] and panic == [0.0, 30.0], str((seq, panic)))
+finally:
+    (H_.a_film_is_struggling, H_.disk_reading_slow, H_.how_thin, H_.link_seen) = _keepC[:4]
+    H_.PACE.clear(); H_.PACE.update(_keepC[4]); m.time = _keepC[5]
+# a dip counts after 10 s, and never for a player that reports its buffer
+H_ = m.Handler
+_keepD = (H_.running_dry, dict(H_.AHEAD), dict(H_.DIPS), m.time)
+try:
+    import types as _tyD
+    _tD = {"t": 5000.0}
+    m.time = _tyD.SimpleNamespace(time=lambda: _tD["t"], sleep=lambda s: None,
+                                  strftime=__import__("time").strftime, monotonic=__import__("time").monotonic)
+    H_.running_dry = staticmethod(lambda now=None, side=None: False)
+    H_.AHEAD.clear(); H_.DIPS.clear()
+    row = {"how": "direct play", "seconds": 60, "average": 1.0, "mbit": 1.0, "who": "g", "address": "1.2.3.4"}
+    first = H_.a_film_is_struggling([row])
+    _tD["t"] += 3.5
+    scene = H_.a_film_is_struggling([row])
+    _tD["t"] += 7.0
+    later = H_.a_film_is_struggling([row])
+    H_.DIPS.clear()
+    H_.AHEAD["g/1.2.3.4"] = (25.0, _tD["t"], "home", 25.0, False, False)
+    first2 = H_.a_film_is_struggling([row])
+    _tD["t"] += 11.0
+    H_.AHEAD["g/1.2.3.4"] = (25.0, _tD["t"], "home", 25.0, False, False)
+    reported = H_.a_film_is_struggling([row])
+    check("13 dip: not at once, not after 3.5 s, yes after 10 s, never for a player reporting its buffer",
+          (first, scene, later, first2, reported) == (False, False, True, False, False),
+          str((first, scene, later, first2, reported)))
+finally:
+    H_.running_dry = _keepD[0]
+    H_.AHEAD.clear(); H_.AHEAD.update(_keepD[1]); H_.DIPS.clear(); H_.DIPS.update(_keepD[2]); m.time = _keepD[3]
 import pd_release, pd_vtt
 check("13 the rules moved out are the server's own names still",
       m.video_mbit is pd_release.video_mbit and m.release_is is pd_release.release_is
@@ -631,6 +719,683 @@ check("19 every series in the library is on the Popular page, after the trending
       not _missing19 and all(x.get("popularity", 0) >= 0 for x in _pop19),
       "%d of %d missing" % (len(_missing19), len(_held19)))
 print("19. every series here on the Popular page", flush=True)
+
+# ---- 40. the Start tab: every vibe has a picture, and a vibe hands back a feature
+#          that fits it, a reason, and more - the same on the same day, another on reroll
+_s40 = api.start_page(api.lib.db(), lambda k, d="": {}.get(k, d))
+_laugh40 = api.start_page(api.lib.db(), lambda k, d="": {"vibe": "laugh"}.get(k, d))
+_again40 = api.start_page(api.lib.db(), lambda k, d="": {"vibe": "laugh"}.get(k, d))
+_other40 = api.start_page(api.lib.db(), lambda k, d="": {"vibe": "laugh", "seed": "7"}.get(k, d))
+_scare40 = api.start_page(api.lib.db(), lambda k, d="": {"vibe": "scare", "kind": "movie"}.get(k, d))
+check("40 Start: vibes with pictures; a vibe's feature fits it, the same today, another on reroll",
+      len(_s40.get("vibes") or []) == len(api.VIBES) and all(v.get("art") for v in _s40["vibes"][:4])
+      and _laugh40.get("feature") and "Comedy" in (_laugh40["feature"].get("genres") or [])
+      and _laugh40["why"].startswith("Make me laugh:") and len(_laugh40["Metadata"]) >= 5
+      and _again40["feature"]["ratingKey"] == _laugh40["feature"]["ratingKey"]
+      and [x["ratingKey"] for x in _other40["Metadata"]] != [x["ratingKey"] for x in _laugh40["Metadata"]]
+      and "Horror" in (_scare40["feature"].get("genres") or []),
+      "%s %s" % (len(_s40.get("vibes") or []), (_laugh40.get("feature") or {}).get("genres")))
+print("40. the Start tab chooses by vibe", flush=True)
+
+# ---- 41. the Start tab leans to what this viewer watches: their genres weigh in, and
+#          the reason says so
+_con41 = api.lib.db()
+_who41 = api.who
+try:
+    _rows41 = _con41.execute("SELECT id, genres FROM item WHERE type='movie' AND genres LIKE '%Horror%' "
+                             "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = item.id) LIMIT 6").fetchall()
+    api.who = "tasteprobe41"
+    api._TASTES.clear()
+    for _n41, _r41 in enumerate(_rows41):
+        _con41.execute("INSERT INTO watchlog (who, key, title, started, updated, casual) "
+                       "VALUES (?, ?, ?, ?, ?, 0)",
+                       ("tasteprobe41", _r41["id"], "x", time.time() - 3600 - _n41, time.time() - _n41))
+    _con41.commit()
+    _taste41 = api.taste(_con41)
+    _plain41 = {"genres": {}, "decades": {}, "top": []}
+    _p41 = {"genres": {"Horror", "Comedy"}, "year": 1990}
+    _q41 = {"genres": {"Romance"}, "year": 1990}
+    _why41 = api._start_why({"genres": ["Horror", "Comedy"], "rating": 5.0},
+                            api.VIBES[0], _taste41)
+finally:
+    _con41.execute("DELETE FROM watchlog WHERE who='tasteprobe41'")
+    _con41.commit()
+    _con41.close()
+    api.who = _who41
+    api._TASTES.clear()
+check("41 taste: what somebody watches weighs in, and the reason says so",
+      "Horror" in _taste41["top"][:2]
+      and api._taste_bonus(_p41, _taste41) > api._taste_bonus(_q41, _taste41)
+      and api._taste_bonus(_p41, _plain41) == 0.0
+      and "you watch a lot of horror" in _why41,
+      "%s %s" % (_taste41.get("top"), _why41))
+print("41. the Start tab leans to what this viewer watches", flush=True)
+
+# ---- 42. told "not this": it is never suggested again, and its kind weighs less; told
+#          "more like this": its kind weighs more - for that viewer alone
+_con42 = api.lib.db()
+_who42 = api.who
+_vs42 = m.pd_localapi.viewer_settings if hasattr(m, "pd_localapi") else None
+import pd_localapi as _pla42
+_real_vs42 = _pla42.viewer_settings
+try:
+    api.who = "tasteprobe42"
+    api._TASTES.clear()
+    _laugh42 = api.start_page(_con42, lambda k, d="": {"vibe": "laugh"}.get(k, d))
+    _gone42 = _laugh42["feature"]["ratingKey"]
+    _pla42.viewer_settings = lambda who: ({"startNot": [_gone42]} if who == "tasteprobe42" else _real_vs42(who))
+    api._TASTES.clear()
+    _after42 = api.start_page(_con42, lambda k, d="": {"vibe": "laugh"}.get(k, d))
+    _keys42 = [_after42["feature"]["ratingKey"]] + [x["ratingKey"] for x in _after42["Metadata"]]
+    _someone42 = api.who
+    api.who = "anotherviewer42"
+    api._TASTES.clear()
+    _other42 = api.start_page(_con42, lambda k, d="": {"vibe": "laugh"}.get(k, d))
+    # left out as such, not only weighed down: a taste that is nothing but the "not"
+    _bare42 = api._start_choose(_con42, api._start_pool(_con42, "movie"), api.VIBES[0], "0", 400,
+                                {"genres": {}, "decades": {}, "top": [], "never": {_gone42}})
+finally:
+    _pla42.viewer_settings = _real_vs42
+    api.who = _who42
+    api._TASTES.clear()
+    _con42.close()
+check("42 a title told 'not this' is never suggested again - to that viewer alone",
+      _gone42 not in _keys42 and _other42["feature"]["ratingKey"] == _gone42
+      and _gone42 not in [x["ratingKey"] for x in _bare42] and len(_bare42) > 20, _gone42)
+print("42. told not this, the Start tab leaves it out", flush=True)
+
+# ---- 43. Fresh is this year and last; Classic is everything before
+_con43 = api.lib.db()
+try:
+    _y43 = int(time.strftime("%Y"))
+    _fresh43 = api.start_page(_con43, lambda k, d="": {"vibe": "edge", "era": "fresh"}.get(k, d))
+    _old43 = api.start_page(_con43, lambda k, d="": {"vibe": "edge", "era": "classic"}.get(k, d))
+    _fy43 = [int(x.get("year") or 0) for x in [_fresh43.get("feature") or {}] + _fresh43["Metadata"]]
+    _oy43 = [int(x.get("year") or 0) for x in [_old43.get("feature") or {}] + _old43["Metadata"]]
+finally:
+    _con43.close()
+check("43 Fresh holds this year and last, Classic everything before",
+      _fy43 and all(y >= _y43 - 1 for y in _fy43) and _oy43 and all(0 < y < _y43 - 1 for y in _oy43),
+      "%s %s" % (_fy43[:6], _oy43[:6]))
+print("43. Fresh and Classic", flush=True)
+
+# ---- 44. the front's rows: films and series mixed - new ones, each mood for both, the
+#          classics - every row's titles of its own kind, each row with enough in it
+# the copy reaches no network: IMDb's chart is put beside it, made of films it holds
+_con44 = api.lib.db()
+try:
+    _chart44 = [[r["imdb_id"], r["title"], r["year"]] for r in _con44.execute(
+        "SELECT i.imdb_id, i.title, i.year FROM item i WHERE i.type='movie' AND i.imdb_id <> '' "
+        "AND i.rating >= 7.5 AND i.genres NOT LIKE '%Family%' AND i.genres NOT LIKE '%Animation%' "
+        "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = i.id) ORDER BY i.id LIMIT 12")]
+finally:
+    _con44.close()
+with open(os.path.join(api.lib.root, "imdb_top.json"), "w", encoding="utf-8") as _f44:
+    json.dump({"at": time.time(), "rows": _chart44}, _f44)
+_con44 = api.lib.db()
+try:
+    _rows44 = api.start_page(_con44, lambda k, d="": {"rows": "1"}.get(k, d))["rows"]
+finally:
+    _con44.close()
+# a streaming service's row mixes the two, as the service does; the others are one kind
+_svc44 = [r for r in _rows44 if r["id"].startswith("svc-")]
+# the music videos' row stands last of all, after the classics and the kids' films
+_music44 = [r["id"] for r in _rows44][-1:] == ["music"] or \
+    all(r["id"] != "music" for r in _rows44)
+_rows44 = [r for r in _rows44 if not r["id"].startswith("svc-") and r["id"] != "music"]
+_kinds44 = {r["kind"] for r in _rows44}
+check("44 the front's rows: films and series, each row its own kind, new and classic too",
+      len(_rows44) >= 10 and _kinds44 == {"movie", "show"}
+      and all(len(r["Metadata"]) >= 4 for r in _rows44)
+      and all(x.get("type") == r["kind"] for r in _rows44 for x in r["Metadata"])
+      and _rows44[0]["id"] == "new-movie"
+      and [r["id"] for r in _rows44][-2:] == ["classic-movie", "kids-movie"] and _music44
+      # a title once a row: a pack's copy of something here is not set beside it
+      and all(len({re.sub(r"[^a-z0-9]+", "", str(x.get("title")).lower()) for x in r["Metadata"]})
+              == len(r["Metadata"]) for r in _rows44),
+      str([(r["id"], len(r["Metadata"])) for r in _rows44]))
+print("44. the Start front mixes films and series rows", flush=True)
+
+# ---- 45. a series page's Shuffle: the viewer's collection of that series, all its
+#          episodes where there is none - and a whole series draws as a shelf
+_con45 = api.lib.db()
+try:
+    _show45 = _con45.execute("SELECT id FROM item WHERE type='show' AND EXISTS (SELECT 1 FROM "
+                             "episode e JOIN file f ON f.episode_id = e.id WHERE e.item_id = item.id) "
+                             "ORDER BY id LIMIT 1").fetchone()["id"]
+    _other45 = _con45.execute("SELECT id FROM item WHERE type='show' AND id <> ? ORDER BY id LIMIT 1",
+                              (_show45,)).fetchone()["id"]
+finally:
+    _con45.close()
+_h45 = m.Handler.__new__(m.Handler)
+_h45.collections = lambda: [{"id": "s45", "name": "A series", "mode": "manual", "series": [_show45],
+                             "pinned": [], "hidden": []}]
+_mine45 = _h45.series_shuffle_id(_show45)
+_none45 = _h45.series_shuffle_id(_other45)
+_sh45, _pool45 = _h45.shuffle_shelf("show:" + _show45)
+check("45 a series' Shuffle is its collection, or every episode of it",
+      _mine45 == "s45" and _none45 == "show:" + _other45 and _sh45 is not None and len(_pool45) > 0,
+      "%s %s %d" % (_mine45, _none45, len(_pool45)))
+print("45. a series page's Shuffle", flush=True)
+_rs45 = m.read_settings
+_con45 = api.lib.db()
+try:
+    _film45 = _con45.execute("SELECT id FROM item WHERE type='movie' ORDER BY id LIMIT 3").fetchall()
+finally:
+    _con45.close()
+m.read_settings = lambda: {"users": {"shuffleprobe45": {"collections": [
+    {"id": "s45", "name": "A series", "mode": "manual", "series": [_show45], "pinned": [], "hidden": []},
+    {"id": "f45", "name": "Some films", "mode": "manual", "pinned": [r["id"] for r in _film45], "hidden": []}],
+    "shuffles": {"show:" + _other45: {"order": ["e1"], "pos": 0},
+                 "show:" + _show45: {"order": ["e2"], "pos": 0},
+                 "show:000000000000": {"order": ["e3"], "pos": 0}}}}}
+try:
+    _row45 = m.series_shelves("shuffleprobe45")
+finally:
+    m.read_settings = _rs45
+check("45c a series shuffled from its page is on the row as that round, once",
+      [x["shelf"] for x in _row45] == ["s45", "show:" + _other45], str(_row45))
+_row45 = _row45[:1]
+check("45b the Shuffle row holds the series collections and not the film ones",
+      [x["shelf"] for x in _row45] == ["s45"] and _row45[0]["art"] == "/art/%s/backdrop" % _show45,
+      str(_row45))
+print("45b. the Start tab's Shuffle row", flush=True)
+
+# ---- 46. Start's rows in the viewer's order, the turned-off ones gone, a new row on the end
+_vs46 = __import__("pd_localapi").viewer_settings
+_st46 = __import__("pd_localapi")._settings
+try:
+    __import__("pd_localapi").viewer_settings = lambda who: {
+        "startRows": ["classic-movie", "shuffle", "new-movie"], "startRowsOff": ["new-show"]}
+    __import__("pd_localapi")._settings = lambda: {}
+    _k46 = api.start_kept()
+    __import__("pd_localapi").viewer_settings = lambda who: {}
+    _d46 = api.start_kept()
+finally:
+    __import__("pd_localapi").viewer_settings = _vs46
+    __import__("pd_localapi")._settings = _st46
+_all46 = [i for i, _ in api.start_row_names()]
+check("46 Start's rows follow the viewer: their order, the hidden left out, the unnamed on the end",
+      _k46[:3] == ["classic-movie", "shuffle", "new-movie"] and "new-show" not in _k46
+      and set(_k46) == set(_all46) - {"new-show"} - api.start_off_by_default()
+      and _d46 == [i for i in _all46 if i not in api.start_off_by_default()], str(_k46))
+# by default one row in four is series, a series row after each three of films
+_rows46 = [i for i in _d46 if i != "shuffle"]
+check("46b Start's default rows: one in four is series, never two side by side",
+      sum(1 for i in _rows46 if i.endswith("-show")) * 4 <= len(_rows46) + 3
+      and not any(a.endswith("-show") and b.endswith("-show") for a, b in zip(_rows46, _rows46[1:])),
+      str(_rows46))
+print("46. Start's rows in the viewer's order", flush=True)
+
+# ---- 47. a series' seasons name the series: the app's Add pack asks the tracker with it
+_con47 = api.lib.db()
+try:
+    _show47 = _con47.execute("SELECT id, title FROM item WHERE type='show' AND EXISTS (SELECT 1 FROM "
+                             "episode e WHERE e.item_id = item.id) ORDER BY id LIMIT 1").fetchone()
+finally:
+    _con47.close()
+_kids47 = cards("/library/metadata/%s/children" % _show47["id"])
+check("47 every season of a series carries the series' name",
+      bool(_kids47) and all(k.get("parentTitle") == _show47["title"] for k in _kids47 if k.get("index", 0) >= 0),
+      str([(k.get("title"), k.get("parentTitle")) for k in _kids47][:4]))
+print("47. seasons name their series", flush=True)
+
+# ---- 48. Start shows its best: nothing under the floor, and no bad-on-purpose row
+_con48 = api.lib.db()
+try:
+    _rows48 = api._start_rows(_con48, {}, "0")
+finally:
+    _con48.close()
+# music videos carry no rating: their row is everything in the folder, not a choice
+_low48 = [(r["id"], m.get("title"), m.get("rating")) for r in _rows48 for m in r["Metadata"]
+          if r["id"] != "music"
+          and float(m.get("rating") or 0) < (api.START_FLOOR_NEW if r["id"].startswith("new-")
+                                             else api.START_FLOOR)]
+_con48 = api.lib.db()
+try:
+    _low_pool48 = [p for p in api._start_pool(_con48, "movie") if 0 < p["rating"] < 7.0][:3]
+    _picked48 = api._start_choose(_con48, _low_pool48, api.ANY_VIBE, "0", 5, {})
+finally:
+    _con48.close()
+check("48 a title under the floor is never chosen, even when nothing else is there",
+      len(_low_pool48) == 3 and _picked48 == [], str([c.get("title") for c in _picked48]))
+check("48 Start's rows hold nothing rated under the floor, and no trash row",
+      bool(_rows48) and not _low48 and not any(r["id"].startswith("trash") for r in _rows48),
+      str(_low48[:5]))
+print("48. Start shows its best", flush=True)
+
+# ---- 49. Popular: by TMDB's score where known, then rating, then name - never Z first
+_tp49 = api.tmdb_popularity
+_con49 = api.lib.db()
+try:
+    _films49 = [dict(r) for r in _con49.execute(
+        "SELECT id, title, sort_title, rating, tmdb_id FROM item WHERE type='movie' AND tmdb_id "
+        "ORDER BY sort_title LIMIT 4")]
+finally:
+    _con49.close()
+_cards49 = [{"ratingKey": f["id"], "title": f["title"], "titleSort": f["sort_title"],
+             "rating": r} for f, r in zip(_films49, (5.0, 9.0, 6.0, 7.0))]
+_cards49 += [{"ratingKey": "zz49", "title": "Zzz", "rating": 8.0, "tmdb": 0},
+             {"ratingKey": "aa49", "title": "Aaa", "rating": 8.0, "tmdb": 0}]
+# a pack's copy of the second, under a key of its own and with no number: scored by name
+_cards49 += [{"ratingKey": "os49", "title": _films49[1]["title"], "rating": 1.0}]
+try:
+    # the first two scored, the others not yet
+    api.tmdb_popularity = lambda kind, numbers: {int(_films49[0]["tmdb_id"]): 50.0,
+                                                 int(_films49[1]["tmdb_id"]): 10.0}
+    _out49 = [c["ratingKey"] for c in api._by_popularity(_cards49, "movie", True)]
+finally:
+    api.tmdb_popularity = _tp49
+check("49 Popular: scored first by score - a pack's copy by its name - then rating, then name",
+      _out49[:3] == [_films49[0]["id"], _films49[1]["id"], "os49"]
+      and _out49[3:] == ["aa49", "zz49", _films49[3]["id"], _films49[2]["id"]], str(_out49))
+print("49. Popular by TMDB's score", flush=True)
+
+# ---- 50. Shuffle carries on what was watched last; a collection is one round
+_m50 = {"shuffles": {"c50": {"order": ["a"], "pos": 0, "at": {"a": {"at": 100, "when": 10}}},
+                     "coll:c50": {"order": ["b"], "pos": 0, "at": {"b": {"at": 200, "when": 20}}}}}
+m.Handler.fold_round(_m50, "c50")
+_n50 = {"shuffles": {"coll:d50": {"order": ["b"], "pos": 0}}}
+m.Handler.fold_round(_n50, "d50")
+check("50 a collection's two rounds fold into one: the collection's own kept, with the newer place",
+      list(_m50["shuffles"]) == ["c50"] and _m50["shuffles"]["c50"]["order"] == ["a"]
+      and _m50["shuffles"]["c50"]["at"] == {"b": {"at": 200, "when": 20}}
+      and list(_n50["shuffles"]) == ["d50"], str(_m50) + str(_n50))
+# an older place under "coll:" does not replace the round's own
+_o50 = {"shuffles": {"c51": {"order": ["a"], "pos": 0, "at": {"a": {"at": 100, "when": 30}}},
+                     "coll:c51": {"order": [], "pos": -1, "at": {"b": {"at": 200, "when": 20}}}}}
+m.Handler.fold_round(_o50, "c51")
+# and "coll:<id>" is that round, wherever it is asked for
+_h50r = m.Handler.__new__(m.Handler)
+_p50 = {"shuffles": {"c52": {"order": ["a"], "pos": 0, "at": {}}}}
+check("50b one round per collection: \"coll:<id>\" is the round itself, an older place stays out",
+      _o50["shuffles"]["c51"]["at"] == {"a": {"at": 100, "when": 30}}
+      and m.Handler.round_id("coll:c52") == "c52"
+      and _h50r.shuffle_round(_p50, "coll:c52") is _p50["shuffles"]["c52"]
+      and list(_p50["shuffles"]) == ["c52"], str(_o50) + str(_p50))
+_con50 = api.lib.db()
+try:
+    _ep50 = _con50.execute("SELECT e.id, e.item_id FROM episode e JOIN file f ON f.episode_id = e.id "
+                           "ORDER BY e.id LIMIT 2").fetchall()
+    _who50 = "probe50"
+    _con50.execute("DELETE FROM progress WHERE who=?", (_who50,))
+    _con50.execute("INSERT INTO progress (who, key, position, duration, updated) VALUES (?,?,?,?,?)",
+                   (_who50, str(_ep50[0]["id"]), 600, 1300, 5000))
+    _con50.commit()
+finally:
+    _con50.close()
+_h50 = m.Handler.__new__(m.Handler)
+_h50.viewer = lambda: _who50
+_inside50 = {str(_ep50[0]["id"]), str(_ep50[1]["id"])}
+_newer50 = _h50.newest_watched(_inside50, {str(_ep50[1]["id"]): {"at": 50, "when": 4000}})
+_older50 = _h50.newest_watched(_inside50, {str(_ep50[1]["id"]): {"at": 50, "when": 6000}})
+_con50 = api.lib.db()
+try:
+    _con50.execute("UPDATE progress SET position=1290 WHERE who=?", (_who50,))
+    _con50.commit()
+finally:
+    _con50.close()
+_done50 = _h50.newest_watched(_inside50, {str(_ep50[1]["id"]): {"at": 50, "when": 4000}})
+check("50 carrying on takes the episode watched since the round's place, where it was left",
+      _newer50 == (str(_ep50[0]["id"]), 600, False) and _older50 is None
+      # watched into its last minute: still that one, said to be over, so the round goes on
+      and _done50 == (str(_ep50[0]["id"]), 1290, True),
+      "%s %s %s" % (_newer50, _older50, _done50))
+print("50. Shuffle carries on what was watched last", flush=True)
+
+# ---- 51. children's films: a row of their own and in no other
+_con51 = api.lib.db()
+try:
+    _rows51 = api._start_rows(_con51, {}, "0")
+finally:
+    _con51.close()
+_kid51 = [r for r in _rows51 if r["id"] == "kids-movie"]
+_stray51 = [(r["id"], m.get("title")) for r in _rows51 if r["id"] != "kids-movie" and r.get("kind") == "movie"
+            for m in r["Metadata"] if api.for_kids(m.get("genres") or [])]
+check("51 children's films stand in their own row and in no other",
+      bool(_kid51) and all(api.for_kids(m.get("genres") or []) for m in _kid51[0]["Metadata"])
+      and not _stray51 and api.for_kids(["Animation", "Comedy"])
+      and not api.for_kids(["Animation", "Crime"]) and not api.for_kids(["Comedy"]),
+      str(_stray51[:5]))
+print("51. a row for the kids", flush=True)
+
+# ---- 52. New films: out this last month, the most popular first
+_tp52 = api.tmdb_popularity
+_today52 = time.strftime("%Y-%m-%d")
+_old52 = time.strftime("%Y-%m-%d", time.localtime(time.time() - 60 * 86400))
+_con52 = api.lib.db()
+try:
+    _f52 = [dict(r) for r in _con52.execute(
+        "SELECT i.id, i.tmdb_id FROM item i WHERE i.type='movie' AND i.tmdb_id AND EXISTS "
+        "(SELECT 1 FROM file f WHERE f.item_id = i.id) ORDER BY i.id LIMIT 3")]
+    _pool52 = [{"key": _f52[0]["id"], "tmdb": _f52[0]["tmdb_id"], "released": _today52, "rating": 9.0},
+               {"key": _f52[1]["id"], "tmdb": _f52[1]["tmdb_id"], "released": _today52, "rating": 7.0},
+               {"key": _f52[2]["id"], "tmdb": _f52[2]["tmdb_id"], "released": _old52, "rating": 9.9}]
+    api.tmdb_popularity = lambda kind, numbers: {int(_f52[0]["tmdb_id"]): 10.0,
+                                                 int(_f52[1]["tmdb_id"]): 90.0}
+    _got52 = [c["ratingKey"] for c in api._start_newest(_con52, _pool52, {}, 10)]
+finally:
+    api.tmdb_popularity = _tp52
+    _con52.close()
+check("52 New films: only the last month's, the most popular first, the rating aside",
+      _got52 == [_f52[1]["id"], _f52[0]["id"]], str(_got52))
+print("52. New films by popularity", flush=True)
+
+# ---- 53. Classics: IMDb's top 100 held or in a pack, in the chart's order
+_it53 = api.imdb_top
+_con53 = api.lib.db()
+try:
+    _f53 = [dict(r) for r in _con53.execute(
+        "SELECT i.id, i.title, i.year, i.imdb_id FROM item i WHERE i.type='movie' AND i.imdb_id <> '' "
+        "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = i.id) ORDER BY i.id LIMIT 3")]
+    # the third by name and year only, as a pack's copy would be found
+    api.imdb_top = lambda: [[_f53[1]["imdb_id"], "x", 0], ["tt0000000", _f53[2]["title"], _f53[2]["year"]],
+                            [_f53[0]["imdb_id"], "y", 0]]
+    _pool53 = [{"key": f["id"], "imdb": f["imdb_id"] if i < 2 else "", "title": f["title"],
+                "year": f["year"]} for i, f in enumerate(_f53)]
+    _pool53.append({"key": "notontop53", "imdb": "tt9999999", "title": "Nope", "year": 1})
+    _got53 = [c["ratingKey"] for c in api._start_classics(_con53, _pool53, {}, 10)]
+finally:
+    api.imdb_top = _it53
+    _con53.close()
+check("53 Classics: the top 100's titles here, by number or by name and year, in the chart's order",
+      _got53 == [_f53[1]["id"], _f53[2]["id"], _f53[0]["id"]], str(_got53))
+print("53. Classics from IMDb's top 100", flush=True)
+
+# ---- 54. the Service menu counts each choice's titles
+_sp54 = __import__("pd_streaming").service_page
+try:
+    __import__("pd_streaming").service_page = lambda lib, kind, provs, region, page, **kw: ([], 3, 1234)
+    _con54 = api.lib.db()
+    try:
+        _c54 = api.service_counts(_con54, "movie", "SE", [8])
+        _held54 = _con54.execute("SELECT COUNT(*) FROM item i WHERE i.type='movie' AND EXISTS "
+                                 "(SELECT 1 FROM file f WHERE f.item_id = i.id)").fetchone()[0]
+    finally:
+        _con54.close()
+finally:
+    __import__("pd_streaming").service_page = _sp54
+check("54 the Service menu: a service's count, My library's and In packs'",
+      _c54.get(8) == 1234 and _c54.get(-1) == _held54 and -2 in _c54, str(_c54))
+print("54. the Service menu's counts", flush=True)
+
+# ---- 55. a row a streaming service: its films and series in turn, rated, no children's
+_sc55 = api.service_catalogue
+def _fake55(con, one):
+    if one("type") == "movie":
+        return {"Metadata": [{"ratingKey": "m1", "rating": 8.0, "genres": ["Drama"]},
+                             {"ratingKey": "m2", "rating": 5.0, "genres": ["Drama"]},
+                             {"ratingKey": "m3", "rating": 8.0, "genres": ["Family"]},
+                             {"ratingKey": "m4", "rating": 7.0, "genres": ["Action"]}]}
+    return {"Metadata": [{"ratingKey": "s1", "rating": 8.5, "genres": ["Drama"]},
+                         {"ratingKey": "s2", "rating": 7.5, "genres": ["Comedy"]}]}
+try:
+    api.service_catalogue = _fake55
+    _con55 = api.lib.db()
+    try:
+        api._start_service_kept.clear()     # the kept lists are the real ones
+        _row55 = [c["ratingKey"] for c in api._start_service(_con55, 8, {})]
+    finally:
+        _con55.close()
+finally:
+    api.service_catalogue = _sc55
+check("55 a service's row: three films to a series, the low-rated and children's left out",
+      _row55 == ["m1", "m4", "s1", "s2"], str(_row55))
+print("55. a row a streaming service", flush=True)
+
+# ---- 39. a pack taken off a series loses its link unless a download came from it or
+#          another series chose it; the torrent is never touched
+_saved39 = (pd_torrents.remove_pack, pd_torrents.drop_show_pack, pd_torrents.load)
+_gone39 = []
+_data39 = {"config": {"showPacks": {"othershow": {"packs": ["hOther"], "season": {}}}},
+           "packs": [], "downloads": [{"hash": "hUsed"}]}
+pd_torrents.remove_pack = lambda h: _gone39.append(h) or {"ok": True}
+pd_torrents.drop_show_pack = lambda name, h: None
+pd_torrents.load = lambda: _data39
+try:
+    _free39 = m.use_show_pack("Invented Gold Series", info_hash="hFree", drop=True, unlink=True)
+    _used39 = m.use_show_pack("Invented Gold Series", info_hash="hUsed", drop=True, unlink=True)
+    _other39 = m.use_show_pack("Invented Gold Series", info_hash="hOther", drop=True, unlink=True)
+    _drop39 = m.use_show_pack("Invented Gold Series", info_hash="hPlain", drop=True)
+finally:
+    pd_torrents.remove_pack, pd_torrents.drop_show_pack, pd_torrents.load = _saved39
+check("39 removing a pack drops a free link only",
+      _gone39 == ["hFree"] and not _free39.get("kept") and _used39.get("kept")
+      and _other39.get("kept") and _drop39 == {"ok": True}, "%s %s %s" % (_gone39, _used39, _other39))
+print("39. a pack is removed only when nothing holds on to it", flush=True)
+
+# ---- 38. a pack added from a season's page becomes that season's source; a season
+#          choice alone still only sets the source
+import pd_tracker as _pt38
+_calls38 = []
+_saved38 = (_pt38.torrent_of, pd_torrents.add_pack, pd_torrents.add_show_pack,
+            pd_torrents.set_season_pack)
+_pt38.torrent_of = lambda ident: b"raw"
+pd_torrents.add_pack = lambda raw=None, path=None, series="": {"ok": True, "hash": "h38"}
+pd_torrents.add_show_pack = lambda name, h: _calls38.append(("chosen", name, h))
+pd_torrents.set_season_pack = lambda name, season, h: _calls38.append(("season", name, season, h))
+try:
+    _r38 = m.use_show_pack("Invented Gold Series", "123", season=4)
+    _r38b = m.use_show_pack("Invented Gold Series", info_hash="h0", season=5)
+finally:
+    (_pt38.torrent_of, pd_torrents.add_pack, pd_torrents.add_show_pack,
+     pd_torrents.set_season_pack) = _saved38
+check("38 a pack added from a season's page is chosen and that season's source",
+      _r38.get("ok") and _calls38 == [("chosen", "Invented Gold Series", "h38"),
+                                      ("season", "Invented Gold Series", 4, "h38"),
+                                      ("season", "Invented Gold Series", 5, "h0")], str(_calls38))
+print("38. a season's pack is its source", flush=True)
+
+# ---- 37. a season with nothing linked, put on a collection, shows as that season
+_con37 = api.lib.db()
+_rt37 = api.route
+try:
+    _show37 = str(_con37.execute("SELECT id FROM item WHERE type='show' ORDER BY id LIMIT 1").fetchone()["id"])
+    api.route = lambda con, path, q: ({"Metadata": [{"ratingKey": "%s-s97" % _show37, "type": "season",
+                                                     "index": 97, "title": "Season 97", "upcoming": True}]}
+                                      if path == "/library/metadata/%s/children" % _show37
+                                      else _rt37(con, path, q))
+    _c37 = api._by_season(_con37, ["%s-s97" % _show37])
+finally:
+    api.route = _rt37
+    _con37.close()
+check("37 a season with nothing linked shows as its season card",
+      len(_c37) == 1 and _c37[0].get("type") == "season" and _c37[0].get("index") == 97
+      and _c37[0].get("grandparentRatingKey") == _show37, str(_c37))
+print("37. an unlinked season on a collection shows", flush=True)
+
+# ---- 36. a filter collection whose words catch a series holds it whole on its page;
+#          a season span does not
+_con36 = api.lib.db()
+try:
+    _row36 = _con36.execute("SELECT i.id, i.title FROM item i JOIN episode e ON e.item_id = i.id "
+                            "WHERE i.type='show' GROUP BY i.id HAVING COUNT(*) >= 3 "
+                            "ORDER BY i.id LIMIT 1").fetchone()
+    _h36 = m.Handler.__new__(m.Handler)
+    _w36 = _h36.whole_series(_con36, {"id": "t36", "mode": "filter", "pinned": [], "hidden": [],
+                                      "rule": {"words": [str(_row36["title"])], "type": "show"}})
+    _s36 = _h36.whole_series(_con36, {"id": "t36", "mode": "filter", "pinned": [], "hidden": [],
+                                      "rule": {"words": [str(_row36["title"])], "type": "show",
+                                               "season": "s1"}})
+finally:
+    _con36.close()
+check("36 a series a filter catches whole shows every season; a span keeps to its seasons",
+      str(_row36["id"]) in _w36 and str(_row36["id"]) not in _s36, "%s %s" % (_w36[:3], _s36[:3]))
+print("36. a filter's whole series shows every season", flush=True)
+
+# ---- 35. a collection holding a whole series shows every season the series page lists
+_con35 = api.lib.db()
+_rt35 = api.route
+try:
+    _sh35 = _con35.execute("SELECT item_id, season FROM episode GROUP BY item_id, season "
+                           "HAVING COUNT(*) >= 2 ORDER BY item_id LIMIT 1").fetchone()
+    _show35, _n35 = str(_sh35["item_id"]), int(_sh35["season"])
+    _ep35 = [str(r["id"]) for r in _con35.execute(
+        "SELECT id FROM episode WHERE item_id=? AND season=? ORDER BY number LIMIT 2",
+        (_show35, _n35))]
+    _fake35 = [{"ratingKey": "%s-s%d" % (_show35, n), "type": "season", "index": n,
+                "title": "Season %d" % n, "upcoming": True} for n in (_n35 + 2, _n35 + 1)]
+    api.route = lambda con, path, q: ({"Metadata": _fake35} if path ==
+                                      "/library/metadata/%s/children" % _show35 else _rt35(con, path, q))
+    _all35 = api._by_season(_con35, _ep35, {_show35})
+    _part35 = api._by_season(_con35, _ep35)
+finally:
+    api.route = _rt35
+    _con35.close()
+check("35 a whole series on a collection lists its seasons with nothing here too, in order",
+      [c.get("index") for c in _all35] == [_n35, _n35 + 1, _n35 + 2]
+      and all(c.get("grandparentRatingKey") == _show35 for c in _all35)
+      and [c.get("index") for c in _part35] == [_n35],
+      str([(c.get("ratingKey"), c.get("index")) for c in _all35]))
+print("35. a whole series shows all its seasons", flush=True)
+
+# ---- 33. a season the tracker had nothing for waits, and the next programme gets the search
+_ls33, _sg33, _fs33 = m.library_shows, m.season_gaps, m.fill_season
+_asked33 = []
+m.library_shows = lambda stored=None: [{"show": "Nopack One", "tmdb": 1}, {"show": "Nopack Two", "tmdb": 2},
+                                       {"show": "Packed Three", "tmdb": 3}]
+m.season_gaps = lambda title, tmdb=0: {"show": title, "missing": [1, 2]}
+m.fill_season = lambda title, season: (_asked33.append((title, season))
+                                       or ({"error": "nothing"} if title.startswith("Nopack") else {"ok": True}))
+m.EMPTY_SEASONS.clear()
+try:
+    m.stock_shows()
+    m.stock_shows()
+    m.stock_shows()
+finally:
+    m.library_shows, m.season_gaps, m.fill_season = _ls33, _sg33, _fs33
+    m.EMPTY_SEASONS.clear()
+check("33 an empty season waits a day; the next season and programme get the searches",
+      _asked33 == [("Nopack One", 1), ("Nopack Two", 1), ("Nopack One", 2), ("Nopack Two", 2),
+                   ("Packed Three", 1)], str(_asked33))
+print("33. a season with no pack does not hold up the rest", flush=True)
+
+# ---- 32. a pack's key for an episode downloaded since is in the shuffle's hat once
+_con32 = api.lib.db()
+_md32 = api.metadata_for
+try:
+    _ep32 = [str(r["id"]) for r in _con32.execute(
+        "SELECT e.id FROM episode e JOIN file f ON f.episode_id = e.id "
+        "GROUP BY e.id ORDER BY e.id LIMIT 2")]
+    _card32 = _md32(_con32, _ep32[0], brief=True)
+    api.metadata_for = lambda con, key, brief=False, **kw: (
+        dict(_card32) if key == "ozz32arrived" else _md32(con, key, brief=brief, **kw))
+    _h32 = m.Handler.__new__(m.Handler)
+    _pool32 = _h32.shelf_pool(_con32, {"id": "t32", "name": "t32", "mode": "manual", "rule": {},
+                                       "pinned": [_ep32[0], "ozz32arrived", _ep32[1]], "hidden": []})
+finally:
+    api.metadata_for = _md32
+    _con32.close()
+check("32 an arrived pack key and its episode are one draw",
+      _pool32 == [_ep32[0], _ep32[1]], str(_pool32))
+print("32. an arrived episode is in the hat once", flush=True)
+
+# ---- 31. a pack's key for an episode downloaded since folds into its season; one
+#          episode of a series held whole is a season card
+_con31 = api.lib.db()
+_md31 = api.metadata_for
+try:
+    _sh31 = _con31.execute("SELECT item_id, season FROM episode WHERE item_id IN "
+                           "(SELECT item_id FROM episode GROUP BY item_id "
+                           "HAVING COUNT(DISTINCT season) >= 2) GROUP BY item_id, season "
+                           "HAVING COUNT(*) >= 3 ORDER BY item_id LIMIT 1").fetchone()
+    _ep31 = [str(r["id"]) for r in _con31.execute(
+        "SELECT id FROM episode WHERE item_id=? AND season=? ORDER BY number LIMIT 3",
+        (_sh31["item_id"], _sh31["season"]))]
+    _arrived31 = _md31(_con31, _ep31[2], brief=True)
+    api.metadata_for = lambda con, key, brief=False, **kw: (
+        dict(_arrived31) if key == "ozz31arrived" else _md31(con, key, brief=brief, **kw))
+    _c31 = api._by_season(_con31, [_ep31[0], _ep31[1], "ozz31arrived"])
+    # two seasons, one episode each: both seasons, which a loop variable named like
+    # the argument once broke after the first
+    _two31 = _con31.execute("SELECT MIN(id) id FROM episode WHERE item_id=? AND season<>? "
+                            "GROUP BY season LIMIT 1", (_sh31["item_id"], _sh31["season"])).fetchone()
+    _one31 = api._by_season(_con31, [_ep31[0]] + ([_two31["id"]] if _two31 else []),
+                            {str(_sh31["item_id"])})
+    _lone31 = api._by_season(_con31, [_ep31[0]])
+finally:
+    api.metadata_for = _md31
+    _con31.close()
+check("31 an arrived pack key joins its season, and a lone episode of a whole series is its season",
+      len(_c31) == 1 and _c31[0].get("type") == "season" and len(_c31[0].get("holds") or []) == 3
+      and _two31 is not None and len(_one31) >= 2 and all(c.get("type") == "season" for c in _one31)
+      and len([c for c in _one31 if c.get("holds")]) == 2
+      and len(_lone31) == 1 and _lone31[0].get("type") == "episode",
+      "%s %s" % ([(c.get("type"), c.get("ratingKey")) for c in _c31], [c.get("type") for c in _one31]))
+print("31. a collection reads as seasons", flush=True)
+
+# ---- 30. a hand-made collection given a whole series keeps what the series gains
+_con30 = api.lib.db()
+try:
+    _show30 = _con30.execute("SELECT i.id FROM item i JOIN episode e ON e.item_id = i.id "
+                             "WHERE i.type='show' GROUP BY i.id HAVING COUNT(*) >= 3 "
+                             "ORDER BY i.id LIMIT 1").fetchone()
+    _eps30 = m.series_episode_keys(_con30, _show30["id"]) if _show30 else []
+    _shelf30 = {"id": "t30", "name": "t30", "mode": "manual", "rule": {},
+                "pinned": [_eps30[0]] if _eps30 else [], "hidden": [], "series": [_show30["id"]] if _show30 else []}
+    _all30 = m.Handler.collection_keys(_con30, _shelf30)
+    _shelf30["hidden"] = [_eps30[1]] if len(_eps30) > 1 else []
+    _less30 = m.Handler.collection_keys(_con30, _shelf30)
+finally:
+    _con30.close()
+check("30 a series on a hand-made collection is every episode it has now, less one taken off",
+      bool(_eps30) and set(_all30) == set(_eps30) and len(_all30) == len(_eps30)
+      and _eps30[1] not in _less30 and len(_less30) == len(_eps30) - 1)
+print("30. a series on a hand-made collection keeps what it gains", flush=True)
+
+# ---- 29. a season's packs are the series' own, not a spin-off's that starts with its name
+import pd_tracker as _ptr29
+_rd29, _sn29 = _ptr29.read, m.series_names
+_ptr29.read = lambda: {"1": {"id": "1", "name": "Placer Run (2010) S02 1080p WEB x265-AA", "seeds": 9},
+                       "2": {"id": "2", "name": "Placer Run S01-S05 720p WEB-BB", "seeds": 3},
+                       "3": {"id": "3", "name": "Placer Run Far South S02 1080p WEB-CC", "seeds": 30},
+                       "4": {"id": "4", "name": "Placer Run White Water S01-S05 1080p WEB-DD", "seeds": 40},
+                       "5": {"id": "5", "name": "Placer Run Klondike S02 1080p WEB-EE", "seeds": 5}}
+m.series_names = lambda t: ["Placer Run Klondike"]
+try:
+    _o29 = m.season_offers("Placer Run", 2, ask=False)
+finally:
+    _ptr29.read, m.series_names = _rd29, _sn29
+_n29 = sorted(o["id"] for o in _o29["packs"] + _o29["loose"])
+check("29 a season's packs are the series' own and its other names', never a spin-off's",
+      _n29 == ["1", "2", "5"], str(_n29))
+print("29. no spin-off pack stands for a series' season", flush=True)
+
+# ---- 28. a whole name the catalogue knows, credited nowhere here, finds the person;
+_tm28 = api.lib.tmdb
+_pf28 = api._person_films
+api.lib.tmdb = lambda path, **kw: ({"results": [{"id": 999991, "name": "Ada Madeup Quill",
+                                                 "profile_path": "/a.jpg"}]}
+                                   if path == "/search/person" else {})
+api._person_films = lambda person, name: [{"ratingKey": "tv999992", "type": "show",
+                                           "title": "Invented Gold Series", "addable": True}]
+api._PEOPLE_ASKED.clear()
+try:
+    _s28, _, _b28 = api.handle("/hubs/search", {"query": ["Ada Madeup Quill"]})
+    _h28 = json.loads(_b28)["MediaContainer"].get("Hub", []) if _s28 == 200 else []
+finally:
+    api.lib.tmdb = _tm28
+    api._person_films = _pf28
+    api._PEOPLE_ASKED.clear()
+_who28 = [x.get("tag") for h in _h28 if h.get("type") == "person" for x in h.get("Metadata") or []]
+_tv28 = [x.get("title") for h in _h28 if h.get("type") == "show" for x in h.get("Metadata") or []]
+check("28 a whole name the catalogue knows finds the person and their series",
+      "Ada Madeup Quill" in _who28 and "Invented Gold Series" in _tv28, "%s %s" % (_who28, _tv28))
+print("28. a person known only to the catalogue is found by name", flush=True)
+
+# ---- 27. a film not matched yet wears the poster its card had before it was downloaded
+import pd_streaming as _ps27
+_was27 = _ps27.SEARCHED["rows"]
+_ps27.SEARCHED["rows"] = [{"key": "rt0000test27", "title": "Made Up Film Twenty Seven", "year": 1999,
+                           "poster": "/x.jpg"}]
+try:
+    _t27 = api._poster_before_match("Made Up Film: Twenty-Seven", 1999)
+    _n27 = api._poster_before_match("Made Up Film Twenty Seven", 2010)
+finally:
+    _ps27.SEARCHED["rows"] = _was27
+check("27 a film not matched yet takes the poster its card had; another year does not",
+      _t27 == "/art/rt0000test27/poster" and _n27 is None)
+print("27. a just-downloaded film keeps its card's poster", flush=True)
 
 # ---- 26. a name typed in full finds the person, credited only on films not here yet
 _con26 = api.lib.db()
@@ -773,9 +1538,218 @@ print("20. every film here on the films' Popular page: %d cards, %d ranked"
       % (len(_pop20), sum(1 for n in _ranks20 if n)), flush=True)
 
 print()
+# ---- a service's list for Start is kept: the second Start does not build it again
+_calls217 = []
+_real217 = api.service_catalogue
+api._start_service_kept.clear()
+try:
+    api.service_catalogue = lambda con, one: (_calls217.append(one("provider")) or _real217(con, one))
+    _r1 = api._start_service(api.lib.db(), 8, {})
+    _n1 = len(_calls217)
+    _r2 = api._start_service(api.lib.db(), 8, {})
+    time.sleep(0.5)                  # and nothing built behind it either
+    check("217 a service's Start row is built once and then kept",
+          _n1 == 2 and len(_calls217) == 2 and [c.get("ratingKey") for c in _r1] == [c.get("ratingKey") for c in _r2],
+          "%d then %d" % (_n1, len(_calls217)))
+    # past its time: the kept one answers at once, a fresh one is built behind it
+    for _k217 in list(api._start_service_kept):
+        _t, _rows, _b = api._start_service_kept[_k217]
+        api._start_service_kept[_k217] = (_t - api.START_SERVICE_FOR - 1, _rows, False)
+    _r3 = api._start_service(api.lib.db(), 8, {})
+    for _ in range(200):
+        if len(_calls217) >= 4:
+            break
+        time.sleep(0.05)
+    check("217b past its time the kept row answers and a fresh one is built behind it",
+          [c.get("ratingKey") for c in _r3] == [c.get("ratingKey") for c in _r1] and len(_calls217) == 4,
+          str(len(_calls217)))
+finally:
+    api.service_catalogue = _real217
+
+# ---- Popular films: a film not out yet is no card to ask for
+_real221 = api.top_films
+try:
+    _rows221 = [dict(r) for r in _real221()]
+    import pd_streaming as _ps221
+    _by221, _name221 = _ps221._held(api.lib)
+    from pd_library import flatten_title as _flat221
+    _free221 = next((r for r in _rows221 if not _by221.get(("movie", int(r.get("tmdb") or 0)))
+                     and not _ps221._by_name(_name221, "movie", _flat221(r["title"]),
+                                             int(r.get("year") or 0))), None)
+    if _free221 is None:
+        print("221. skipped: every popular film is here", flush=True)
+    else:
+        _free221["released"] = "2099-12-15"
+        api.top_films = lambda: _rows221
+        _show221 = api.films_show
+        api.films_show = lambda: _pl.films_shown({"download": True, "request": True}, api.FILMS_SHOW)
+        try:
+            _cards221 = api.popular_films(api.lib.db(), as_row=False)
+        finally:
+            api.films_show = _show221
+        _shown221 = {str(c.get("title")) for c in _cards221 if c.get("askable")}
+        _up221 = [c for c in _cards221 if str(c.get("title")) == str(_free221["title"])]
+        # requests hidden: upcoming hidden with them
+        api.films_show = lambda: _pl.films_shown({"download": True, "request": False}, api.FILMS_SHOW)
+        try:
+            _hid221 = {str(c.get("title")) for c in api.popular_films(api.lib.db(), as_row=False)}
+        finally:
+            api.films_show = _show221
+        # upcoming hidden by this viewer, requests shown: hidden
+        api.films_show = lambda: _pl.films_shown({"download": True, "request": True, "upcoming": False}, api.FILMS_SHOW)
+        try:
+            _nope221 = {str(c.get("title")) for c in api.popular_films(api.lib.db(), as_row=False)}
+        finally:
+            api.films_show = _show221
+        # the same film a year on, out now: a card again
+        _free221["released"] = "2001-01-01"
+        api.films_show = lambda: _pl.films_shown({"download": True, "request": True}, api.FILMS_SHOW)
+        try:
+            _again221 = {str(c.get("title")) for c in api.popular_films(api.lib.db(), as_row=False)}
+        finally:
+            api.films_show = _show221
+        check("221 Popular films: a film not out yet is upcoming, not a card to ask for, and is once it is out",
+              str(_free221["title"]) not in _shown221 and str(_free221["title"]) in _again221
+              and len(_up221) == 1 and _up221[0].get("upcoming") is True
+              and str(_free221["title"]) not in _hid221 and str(_free221["title"]) not in _nope221,
+              str(_free221["title"]))
+finally:
+    api.top_films = _real221
+
+# ---- 229. a kept list: IMDb's top 100 in the database, read back in its order
+import pd_lists as _pl229
+_con229 = api.lib.db()
+try:
+    _page229 = api.list_page(_con229, "imdb-top", {})
+    _rows229 = _pl229.items(_con229, "imdb-top")
+    _cards229 = _page229.get("Metadata") or []
+    _ranks229 = [c.get("listRank") for c in _cards229]
+    check("229 the IMDb top 100 is kept in the database and read back in its order",
+          len(_rows229) > 0 and 0 < len(_cards229) <= len(_rows229)
+          and _ranks229 == sorted(_ranks229, reverse=True)
+          and _page229.get("title") == "IMDb Top 250"
+          and api.start_more("classic-movie") == {"list": "imdb-top", "name": "IMDb Top 250"},
+          "%d rows, %d cards" % (len(_rows229), len(_cards229)))
+    check("229b an unknown list is empty", (api.list_page(_con229, "nope", {}).get("Metadata") or []) == [])
+    # read again once a day old: the chart's order changed, the list follows it
+    _con229.execute("UPDATE list SET updated = updated - 2 * 86400 WHERE id = 'imdb-top'")
+    _con229.commit()
+    _real229 = api.imdb_top
+    _moved229 = list(reversed(_real229()))
+    api.imdb_top = lambda: _moved229
+    try:
+        api.refresh_lists(_con229)
+    finally:
+        api.imdb_top = _real229
+    _now229 = [r["imdb"] for r in _pl229.items(_con229, "imdb-top")]
+    check("229c a kept list a day old is read again from its source",
+          _now229 == [row[0] for row in _moved229] and
+          time.time() - _pl229.updated(_con229, "imdb-top") < 60)
+finally:
+    _con229.close()
+
+# ---- 231. Start made ahead: a viewer's front is answered as made, made again on the round
+_con231 = api.lib.db()
+try:
+    api._START_KEPT.clear()
+    _ask231 = lambda k, d="": {"rows": "1", "kind": "movie", "seed": "0", "era": ""}.get(k, d)
+    _who231 = api.who
+    _made231 = api.start_make_ahead(_con231)
+    _active231 = api.start_active(_con231)
+    _key231 = (str(_who231), "movie", "0", "")
+    _t0 = time.time()
+    _a231 = api.start_page(_con231, _ask231)
+    _fast231 = time.time() - _t0
+    _b231 = api.start_page(_con231, _ask231)
+    check("231 Start's front is made ahead for the active viewers and answered as made",
+          _made231 == 2 * len(_active231) and (not _active231 or str(_who231) not in _active231
+                                               or _a231 is api._START_KEPT[_key231][1])
+          and _a231 is _b231 and api.who == _who231,
+          "%d made for %d, %.2f s" % (_made231, len(_active231), _fast231))
+    api.start_forget(_who231)
+    check("231b what a viewer tells Start drops their kept front",
+          not any(k[0] == str(_who231) for k in api._START_KEPT))
+finally:
+    _con231.close()
+
+# ---- 235. a series' shuffle with no collection: one is made, named after it, its round moved
+_h235 = m.Handler.__new__(m.Handler)
+_h235.headers = {}; _h235.client_address = ("127.0.0.1", 0); _h235.guest_name = ""
+_h235.path = "/"; _h235.role = "owner"
+_con235 = api.lib.db()
+try:
+    _show235 = _con235.execute("SELECT i.id, i.title FROM item i WHERE i.type='show' AND EXISTS "
+                               "(SELECT 1 FROM episode e JOIN file f ON f.episode_id=e.id "
+                               "WHERE e.item_id=i.id) ORDER BY i.title LIMIT 1").fetchone()
+finally:
+    _con235.close()
+_st235 = m.read_settings()
+_mine235 = _h235.viewer_settings(_st235)
+_con235 = api.lib.db()
+try:
+    _had235 = [c for c in (_mine235.get("collections") or [])
+               if m.shelf_series(_con235, c) == str(_show235["id"])]
+finally:
+    _con235.close()
+_mine235.setdefault("shuffles", {})["show:" + str(_show235["id"])] = {"order": ["x"], "pos": 0,
+                                                                     "casualStamp": 5}
+m.write_settings(_st235, merge=False)
+_id235 = _h235.own_series_shelf(str(_show235["id"]))
+_mine235 = _h235.viewer_settings(m.read_settings())
+_made235 = next((c for c in _mine235.get("collections") or [] if str(c.get("id")) == _id235), {})
+check("235 a series' shuffle with no collection makes one, named after it, the round moved onto it",
+      bool(_id235) and (_had235 or (_made235.get("name") == _show235["title"]
+                                    and _made235.get("series") == [str(_show235["id"])]
+                                    and (_mine235.get("shuffles") or {}).get(_id235, {}).get("order") == ["x"]))
+      and _h235.own_series_shelf(str(_show235["id"])) == _id235,
+      str(_made235)[:200])
+
+# ---- 238. a collection's shuffle can have its own span: the whole series held, some drawn
+_con238 = api.lib.db()
+try:
+    _eps238 = _con238.execute("SELECT e.id, e.season, e.number FROM episode e JOIN file f "
+                              "ON f.episode_id = e.id WHERE e.season BETWEEN 1 AND 3 "
+                              "LIMIT 40").fetchall()
+    _keys238 = [str(r["id"]) for r in _eps238] + ["filmkey000001"]
+    _shelf238 = {"shuffleSeason": "s1-s2", "shuffleSeasonWithout": "s2"}
+    _got238 = m.Handler.shuffle_part(_con238, _shelf238, _keys238)
+    _want238 = [str(r["id"]) for r in _eps238 if int(r["season"]) == 1] + ["filmkey000001"]
+    check("238 a collection's shuffle span draws only its seasons; films and no span keep all",
+          _got238 == _want238 and m.Handler.shuffle_part(_con238, {}, _keys238) == _keys238,
+          "%d of %d" % (len(_got238), len(_keys238)))
+finally:
+    _con238.close()
+
+# ---- 240. what a collection's shuffle span leaves out is marked on its cards
+_con240 = api.lib.db()
+try:
+    _by240 = {}
+    for _r in _con240.execute("SELECT e.id, e.season FROM episode e JOIN file f "
+                              "ON f.episode_id = e.id WHERE e.season BETWEEN 1 AND 2 "
+                              "LIMIT 60").fetchall():
+        _by240.setdefault(int(_r["season"]), []).append(str(_r["id"]))
+    _s1, _s2 = _by240.get(1, [])[:3], _by240.get(2, [])[:3]
+    _rows240 = [{"ratingKey": "a-s1", "holds": list(_s1)}, {"ratingKey": "a-s2", "holds": list(_s2)},
+                {"ratingKey": "a-mix", "holds": _s1[:1] + _s2[:1]}, {"ratingKey": "filmkey000001"}]
+    _keys240 = _s1 + _s2 + ["filmkey000001"]
+    m.Handler.shuffle_marks(_con240, {"shuffleSeason": "s1"}, _rows240, _keys240)
+    _plain240 = [dict(r) for r in _rows240[:2]]
+    for _r in _plain240:
+        _r.pop("notShuffled", None); _r.pop("shuffleOut", None)
+    m.Handler.shuffle_marks(_con240, {}, _plain240, _keys240)
+    check("240 a collection's cards say what its shuffle leaves out: whole, in part, or none",
+          bool(_s1) and bool(_s2)
+          and not _rows240[0].get("notShuffled") and _rows240[1].get("notShuffled") is True
+          and _rows240[2].get("shuffleOut") == 1 and not _rows240[3].get("notShuffled")
+          and not any(r.get("notShuffled") or r.get("shuffleOut") for r in _plain240),
+          str(_rows240))
+finally:
+    _con240.close()
+
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):
-    print("  -", f)
+    # a title with a letter the console's code page lacks ("⧸") stopped the printout
+    print("  -", f.encode("ascii", "backslashreplace").decode("ascii"))
 sys.stdout.flush()
 shutil.rmtree(root, ignore_errors=True)
 os._exit(1 if FAILS else 0)

@@ -16,6 +16,7 @@ import time
 # spurts, and a window shorter than the gaps reads zero for most of a film.
 WINDOW = 20.0
 PEAK_WINDOW = 3.0        # what "fastest" is measured over
+COPY_WINDOW = 4.0        # what a copy's speed is measured over
 # How long a viewing is held on the list after its last socket closed. A direct play
 # is a run of range requests, not one connection: the browser asks for a stretch of
 # the file, reads it, and comes back a moment later. Each one is a session opening
@@ -214,6 +215,17 @@ class Watching:
                         s["peak"] = max(s["peak"], rate)
 
     @staticmethod
+    def copy_rate(marks, total, now, fallback):
+        """A copy's speed over the last COPY_WINDOW seconds: it reads steadily, and the
+        20 s window a direct play needs showed a paused film's freed line 20 s late."""
+        recent = [m for m in marks if now - m[0] <= COPY_WINDOW]
+        if not recent:
+            return 0.0                    # nothing came in the window
+        if now - recent[0][0] < 1.0:
+            return fallback
+        return (total - recent[0][1]) / (now - recent[0][0]) / 1048576.0
+
+    @staticmethod
     def _seat(s):
         """One sitting: a person, a title, a screen, whichever door it came in by."""
         return (s.get("who") or "", str(s.get("key") or ""), s.get("kind") or "")
@@ -285,6 +297,9 @@ class Watching:
                     # is really doing when the last few seconds happen to be quiet
                     lived = max(1.0, now - s["started"])
                     average = s["bytes"] / lived / 1048576.0
+                if s.get("how") == "syncing":
+                    rate = self.copy_rate(f["marks"] if f else s["marks"],
+                                          f["bytes"] if f else s["bytes"], now, rate)
                 out.append({
                     "who": s["who"], "title": s["title"], "quality": s["quality"],
                     "how": s["how"], "address": s["address"],

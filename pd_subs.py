@@ -171,12 +171,15 @@ class OpenSubtitles:
                 body = json.loads(e.read().decode("utf-8", "replace")).get("message", "")
             except Exception:
                 pass
+            # the day's downloads used up: none until they come back, kept as known
+            if "allowed" in (body or "") and "subtitles" in (body or ""):
+                _note_allowance(0, refused_until(body) or time.time() + 86400)
             return None, "OpenSubtitles refused: %s" % (body or e.reason)
         except Exception as e:
             return None, str(e)[:100]
         link = out.get("link")
         if out.get("remaining") is not None:
-            ALLOWANCE.update(left=int(out.get("remaining") or 0), at=time.time())
+            _note_allowance(int(out.get("remaining") or 0), refused_until(out.get("reset_time_utc") or ""))
         if not link:
             return None, "No download link came back (allowance used up?)."
         try:
@@ -200,8 +203,59 @@ class OpenSubtitles:
 #: login token per user, with when it was issued; shared by every client
 TOKENS = {}
 
-#: what OpenSubtitles said was left of today's downloads, and when it said it
-ALLOWANCE = {"left": None, "at": 0.0}
+#: what OpenSubtitles said was left of today's downloads, when it said it, and when the
+#: day's allowance comes back - kept on disk: the server restarts with every install, and
+#: forgetting it let the subtitle check spend the day's downloads afresh each time
+ALLOWANCE = {"left": None, "at": 0.0, "back": 0.0, "file": ""}
+
+
+def keep_allowance(root):
+    """Where the allowance is kept, and what was kept there read back."""
+    ALLOWANCE["file"] = os.path.join(root, "subs_allowance.json")
+    try:
+        with open(ALLOWANCE["file"], encoding="utf-8") as f:
+            said = json.load(f)
+        ALLOWANCE.update({k: said[k] for k in ("left", "at", "back") if k in said})
+    except (OSError, ValueError):
+        pass
+
+
+def _note_allowance(left, back=0.0):
+    ALLOWANCE.update(left=int(left), at=time.time(), back=float(back or 0))
+    if ALLOWANCE["file"]:
+        try:
+            with open(ALLOWANCE["file"], "w", encoding="utf-8") as f:
+                json.dump({k: ALLOWANCE[k] for k in ("left", "at", "back")}, f)
+        except OSError:
+            pass
+
+
+def refused_until(message):
+    """When OpenSubtitles says the day's downloads come back, as a time, from its refusal
+    ("... renewed in 06 hours and 02 minutes (2026-10-30 23:59:59 UTC)"); 0 when it does not say."""
+    import calendar
+    m = re.search(r"\((\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) UTC\)", str(message or ""))
+    if not m:
+        return 0.0
+    return float(calendar.timegm(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")))
+
+
+#: the last hours before the day's downloads come back, when what is left of the reserve
+#: is spent too: unused, it is lost at the reset anyway
+SPEND_ALL_H = 3
+
+
+def allowance_short(reserve, now=None):
+    """Whether the day's downloads are down to `reserve` - known, and not yet come back. In
+    the last SPEND_ALL_H before they come back only none left is short."""
+    now = time.time() if now is None else now
+    left = ALLOWANCE["left"]
+    if left is None or left > reserve:
+        return False
+    back = ALLOWANCE["back"] or (ALLOWANCE["at"] + 86400)
+    if now >= back:
+        return False
+    return left <= 0 or now < back - SPEND_ALL_H * 3600
 
 
 def release_tag(release):
@@ -246,6 +300,40 @@ def sidecar_path(video, language, release=""):
 GOOD = ("fits", "verified", "inside")
 #: the provider said no for today: asked again tomorrow, whoever asks
 TOMORROW = ("login", "allowance")
+
+
+def by_name_order(results, before):
+    """Candidates when nothing is marked for an episode: those named exactly like the upload
+    the episode before was fetched with, then the rest by downloads."""
+    same = [r for r in results if before and str(r.get("name") or "").strip() == before.strip()]
+    rest = sorted((r for r in results if r not in same), key=lambda r: -int(r.get("downloads") or 0))
+    return same + rest
+
+
+def names_episode(text, title, number):
+    """Whether a subtitle's text is this episode: it says "Episode N" near the top, or it
+    carries a word of four letters or more from the episode's title."""
+    low = str(text or "").lower()
+    if number and ("episode %d" % int(number)) in low[:2000]:
+        return True
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", str(title or ""))]
+    return bool(words) and any(w in low for w in words)
+
+
+def approaching_due(nexts, done, languages, now, again):
+    """The (key, language, fetch) of next episodes - one after each on a screen now - that
+    still want a subtitle: never found good, and not tried within `again`."""
+    out = []
+    for key in nexts:
+        for lang in languages:
+            at, verdict = done.get((str(key), lang), (0, ""))
+            if verdict in GOOD:
+                continue
+            wait = 86400 if verdict in TOMORROW else again
+            if at and now - at < wait:
+                continue
+            out.append((str(key), lang, True))
+    return out
 
 
 def due(done, first, rest, languages, asked, now, again, stop_at_one=False):

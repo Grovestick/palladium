@@ -51,7 +51,9 @@ fun moveTo(wanted: FocusRequester?): Boolean =
 
 /** How many posters are across one row of a grid, from what is on the screen. */
 fun columnsNow(info: androidx.compose.foundation.lazy.grid.LazyGridLayoutInfo): Int {
-    val seen = info.visibleItemsInfo
-    val top = seen.firstOrNull()?.offset?.y ?: return 0
-    return seen.count { it.offset.y == top }
+    // from how wide a poster's cell is, not from a row on screen: under a heading the
+    // first row is the heading alone, and a short list's row is short - one column made
+    // down go along the row, three made up land at the end of the row above
+    return Route.columnsOf(info.viewportSize.width,
+                           info.visibleItemsInfo.map { it.offset.x to it.size.width })
 }

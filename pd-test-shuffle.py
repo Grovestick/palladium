@@ -47,6 +47,7 @@ pd_torrents.STATE["lib"] = lambda: m.local().lib
 pd_torrents.load()
 pd_torrents.request = lambda *a, **k: {"ok": True}
 H = m.Handler
+_ready_now_real = m.Handler.ready_now
 REAL_AS_HELD = H.as_held
 BEGAN = time.time()
 
@@ -126,7 +127,19 @@ def walked(h, who, cid, presses, label):
             check(label + " place kept on an error", int(after["pos"]) == pos0)
             continue
         pos1 = int(after["pos"])
-        check(label + " order unchanged", after["order"] == order0, "press %d" % n)
+        if after["order"] != order0:
+            # The one change a press may make: forward, onto a title a pack still has to
+            # bring, the first after it that plays now moves up to the place - the rest
+            # keep their order behind it, the one coming in next in line.
+            moved = after["order"][pos1]
+            expect = [k for k in order0 if k != moved]
+            expect.insert(pos1, moved)
+            check(label + " only a title that plays now moves up, onto one still coming",
+                  not back and expect == after["order"] and H.ready_now(moved)
+                  and not H.ready_now(order0[pos1]), "press %d" % n)
+            order0 = list(after["order"])
+            # what stood at the place and after it has moved along one
+            seen = {p: k for p, k in seen.items() if p < pos1}
         between = order0[min(pos0, pos1) + 1:max(pos0, pos1)]
         check(label + " one step", (pos1 < pos0) == back and not any(k in inside for k in between),
               "press %d from %d to %d" % (n, pos0, pos1))
@@ -268,6 +281,7 @@ check("6 nothing lost", set(r2["order"]) == set(want))
 print("6. repeats in a stored order", flush=True)
 
 # ---- 7. a title added to the shelf goes in ahead; one taken off is stepped over
+H.ready_now = staticmethod(lambda k: True)   # another rule's test: all ready
 fresh_round(3)
 real_shelf = h.shuffle_shelf
 r = copy.deepcopy(round_of(owner, cid))
@@ -291,6 +305,7 @@ h.shuffle_shelf = real_shelf
 print("7. shelf gaining and losing a title", flush=True)
 
 # ---- 8. a round from before the order had a place
+H.ready_now = staticmethod(lambda k: True)   # another rule's test: all ready
 fresh_round(0)
 s = m.read_settings(); rounds_ = (s["users"][owner] if owner != "me" else s)["shuffles"]
 r = rounds_[cid]
@@ -335,6 +350,7 @@ check("10 the hat's next are in what is copied ahead",
 print("10. the hat read by the copy", flush=True)
 
 # ---- 11. a library row without a file is not in a hat; a pack's key for it is
+H.ready_now = staticmethod(lambda k: True)   # another rule's test: all ready
 con = m.local().lib.db()
 filed = ({str(r[0]) for r in con.execute("SELECT DISTINCT episode_id FROM file WHERE episode_id IS NOT NULL")}
          | {str(r[0]) for r in con.execute("SELECT DISTINCT item_id FROM file WHERE episode_id IS NULL")})
@@ -451,6 +467,113 @@ check("11 a pack's key and a key of another shape are kept, a library key with n
 print("11. no hat holds a title without a file: %d shelves" % looked, flush=True)
 
 print()
+# ---- 12. a draw onto a title a pack still has to bring plays the next one here instead;
+#          the one coming in stays next in line. Nothing here ahead of it: it is drawn.
+H.ready_now = staticmethod(_ready_now_real)
+fresh_round(3)
+r = round_of(owner, cid)
+ahead = r["order"][r["pos"] + 1:]
+coming = next((k for k in ahead if not H.ready_now(k)), None)
+if coming is None:
+    print("12. skipped: nothing on this shelf is still to come", flush=True)
+else:
+    # stand the round just before the one still coming
+    stored12 = m.read_settings()
+    r12 = (stored12["users"][owner] if owner != "me" else stored12)["shuffles"][cid]
+    r12["pos"] = r12["order"].index(coming) - 1
+    m.write_settings(stored12, merge=False)
+    before = list(r12["order"])
+    said = h.shuffle_draw(cid)
+    r2 = round_of(owner, cid)
+    nxt = next((k for k in before[before.index(coming) + 1:] if H.ready_now(k)
+                and k in set(inside)), None)
+    if nxt is None:
+        check("12 nothing here ahead: the one coming is drawn", said.get("key") == coming)
+    else:
+        check("12 the next one here plays, the one coming next in line",
+              said.get("key") == nxt and r2["order"][r2["pos"] + 1] == coming
+              and sorted(r2["order"]) == sorted(before),
+              "played %s, after it %s" % (said.get("key"), r2["order"][r2["pos"] + 1]))
+    print("12. a title still to come gives way to the next one here", flush=True)
+
+# ---- 13. carrying on: the episode watched last resumes at its place, however near its
+#          end - unless it got to its last minute, when the round goes on to the next one
+fresh_round(3)
+r13 = round_of(owner, cid)
+on13 = r13["order"][r13["pos"]]
+who13 = h.viewer()
+
+
+def watched13(position, duration, ago):
+    con = m.local().lib.db()
+    con.execute("DELETE FROM progress WHERE who=? AND key=?", (who13, on13))
+    con.execute("INSERT INTO progress (who,key,position,duration,updated) VALUES (?,?,?,?,?)",
+                (who13, on13, position, duration, int(time.time()) - ago))
+    con.commit()
+    con.close()
+
+
+# stopped two minutes from the end: inside Continue watching's three, still its place
+watched13(1230, 1350, 5)
+said13 = h.shuffle_draw(cid, resume=True)
+check("13 stopped near the end, carrying on resumes that place",
+      said13.get("key") == on13 and int(said13.get("resumeAt") or 0) == 1230)
+# watched into its last minute: the next one, not an older place
+s13 = m.read_settings()
+(s13["users"][owner] if owner != "me" else s13)["shuffles"][cid]["at"] = {}
+m.write_settings(s13, merge=False)
+watched13(1320, 1350, 1)
+said13b = h.shuffle_draw(cid, resume=True)
+r13b = round_of(owner, cid)
+check("13 watched into its last minute, carrying on plays the next one",
+      said13b.get("key") not in (None, on13)
+      and r13b["order"].index(said13b.get("key")) > r13b["order"].index(on13))
+con13 = m.local().lib.db()
+con13.execute("DELETE FROM progress WHERE who=? AND key=?", (who13, on13))
+con13.commit()
+con13.close()
+print("13. carrying on resumes the place, or goes on past an episode watched to its end", flush=True)
+
+# ---- 14. the music videos: the row's order from the one pressed, round and round
+h14 = handler("me")
+_s14, keys14 = h14.shuffle_shelf("music")
+if len(keys14) >= 4:
+    at14 = h14.shuffle_draw("music", resume=True, at=keys14[2])
+    n14 = h14.shuffle_draw("music")
+    b14 = h14.shuffle_draw("music", back=True)
+    bb14 = h14.shuffle_draw("music", back=True)
+    first14 = h14.shuffle_draw("music", resume=True, at=keys14[0])
+    wrap14 = h14.shuffle_draw("music", back=True)
+    last14 = h14.shuffle_draw("music", resume=True, at=keys14[-1])
+    for _ in range(len(keys14) - 1):
+        h14.shuffle_draw("music")
+    loop14 = h14.shuffle_draw("music")
+    check("14 a music video plays the row on from itself, Back wraps, the end loops",
+          at14.get("key") == keys14[2] and n14.get("key") == keys14[3]
+          and b14.get("key") == keys14[2] and bb14.get("key") == keys14[1]
+          and first14.get("key") == keys14[0] and wrap14.get("key") == keys14[-1]
+          and last14.get("key") == keys14[-1] and loop14.get("key") == keys14[-1],
+          "%s" % [x.get("key") for x in (at14, n14, b14, bb14, first14, wrap14, last14, loop14)])
+    print("14. the music videos loop in the row's order from the one pressed", flush=True)
+    # ---- 15. a playlist: its own order, from the one pressed, round and round
+    import pd_music
+    pd_music.use_data_dir(root)
+    made15 = pd_music.change("create", name="Test", keys=[keys14[5], keys14[1], "gone", keys14[3]])
+    cid15 = "music:" + made15["id"]
+    _s15, keys15 = h14.shuffle_shelf(cid15)
+    a15 = h14.shuffle_draw(cid15, resume=True, at=keys14[1])
+    seq15 = [h14.shuffle_draw(cid15).get("key") for _ in range(3)]
+    back15 = h14.shuffle_draw(cid15, back=True)
+    none15 = h14.shuffle_shelf("music:nosuch")
+    check("15 a playlist plays its own order from the one pressed and loops; a missing one is none",
+          keys15 == [keys14[5], keys14[1], keys14[3]] and a15.get("key") == keys14[1]
+          and seq15 == [keys14[3], keys14[5], keys14[1]] and back15.get("key") == keys14[5]
+          and none15 == (None, []),
+          "%s %s %s" % (keys15, a15.get("key"), seq15))
+    print("15. a playlist loops in its own order from the one pressed", flush=True)
+else:
+    print("14. not run: fewer than four music videos in the copy", flush=True)
+
 print("SHUFFLE FAILED: %d" % len(FAILS) if FAILS else "SHUFFLE PASSED  (%.0f s)" % (time.time() - BEGAN))
 for f in sorted(set(FAILS))[:40]:
     print("  -", f)

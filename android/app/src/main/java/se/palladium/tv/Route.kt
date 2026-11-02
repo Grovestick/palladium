@@ -13,8 +13,50 @@ object Route {
     val PICKER_MAX = 1000
 
     /** A search typed on Home that found films and programmes: shown in two parts. */
-    fun splitSearch(query: String, tab: String, films: Int, tv: Int): Boolean =
-        query.isNotBlank() && tab == "home" && films > 0 && tv > 0
+    /** Whether back on this tab first takes a scrolled Films or TV list to its top,
+     *  Home being the press after. */
+    fun backToTop(tab: String, index: Int, offset: Int): Boolean =
+        tab in setOf("films", "tv") && (index > 0 || offset > 0)
+
+    /** How many genres a widened More like this keeps, in the order tried: one fewer
+     *  each time, down to two - or to one, for a film that had only two. */
+    fun genreFewer(n: Int): List<Int> = ((n - 1) downTo (if (n > 2) 2 else 1)).toList()
+
+    /** Every choice of `size` of the words, in their own order. */
+    fun genreSets(words: List<String>, size: Int): List<List<String>> = when {
+        size == 0 -> listOf(emptyList())
+        words.size < size -> emptyList()
+        else -> genreSets(words.drop(1), size - 1).map { listOf(words[0]) + it } +
+            genreSets(words.drop(1), size)
+    }
+
+    /** Whether a resume is the activity's first - the app opening, which stays on the
+     *  tab it opens on - rather than a return, which goes to Home. */
+    fun isOpening(resumed: Int, openedAt: Int): Boolean = resumed <= openedAt
+
+    /** The band across a shuffle's card on Continue watching: a music round says so. */
+    fun shuffleBand(shelf: String): String =
+        if (shelf == "music" || shelf.startsWith("music:")) "MUSIC" else "SHUFFLE"
+
+    /** Whether the picture plays from the file itself. AV1 only with a hardware decoder:
+     *  the software one runs a 1080p picture at about 4 fps. */
+    /** Whether a file is played as it is: one this device decodes, or one whose codecs
+     *  were not in the details that came back - tried as it is, an encode only if the
+     *  device then cannot decode it. */
+    fun playAsIs(decodes: Boolean, hasPart: Boolean, videoCodec: String?): Boolean =
+        decodes || (hasPart && videoCodec.isNullOrEmpty())
+
+    fun videoDirect(codec: String, av1Hardware: Boolean): Boolean =
+        codec in setOf("h264", "avc", "hevc", "h265", "vp9", "vp8") ||
+            (codec == "av1" && av1Hardware)
+
+    /** Films and programmes under their own headings: a search, or one person's page. */
+    fun splitSearch(query: String, tab: String, films: Int, tv: Int,
+                    person: Boolean = false): Boolean =
+        (query.isNotBlank() || person) && films > 0 && tv > 0
+
+    /** A split search on the TV tab: the programmes first, the films under them. */
+    fun tvFirst(tab: String): Boolean = tab == "tv"
 
     /** "(3)" after the Version button when there are several copies, nothing for one. */
     fun copiesSaid(copies: Int): String = if (copies > 1) "  ($copies)" else ""
@@ -37,6 +79,15 @@ object Route {
      *  microphone off the screen. */
     fun searchFills(tv: Boolean, widthDp: Int): Boolean = !tv && widthDp < 600
 
+    /** A title page still waiting on the tracker asks again this often, this many
+     *  times: a minute, which is longer than a first search takes. */
+    const val CHECK_EVERY_MS = 5_000L
+    const val CHECK_TRIES = 12
+
+    /** The wait before the next look: every five seconds for that minute, then every
+     *  thirty while the page stays open - it says Checking until the tracker has answered. */
+    fun checkGap(tries: Int): Long = if (tries < CHECK_TRIES) CHECK_EVERY_MS else 30_000L
+
     /** The seasons a pack carries, as a pack is named: "S02", "S01–S22", or "". */
     fun seasonSpan(seasons: List<Int>): String = when {
         seasons.isEmpty() -> ""
@@ -58,6 +109,15 @@ object Route {
     /** What the server decided among these tracks, or null from a server that does not. */
     fun serverSub(text: List<SubTrack>): SubChoice? =
         if (text.none { it.decided }) null else SubChoice(text.firstOrNull { it.start }?.index)
+
+    /**
+     * The subtitle an episode that follows on by itself opens with, when one is wanted:
+     * the server's choice, as pressing Next gets. Chosen by the closest file name, a
+     * Swedish file sharing more of the episode's words opened for an English reader.
+     * [own] is the app's rule, for a server that does not decide.
+     */
+    fun followOnSub(wanted: Boolean, text: List<SubTrack>, own: () -> Int?): Int? =
+        if (!wanted) null else serverSub(text).let { if (it != null) it.index else own() }
 
     /** How many looks in a row must miss before an address is called down. */
     const val MISSES = 2
@@ -165,6 +225,18 @@ object Route {
      * Where a title starts, in seconds: past its skip rule on a fresh start from 0,
      * the place asked for otherwise. A restart inside the player is not a fresh start.
      */
+    /** How long the player waits before calling a soundtrack one it cannot play. */
+    const val SOUND_FIRST_MS = 2500L
+    /** On screen this long first: back from Home, the HDMI sound is taken up anew. */
+    const val SOUND_SETTLE_MS = 10000L
+    /** And silent again this much later before the film is re-encoded. */
+    const val SOUND_AGAIN_MS = 5000L
+
+    /** Milliseconds to wait before judging the sound, the player having been back on
+     *  screen for backMs. */
+    fun soundJudgedAfter(backMs: Long): Long =
+        maxOf(SOUND_FIRST_MS, SOUND_SETTLE_MS - maxOf(0L, backMs))
+
     fun leadStart(positionSec: Long, skipStart: Double, fresh: Boolean): Long =
         if (fresh && positionSec <= 0L && skipStart > 0.0) Math.round(skipStart) else positionSec
 
@@ -199,8 +271,65 @@ object Route {
         "downloading" -> "" + (progress * 100).toInt().coerceIn(0, 100) + "%" +
             (if (mbit >= 0.5) " · " + Math.round(mbit) + " Mbit/s" else "")
         "queued" -> "Queued"
+        "unpacking" -> "Unpacking " + (progress * 100).toInt().coerceIn(0, 100) + "%"
         "done" -> "Arriving"
         else -> ""
+    }
+
+    /** What a title's page says of its download while it comes in: the version, how far,
+     *  how fast and how long is left, or its place in the queue. */
+    fun offerLine(state: String, version: String, progress: Double, mbit: Double,
+                  eta: Long, place: Int, words: String = ""): String =
+        // the server's words when it has them: they say looking for seeders, checking,
+        // adding it - where a per cent alone said "Downloading 0%"
+        if (words.isNotEmpty()) words
+        else if (state == "queued") "Queued" + (if (place > 0) " · $place ahead" else "")
+        else "Downloading " + (if (version.isNotEmpty()) "$version · " else "") +
+            (progress * 100).toInt().coerceIn(0, 100) + "%" +
+            (if (mbit >= 0.5) String.format(java.util.Locale.US, " · %.0f Mbit/s", mbit) else "") +
+            (if (eta >= 0) " · " + when {
+                eta < 60 -> "$eta s left"
+                eta < 3600 -> "${eta / 60} min left"
+                else -> "${eta / 3600} h ${eta % 3600 / 60} min left"
+            } else "")
+
+    /** The health page's heading from how many things need somebody. */
+    fun healthTitle(problems: Int): String = when (problems) {
+        0 -> "All good"
+        1 -> "1 thing needs you"
+        else -> "$problems things need you"
+    }
+
+    /** How long ago, said short: "just now", "12 min ago", "3 h ago", "2 days ago". */
+    fun agoWords(seconds: Long): String = when {
+        seconds < 60 -> "just now"
+        seconds < 3600 -> "${seconds / 60} min ago"
+        seconds < 172_800 -> "${seconds / 3600} h ago"
+        else -> "${seconds / 86_400} days ago"
+    }
+
+    /** Whether a request that failed is worth reporting as slow: one that could not be
+     *  made, or took its time - except the notice, held open on purpose, which a phone
+     *  network cuts after a quiet half minute. */
+    fun slowWorthSaying(path: String, ms: Long, gone: Boolean): Boolean = when {
+        path.startsWith("/trace") -> false
+        path.startsWith("/notice") -> gone && ms <= 2500
+        else -> gone || ms > 2500
+    }
+
+    /** A short line - the strip under the tabs, the queue - in the server's words while it is
+     *  not coming in yet: looking for seeders, checking, stuck. The per cent otherwise. */
+    fun shortLine(stage: String, words: String, otherwise: String): String =
+        if (words.isNotEmpty() && stage !in setOf("", "downloading", "queued")) words
+        else otherwise
+
+    /** A tracker download's line after "Cancel": the server's words, else the per cent. */
+    fun takingLine(state: String, progress: Double, mbit: Double, words: String): String {
+        if (words.isNotEmpty()) return words
+        val pct = (progress * 100).toInt()
+        return (if (state.startsWith("queued") || state.startsWith("stalledDL") && pct == 0)
+                    "Queued" else "Downloading $pct%") +
+            (if (mbit > 0) String.format(java.util.Locale.US, "  ·  %.1f Mbit/s", mbit) else "")
     }
 
     /** From a press of Next or an episode's end: black over the picture from here. */
@@ -291,20 +420,73 @@ object Route {
         else -> "SVT Play's stream would not play here"
     }
 
-    /** Whether pressing a tab opens its popular page: TV and Films do, unless a
-     *  streaming service is marked - then it is that service's catalogue. */
+    /** The Service menu's two of this house: what is on its disks, what its packs carry. */
+    const val SRC_MINE = "-1"
+    const val SRC_PACKS = "-2"
+    /** both marked: how Films and TV open */
+    const val SRC_HOUSE = "-1,-2"
+
+    /** What a Service menu's marks stand for: the services' ids and this house's two.
+     *  Nothing marked is everything - this house and every service. */
+    data class Sources(val services: List<String>, val mine: Boolean, val packs: Boolean,
+                       val everything: Boolean) {
+        /** a catalogue to read: a service marked, or nothing marked at all */
+        val catalogue: Boolean get() = everything || services.isNotEmpty()
+    }
+
+    fun sources(marked: String): Sources {
+        val all = marked.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        val none = all.isEmpty()
+        return Sources(all.filter { (it.toIntOrNull() ?: 0) > 0 },
+                       none || SRC_MINE in all, none || SRC_PACKS in all, none)
+    }
+
+    /** Whether a title of the tab stays under these marks: on disk for My library, in a
+     *  pack for In packs. Both marked keep everything, what can be asked for included. */
+    fun keptByHouse(offered: Boolean, askable: Boolean, mine: Boolean, packs: Boolean): Boolean =
+        if (mine && packs) true else if (offered) packs else if (askable) false else mine
+
+    /** Whether pressing a tab opens its popular page: TV and Films do on this house's
+     *  own marks; any other marks are a catalogue of their own. */
     fun tvOpensPopular(tab: String, service: String): Boolean =
-        (tab == "tv" || tab == "films") && service.isEmpty()
+        (tab == "tv" || tab == "films") && service == SRC_HOUSE
 
     /** A streaming service's catalogue in the popular page's orders. */
     val SERVICE_ORDERS = listOf("popularity" to "Popular", "rating" to "Rating",
                                 "originallyAvailableAt" to "Released", "year" to "Year",
                                 "titleSort" to "Name")
 
+    /** A joined list with a series' catalogue card left out where a card it is held or
+     *  carried under stands too - one machine's pack and the other's popular card. */
+    fun <T> oneCardASeries(list: List<T>, title: (T) -> String, catalogue: (T) -> Boolean): List<T> {
+        val flat = { t: String -> t.lowercase().replace(Regex("[^a-z0-9]+"), "") }
+        val real = list.filter { !catalogue(it) }.mapTo(HashSet()) { flat(title(it)) }
+        return list.filter { !catalogue(it) || flat(title(it)) !in real }
+    }
+
+    /** A list in one of the catalogue's orders, high first unless `asc`. Stable: what
+     *  ties keeps the order it came in. */
+    fun <T> inServiceOrder(list: List<T>, key: String, asc: Boolean, pop: (T) -> Double,
+                           rating: (T) -> Double, released: (T) -> String, year: (T) -> Int,
+                           name: (T) -> String): List<T> {
+        val by: Comparator<T> = when (key) {
+            "popularity" -> compareBy(pop)
+            "rating" -> compareBy(rating)
+            "originallyAvailableAt" -> compareBy(released)
+            "year" -> compareBy(year)
+            else -> compareBy { name(it).lowercase() }
+        }
+        return list.sortedWith(if (asc) by else by.reversed())
+    }
+
     /** The orders a shelf opened whole offers instead of the library's own: the
      *  popular shows sort by how popular and how well rated as well; empty for the rest. */
-    fun extraOrders(row: String?): List<Pair<String, String>> =
-        if (popularPage(row))
+    fun extraOrders(row: String?, list: Boolean = false): List<Pair<String, String>> =
+        // a kept list: its own order first, the one it opens in
+        if (list)
+            listOf("popularity" to "List order", "originallyAvailableAt" to "Released",
+                   "year" to "Year", "titleSort" to "Name", "rating" to "Rating")
+        else if (popularPage(row))
             listOf("popularity" to "Popular", "originallyAvailableAt" to "Released",
                    "year" to "Year", "titleSort" to "Name", "rating" to "Rating")
         else emptyList()
@@ -314,6 +496,299 @@ object Route {
      *  Nothing on a phone, where the screen shows all of itself. */
     fun tvSafe(tv: Boolean): Pair<Int, Int> = if (tv) 24 to 20 else 0 to 0
 
+    /** Where Start's list moves for a focused card: its top this far under the list's
+     *  top - room for the row's title - the same place every time. Null for anything
+     *  smaller than a card (the picture's buttons) or taller than half the screen (the
+     *  picture itself): those keep scrolling only as far as they must. */
+    /** How long Start's page slides a row up or down, and a row slides along: the home
+     *  screen's own, read off a recording of it at sixty frames - 468 and 318 ms. */
+    const val START_SLIDE_DOWN_MS = 450
+    const val START_SLIDE_ALONG_MS = 300
+
+    /** How far a Home row scrolls for a card the remote lands on: nothing while the card
+     *  and `room` either side of it are on screen - coming down from the row above is no
+     *  reason to slide sideways - and otherwise just enough to give it that room, which
+     *  for the first card is the row's own margin, back at its start. */
+    fun calmAlong(offset: Float, size: Float, containerSize: Float, room: Float): Float {
+        val start = offset - room
+        val end = offset + size + room
+        if (start >= 0f && end <= containerSize) return 0f
+        if (start < 0f && end > containerSize) return 0f
+        return if (start < 0f) start else end - containerSize
+    }
+
+    /** A film page's More like this poster width on a television: as large as the room
+     *  under the film's words allows - the row's name (24), the ring's room (8), the
+     *  poster at 1.5 its width and `margin` under it - never smaller than the shelf
+     *  it had been, nor larger than a home shelf's. `room` is from where the words end
+     *  to the foot of the screen; nought, not measured yet, keeps the small size. */
+    fun likeWide(room: Float, home: Int, margin: Float = 14f): Int {
+        val least = home * 5 / 8
+        if (room <= 0f) return least
+        return ((room - 24f - 8f - margin) / 1.5f).toInt().coerceIn(least, home)
+    }
+
+    /** How many More like this posters stand in a row `width` wide and how wide each
+     *  is, so the row runs edge to edge between the page's margins: the fewest that
+     *  are no wider than `most` (what the room under the words allows), at most `cap`.
+     *  `sides` is the air each card carries. */
+    /** The width of each of ten More like this posters filling a row `width` wide,
+     *  less the air each card carries: one size for the page, whatever else is on it. */
+    fun likeTen(width: Float, sides: Int): Int = maxOf(40, (width / 10f).toInt() - sides)
+
+    fun likeFit(width: Float, most: Int, sides: Int, cap: Int = 10): Pair<Int, Int> {
+        if (width <= 0f || most <= 0) return cap to most
+        for (n in 1..cap) {
+            val w = (width / n).toInt() - sides
+            if (w <= most) return n to w
+        }
+        return cap to ((width / cap).toInt() - sides)
+    }
+
+    /** The order a search's finds stand in on a tab, as indexes into them: all of them,
+     *  the tab's own kind first - films on Films, series and episodes on TV - each
+     *  group in the order the server ranked it. */
+    fun tabFirst(types: List<String>, tab: String): List<Int> {
+        val own: (String) -> Boolean = when (tab) {
+            "films" -> { t -> t == "movie" }
+            "tv" -> { t -> t == "show" || t == "episode" }
+            else -> { _ -> true }
+        }
+        val idx = types.indices.toList()
+        return idx.filter { own(types[it]) } + idx.filter { !own(types[it]) }
+    }
+
+    /** How red a collection's card is while Play shuffle is focused: 2 left out of
+     *  the shuffle whole, 1 a season it leaves part of, 0 drawn from. */
+    fun shuffleOff(lit: Boolean, notShuffled: Boolean, shuffleOut: Int): Int =
+        if (!lit) 0 else if (notShuffled) 2 else if (shuffleOut > 0) 1 else 0
+
+    /** An episode's releases under their headings, in order: the pack already added,
+     *  the episode on its own on the tracker, then the tracker's season packs holding
+     *  it. Each row is (in a pack here, in a box); the groups are row indexes, and an
+     *  empty group is left out. */
+    fun releaseGroups(rows: List<Pair<Boolean, Boolean>>): List<Pair<String, List<Int>>> =
+        listOf("From the pack you added" to rows.indices.filter { rows[it].first },
+               "The episode on its own" to rows.indices.filter { !rows[it].first && !rows[it].second },
+               "In season packs on the tracker" to rows.indices.filter { !rows[it].first && rows[it].second })
+            .filter { it.second.isNotEmpty() }
+
+    /** The collections popup's button for one collection: Add where this is not on
+     *  it or only partly, Remove where all of it is. */
+    fun shelfAct(state: String): String = if (state == "all") "Remove" else "Add"
+
+    /** The watchlist popup's line saying where a title stands. */
+    fun watchlistSaid(listed: Boolean, favorite: Boolean): String = when {
+        favorite -> "A favorite: on your watchlist, and kept there when watched"
+        listed -> "On your watchlist"
+        else -> "Not on your watchlist"
+    }
+
+    /** The black under a picture drawn to fit a view, in pixels. The shape is the file's
+     *  own when known: a decoder that pads a scope film into a 16:9 frame reports 16:9,
+     *  and the subtitles were placed as if the picture filled the screen. */
+    fun barUnder(viewW: Int, viewH: Int, decodedAspect: Float, sourceAspect: Float): Int {
+        val aspect = if (sourceAspect > 0f) sourceAspect else decodedAspect
+        if (aspect <= 0f || viewW <= 0 || viewH <= 0) return 0
+        val spare = viewH - viewW / aspect
+        return if (spare > 1f) Math.round(spare / 2f) else 0
+    }
+
+    /** How near a subtitle comes to the top or bottom edge of the screen, as a share of
+     *  its height: a television crops a few per cent off every edge (overscan). */
+    const val SUB_SAFE = 0.03f
+    /** The least room under a subtitle in the band under the picture: what keeps a second
+     *  row from being drawn past the screen itself. */
+    const val SUB_EDGE = 0.005f
+
+    /** The rows a height setting means: Bottom/Nearest 0, Just up/One down 1,
+     *  Raised/Two down 2, High 3. Very bottom (0.9 and up) is not a number of rows. */
+    fun subtitleSteps(position: Float): Int = when {
+        position < 0.04f -> 0
+        position < 0.12f -> 1
+        position < 0.22f -> 2
+        else -> 3
+    }
+
+    /**
+     * Where the top of a subtitle goes, as a share of the view's height from its top.
+     *
+     * bar is the black under the picture and text the text size, both shares of the
+     * view; a row is text * lineRatio and the gap kept from the picture's edge is the
+     * leading, text * (lineRatio - 1). rows are the subtitle's lines with wraps counted.
+     *
+     *  - Off screen ("screen") with a band under the picture that holds a row and a gap
+     *    either side: the top row hugs the picture's edge - the row's own leading is the
+     *    buffer - a row lower for each step (Nearest, One down, Two down), and stays there
+     *    whether the subtitle has one row or two: a second row goes down into the band.
+     *    It moves up only if a row would leave the screen itself (EDGE). Very bottom puts
+     *    the last row on the safe edge.
+     *  - On screen ("picture"), or Off screen with no such band - a film that fills the
+     *    screen: the bottom sits a gap above the picture's edge, a row higher for each
+     *    step (Bottom, Just up, Raised, High), at onPicture's height for Off screen.
+     *    Very bottom puts the last row on the safe edge.
+     *  - On the picture and at Very bottom: no row closer than SUB_SAFE to the top or
+     *    bottom of the screen.
+     */
+    fun subtitleTop(bar: Float, text: Float, lineRatio: Float, rows: Int, base: String,
+                    position: Float, onPicture: Float, safe: Float = SUB_SAFE): Float {
+        val row = text * lineRatio
+        val gap = text * (lineRatio - 1f)
+        val tall = rows.coerceAtLeast(1) * row
+        val lowest = (1f - safe - tall).coerceAtLeast(safe)
+        val edge = 1f - bar
+        val under = base == "screen" && bar >= row + 2f * gap
+        val height = if (base == "screen" && !under) (if (onPicture >= 0f) onPicture else 0.08f)
+                     else position
+        if (height >= 0.9f) return lowest
+        if (under) {
+            // the top row where it always is; down only as far as the screen goes
+            val onEdge = (1f - SUB_EDGE - tall).coerceAtLeast(safe)
+            return (edge + subtitleSteps(height) * row).coerceIn(safe, onEdge)
+        }
+        return (edge - gap - subtitleSteps(height) * row - tall).coerceIn(safe, lowest)
+    }
+
+    /** The rows a subtitle takes: each of its lines one row, or more where its width
+     *  passes the room it is drawn in and it wraps. */
+    fun cueRows(lineWidths: List<Float>, room: Float): Int =
+        lineWidths.sumOf { w -> if (room <= 0f) 1 else maxOf(1, kotlin.math.ceil(w / room).toInt()) }
+            .coerceAtLeast(1)
+
+    /** The line under a poster: what the caller asks for, or for a season with nothing
+     *  asked its number - its picture is often the programme's own. */
+    fun posterLine(type: String?, index: Int?, asked: String?, show: String? = null): String? =
+        asked ?: if (type == "season" && index != null && index > 0) seasonLine(index, "", show)
+                 else null
+
+    /** A season card's line: its programme where the card stands among other things,
+     *  then its number - or its own name where it has no number. */
+    fun seasonLine(index: Int?, title: String, show: String?): String {
+        val own = if (index != null) "Season $index" else title
+        return if (show.isNullOrBlank()) own else "$show · $own"
+    }
+
+    /** Whether a download taken from the tracker is this page's: started from it, or
+     *  the same film by name and year. */
+    fun takingIsFor(takeKey: String, takeTitle: String, takeYear: Int,
+                    key: String, title: String, year: Int?): Boolean {
+        if (takeKey.isNotEmpty()) return takeKey == key
+        val flat = { t: String -> t.lowercase().filter { it.isLetterOrDigit() } }
+        return flat(takeTitle).isNotEmpty() && flat(takeTitle) == flat(title) &&
+            (takeYear == 0 || year == null || takeYear == year)
+    }
+
+    /** A grid's columns from its width and its cells (x, width): as many as a cell fits
+     *  across - a heading, the full width, is not a cell. */
+    fun columnsOf(width: Int, cells: List<Pair<Int, Int>>): Int {
+        val cell = cells.map { it.second }.filter { it in 1 until width * 9 / 10 }.minOrNull()
+            ?: return if (cells.isEmpty()) 0 else 1
+        return maxOf(1, width / cell)
+    }
+
+    /** Up or down from card `at` of a list of `size` laid out `across` a row, in a grid
+     *  of lists each under its own heading: (-1, i) for card i of the list above, (0, i)
+     *  in this one, (1, i) in the one below - the same column, or the last card of a
+     *  shorter row - or null where there is nothing that way. */
+    fun gridStep(at: Int, across: Int, size: Int, prevSize: Int, nextSize: Int,
+                 down: Boolean): Pair<Int, Int>? {
+        val n = maxOf(across, 1)
+        val col = at % n
+        if (down) {
+            if (at + n < size) return 0 to at + n
+            // the short last row of this list still lies below
+            if ((size - 1) / n > at / n) return 0 to size - 1
+            if (nextSize > 0) return 1 to minOf(col, nextSize - 1)
+            return null
+        }
+        if (at - n >= 0) return 0 to at - n
+        if (prevSize > 0) {
+            val lastRow = (prevSize - 1) / n * n
+            return -1 to minOf(lastRow + col, prevSize - 1)
+        }
+        return null
+    }
+
+    /** The watchlist's headings in order - its films, its television, then the
+     *  favorites the same two ways - each with what is under it; an empty one is left
+     *  out. */
+    fun <T> watchlistGroups(films: List<T>, tv: List<T>, favFilms: List<T>,
+                            favTv: List<T>): List<Pair<String, List<T>>> =
+        listOf("Films" to films, "TV shows" to tv, "Favorite films" to favFilms,
+               "Favorite TV shows" to favTv).filter { it.second.isNotEmpty() }
+
+    /** The word for a watchlisted film that has got a source. */
+    fun watchNewsSaid(title: String, how: String): String =
+        if (how == "here") "$title is here - it was on your watchlist"
+        else "$title can be downloaded now - it was on your watchlist"
+
+    /** The Play build's credits for the data it shows: the film catalogue, and where
+     *  a film streams, which the catalogue has from JustWatch. */
+    const val PLAY_CREDITS =
+        "Film and series information, pictures and where they stream come from TMDB. " +
+        "This product uses the TMDB API but is not endorsed or certified by TMDB. " +
+        "Streaming availability data by JustWatch. Service names and logos belong to " +
+        "their owners; Palladium is not connected to any streaming service."
+
+    /** Whether a card stands in the Play Store's build: only what the server holds -
+     *  nothing to download, nothing to ask for. The house's build shows everything. */
+    fun forStore(play: Boolean, offered: Boolean, askable: Boolean, addable: Boolean): Boolean =
+        !play || !(offered || askable || addable)
+
+    /** What a collection's Play all plays, in the order shown: each card's key, or a
+     *  season card's episodes in its place. */
+    fun playAllKeys(cards: List<Pair<String, List<String>>>): List<String> =
+        cards.flatMap { (key, holds) -> holds.ifEmpty { listOf(key) } }
+
+    /** How far a press scrolls a block of text being read: down while some of it is
+     *  still under the window, up while the window is not at its top; nought when the
+     *  press should move on - down to the cast, or up out of it. `textEnd` is where the
+     *  text ends in the scrolled column, `step` a press's worth. */
+    fun readStep(down: Boolean, at: Float, window: Float, textEnd: Float, step: Float): Float =
+        if (down) minOf(step, textEnd - (at + window)).coerceAtLeast(0f)
+        else -minOf(step, at).coerceAtLeast(0f)
+
+    /** The stiffness of an unbouncy spring that has covered 98% of its way after [ms]:
+     *  (1 + wt)e^-wt = 0.02 at wt = 5.83, stiffness w squared. */
+    fun slideStiffness(ms: Int): Float {
+        val w = 5.83f / (ms / 1000f)
+        return w * w
+    }
+
+    /** A Start card's width: on a television narrow enough that two whole rows, the
+     *  second one's titles too, stand under the tabs - 270 left them under the screen's
+     *  edge; on a phone 220, a tablet 280. */
+    fun startCardW(screenWidthDp: Int, tv: Boolean): Float =
+        if (tv) 256f else if (screenWidthDp < 600) 220f else 280f
+
+    /** Where Start's page moves for a card the remote lands on; null for anything that
+     *  is not a row's card. Nothing while the card, its row's name above it and the
+     *  ring's room are on screen: down from the upper row to the lower one the page holds
+     *  still. Below the screen: just far enough that the row stands at the foot, so the
+     *  row it came from stays above it. Above, or down off the picture (`fromTop`): the
+     *  row under the tabs, its name showing - decided first: asked again every frame of
+     *  the slide, "on screen" stopped that slide half way. No margin under a row at the
+     *  foot: 2% of the screen was more than the second row has, and it moved the page. */
+    fun startRowMove(offset: Float, size: Float, containerSize: Float, fromTop: Boolean): Float? {
+        val pivot = rowPivot(offset, size, containerSize) ?: return null
+        if (fromTop) return pivot
+        val name = containerSize * 0.085f
+        val bottom = offset + size + size * 0.04f
+        if (offset - name >= 0f && bottom <= containerSize) return 0f
+        if (offset < name) return pivot
+        return bottom - containerSize
+    }
+
+    fun rowPivot(offset: Float, size: Float, containerSize: Float): Float? {
+        if (size < containerSize * 0.15f || size > containerSize * 0.5f) return null
+        val titleRoom = containerSize * 0.085f
+        return offset - titleRoom
+    }
+
+    /** The side margin of the Films and TV grid: on a television, with the ring's room
+     *  inside the grid, the same sixteen points Start and the tabs keep. */
+    fun gridSide(tv: Boolean): Int = if (tv) 12 else 0
+
     /** The air above a film page's shelf so that it ends `margin` above the foot of a
      *  `screen` tall screen: from where the air begins and how tall the shelf is, all in
      *  dp; never less than ten. */
@@ -321,10 +796,10 @@ object Route {
         (screen - from - shelf - margin).coerceAtLeast(10f)
 
     /** A television's home poster width in dp: two whole shelves in the `tall` dp under
-     *  the tabs - per shelf its name (18), the poster at 1.5 its width and 8 of air - with
-     *  the `passing` bars over the shelves counted back in, so a bar does not shrink them. */
-    fun homePoster(tall: Float, passing: Float): Int =
-        ((((tall + passing) / 2f) - 18f - 8f) / 1.5f).toInt().coerceIn(96, 124)
+     *  the tabs and any bar - per shelf its name and air (36, measured on the streamer),
+     *  the poster at 1.5 its width and 4 for the focused poster's lift. */
+    fun homePoster(tall: Float): Int =
+        (((tall / 2f) - 36f - 4f) / 1.5f).toInt().coerceIn(96, 124)
 
     /** The second a still is asked for at: ten-second steps, as the server keeps them. */
     fun frameSecond(filmMs: Long): Long = (filmMs.coerceAtLeast(0) / 10_000) * 10
@@ -341,7 +816,7 @@ object Route {
 
     /** How far in a home shelf's first poster stands: in line with the shelf's name
      *  on a television, a little in on a phone. The row itself runs edge to edge. */
-    fun shelfInset(tv: Boolean): Int = if (tv) 21 else 8
+    fun shelfInset(tv: Boolean): Int = if (tv) 21 else 7
 
     /** And the shelf's name above it: on a phone just right of the poster's edge, where
      *  21 dp of a 400 dp wide screen was a margin nobody needed. */
@@ -349,6 +824,11 @@ object Route {
 
     /** The address a live channel plays from on its server, signed in as the app is:
      *  the token in the address, which the server copies onto each piece. */
+    /** How long the live player waits to reach a server, and for a channel's first
+     *  playlist - which arrives once the server has the channel's first stretch. */
+    const val LIVE_CONNECT_MS = 5_000L
+    const val LIVE_READ_MS = 30_000L
+
     fun liveAddress(base: String, key: String, token: String): String =
         base.trimEnd('/') + "/live/" + key + "/index.m3u8" +
             (if (token.isNotEmpty()) "?t=" + java.net.URLEncoder.encode(token, "UTF-8") else "")
@@ -537,6 +1017,99 @@ object Route {
     /** What a press on a film's download button does while it is coming in: the first
      *  press asks ("arm"), a second within a few seconds cancels; otherwise "" - it is
      *  the Download button and opens the versions. */
+    /** A film not out yet, on its page where Play would be: "Out 15 Dec 2026". */
+    fun upcomingLine(released: String): String {
+        val d = Regex("""^(\d{4})-(\d{2})-(\d{2})""").find(released) ?: return "Not out yet"
+        val (y, m, day) = d.destructured
+        val month = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
+                           "Oct", "Nov", "Dec").getOrNull(m.toInt() - 1) ?: return "Not out yet"
+        return "Out " + day.toInt() + " " + month + " " + y
+    }
+
+    /** The band of a card not out yet: its date, "15 DEC" - month and year when it is
+     *  most of a year off - and UPCOMING when the date is not known or has passed.
+     *  Both dates "yyyy-MM-dd". */
+    fun upcomingBand(date: String, today: String): String {
+        val day = Regex("""^(\d{4})-(\d{2})-(\d{2})""")
+        val d = day.find(date)?.destructured ?: return "UPCOMING"
+        val t = day.find(today)?.destructured ?: return "UPCOMING"
+        val month = listOf("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP",
+                           "OCT", "NOV", "DEC").getOrNull(d.component2().toInt() - 1)
+            ?: return "UPCOMING"
+        fun epochDay(y: Int, m: Int, dd: Int): Long {
+            val yy = if (m <= 2) y - 1 else y
+            val era = (if (yy >= 0) yy else yy - 399) / 400
+            val yoe = yy - era * 400
+            val doy = (153 * (if (m > 2) m - 3 else m + 9) + 2) / 5 + dd - 1
+            return era * 146097L + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+        }
+        val days = epochDay(d.component1().toInt(), d.component2().toInt(), d.component3().toInt()) -
+            epochDay(t.component1().toInt(), t.component2().toInt(), t.component3().toInt())
+        return when {
+            days <= 0 -> "UPCOMING"
+            days > 330 -> month + " " + d.component1()
+            else -> d.component3().toInt().toString() + " " + month
+        }
+    }
+
+    /** How often a season's page looks for an episode it started downloading. */
+    const val EPISODE_LANDS_EVERY_MS = 20_000L
+
+    /** The episodes asked for and not in yet: `ready` are those that can be played now. */
+    fun episodesStillComing(asked: Set<Int>, ready: Set<Int>): Set<Int> = asked - ready
+
+    /** A series' added packs, those in use first: every one of them can be removed. */
+    fun addedPacks(inUse: List<String>, rows: List<String>): List<String> =
+        (inUse + rows.filter { it.isNotEmpty() }).distinct()
+
+    /** What a series' pack row says it already is; "" for one on the tracker only. */
+    fun packWord(hash: String, inUse: List<String>): String = when {
+        hash.isEmpty() -> ""
+        hash in inUse -> "In use"
+        else -> "Added"
+    }
+
+    /** Where a version in the download list comes from; one this house holds says On disk,
+     *  whether it is a file here, a pack's or the tracker's own upload. */
+    fun versionTag(disk: Boolean, have: Boolean, pack: Boolean, box: Boolean,
+                   seasonPack: Boolean): String = when {
+        disk || have -> "On disk"
+        pack -> "Pack"
+        box -> if (seasonPack) "Season pack" else "Box set"
+        else -> "Tracker"
+    }
+
+    /** The first button on a Start slide: its word, and whether it plays (else it opens
+     *  the page). Only a film here plays; one not out yet says when. */
+    fun heroAct(offered: Boolean, upcoming: Boolean, askable: Boolean, type: String,
+                released: String): Pair<String, Boolean> = when {
+        upcoming -> upcomingLine(released) to false
+        offered -> "⤓ Get it" to false
+        askable -> "Request" to false
+        type == "movie" -> "▶ Play" to true
+        else -> "▶ Watch" to false
+    }
+
+    /** The line under a series' poster: its place, and while stepping the film on show. */
+    fun sagaCaption(going: Boolean, label: String, shown: Int, size: Int, own: Boolean): String =
+        if (!going) "${shown + 1} of $size"
+        else "$label · ${shown + 1} of $size"
+
+    /** The poster shown after a step through a series of `size`: within its ends. */
+    fun sagaStep(shown: Int, size: Int, by: Int): Int =
+        if (size <= 0) 0 else (shown + by).coerceIn(0, size - 1)
+
+    /** The film before and after this one in its series - (key, label) or null each -
+     *  from the series in order, this one marked. */
+    fun sagaSteps(parts: List<Triple<String, String, Boolean>>):
+            Pair<Pair<String, String>?, Pair<String, String>?> {
+        val at = parts.indexOfFirst { it.third }
+        if (at < 0) return null to null
+        val prev = parts.getOrNull(at - 1)?.let { it.first to "‹ " + it.second }
+        val next = parts.getOrNull(at + 1)?.let { it.first to it.second + " ›" }
+        return prev to next
+    }
+
     fun offerPress(state: String, armed: Boolean): String =
         if (state != "queued" && state != "downloading") ""
         else if (armed) "cancel" else "arm"

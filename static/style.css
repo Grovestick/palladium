@@ -203,6 +203,14 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 .btn{background:var(--accent);color:var(--on-accent,#111);font-weight:600;padding:9px 20px;
   border-radius:6px}
 .btn.ghost{background:var(--panel2);color:var(--fg);font-weight:400}
+/* Fix match: the words alone, no frame */
+.btn.fixmatch{background:none;border:0;color:var(--dim);font-weight:400;padding-left:8px;
+  padding-right:8px}
+.btn.fixmatch:hover,.btn.fixmatch:focus-visible{color:var(--fg);text-decoration:underline}
+/* a title's page: every button on its rows the one height, Play's */
+#watchedbtn .btn:not(.tiny),#showmark .btn:not(.tiny),#seasonbar .btn:not(.tiny),
+.detail .btn.collplay,.markgroup .btn{height:40px;box-sizing:border-box;padding-top:0;
+  padding-bottom:0;display:inline-flex;align-items:center;justify-content:center}
 /* the version chosen is one this house already holds: green says so, and the button
    still fetches - a file here can be broken, or half a pack */
 .btn.here{background:#5fd08a;color:#10261a}
@@ -586,6 +594,11 @@ body.guest #topbar .spacer{flex:1}
   position:absolute;inset:0;z-index:3;pointer-events:none;border-radius:8px}
 .card.hazein .poster::after{background:rgba(74,200,120,.34)}
 .card.hazeout .poster::after{background:rgba(214,74,64,.36)}
+/* Play shuffle hovered: what the shuffle leaves out is framed red, washed where whole */
+.shuflit .card.unshuf .poster::after,.shuflit .card.partshuf .poster::after{content:"";
+  position:absolute;inset:0;z-index:3;pointer-events:none;border-radius:8px;
+  box-shadow:inset 0 0 0 3px rgb(214,74,64)}
+.shuflit .card.unshuf .poster::after{background:rgba(214,74,64,.36)}
 /* the marks stay above the wash, or they read as tinted and unpressable */
 .card.hazein .poster .deckmarks,.card.hazeout .poster .deckmarks{z-index:4}
 .colltest{margin:10px 0 0}
@@ -681,7 +694,6 @@ h2 .makecoll + .makecoll{margin-left:8px}
 /* one release: what it was called, what it did */
 h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
   text-transform:uppercase;color:var(--dim);font-weight:600}
-.addrow.subtabs{margin-bottom:14px}
 .release{border-bottom:1px solid var(--line);padding:12px 0}
 .release:last-of-type{border-bottom:0}
 .release.older{opacity:.72}
@@ -706,7 +718,7 @@ h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
 /* the drawing with a box for each worker beside it; a box is lit while it works */
 .nowpage{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;max-width:1380px}
 .nowleft{flex:3 1 560px;min-width:0}
-.nowpage>.workers{flex:1 1 320px}
+.nowpage>.nowright{flex:1 1 320px;min-width:0}
 .nowtop{display:flex;gap:16px;align-items:flex-start}
 .nowtop>.setblock{flex:3 1 560px;min-width:0}
 .workers .wgroup{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.03em;
@@ -722,6 +734,8 @@ h3.subhead.pane{margin:18px 0 8px;font-size:13px;letter-spacing:.08em;
 .wbox.on b{color:var(--fg)}
 .wbox.stalled{opacity:1;border-color:#f0704f}
 .wbox.stalled b{color:#f0704f}
+.wbox.link{cursor:pointer}
+.wbox.link:hover{border-color:var(--accent)}
 .livetotals{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 18px;max-width:940px}
 .livetotals .total{background:var(--panel);border:1px solid var(--line);
   border-radius:10px;padding:10px 16px;min-width:120px;flex:1 1 0}
@@ -1394,6 +1408,10 @@ body.has-copynote{padding-top:38px}
 .srvpick .dot{width:6px;height:6px;border-radius:50%;background:var(--dim)}
 .srvpick .dot.waiting{opacity:.4}
 .srvpick .dot.up{background:#42c96a}
+/* Health: whether a server answers */
+.updot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle}
+.updot.up{background:#42c96a}
+.updot.down{background:#e5534b}
 .srvpick .dot.down{background:#8a4038}
 
 /* Fixed, and moved out of the bar when it opens: the bar carries a backdrop filter,
@@ -1456,6 +1474,10 @@ body.has-copynote{padding-top:38px}
   color:var(--fg);font-size:13.5px;padding:7px 8px;border-radius:6px;cursor:pointer;text-align:left}
 .collpick-row:hover,.collpick-row:focus-visible{background:rgba(255,255,255,.07);outline:none}
 .collpick-row .tick{width:16px;flex:none;text-align:center;color:var(--accent)}
+/* a collection's line: its name, then Add or Remove and Go to at the end */
+.collpick-row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.collpick-row .btn.ghost.tiny{margin-right:0;flex:none}
+.collpick:has(.nm){max-width:360px}
 .collpick-row.make{color:var(--dim);border-top:1px solid var(--line);border-radius:0;margin-top:4px}
 .listtabs{display:inline-flex;gap:6px;margin-left:14px;vertical-align:middle}
 .splitmark .half.right{border-right:1px solid var(--line)}
@@ -1510,6 +1532,14 @@ body.has-copynote{padding-top:38px}
 .qbstate .qbdot{width:10px;height:10px;border-radius:50%;flex:none;background:#e0564f;
   box-shadow:0 0 0 3px rgba(224,86,79,.18)}
 .qbstate.on .qbdot{background:#42c96a;box-shadow:0 0 0 3px rgba(66,201,106,.2)}
+.qbstate .btn.tiny{margin-left:6px}
+/* Now playing's link merge: a link a line, its speed and total in columns */
+.mergelinks{display:grid;gap:4px;font-variant-numeric:tabular-nums}
+.mergerow{display:grid;grid-template-columns:1fr 110px 80px;gap:10px;font-size:13px}
+.mergerow .s,.mergerow .t{text-align:right;color:var(--dim)}
+.mergerow.sum{border-top:1px solid var(--line);padding-top:4px;font-weight:600}
+.mergerow.sum .s,.mergerow.sum .t{color:var(--fg)}
+.mergerow.off{opacity:.5}
 /* the watchlist button's third state: a favorite, a red heart */
 /* a favorite: the heart red, on the ground every chosen button has */
 .splitmark .half.left.on.fav{color:#ff4d5e}
@@ -1521,6 +1551,29 @@ body.has-copynote{padding-top:38px}
 .versions .btn.on{box-shadow:inset 0 0 0 2px var(--fg);font-weight:600}
 /* a film on offer being fetched: how far and how long, across its poster on its page */
 .detail .poster{position:relative}
+/* the film before and after in its series: an arrow at each side of the poster */
+.detail .poster .sagastep{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:28px;height:44px;
+  padding:0;border:0;border-radius:6px;background:rgba(11,13,16,.55);cursor:pointer;font-size:0;
+  display:flex;align-items:center;justify-content:center}
+/* a drawn chevron, the same in both directions: a font's two arrows sit differently */
+.detail .poster .sagastep::before{content:"";width:10px;height:10px;border:solid #fff;border-width:0 3px 3px 0}
+.detail .poster .sagastep.prev::before{transform:translateX(2px) rotate(135deg)}
+.detail .poster .sagastep.next::before{transform:translateX(-2px) rotate(-45deg)}
+.detail .poster .sagastep.prev{left:6px}
+.detail .poster .sagastep.next{right:6px}
+.detail .poster .sagastep:hover,.detail .poster .sagastep:focus-visible{background:rgba(11,13,16,.88);outline:2px solid var(--accent)}
+.detail .poster .sagaat{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:3;
+  background:rgba(11,13,16,.7);color:#fff;font-size:12px;padding:2px 8px;border-radius:10px;
+  max-width:92%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* the poster of a film in a series, with its place in the series under it */
+.detail .sagacol{display:flex;flex-direction:column;gap:8px;flex:0 0 260px;width:260px}
+.detail .sagacol .poster{width:100%;flex:none}
+.detail .sagacol .sagaat{position:static;transform:none;background:none;color:var(--dim);
+  font-size:13px;padding:0;text-align:center;max-width:100%;white-space:normal}
+.detail .poster.sagaon .sagaat{color:var(--fg)}
+/* another film of the series on show: ringed, its name at the foot */
+.detail .poster.sagaother::after{content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+  border:3px solid var(--accent);border-radius:inherit}
 .detail .poster .offerbadge{position:absolute;right:8px;top:8px;z-index:4;background:rgba(7,10,14,.85);
   color:var(--fg);font-size:13px;font-weight:600;padding:3px 8px;border-radius:6px}
 /* something downloading: a line beside the tabs */
@@ -1636,6 +1689,8 @@ body.has-copynote{padding-top:38px}
 .epdl { margin-top: 8px; display: grid; gap: 6px; }
 .epdlrow { display: flex; gap: 10px; align-items: center; font-size: 13px; }
 .epdlrow span { overflow-wrap: anywhere; }
+/* one width for Download and On disk, never wrapped: the names beside them line up */
+.epdlrow .btn { flex: 0 0 112px; white-space: nowrap; text-align: center; }
 .ribbon.new span{background:#d9a21b;color:#111}
 .epnew{display:inline-block;margin-right:6px;padding:0 6px;border-radius:4px;background:#d9a21b;color:#111;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;vertical-align:1px}
 /* Settings, Upgrade: a film, what is here, what Choosing would pick */
@@ -1643,10 +1698,18 @@ body.has-copynote{padding-top:38px}
 .upgrade{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:var(--panel2)}
 .upgrade .have{font-size:12px;color:#e0b341}
 .upgrade div.pick{font-size:12px;color:#5fd08a}
+/* a pack list on show, not a menu: a line for each name, the button under it */
+.pick.openlist{flex:1 1 100%;width:100%;max-width:none;color-scheme:dark;padding:4px}
+.pick.openlist option{padding:3px 6px}
+.pick.openlist option:checked{background:#3a3320 linear-gradient(#3a3320,#3a3320)}
 .upgrade div.pick.pack{color:#7fb4ff}
 .upgrade .note a{color:#7fb4ff;text-decoration:underline;word-break:break-all}
 .upgrade .btn{align-self:flex-start;margin-top:4px}
 /* #monitor: Now playing alone, for a tablet on a stand - one screen, never scrolled */
+/* the Monitor opened on its own: nothing of the page shown until it has drawn */
+html.monitorwait{background:#000}
+html.monitorwait body{visibility:hidden}
+html.monitorwait::after{content:"Loading\2026";position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#888;font:16px sans-serif}
 body.monitor #topbar{display:none}
 body.monitor{height:calc(var(--vh, 1vh) * 100);overflow:hidden}
 body.monitor main{height:calc(var(--vh, 1vh) * 100);box-sizing:border-box;display:flex;flex-direction:column;
@@ -1900,3 +1963,123 @@ body.phonelike .watchlog .how{grid-area:how}
 
 /* the film club skin sets its titles in a serif */
 [data-mood="archive"] h1,[data-mood="archive"] h2,[data-mood="archive"] h3,[data-mood="archive"] .rowhead,[data-mood="archive"] .ct{font-family:Georgia,"Times New Roman",serif}
+
+/* ---- Start: a hero that turns, a bar of chips, a row for every mood ---- */
+.sp{display:flex;flex-direction:column;gap:26px;margin:-18px -18px 0}
+.sp .sphero + .spshelf{margin-top:-30px;position:relative;z-index:4}
+.sphero{position:relative;height:min(68vh,640px);min-height:380px;overflow:hidden;background:#05070a}
+.spstage,.spslide{position:absolute;inset:0}
+.spslide{animation:spfade .6s ease}
+@keyframes spfade{from{opacity:0}to{opacity:1}}
+.spbg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.spshade{position:absolute;inset:0;
+  background:linear-gradient(90deg,rgba(5,7,10,.94) 0%,rgba(5,7,10,.7) 34%,rgba(5,7,10,0) 66%),
+             linear-gradient(0deg,var(--bg) 0%,rgba(5,7,10,0) 38%)}
+.spbody{position:absolute;left:clamp(18px,4.5vw,64px);bottom:clamp(44px,9vh,96px);max-width:min(560px,86vw);
+  display:flex;flex-direction:column;gap:12px}
+.speyebrow{font-size:13px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.sptitle{margin:0;font-size:clamp(32px,4.6vw,64px);line-height:1;font-weight:800;letter-spacing:-.02em;
+  text-wrap:balance}
+.spfacts{display:flex;flex-wrap:wrap;gap:6px 16px;color:#c9d2dc;font-size:14.5px;font-weight:500}
+.spnote{margin:0;color:#d8dfe7;font-size:16px;line-height:1.5;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.spacts{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px}
+.spacts .btn{padding:11px 22px;font-size:15.5px;font-weight:600}
+.spacts .spplay{background:#fff;color:#0b0e12;border-color:#fff}
+.spacts .spplay:hover{background:#dfe5ec}
+.spacts .spround{width:44px;height:44px;padding:0;border-radius:50%;font-size:17px;justify-content:center}
+.spacts .spround.on{color:var(--accent);border-color:var(--accent)}
+.sparrow{position:absolute;top:0;bottom:0;width:58px;z-index:3;font-size:46px;line-height:1;color:#fff;
+  display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s ease;
+  background:linear-gradient(90deg,rgba(5,7,10,.7),rgba(5,7,10,0))}
+.sparrow.next{right:0;background:linear-gradient(270deg,rgba(5,7,10,.7),rgba(5,7,10,0))}
+.sparrow.prev{left:0}
+.sphero:hover .sparrow,.spline:hover .sparrow,.sparrow:focus-visible{opacity:1}
+.sparrow:hover{color:var(--accent)}
+.sparrow[hidden]{display:none}
+.spdots{position:absolute;right:clamp(18px,4.5vw,64px);bottom:clamp(44px,9vh,96px);display:flex;gap:8px;z-index:3}
+.spdots button{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.35);padding:0}
+.spdots button.on{background:#fff;width:22px;border-radius:5px}
+.spdots[hidden]{display:none}
+.spchips{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:0 clamp(18px,4.5vw,64px);
+  margin-top:-34px;position:relative;z-index:4}
+.spchip{padding:7px 15px;border-radius:999px;background:var(--panel2);color:var(--fg);font-size:14px;
+  font-weight:500;border:1px solid transparent;transition:background .15s ease}
+.spchip:hover{background:var(--line)}
+.spchip.on{background:var(--fg);color:var(--bg)}
+.spchip:focus-visible{border-color:var(--accent)}
+.spsep{width:1px;height:20px;background:var(--line);margin:0 4px}
+.spshelf{padding:0 clamp(18px,4.5vw,64px);scroll-margin-top:64px}
+/* Start and Home scroll without a scrollbar beside them */
+html:has(#main > .sp),html:has(#main > .homemark){scrollbar-width:none}
+html:has(#main > .sp)::-webkit-scrollbar,html:has(#main > .homemark)::-webkit-scrollbar{display:none}
+/* a plugin's row on Start - My channels - in line with Start's own */
+.sp>.cat{padding:0 clamp(18px,4.5vw,64px)}
+.sp>.cat h2,.sp>.cat h2 .ct{margin-top:0;font-size:15px;font-weight:700;text-transform:none;
+  letter-spacing:0;color:var(--fg)}
+.sphead{margin:0 0 10px;font-size:15px;font-weight:700;text-transform:none;letter-spacing:0;
+  color:var(--fg)}
+.sphead .sptag{font-size:12.5px;font-weight:400;color:var(--dim);margin-left:8px;
+  text-transform:none;letter-spacing:0}
+.sp{gap:22px}
+.spline{position:relative}
+.spline .sparrow{width:46px;top:0;bottom:0;margin:0 -12px;border-radius:6px}
+.spcards{display:grid;grid-auto-flow:column;grid-auto-columns:var(--cw,260px);gap:12px;
+  transition:transform .6s cubic-bezier(.25,.8,.25,1);will-change:transform}
+/* the window a row's strip slides in: cut at the sides, room above and below for a card
+   that grows where the pointer rests */
+.spview{overflow-x:clip;overflow-y:visible;padding:10px 0;margin:-10px 0}
+.spmore{align-self:center;justify-self:start;background:var(--panel);color:var(--dim);
+  border:2px solid transparent;border-radius:8px;padding:10px 14px;font:inherit;
+  font-size:14px;cursor:pointer}
+.spmore:hover,.spmore:focus-visible{color:var(--fg);border-color:#fff}
+.sphead.link{cursor:pointer}
+.sphead.link:hover{text-decoration:underline}
+@media (prefers-reduced-motion:reduce){.spcards{transition:none}}
+.spcard{position:relative;cursor:pointer;border-radius:6px;transition:transform .2s ease;z-index:1;outline:none}
+.spframe{position:relative;aspect-ratio:16/9;border-radius:6px;overflow:hidden;background:var(--panel2)}
+.spframe img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.spcshade{position:absolute;inset:0;background:linear-gradient(0deg,rgba(5,7,10,.88) 0%,rgba(5,7,10,0) 55%)}
+.spctitle{position:absolute;left:10px;right:10px;bottom:8px;font-size:15px;font-weight:700;line-height:1.2;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  text-shadow:0 1px 3px rgba(0,0,0,.6)}
+.spcband{position:absolute;top:8px;left:8px;padding:2px 8px;border-radius:4px;font-size:11.5px;
+  font-weight:600;background:rgba(5,7,10,.75);color:var(--accent)}
+/* the year, score and buttons, laid over the card's foot while it is rested on - not a
+   strip of empty room under every row */
+.spcmore{position:absolute;left:0;right:0;top:100%;margin-top:-1px;display:flex;align-items:center;
+  justify-content:space-between;gap:8px;padding:7px 8px;border-radius:0 0 6px 6px;
+  background:var(--panel);box-shadow:0 10px 24px rgba(0,0,0,.5);
+  opacity:0;pointer-events:none;transition:opacity .2s ease;font-size:12.5px;color:var(--dim)}
+.spcard:hover .spcmore,.spcard:focus-visible .spcmore,.spcard:focus-within .spcmore{pointer-events:auto}
+.spcard:hover,.spcard:focus-visible{transform:scale(1.06);z-index:2}
+.spcard:hover .spcmore,.spcard:focus-visible .spcmore,.spcard:focus-within .spcmore{opacity:1}
+.spcard:focus-visible .spframe{box-shadow:0 0 0 2px var(--accent)}
+.spcbtns{display:flex;gap:6px}
+.spcbtn{width:30px;height:30px;border-radius:50%;border:1px solid var(--line);color:var(--fg);
+  display:flex;align-items:center;justify-content:center;font-size:13px}
+.spcbtn.play{background:#fff;color:#0b0e12;border-color:#fff}
+.spcbtn:hover{border-color:var(--fg)}
+.spcbtn.on{color:var(--accent);border-color:var(--accent)}
+@media (max-width:640px){
+  .sp{margin:-18px -12px 0}
+  .sphero{height:auto;min-height:460px}
+  .spbody{right:18px;max-width:none}
+  .spdots{display:none}
+  .spchips{gap:6px}
+  .spchip{padding:5px 11px;font-size:12.5px}
+  .spsep{display:none}
+  .sphead .sptag{display:block;margin:2px 0 0;font-size:12.5px}
+}
+@media (prefers-reduced-motion:reduce){
+  .spslide{animation:none}
+  .spcard,.sparrow{transition:none}
+}
+.spcbadge{position:absolute;top:8px;left:8px;padding:2px 9px;border-radius:999px;font-size:12px;
+  font-weight:700;background:rgba(5,7,10,.72);color:#fff}
+.spedit{display:flex;flex-direction:column;align-items:flex-end;margin:4px 0 -8px}
+.setblock h3.golink{cursor:pointer}
+.setblock h3.golink:hover,.setblock h3.golink:focus-visible{color:var(--accent);outline:none}
+/* the health page: what needs somebody in amber, all good in green */
+.setblock.health.good h3{color:#5fd08a}
+.setblock.health.bad h3{color:#e0a43b}
