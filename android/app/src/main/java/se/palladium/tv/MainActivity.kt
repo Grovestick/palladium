@@ -5900,7 +5900,7 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                     key.isEmpty() -> "Could not add that one" + (if (error.isNotEmpty()) ": $error" else "")
                     error.isNotEmpty() -> "In the library, but the pack: $error"
                     id.isEmpty() -> "In the library - its packs are looked for a season at a time"
-                    else -> "In the library - its episodes come in as a pack"
+                    else -> "Pack added - nothing is downloaded until you start an episode"
                 }
                 Toast.makeText(ctx, said, Toast.LENGTH_LONG).show()
                 if (key.isNotEmpty()) onAdded(key)
@@ -6026,7 +6026,17 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                     val find = "Let it find packs by itself, a season at a time"
                     val pack = list.firstOrNull { "p:" + it.id == choice }
                     val ep = trackerEps.firstOrNull { "e:" + it.id == choice }
-                    // every choice on show, not a menu: closed, it read as one pack on offer
+                    val takeEpisode = { e: Api.TrackerEpisode ->
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            val (ok, said) = Api.takeFromTracker(full, e.id)
+                            Toast.makeText(ctx, if (ok) "Downloading" else said,
+                                           Toast.LENGTH_SHORT).show()
+                        }
+                        Unit
+                    }
+                    // every choice on show, not a menu: closed, it read as one pack on offer. A
+                    // press does it: it only marked the row, with the button under the list, and
+                    // read as nothing happening. A pack added downloads nothing and can be removed
                     val item = @Composable { words: String, mine: Boolean, green: Boolean, pick: () -> Unit ->
                         PackChoice(onPress = pick) { lit ->
                             Text((if (mine) "✓  " else "") + words, fontSize = 13.sp, lineHeight = 17.sp,
@@ -6037,15 +6047,27 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                     Column(Modifier.fillMaxWidth().heightIn(max = 300.dp)
                                .verticalScroll(rememberScrollState())) {
                         list.forEach { one ->
-                            item(packSays(one), "p:" + one.id == choice, one.pick) { chosen = "p:" + one.id }
+                            item(packSays(one), "p:" + one.id == choice, one.pick) {
+                                chosen = "p:" + one.id
+                                // said at the press: a pack takes seconds to fetch and add
+                                Toast.makeText(ctx, "Adding " + one.name, Toast.LENGTH_SHORT).show()
+                                add(one.id)
+                            }
                         }
-                        item(find, choice == "find", false) { chosen = "find" }
+                        item(find, choice == "find", false) {
+                            chosen = "find"
+                            Toast.makeText(ctx, "Adding to the library", Toast.LENGTH_SHORT).show()
+                            add("")
+                        }
                         if (trackerEps.isNotEmpty()) {
                             Text("Single episodes", color = Skin.Dim, fontSize = 12.sp,
                                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                         }
                         trackerEps.forEach { e ->
-                            item(epSays(e), "e:" + e.id == choice, false) { chosen = "e:" + e.id }
+                            item(epSays(e), "e:" + e.id == choice, false) {
+                                chosen = "e:" + e.id
+                                takeEpisode(e)
+                            }
                         }
                     }
                     Spacer(Modifier.height(4.dp))
@@ -6056,11 +6078,7 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                              else -> "⤓ Add to the library"
                          }, primary = true) {
                         when {
-                            ep != null -> (ctx as AppCompatActivity).lifecycleScope.launch {
-                                val (ok, said) = Api.takeFromTracker(full, ep.id)
-                                Toast.makeText(ctx, if (ok) "Downloading" else said,
-                                               Toast.LENGTH_SHORT).show()
-                            }
+                            ep != null -> takeEpisode(ep)
                             pack != null -> add(pack.id)
                             else -> add("")
                         }

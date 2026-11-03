@@ -2095,6 +2095,13 @@ def release_group(name):
     return "" if re.fullmatch(r"[se]?\d+", said) else said
 
 
+def index_of(row):
+    """A pack file's number from a row, -1 for none. Not `or -1`: file 0 is the first of every
+    pack and the only one of a single film, and it was never fetched or sent."""
+    said = row.get("index")
+    return int(said) if said not in (None, "") else -1
+
+
 def show_packs(title, look=False, tmdb=0):
     """The packs for one programme: those already carrying it, and - when asked to
     look - what the tracker holds, best first by the house's wishes, then by how many
@@ -2837,6 +2844,23 @@ def checking_now():
 #: qBittorrent categories whose torrents are seeding work rather than downloads for the
 #: library: cross-seeds of files already here, and freeleech races
 NOT_LIBRARY = ("cross-seed", "fl-race")
+
+
+def copies_coming(rows):
+    """Copies going to the other server, from the watching rows, as lines of the downloads
+    list: a viewer's row said nothing of how far a copy had got or how long it had left."""
+    out = []
+    for r in rows:
+        if r.get("how") != "syncing":
+            continue
+        whole, sent = float(r.get("ofMb") or 0), float(r.get("mb") or 0)
+        rate = float(r.get("mbit") or 0)
+        left = (whole - sent) * 8.388608 / rate if whole > sent and rate > 0 else 0
+        out.append({"name": r.get("title") or "a copy", "state": "copying", "from": "copy",
+                    "progress": min(1.0, sent / whole) if whole else 0.0,
+                    "size": int(whole * 1048576), "mbit": rate, "eta": int(left),
+                    "who": r.get("who") or "", "key": r.get("key") or ""})
+    return out
 
 
 def coming_in():
@@ -3785,39 +3809,58 @@ def write_loudness():
 #: version somebody was watching could not be split between the two machines.
 PLAYED_FILES = {}
 PLAYED_DAYS = 30.0
+PLAYED_READ = []
+
+
+def _read_played():
+    """played_files.json, once. Read only on a play, a restart with nobody playing left the
+    list without these versions and the cache deleted its copies. Unreadable is not empty:
+    it is put aside, and a read that failed is tried again."""
+    if PLAYED_READ:
+        return
+    where = os.path.join(ROOT, "played_files.json")
+    try:
+        with open(where, encoding="utf-8") as f:
+            PLAYED_FILES.update(json.load(f) or {})
+    except FileNotFoundError:
+        pass
+    except ValueError:
+        try:
+            os.replace(where, where + ".bad")
+        except OSError:
+            return
+    except OSError:
+        return
+    PLAYED_READ.append(True)
 
 
 def played_file(key, path):
     """Note that this file of this title was played, for the copy machine's list."""
     if not key or not path:
         return
-    try:
-        if not PLAYED_FILES:
-            with open(os.path.join(ROOT, "played_files.json"), encoding="utf-8") as f:
-                PLAYED_FILES.update(json.load(f) or {})
-    except (OSError, ValueError):
-        pass
+    _read_played()
     now = time.time()
     was = PLAYED_FILES.setdefault(str(key), {})
     fresh = now - float(was.get(path) or 0) > 600
     was[path] = now
-    if fresh:
+    if fresh and PLAYED_READ:
         for k in list(PLAYED_FILES):
             PLAYED_FILES[k] = {p: t for p, t in PLAYED_FILES[k].items()
                                if now - float(t) < PLAYED_DAYS * 86400}
             if not PLAYED_FILES[k]:
                 del PLAYED_FILES[k]
         try:
-            with open(os.path.join(ROOT, "played_files.json"), "w", encoding="utf-8") as f:
+            tmp = os.path.join(ROOT, "played_files.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(PLAYED_FILES, f)
+            os.replace(tmp, os.path.join(ROOT, "played_files.json"))
         except OSError:
             pass
 
 
 def played_files(key):
     """The files of this title played within the days kept, newest first."""
-    if not PLAYED_FILES:
-        played_file("", "")               # read from disk
+    _read_played()
     now = time.time()
     got = (PLAYED_FILES.get(str(key)) or {}).items()
     return [p for p, t in sorted(got, key=lambda x: -float(x[1]))
@@ -6655,10 +6698,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 Handler.SYNC_WANTED, bool(local().lib.config().get("syncBack")))
             fresh = []
             with Handler.FROM_COPY_LOCK:
-                known = {(str(x.get("hash")), int(x.get("index") or -1))
+                known = {(str(x.get("hash")), index_of(x))
                          for x in Handler.FROM_COPY}
                 for one in chosen:
-                    mark = (str(one.get("hash") or ""), int(one.get("index") or -1))
+                    mark = (str(one.get("hash") or ""), index_of(one))
                     if not mark[0] or mark[1] < 0 or mark in known:
                         continue
                     known.add(mark)
@@ -8188,7 +8231,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             import base64
             import pd_torrents
             body = self.read_json() or {}
-            ph, index = str(body.get("pack") or ""), int(body.get("index") or -1)
+            ph, index = str(body.get("pack") or ""), index_of(body)
             if not pd_torrents.whole_file(ph, index):
                 self.reply_json({"ok": False, "why": "the film is not whole in the pack here"})
                 return
@@ -12500,6 +12543,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         import pd_torrents
         Handler.SYNC_BACK.update(at=time.time(), busy=True, why="")
+        try:
+            self._sync_back_start(hours, deck, episodes, casual, whole, keep_days)
+        except Exception:
+            # no round started, so none will clear it: sync back stopped until a restart
+            Handler.SYNC_BACK["busy"] = False
+            raise
+
+    def _sync_back_start(self, hours, deck, episodes, casual, whole, keep_days):
+        """What is wanted worked out, and the round started."""
+        import pd_torrents
         # what is wanted, as TMDB numbers: the same lists the copy is kept by, the days
         # kept after watching, and whatever was asked for from those packs
         con = local().lib.db()
@@ -12616,7 +12669,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 copy_whole, playing,
                 {p["hash"] for p in data["packs"] if pd_torrents.home_of(p["hash"]) == "both"})
             with cls.FROM_COPY_LOCK:
-                known = {(str(x.get("hash")), int(x.get("index") or -1)) for x in cls.FROM_COPY}
+                known = {(str(x.get("hash")), index_of(x)) for x in cls.FROM_COPY}
                 for pack, film in fetch:
                     if (pack["hash"], int(film["index"])) not in known:
                         cls.FROM_COPY.append({"where": where, "hash": pack["hash"],
@@ -12771,7 +12824,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              if int(f.get("index", -1)) in there
                              and not pd_torrents.whole_file(info_hash, f["index"])]
                     with cls.FROM_COPY_LOCK:
-                        known = {(str(x.get("hash")), int(x.get("index") or -1))
+                        known = {(str(x.get("hash")), index_of(x))
                                  for x in cls.FROM_COPY}
                         for film in fetch:
                             if (info_hash, int(film["index"])) not in known:
@@ -12809,7 +12862,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             return
                         one = cls.FROM_COPY.pop(0)
                     where = str(one.get("where") or "").rstrip("/")
-                    mark, at = str(one.get("hash") or ""), int(one.get("index") or -1)
+                    mark, at = str(one.get("hash") or ""), index_of(one)
                     if not where or not mark or at < 0:
                         continue
                     # already here and the right length: nothing to fetch. Looked for
@@ -20928,10 +20981,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not where or not os.path.exists(where):
                 self.send_error(404, "not here")
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(os.path.getsize(where)))
-            self.end_headers()
             # a copy on its drive while it goes, so that drive's workers wait; and a
             # viewer short of disk comes first - only live viewing goes before it
             import pd_disk
@@ -20941,6 +20990,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if busy:
                 self.send_error(503, "the drive is busy: " + busy)
                 return
+            # only now: after a 200 the 503 above went out as the file's first bytes
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(os.path.getsize(where)))
+            self.end_headers()
             drive = os.path.splitdrive(where)[0].upper()
             with Handler.SERVING_LOCK:
                 Handler.SERVING[drive] = Handler.SERVING.get(drive, 0) + 1
@@ -21587,7 +21641,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
             # and what is coming in: every download is something going on in the house
             try:
-                coming = coming_in()
+                coming = coming_in() + copies_coming(live)
                 if coming:
                     said["downloading"] = coming
             except Exception:
@@ -23026,6 +23080,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
             self.reply_json({"now": now, "ready": ready})
             return
+        if path == "/torrents/totals":
+            # both machines' torrent speeds and the tracker ratio, for Now playing: off the
+            # race page, which a browser away from home cannot reach itself
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_speed
+            self.reply_json(pd_speed.totals(other_server()[0], time.time()))
+            return
         if path == "/merge":
             # the link merge tool's links, speeds and totals, for Now playing: asked of
             # the tool on this computer, which a browser elsewhere cannot reach itself
@@ -23040,6 +23103,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # a guest's own otherwise
             import pd_torrents
             got = pd_torrents.active(None if self.role == "owner" else (self.bearer() or "me"))
+            # the panel asks for copies to the other server as well: the owner's only
+            if "sync=1" in self.path and self.role == "owner":
+                got = got + [{"title": "Copy: " + str(c["name"])[:40], "offer": {
+                    "state": "downloading", "progress": c["progress"], "mbit": c["mbit"],
+                    "eta": c["eta"], "who": c["who"]}} for c in copies_coming(WATCHING.snapshot())]
             # and what is coming straight from the tracker, which is not a pack's
             try:
                 got = got + tracker_coming(self.role == "owner",

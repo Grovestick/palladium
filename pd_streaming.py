@@ -1352,8 +1352,11 @@ def shown():
 
 
 def not_out(one):
-    """A film whose release date is still to come."""
-    return str(one.get("released") or "")[:10] > time.strftime("%Y-%m-%d")
+    """A film whose release date is still to come, and that nobody has a release of: the
+    catalogue's date is one country's, and a film with 21 releases on the tracker read "Out 3
+    Nov" with no way to download it (2026-11-02)."""
+    return (str(one.get("released") or "")[:10] > time.strftime("%Y-%m-%d")
+            and not (fetchable(one) or boxed(one)))
 
 
 #: how popular on TMDB a film not out yet has to be to be found by a search: the one

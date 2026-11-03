@@ -6177,7 +6177,6 @@ class LocalAPI:
         # the ones not out yet: kept with the rest, so their posters are found
         soon = []
         from pd_library import flatten_title
-        today = time.strftime("%Y-%m-%d")
         for at, row in enumerate(films):
             year = int(row.get("year") or 0)
             held = (by_tmdb.get(("movie", int(row.get("tmdb") or 0)))
@@ -6189,7 +6188,7 @@ class LocalAPI:
                              or abs(int(o.get("year") or 0) - year) <= 1), None)
                 if pack:
                     got = dict(pack) if show.get("download") else None
-                elif str(row.get("released") or "")[:10] > today:
+                elif pd_streaming.not_out(row):
                     # talked about before it is out: shown as upcoming, nothing to ask
                     # for and nobody asked of the tracker until it is
                     card = pd_streaming.item(row)

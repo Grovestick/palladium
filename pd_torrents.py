@@ -3105,9 +3105,14 @@ def _start_next():
             row = next((d for d in data["downloads"]
                         if d.get("state") == "failed"
                         and _waiting_for_qbt(d.get("why"))), None)
+        was = row.get("state") if row else ""
     if row is None:
         return
     with LOCK:
+        # started or cancelled by another thread while the lock was free: not started twice,
+        # and not brought back
+        if row.get("state") != was:
+            return
         pack, film = by_key(row.get("key"))
         why = "No longer on offer" if not film else ""
         if not why and refused(pack):
@@ -3681,7 +3686,20 @@ def let_go(info_hash, index, same_on_copy, allowed=(), remove=os.remove):
                 d["off"] = True
         save()
     STATE["owned"] = None
-    remove(path)
+    try:
+        remove(path)
+    except OSError as e:
+        # still here and still whole: back on, or no round would ever try it again
+        with LOCK:
+            for d in data["downloads"]:
+                if d.get("hash") == info_hash and int(d.get("index", -1)) == int(index):
+                    d.pop("off", None)
+            save()
+        try:
+            qb.priority(info_hash, [int(index)], 1)
+        except Exception:
+            pass
+        return {"ok": False, "why": "could not remove it: %s" % e, "path": path}
     return {"ok": True, "why": "", "path": path, "mark": mark, "size": film["size"]}
 
 
@@ -3831,7 +3849,7 @@ def my_own_downloads():
                             for n, f in enumerate(qb.files(h))}
             except Exception:
                 names[h] = {}
-        name = names[h].get(int(d.get("index") or -1)) or ""
+        name = names[h].get(int(d.get("index", -1))) or ""
         if not name:
             continue
         out.append({"hash": h, "index": int(d["index"]), "name": name,
@@ -4519,7 +4537,7 @@ def _guard_packs():
                 continue
             only_asked(qb, pack["hash"])
             stopped = str(held.get("state") or "").startswith(("stopped", "paused"))
-            if not asked_for(pack["hash"]) and not stopped:
+            if not asked_for(pack["hash"]) and not kept_whole(pack["hash"]) and not stopped:
                 _stop(qb, pack["hash"])
             # stopped in the moment between one download and the next, it stayed
             # stopped with the next one on: 0% and an ETA counting up

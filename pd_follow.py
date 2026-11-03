@@ -920,9 +920,9 @@ def learn_the_viewers(one, settings_path, api=None):
             merged.update(got)
             if merged != mine.get(name):
                 mine[name] = merged
-        for who, one in (said.get("subsBy") or {}).items():
+        for who, their_subs in (said.get("subsBy") or {}).items():
             them = mine.setdefault("users", {}).setdefault(str(who), {})
-            for name, got in subs_for_copy(one or {}, keys, paths).items():
+            for name, got in subs_for_copy(their_subs or {}, keys, paths).items():
                 merged = dict(them.get(name) or {})
                 merged.update(got)
                 if merged != them.get(name):
@@ -1030,10 +1030,10 @@ def learn_the_viewers(one, settings_path, api=None):
             elif mine.get(name) != before.get(name):
                 fresh[name] = mine.get(name)
         users = fresh.setdefault("users", {})
-        for who, one in (mine.get("users") or {}).items():
+        for who, kept in (mine.get("users") or {}).items():
             was = (before.get("users") or {}).get(who) or {}
             there = users.setdefault(who, {})
-            for name, value in (one or {}).items():
+            for name, value in (kept or {}).items():
                 if was.get(name) != value:
                     there[name] = value
         tmp = settings_path + ".tmp"
@@ -1614,6 +1614,7 @@ def make_room(folder, cap_bytes, keeping, how="oldest"):
             os.remove(path)
             total -= size
             mine.discard(os.path.relpath(path, folder).replace("\\", "/"))
+            log_line("deleted copy %s, %.1f GB: over the cap" % (os.path.basename(path), size / 1e9))
         except OSError:
             pass
     try:
@@ -1682,6 +1683,8 @@ def clear_unwanted(folder, qualified, keeping, verified=True):
                 os.remove(path)
             except OSError:
                 continue                   # open, or gone already: leave it
+            log_line("deleted copy %s, %.1f GB: on neither of two lists in a row, %d names on this one"
+                     % (name, size / 1e9, len(qualified)))
             mine.discard(known)
             ABSENT.pop(path, None)
             gone += 1
@@ -1968,6 +1971,17 @@ def copy_place(folder, name, size=None):
     return pd_torrents.pack_place(name, size) or os.path.join(folder, name)
 
 
+def kept_path(folder, name, size=None, mark=""):
+    """The copies-folder path a listed file keeps, or "" when a pack here holds it whole on
+    the disk: a copy made beside it while the pack was not known is the same file twice
+    (8.3 GB, 2026-11-03), and with no name kept it goes after two lists like any other."""
+    plain = os.path.join(folder, name)
+    here = copy_place(folder, name, size)
+    if os.path.abspath(here) != os.path.abspath(plain) and copy_here(folder, name, here, size, mark):
+        return ""
+    return plain
+
+
 def copy_here(folder, name, path, size=None, mark=""):
     """Whether the copy at path is here. In a pack's folder a file of the right length may be
     an empty placeholder, so there what is on the disk counts."""
@@ -2013,6 +2027,7 @@ def copy_file(one, item, folder):
         # the right size and other contents: a copy of an older file. Fetched again;
         # returned as here, it was picked forty times a round and nothing below it came
         os.remove(into)
+        log_line("deleted copy %s: its contents are not the file offered" % name)
     if in_pack:
         os.makedirs(os.path.dirname(in_pack), exist_ok=True)
     part = into + ".part"
@@ -2070,13 +2085,18 @@ def copy_file(one, item, folder):
         raise ValueError("nothing arrived; will ask again")
     if not looks_like_film(part, into):
         os.remove(part)
+        log_line("deleted arriving copy %s: not a film" % name)
         raise ValueError("what arrived is not a film")
     # and it is the film that was offered, not another one of the same length
     offered = str(item.get("mark") or "")
     if offered and quick_mark(part) != offered:
+        size_came = os.path.getsize(part)
         os.remove(part)
+        log_line("deleted arriving copy %s, %.1f GB: not the file offered" % (name, size_came / 1e9))
         raise ValueError("what arrived is not the file that was offered")
     os.replace(part, into)
+    if item.get("side") is None:
+        log_line("copied %s, %.1f GB" % (name, os.path.getsize(into) / 1e9))
     try:
         os.remove(part + ".want")
     except OSError:
@@ -2694,6 +2714,9 @@ def first_on_screen(wanted, folder, copying):
     for item in wanted:
         if item.get("side") is not None or not is_hot(item):
             continue
+        # one the round will not fetch: it put the copy in flight down all evening for nothing
+        if not item.get("part") or item.get("casual") or not worth_asking_again(item):
+            continue
         safe = a_safe_name(item.get("name"))
         if not safe or safe == copying:
             continue
@@ -2850,7 +2873,8 @@ def _round(one, lib, api, folder):
     for item in holding:
         safe = a_safe_name(item.get("name"))
         if safe:
-            qualified.add(os.path.join(folder, safe))
+            qualified.add(kept_path(folder, safe, item.get("size"), item.get("mark") or ""))
+    qualified.discard("")
     say_what_is_here(one, folder, wanted)
     # The main server lists what is on a screen now first. A pass that is half way through
     # a seventeen-gigabyte film nobody is watching should not make somebody wait for
@@ -2917,7 +2941,8 @@ def _round(one, lib, api, folder):
                 STATE["why"] = "refused a file named %.40s" % (item.get("name") or "")
             return False
         here = copy_place(folder, safe, item.get("size"))
-        keeping.add(os.path.join(folder, safe))
+        keeping.add(kept_path(folder, safe, item.get("size"), item.get("mark") or ""))
+        keeping.discard("")
         if copy_here(folder, safe, here, item.get("size"), item.get("mark") or ""):
             if item.get("key") and item["key"] not in got_already:
                 got_already.append(item["key"])
@@ -2989,17 +3014,20 @@ def _round(one, lib, api, folder):
                 except Exception:
                     pass
         except InterruptedError:
+            log_line("copy of %s stopped: asked to" % (item.get("title") or item.get("name") or "?"))
             with LOCK:
                 STATE["copying"], STATE["at"] = "", 0.0
                 STATE["size"], STATE["pinned"] = 0, False
             return                        # asked to stop: leave the rest for later
         except Busy:
-            # the main server's drive is another transfer's: this round ends, the next
-            # asks again - nothing is counted against the file
+            # the main server's drive is another transfer's: the copying ends for this round,
+            # the next asks again, nothing is counted against the file. The rest of the round
+            # still runs: left out, no logs or viewers were traded for as long as a read took
+            log_line("copy of %s waits: the main server's drive is busy" % (item.get("title") or item.get("name") or "?"))
             with LOCK:
                 STATE["copying"], STATE["at"] = "", 0.0
                 STATE["size"], STATE["pinned"] = 0, False
-            return
+            break
         except Preempted as e:
             # the round starts again at once from the top, where what is on a screen is
             log_line("copy of %s put down for %s, on a screen now"
@@ -3010,6 +3038,7 @@ def _round(one, lib, api, folder):
                 STATE["size"], STATE["pinned"] = 0, False
             return
         except Exception as e:
+            log_line("copy of %s stopped: %s" % (item.get("title") or item.get("name") or "?", str(e)[:120]))
             with LOCK:
                 STATE["why"] = str(e)[:160]
                 # written down either way; counted towards giving up only when it was

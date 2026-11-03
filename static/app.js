@@ -6981,6 +6981,7 @@ async function viewOffer(m) {
       // the tracker has no pack offer to read it from, so the button said nothing
       const free = said.free != null ? said.free : o.free;
       const label = () => {
+        if (grab.dataset.hash) return;      // coming in: the button is its Cancel
         const one = rows.find((v) => String(v.id) === String(pick.value)) || rows[0];
         // The version chosen is one this house already holds: green, and nothing to
         // press - fetching it again would write the same file twice. Another version
@@ -7012,6 +7013,15 @@ async function viewOffer(m) {
   // A release taken from the tracker for this page, queued or coming in: the Download
   // button is its cancel - once to ask, again to stop - as in the app.
   let takeArmed = false;
+  // Finished: the film's own page once the library has it, with Play on it. Read as
+  // gone, the button went back to Download on a film that was already here.
+  const landed = async () => {
+    if (!document.body.contains(wrap)) return;
+    let now = null;
+    try { now = items(await api("/library/metadata/" + m.ratingKey))[0]; } catch (e) { now = null; }
+    if (now && !now.offered && !now.askable && now.ratingKey) return viewMovie(String(now.ratingKey));
+    setTimeout(landed, 5000);
+  };
   const followTake = async () => {
     if (!grab || !document.body.contains(wrap)) return;
     let rows = [];
@@ -7020,10 +7030,19 @@ async function viewOffer(m) {
         headers: { "Content-Type": "application/json" }, body: "{}" })).json()).taking) || [];
     } catch (e) { rows = []; }
     const flat = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const one = rows.find((r) => !r.done && (r.key ? r.key === String(m.ratingKey)
+    const ours = (r) => (r.key ? r.key === String(m.ratingKey)
       : flat(r.title) && flat(r.title) === flat(m.title) &&
-        (!r.year || !m.year || Number(r.year) === Number(m.year))));
-    if (one) {
+        (!r.year || !m.year || Number(r.year) === Number(m.year)));
+    const one = rows.find((r) => !r.done && ours(r));
+    const came = !one && rows.find((r) => r.done && (r.hash === grab.dataset.hash || ours(r)));
+    if (came) {
+      delete grab.dataset.hash;
+      takeArmed = false;
+      grab.style.display = "";
+      grab.disabled = true;
+      grab.textContent = "Downloaded - arriving";
+      landed();
+    } else if (one) {
       grab.dataset.hash = one.hash;
       grab.disabled = false;
       grab.style.display = "";

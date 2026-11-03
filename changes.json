@@ -1,5 +1,151 @@
 [
   {
+    "version": "0.19.380",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "A title sent to a screen while a film is open now opens; the player no longer swallows it"
+    ]
+  },
+  {
+    "version": "0.19.379",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "The information line goes as the buttons slide away, leaving only the progress bar and the name"
+    ]
+  },
+  {
+    "version": "0.19.378",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "The shrunk progress bar and name now really stay six seconds"
+    ]
+  },
+  {
+    "version": "0.19.377",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "No flash of the whole set of controls as a film or episode opens"
+    ]
+  },
+  {
+    "version": "0.19.376",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "While loading, the progress bar and the name sit low, where the shrunk bar sits; they stay six seconds once the picture is up",
+      "No flash of the information line as a film or episode opens"
+    ]
+  },
+  {
+    "version": "0.19.375",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "The progress bar and the name stay six seconds after the buttons slide away, not two"
+    ]
+  },
+  {
+    "version": "0.19.374",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "The information line no longer stays on screen after a film or episode has loaded"
+    ]
+  },
+  {
+    "version": "0.19.373",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "While a film or episode loads only the progress bar and its name show",
+      "The name moves with the progress bar instead of jumping"
+    ]
+  },
+  {
+    "version": "0.19.372",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "The control bar comes up by itself again as a film or episode starts"
+    ]
+  },
+  {
+    "version": "0.19.371",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "Films and episodes start without the control bar showing; a press or tap brings it up"
+    ]
+  },
+  {
+    "version": "0.19.370",
+    "when": "2026-11-03",
+    "title": "Now playing",
+    "items": [
+      "A Torrents box above Workers: upload and download on both servers and the tracker ratio"
+    ]
+  },
+  {
+    "version": "0.19.369",
+    "when": "2026-11-03",
+    "title": "Downloads",
+    "items": [
+      "On the web, a film taken from the tracker opens its own page with Play once it is in, instead of showing Download again"
+    ]
+  },
+  {
+    "version": "0.19.368",
+    "when": "2026-11-03",
+    "title": "Copies",
+    "items": [
+      "The cache drops a copy of a film its own pack already holds whole on the disk"
+    ]
+  },
+  {
+    "version": "0.19.367",
+    "when": "2026-11-02",
+    "title": "Copies and release dates",
+    "items": [
+      "The versions of a film played stay on the copy list after a restart; the cache deleted them when nobody was playing",
+      "A film dated ahead with a release on the tracker can be downloaded on its page too"
+    ]
+  },
+  {
+    "version": "0.19.366",
+    "when": "2026-11-02",
+    "title": "Now playing, Adding a series",
+    "items": [
+      "Copies to the other server show in the downloads list with how far and how long, not as viewers",
+      "In the app, pressing a pack adds it at once instead of only marking the row"
+    ]
+  },
+  {
+    "version": "0.19.365",
+    "when": "2026-11-02",
+    "title": "Copies",
+    "items": [
+      "A copy deleted, or a copy that stops, now says which and why in the log"
+    ]
+  },
+  {
+    "version": "0.19.364",
+    "when": "2026-11-02",
+    "title": "Copies, Downloads, Sync back, Packs",
+    "items": [
+      "Shuffle progress made on the copy server reaches the main server again",
+      "A move to a busy drive says busy, and a busy drive no longer stops logs and viewers being traded",
+      "The first file of a pack, and a single-film torrent, can be fetched back and sent across",
+      "An episode the round will not fetch no longer puts down the copy in flight",
+      "A download cancelled or started by another thread is not started again",
+      "An error before a round starts no longer stops sync back until a restart; a file that will not delete is put back on",
+      "A pack kept whole keeps running with nothing asked from it"
+    ]
+  },
+  {
     "version": "0.19.363",
     "when": "2026-11-02",
     "title": "Cross-seed, Boss",

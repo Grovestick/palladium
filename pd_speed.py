@@ -32,6 +32,9 @@ READ_MBIT_EVERY = 60
 #: until the race page has answered once
 DEFAULT_MBIT = 200
 RACE_PORT = 8785
+#: seconds the race page's totals are kept for Now playing
+TOTALS_EVERY = 5
+TOTALS = {"at": 0.0, "got": {}}
 
 STATE = {"mbit": DEFAULT_MBIT, "read": 0.0, "low": 0.0, "seen": 0.0, "said": None,
          "there": False, "askedThere": 0.0, "here": False, "askedHere": 0.0, "applied": None, "appliedAt": 0.0}
@@ -120,21 +123,48 @@ def apply_if_due(qb, want, now):
     return False
 
 
+def ask_race(url, path):
+    """The race page's answer to path: on this machine if it runs here, else on the other
+    server. None when neither answers."""
+    for host in ("127.0.0.1", urllib.parse.urlparse(url or "").hostname):
+        if not host:
+            continue
+        try:
+            with urllib.request.urlopen("http://%s:%d%s" % (host, RACE_PORT, path), timeout=4) as answer:
+                return json.loads(answer.read())
+        except Exception:
+            continue
+    return None
+
+
 def read_mbit(url, now):
     """The race page's number: on this machine if it runs here, else on the other server."""
     if now - STATE["read"] < READ_MBIT_EVERY:
         return STATE["mbit"]
     STATE["read"] = now
-    for host in ("127.0.0.1", urllib.parse.urlparse(url or "").hostname):
-        if not host:
-            continue
-        try:
-            with urllib.request.urlopen("http://%s:%d/api/settings" % (host, RACE_PORT), timeout=4) as answer:
-                STATE["mbit"] = int(json.loads(answer.read())["values"]["KIND_MBIT"])
-                break
-        except Exception:
-            continue
+    try:
+        STATE["mbit"] = int(ask_race(url, "/api/settings")["values"]["KIND_MBIT"])
+    except (TypeError, KeyError, ValueError):
+        pass
     return STATE["mbit"]
+
+
+def totals_of(panel):
+    """Both machines' torrent speeds, bytes a second, and the tracker ratio, from the race
+    page's panel answer; {} without one. read: the tracker's own ratio, not an estimate."""
+    if not isinstance(panel, dict):
+        return {}
+    ratio = panel.get("ratio")
+    return {"up": int(panel.get("up") or 0), "down": int(panel.get("down") or 0),
+            "ratio": None if ratio is None else float(ratio), "read": bool(panel.get("ratioRead"))}
+
+
+def totals(url, now):
+    """totals_of the race page, asked at most every TOTALS_EVERY."""
+    if now - TOTALS["at"] >= TOTALS_EVERY:
+        TOTALS["at"] = now
+        TOTALS["got"] = totals_of(ask_race(url, "/api/panel"))
+    return TOTALS["got"]
 
 
 def one_round(other, here, thin, log, now):

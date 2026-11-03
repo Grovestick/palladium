@@ -7,6 +7,14 @@ package se.palladium.tv
  * that drops connections (RouteTest) rather than tried on a phone.
  */
 object Route {
+    /** Whether a notice from the server carries a title or a shuffle to open: the
+     *  library's listener acts on those, and a player on screen leaves them to it. */
+    fun opensATitle(play: String, shelf: String): Boolean = play.isNotEmpty() || shelf.isNotEmpty()
+
+    /** How long the controls stay shrunk to the progress bar and the name before they go;
+     *  Media3's own is two seconds (owner, 2026-11-03). */
+    const val BAR_HELD_MS = 6000L
+
     /** How wide a list of releases is drawn: most of the screen, so a release name fits
      *  on a phone held sideways; the platform's dialog stopped at a third of it. */
     const val PICKER_WIDTH = 0.94f

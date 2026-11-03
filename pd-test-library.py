@@ -1573,7 +1573,10 @@ try:
     import pd_streaming as _ps221
     _by221, _name221 = _ps221._held(api.lib)
     from pd_library import flatten_title as _flat221
+    # nor on a pack or a download here: that card is the pack's, not the catalogue's
+    _offer221 = {api._bare(o.get("title")) for o in api._offered_quietly()}
     _free221 = next((r for r in _rows221 if not _by221.get(("movie", int(r.get("tmdb") or 0)))
+                     and api._bare(r.get("title")) not in _offer221
                      and not _ps221._by_name(_name221, "movie", _flat221(r["title"]),
                                              int(r.get("year") or 0))), None)
     if _free221 is None:
@@ -1582,6 +1585,9 @@ try:
         _free221["released"] = "2099-12-15"
         api.top_films = lambda: _rows221
         _show221 = api.films_show
+        # no release on the tracker: a date ahead with a release is out
+        _keep221 = (_ps221.fetchable, _ps221.boxed)
+        _ps221.fetchable, _ps221.boxed = (lambda one: []), (lambda one: False)
         api.films_show = lambda: _pl.films_shown({"download": True, "request": True}, api.FILMS_SHOW)
         try:
             _cards221 = api.popular_films(api.lib.db(), as_row=False)
@@ -1608,6 +1614,19 @@ try:
             _again221 = {str(c.get("title")) for c in api.popular_films(api.lib.db(), as_row=False)}
         finally:
             api.films_show = _show221
+        # dated ahead with a release: a card to fetch, for a viewer hiding upcoming too
+        _free221["released"] = "2099-12-15"
+        _ps221.fetchable = lambda one: [{"id": 1}]
+        api.films_show = lambda: _pl.films_shown({"download": True, "request": True, "upcoming": False}, api.FILMS_SHOW)
+        try:
+            _rel221 = [c for c in api.popular_films(api.lib.db(), as_row=False)
+                       if str(c.get("title")) == str(_free221["title"])]
+        finally:
+            api.films_show = _show221
+            _ps221.fetchable, _ps221.boxed = _keep221
+        check("221 Popular films: dated ahead with a release is out, whatever the viewer hides",
+              len(_rel221) == 1 and _rel221[0].get("upcoming") is False
+              and _rel221[0].get("onTracker") is True, str(_free221["title"]))
         check("221 Popular films: a film not out yet is upcoming, not a card to ask for, and is once it is out",
               str(_free221["title"]) not in _shown221 and str(_free221["title"]) in _again221
               and len(_up221) == 1 and _up221[0].get("upcoming") is True

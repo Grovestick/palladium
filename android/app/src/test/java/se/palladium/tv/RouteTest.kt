@@ -1762,4 +1762,17 @@ class RouteTest {
         assertEquals(2500L, Route.soundJudgedAfter(9000L))
         assertTrue(Route.SOUND_AGAIN_MS > 0)
     }
+
+    @Test fun theShrunkBarStaysLongerThanMedia3s() {
+        // Media3 gives the progress bar alone two seconds before the controls go
+        assertTrue(Route.BAR_HELD_MS > 2000L)
+        assertTrue(Route.BAR_HELD_MS <= 10000L)
+    }
+
+    @Test fun aPlayerLeavesTitlesToOpenToTheLibrary() {
+        assertTrue(Route.opensATitle("e1a2b3", ""))
+        assertTrue(Route.opensATitle("", "f00d1"))
+        // words alone are the player's to show
+        assertFalse(Route.opensATitle("", ""))
+    }
 }

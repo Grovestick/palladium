@@ -83,6 +83,12 @@ private const val SUB_AIR = 0.01f
 //: with the leading, not a choice. The browser measured the same 1.32.
 private const val SUB_LEADING = 1.32f
 
+//: Media3's steps for the controls (PlayerControlViewLayoutManager's UX_STATE_*)
+private const val UX_ALL = 0
+private const val UX_ONLY_BAR = 1
+private const val UX_SLIDING_AWAY = 3
+private const val UX_SLIDING_IN = 4
+
 class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
@@ -458,6 +464,17 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private var faultAt = 0L
     private var subsAttached = false        // a subtitle file riding with the video
     private var nameBar: android.widget.TextView? = null
+    //: a film or episode loading: the controls show the progress bar and the name only,
+    //: until the first picture or a press (owner, 2026-11-03)
+    private var loadingLook = true
+    //: what the loading look hid, and how each was, to be given back as it was
+    private val hidWhileLoading = mutableMapOf<android.view.View, Int>()
+    //: the controls' own timeout, put aside while it loads: the loading look goes by the
+    //: first picture, not by a clock that started before it
+    private var timeoutBeforeLoading = -1
+    //: the minimised bar - progress bar and name, the buttons slid away - already given
+    //: its longer stay this time round
+    private var barHeld = false
     private var season = 0
     private var number = 0
     private var decoderName = ""
@@ -1209,29 +1226,26 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 }
             }
         }
-        // sat on top of the transport bar, clear of it by the bar's own height so it
-        // stays put whatever a future Media3 does with the layout
+        // sat on top of the transport bar and moved with it every frame: the bar slides
+        // as the controls come and go, and a name placed once was left behind
         frame.addView(nameBar, android.widget.FrameLayout.LayoutParams(-1, -2).apply {
             gravity = android.view.Gravity.BOTTOM
-            bottomMargin = 260
         })
-        player.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            // clear of whichever part of the transport reaches highest - in one layout
-            // that is the progress bar, in another the row of buttons below it
-            val mine = IntArray(2).also { player.getLocationInWindow(it) }
-            var highest = player.height
-            for (id in intArrayOf(androidx.media3.ui.R.id.exo_progress,
-                                  androidx.media3.ui.R.id.exo_bottom_bar)) {
-                val v = player.findViewById<android.view.View>(id) ?: continue
-                if (v.height <= 0) continue
-                val at = IntArray(2).also { v.getLocationInWindow(it) }
-                highest = minOf(highest, at[1] - mine[1])
-            }
-            val want = (player.height - highest + 14).coerceAtLeast(0)
-            val lp = nameBar?.layoutParams as? android.widget.FrameLayout.LayoutParams
-            if (lp != null && want > 14 && lp.bottomMargin != want) {
-                lp.bottomMargin = want
-                nameBar?.layoutParams = lp
+        nameBar?.translationY = -260f
+        frame.viewTreeObserver.addOnPreDrawListener {
+            nameOnTheBar(frame)
+            topWithTheButtons()
+            true
+        }
+        // the shrink ends between frames, so it is looked for on a beat while the
+        // controls are up
+        lifecycleScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(200)
+                // up at all: shrunk to the bar does not count as fully visible
+                val up = view?.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+                    ?.visibility == android.view.View.VISIBLE
+                if (up || barHeld) holdTheBar()
             }
         }
         // the appearance panel is Compose; this activity is not, so it gets a layer
@@ -1542,7 +1556,17 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                         return true
                     }
                 })
-            player.setOnTouchListener { _, ev -> taps.onTouchEvent(ev); false }
+            player.setOnTouchListener { _, ev ->
+                // a tap while it loads brings all the controls, rather than putting the
+                // bar and the name away
+                if (loadingLook && ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                    lookLoading(false)
+                    view?.showController()
+                    return@setOnTouchListener true
+                }
+                taps.onTouchEvent(ev)
+                false
+            }
         }
 
         // The icon and the info line belong to the controls, not to the film: when the
@@ -1550,10 +1574,20 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         player.setControllerVisibilityListener(
             PlayerView.ControllerVisibilityListener { visibility ->
                 // a child of the bar hides with it; a floating fallback needs telling
+                // gone while it loaded: the next time they come up it is for somebody,
+                // all of them. First, so what it gives back is hidden again just below.
+                if (visibility != android.view.View.VISIBLE && loadingLook) lookLoading(false)
                 if (fitButton.parent === frame) fitButton.visibility = visibility
-                infoBar?.visibility = visibility
+                val ours = if (loadingLook) android.view.View.INVISIBLE else visibility
+                infoBar?.visibility = ours
                 nameBar?.visibility = visibility
-                cornerRow?.visibility = visibility
+                cornerRow?.visibility = ours
+                if (visibility == android.view.View.VISIBLE && loadingLook) {
+                    // in this frame, and again after Media3's own showing, which can put
+                    // its middle buttons back once this has run
+                    lookLoading(true)
+                    player.post { if (loadingLook) lookLoading(true) }
+                }
                 // on a television the remote lands on the time bar, not the pause
                 // button: left and right move through the film from the first press,
                 // and centre on the bar pauses. The controls come up by themselves as
@@ -1562,6 +1596,9 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     player.post { barTakesTheRemote() }
                 }
             })
+        // before the controls are first shown: their first frame is already the loading
+        // look, not the whole set put away a frame later
+        lookLoading(true)
 
         // and when they go: pause, rather than play on to the room
         runCatching {
@@ -1852,7 +1889,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             object : androidx.activity.OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     val v = view
-                    if (v != null && v.isControllerFullyVisible) {
+                    // the bar and the name of something loading are not controls to put away
+                    if (v != null && v.isControllerFullyVisible && !loadingLook) {
                         v.hideController()
                     } else {
                         isEnabled = false
@@ -2472,6 +2510,144 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private fun timeBar(): androidx.media3.ui.DefaultTimeBar? =
         view?.findViewById(androidx.media3.ui.R.id.exo_progress)
 
+    /** The name just over whichever part of the transport is highest on screen now - in
+     *  one layout the progress bar, in another the row of buttons - where it is drawn this
+     *  frame, its slide included. Nothing of it shown: the name stays where it was. */
+    private fun nameOnTheBar(frame: android.view.View) {
+        val name = nameBar ?: return
+        val v = view ?: return
+        // loading: the bar held down where the row was, whatever Media3's own showing
+        // slides it to, and once the row has a size to go by
+        if (loadingLook) {
+            val bar = timeBar()
+            val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
+            if (bar != null && row != null && row.height > 0 &&
+                    bar.translationY != row.height.toFloat()) {
+                bar.translationY = row.height.toFloat()
+            }
+        }
+        val mine = IntArray(2).also { frame.getLocationInWindow(it) }
+        var highest = Int.MAX_VALUE
+        for (id in intArrayOf(androidx.media3.ui.R.id.exo_progress,
+                              androidx.media3.ui.R.id.exo_bottom_bar)) {
+            val part = v.findViewById<android.view.View>(id) ?: continue
+            if (part.height <= 0 || !part.isShown) continue
+            val at = IntArray(2).also { part.getLocationInWindow(it) }
+            highest = minOf(highest, at[1] - mine[1])
+        }
+        if (highest == Int.MAX_VALUE) return
+        val want = (highest - 14 - frame.height).toFloat()
+        if (name.translationY != want) name.translationY = want
+    }
+
+    /**
+     * Media3 shrinks the controls to the progress bar for two seconds before they go, fixed
+     * inside it; that was too short to read the name (owner, 2026-11-03). Its hide is put
+     * back to Route.BAR_HELD_MS. Its private names are kept in proguard-rules.pro; if they
+     * are not found, its own two seconds stand.
+     */
+    private fun holdTheBar() {
+        val v = view ?: return
+        val pcv = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+            as? androidx.media3.ui.PlayerControlView ?: return
+        runCatching {
+            if (uxStep() != UX_ONLY_BAR) { barHeld = false; return }
+            if (barHeld) return
+            barHeld = true
+            val lm = layoutManagerOf(pcv) ?: return
+            val hide = lm.javaClass.getDeclaredField("hideProgressBarRunnable")
+                .apply { isAccessible = true }.get(lm) as Runnable
+            pcv.removeCallbacks(hide)
+            pcv.postDelayed(hide, Route.BAR_HELD_MS)
+            log("bar held " + Route.BAR_HELD_MS + " ms")
+        }.onFailure { if (!barHeld) { barHeld = true; log("bar hold: " + it) } }
+    }
+
+    private var lmField: java.lang.reflect.Field? = null
+    private var uxField: java.lang.reflect.Field? = null
+
+    private fun layoutManagerOf(pcv: androidx.media3.ui.PlayerControlView): Any? {
+        val f = lmField ?: androidx.media3.ui.PlayerControlView::class.java
+            .getDeclaredField("controlViewLayoutManager").apply { isAccessible = true }
+            .also { lmField = it }
+        return f.get(pcv)
+    }
+
+    /** Media3's step for the controls - all up, only the bar, sliding away - or -1 when it
+     *  cannot be read, and then nothing of ours goes by it. */
+    private fun uxStep(): Int = runCatching {
+        val pcv = view?.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+            as? androidx.media3.ui.PlayerControlView ?: return -1
+        val lm = layoutManagerOf(pcv) ?: return -1
+        val f = uxField ?: lm.javaClass.getDeclaredField("uxState")
+            .apply { isAccessible = true }.also { uxField = it }
+        f.getInt(lm)
+    }.getOrDefault(-1)
+
+    /** The information line and the corner row on a shrink: they go as the buttons slide
+     *  away, not two seconds later with the bar (owner, 2026-11-03), and come back with the
+     *  buttons. Looked at every frame, so they go with the first frame of the slide. */
+    private fun topWithTheButtons() {
+        if (loadingLook) return
+        val step = uxStep()
+        val want = when (step) {
+            UX_ONLY_BAR, UX_SLIDING_AWAY -> android.view.View.INVISIBLE
+            UX_ALL, UX_SLIDING_IN -> android.view.View.VISIBLE
+            else -> return
+        }
+        val up = view?.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+            ?.visibility == android.view.View.VISIBLE
+        if (!up) return
+        if (infoBar?.visibility != want) infoBar?.visibility = want
+        if (cornerRow?.visibility != want) cornerRow?.visibility = want
+    }
+
+    /** While a film or episode loads: the controls without their buttons, the information
+     *  line and the corner row - the progress bar and the name are what is left. Off, each
+     *  is given back as it was. */
+    private fun lookLoading(on: Boolean) {
+        loadingLook = on
+        val v = view ?: return
+        val bar = timeBar()
+        val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
+        if (on) {
+            val parts = listOfNotNull<android.view.View>(
+                v.findViewById(androidx.media3.ui.R.id.exo_center_controls),
+                v.findViewById(androidx.media3.ui.R.id.exo_minimal_controls),
+                row, infoBar, cornerRow)
+            for (part in parts) {
+                if (part.visibility == android.view.View.VISIBLE) {
+                    hidWhileLoading[part] = part.visibility
+                    part.visibility = android.view.View.INVISIBLE
+                }
+            }
+            // the bar down where the row of buttons was - where it sits when the
+            // controls are shrunk - and without its knob, as it is then
+            if (bar != null && row != null && row.height > 0) bar.translationY = row.height.toFloat()
+            bar?.hideScrubber(false)
+            if (timeoutBeforeLoading < 0) {
+                timeoutBeforeLoading = v.controllerShowTimeoutMs
+                v.controllerShowTimeoutMs = 0
+            }
+        } else {
+            bar?.translationY = 0f
+            bar?.showScrubber(0)
+            if (timeoutBeforeLoading >= 0) {
+                v.controllerShowTimeoutMs = timeoutBeforeLoading
+                timeoutBeforeLoading = -1
+            }
+            // the information line and the corner row go with the controls: up only if
+            // the controls still are
+            val up = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+                ?.visibility == android.view.View.VISIBLE
+            for ((part, was) in hidWhileLoading) {
+                part.visibility = if (up || (part !== infoBar && part !== cornerRow)) was
+                                  else android.view.View.GONE
+            }
+            hidWhileLoading.clear()
+        }
+    }
+
     /** The time bar takes the remote when the controls come up - unless something of
      *  ours already has it: a panel, or a button somebody moved to. */
     private fun barTakesTheRemote() {
@@ -2520,6 +2696,14 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val focus = currentFocus
         if (nextUp.value != null) return false
         if (focus != null && focus !== v && !isInside(v, focus)) return false
+        // a press while it loads: all the controls, on the bar
+        if (loadingLook) {
+            lookLoading(false)
+            v.showController()
+            bar.post { bar.requestFocus() }
+            centreTook = centre
+            return true
+        }
         if (!v.isControllerFullyVisible) {
             v.showController()
             val sideways = code == android.view.KeyEvent.KEYCODE_DPAD_LEFT ||
@@ -2814,6 +2998,19 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             override fun onRenderedFirstFrame() {
                 if (pictureAt == 0L) pictureAt = android.os.SystemClock.elapsedRealtime()
                 mark("first picture")
+                // loaded: the bar and the name stay a while over the picture, then go at
+                // once - Media3's slide out starts from the bar's usual place, up high
+                if (loadingLook) {
+                    if (view?.isControllerFullyVisible == true) {
+                        view?.postDelayed({
+                            if (loadingLook) {
+                                (view?.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+                                    as? androidx.media3.ui.PlayerControlView)?.hideImmediately()
+                                    ?: view?.hideController()
+                            }
+                        }, Route.BAR_HELD_MS)
+                    } else lookLoading(false)
+                }
                 if (!startSaid) {
                     startSaid = true
                     log("start: " + startMarks.joinToString(" | "))
@@ -3303,6 +3500,9 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // opened, and showed the episode just finished meanwhile
         nameBar?.text = listOf(next.title, next.subtitle)
             .filter { it.isNotEmpty() }.joinToString("   ·   ")
+        // and while it loads, the bar and that name, as a film opening does
+        lookLoading(true)
+        view?.showController()
         // subtitles carry over: the next episode's file was fetched while this one was
         // still playing, so it is there waiting - but the copy of the episode we hold
         // was read before that, and has to be read again to see it
@@ -3965,10 +4165,20 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private fun listenForNotices() {
         lifecycleScope.launch {
             var asked = false
+            // a title to open that this screen let by, so it is not asked about again
+            var passed = 0
             while (true) {
-                val word = Api.notice(MainActivity.noticeSeen.value, if (asked) 45 else 0)
+                val word = Api.notice(maxOf(MainActivity.noticeSeen.value, passed),
+                                      if (asked) 45 else 0)
                 asked = true
                 if (word != null && word.id != MainActivity.noticeSeen.value) {
+                    // A title to open is the library's to act on. Marked seen here, the
+                    // library's own listener never heard it, and a play sent while a
+                    // film was open did nothing (2026-11-03).
+                    if (Route.opensATitle(word.play, word.shelf)) {
+                        passed = word.id
+                        continue
+                    }
                     MainActivity.noticeSeen.value = word.id
                     sayForAMoment(word.text, 10)
                 } else if (word == null) {

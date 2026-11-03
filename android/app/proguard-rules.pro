@@ -3,3 +3,12 @@
 
 # Named in the manifest's meta-data, so nothing in the code refers to it.
 -keep class se.palladium.tv.CastOptionsProvider { *; }
+
+# the progress bar held longer than Media3's two seconds (PlayerActivity.holdTheBar)
+-keepclassmembers class androidx.media3.ui.PlayerControlView {
+    androidx.media3.ui.PlayerControlViewLayoutManager controlViewLayoutManager;
+}
+-keepclassmembers class androidx.media3.ui.PlayerControlViewLayoutManager {
+    int uxState;
+    java.lang.Runnable hideProgressBarRunnable;
+}

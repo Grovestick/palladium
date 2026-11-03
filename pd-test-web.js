@@ -1581,6 +1581,35 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
   check("51 a pack of either series says so before its name",
         /new Option\(\[p\.unsure \? "Either series" : "", p\.name,/.test(SOURCE));
 
+  // ---- 52. a film taken from the tracker: finished, it opens its own page, not Download again
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    let polls = 0;
+    const row = { hash: "h1", key: "rA", title: "New", year: 2026, progress: 0.5 };
+    w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(
+      String(u) === "/tracker/list" ? { free: 100, versions: [{ id: "9", name: "New.2026.1080p", size: 5e9, seeds: 5 }] }
+      : String(u) === "/tracker/active" ? { taking: [polls++ ? Object.assign({}, row, { done: true, progress: 1 }) : row] }
+      : {}) });
+    w.eval(SOURCE);
+    w.moreLikeThis = () => Promise.resolve(null);
+    w.castRow = () => {};
+    const opened = [];
+    w.api = () => Promise.resolve({ Metadata: [{ ratingKey: "lib7", type: "movie", title: "New" }] });
+    w.eval("viewMovie = (k) => { window._opened = k; }");
+    w.document.body.appendChild(w.document.createElement("main"));
+    w.eval("main = document.querySelector('main')");
+    w.viewOffer({ ratingKey: "rA", type: "movie", title: "New", year: 2026, askable: true, onTracker: true });
+    await new Promise((r) => setTimeout(r, 400));
+    const g = w.document.getElementById("offertracker");
+    check("52 coming in: the button is its Cancel, the list drawn after it or not", g && /Cancel/.test(g.textContent), g && g.textContent);
+    await new Promise((r) => setTimeout(r, 3400));
+    check("52 finished: the film's own page opens", w._opened === "lib7", String(w._opened));
+    check("52 and the button never says Download again", g && !/Download/.test(g.textContent.replace("Downloaded", "")), g && g.textContent);
+  }
+
   // ---- 50. an episode asked for: the season is drawn again once it can be played
   {
     let answer = [{ index: 3, offered: true, ratingKey: "p3" }], drawn = [], again = 0, said = [];

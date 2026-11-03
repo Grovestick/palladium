@@ -2909,6 +2909,13 @@ for _p370 in _gl370.glob(os.path.join(_here370, "pd*.py")) + _gl370.glob(os.path
         _others370.append(os.path.basename(_p370))
 check("speed: no other code sets a speed: %s" % _others370, not _others370)
 
+# ---- Now playing's Torrents box: the race page's totals as they are
+check("torrent totals: both machines' speeds and the ratio, an estimate said as one",
+      _sp370.totals_of({"up": 1804129, "down": 20, "ratio": 1.368, "ratioRead": False, "rows": []})
+      == {"up": 1804129, "down": 20, "ratio": 1.368, "read": False})
+check("torrent totals: no answer from the race page is nothing, not zeros",
+      _sp370.totals_of(None) == {} and _sp370.totals_of({"up": 5})["ratio"] is None)
+
 # ---- the boss: a stalled worker is told once, a dead one started, a stuck disk turn given back
 import pd_boss as _bo, pd_disk as _dk371
 _said371 = []
@@ -3609,6 +3616,192 @@ check("file number: S06E0013 is episode 13", _pl95.file_episode("Show.S06E0013.1
 check("file number: S06E13 and 6x13 still read", _pl95.file_episode("Show.S06E13.mp4", 6) == 13
       and _pl95.file_episode("Show 6x13.mp4", 6) == 13)
 check("file number: another season says nothing", _pl95.file_episode("Show.S06E0013.mp4", 5) is None)
+
+# ---- a film dated in the future with a release on the tracker is out
+import pd_streaming as _ps101
+_keep101 = (_ps101.fetchable, _ps101.boxed)
+try:
+    _ps101.boxed = lambda one: False
+    _ps101.fetchable = lambda one: [{"id": 1}]
+    _late101 = {"key": "k", "title": "Some Film", "released": "2999-01-01"}
+    check("not out: dated ahead, a release on the tracker: it is out, and can be downloaded",
+          not _ps101.not_out(_late101) and _ps101.item(_late101)["upcoming"] is False
+          and _ps101.item(_late101)["onTracker"] is True)
+    _ps101.fetchable = lambda one: []
+    check("not out: dated ahead, no release: upcoming, nothing to ask for",
+          _ps101.not_out(_late101) and _ps101.item(_late101)["upcoming"] is True
+          and _ps101.item(_late101)["askable"] is False)
+    check("not out: dated in the past is out, release or none",
+          not _ps101.not_out({"key": "k", "released": "2001-01-01"}))
+finally:
+    _ps101.fetchable, _ps101.boxed = _keep101
+
+# ---- on the app's page for adding a series, pressing a pack adds it
+_ma100 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                           "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
+_row100 = _ma100[_ma100.index('item(packSays(one), "p:" + one.id == choice, one.pick)'):]
+check("adding a series: pressing a pack adds it, it does not only mark the row",
+      "add(one.id)" in _row100[:_row100.index('item(find, choice == "find"')])
+check("adding a series: the press says so at once, and the end says the pack was added",
+      '"Adding " + one.name' in _row100[:_row100.index('item(find, choice == "find"')]
+      and "Pack added - nothing is downloaded" in _ma100)
+
+# ---- the versions played are on the copy list straight after a restart, nobody playing
+import json as _js102, tempfile as _tf102, time as _ti102
+_src102 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src102 = _src102[_src102.index("PLAYED_FILES = {}"):_src102.index("def codec_of(part):")]
+with _tf102.TemporaryDirectory() as _dir102:
+    def _boot102():
+        _ns = {"os": os, "json": _js102, "time": _ti102, "ROOT": _dir102}
+        exec(_src102, _ns)
+        return _ns
+    _file102 = os.path.join(_dir102, "A Version.mkv")
+    open(_file102, "w").close()
+    _list102 = os.path.join(_dir102, "played_files.json")
+    with open(_list102, "w", encoding="utf-8") as _f102:
+        _js102.dump({"7": {_file102: _ti102.time()}}, _f102)
+    check("played files: a restart reads the list from disk without anybody playing",
+          _boot102()["played_files"]("7") == [_file102])
+    _ns102 = _boot102()
+    _ns102["played_file"]("8", _file102)
+    check("played files: a play keeps what was on the list",
+          set(_js102.load(open(_list102, encoding="utf-8"))) == {"7", "8"})
+    with open(_list102, "w", encoding="utf-8") as _f102:
+        _f102.write("")
+    _ns102 = _boot102()
+    _ns102["played_files"]("7")
+    check("played files: an unreadable list is put aside, not written over",
+          os.path.exists(_list102 + ".bad") and not os.path.exists(_list102))
+
+# ---- a copy beside a pack that holds the same file whole is not kept
+import tempfile as _tf103
+_pt103 = __import__("pd_torrents")
+_keep103 = (_pt103.pack_place, _pt103.in_its_place)
+with _tf103.TemporaryDirectory() as _dir103:
+    _cp103, _pk103 = os.path.join(_dir103, "copies"), os.path.join(_dir103, "pack")
+    os.makedirs(_cp103)
+    os.makedirs(_pk103)
+    for _w103 in (_cp103, _pk103):
+        with open(os.path.join(_w103, "F.mkv"), "wb") as _f103:
+            _f103.write(b"x" * 300000)
+    _mark103 = pd_follow.quick_mark(os.path.join(_pk103, "F.mkv"))
+    try:
+        _pt103.pack_place = lambda name, size=None: os.path.join(_pk103, name)
+        _pt103.in_its_place = lambda path: True
+        check("copies: a copy beside a pack holding the file whole is not kept",
+              pd_follow.kept_path(_cp103, "F.mkv", 300000, _mark103) == "")
+        check("copies: a pack file with other contents keeps the copy",
+              pd_follow.kept_path(_cp103, "F.mkv", 300000, "other")
+              == os.path.join(_cp103, "F.mkv"))
+        _pt103.in_its_place = lambda path: False
+        check("copies: a pack file only a placeholder keeps the copy",
+              pd_follow.kept_path(_cp103, "F.mkv", 300000, _mark103)
+              == os.path.join(_cp103, "F.mkv"))
+        _pt103.pack_place = lambda name, size=None: ""
+        check("copies: no pack here keeps the copy",
+              pd_follow.kept_path(_cp103, "F.mkv", 300000, _mark103)
+              == os.path.join(_cp103, "F.mkv"))
+    finally:
+        _pt103.pack_place, _pt103.in_its_place = _keep103
+_fol103 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_follow.py"), encoding="utf-8").read()
+check("copies: the kept names and the listed names both leave out what a pack holds",
+      'qualified.add(kept_path(folder, safe, item.get("size"), item.get("mark") or ""))' in _fol103
+      and 'keeping.add(kept_path(folder, safe, item.get("size"), item.get("mark") or ""))' in _fol103)
+
+# ---- copies to the other server are listed with the downloads
+_src99 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_ns99 = {}
+exec(compile(__import__("ast").get_source_segment(_src99, next(n for n in __import__("ast").parse(_src99).body
+     if getattr(n, "name", "") == "copies_coming")), "x", "exec"), _ns99)
+_cc99 = _ns99["copies_coming"]([{"how": "direct play", "title": "Watched"},
+                               {"how": "syncing", "title": "Some Film", "mb": 750.0, "ofMb": 1000.0, "mbit": 80.0, "who": "copy server"}])
+check("copies: one line for a copy, none for a viewer, saying how far and how long",
+      len(_cc99) == 1 and _cc99[0]["name"] == "Some Film" and _cc99[0]["state"] == "copying"
+      and _cc99[0]["progress"] == 0.75 and _cc99[0]["eta"] == 26 and _cc99[0]["who"] == "copy server")
+check("copies: nothing known of its size says nothing of how far, and no error",
+      _ns99["copies_coming"]([{"how": "syncing", "title": "x"}])[0]["progress"] == 0)
+check("copies: the Now playing list and the panel's answer both carry them",
+      "copies_coming(live)" in _src99 and "copies_coming(WATCHING.snapshot())" in _src99)
+
+# ---- a copy deleted says so, and why
+import pd_follow as _pf98, tempfile as _tp98
+_d98 = _tp98.mkdtemp()
+_c98 = os.path.join(_d98, "Some.Film.mkv")
+with open(_c98, "wb") as _f:
+    _f.write(b"x" * 2000)
+_pf98.note_ours(_d98, _c98)
+_said98, _keep98 = [], _pf98.log_line
+_pf98.log_line = _said98.append
+try:
+    _other98 = {os.path.join(_d98, "Other.mkv")}
+    _pf98.clear_unwanted(_d98, _other98, set(), True)
+    check("copies: off one list deletes nothing and says nothing", os.path.exists(_c98) and not _said98)
+    _pf98.clear_unwanted(_d98, _other98, set(), True)
+    check("copies: off two lists it goes, and the log says which and why",
+          not os.path.exists(_c98) and any("deleted copy Some.Film.mkv" in x and "two lists" in x for x in _said98))
+finally:
+    _pf98.log_line = _keep98
+
+# ---- from the second code review
+import ast as _ast97, pd_follow as _pf97, pd_torrents as _pt97
+_here97 = os.path.dirname(os.path.abspath(__file__))
+_srv97 = open(os.path.join(_here97, "pd-server.py"), encoding="utf-8").read()
+_fol97 = open(os.path.join(_here97, "pd_follow.py"), encoding="utf-8").read()
+_tor97 = open(os.path.join(_here97, "pd_torrents.py"), encoding="utf-8").read()
+_learn97 = next(n for n in _ast97.parse(_fol97).body if getattr(n, "name", "") == "learn_the_viewers")
+check("viewers: nothing in the round overwrites the connection it sends on",
+      not [n for n in _ast97.walk(_learn97) if isinstance(n, (_ast97.For, _ast97.Assign))
+           and any(isinstance(x, _ast97.Name) and x.id == "one" and isinstance(x.ctx, _ast97.Store)
+                   for x in _ast97.walk(n.target if isinstance(n, _ast97.For) else n.targets[0]))])
+_file97 = _srv97[_srv97.index('if path == "/follow/file":'):_srv97.index('if path == "/follow/packpart":')]
+check("a move: the drive is asked for before the answer starts, so busy can still be said",
+      _file97.index("transfer_turn(") < _file97.index("self.send_response(200)")
+      and _file97.index('send_error(503') < _file97.index("self.send_response(200)"))
+_ns97 = {}
+exec(compile(_ast97.get_source_segment(_srv97, next(n for n in _ast97.parse(_srv97).body
+     if getattr(n, "name", "") == "index_of")), "x", "exec"), _ns97)
+check("file 0 is a file, no number is none",
+      _ns97["index_of"]({"index": 0}) == 0 and _ns97["index_of"]({"index": "3"}) == 3
+      and _ns97["index_of"]({}) == -1 and _ns97["index_of"]({"index": None}) == -1)
+check("file 0: nothing reads a pack file's number with `or -1` any more",
+      'get("index") or -1' not in _srv97 and 'get("index") or -1' not in _tor97)
+_busy97 = _fol97[_fol97.index("except Busy:\n            # the main server's drive"):]
+check("a busy drive ends the copying, and the rest of the round runs",
+      _busy97[:_busy97.index("except Preempted")].rstrip().endswith("break"))
+_soon97 = _srv97[_srv97.index("def sync_back_soon("):_srv97.index("def _sync_back_start(")]
+check("sync back: an error before the round starts does not leave it busy for good",
+      'Handler.SYNC_BACK["busy"] = False' in _soon97)
+_d97 = __import__("tempfile").mkdtemp()
+_hot97 = {"part": "x", "name": "Hot.mkv", "why": "on a screen now", "size": 5}
+check("copies: what the round will not fetch does not put another copy down",
+      _pf97.first_on_screen([dict(_hot97, casual=True)], _d97, "Film.mkv") == ""
+      and _pf97.first_on_screen([{k: v for k, v in _hot97.items() if k != "part"}], _d97, "Film.mkv") == ""
+      and _pf97.first_on_screen([_hot97], _d97, "Film.mkv") == "Hot.mkv")
+_row97 = {"key": "k", "state": "queued", "hash": "h"}
+
+
+class _Flip97:
+    """The lock: another thread cancels the row while it is free between the two takes."""
+    n = 0
+    def __enter__(self):
+        _Flip97.n += 1
+        if _Flip97.n == 2:
+            _row97["state"] = "cancelled"
+    def __exit__(self, *a):
+        return False
+
+
+_keep97 = (_pt97.LOCK, _pt97.load, _pt97.save, _pt97.by_key, _pt97._begin, _pt97.STATE.get("held"))
+_begun97 = []
+try:
+    _pt97.LOCK, _pt97.load, _pt97.save = _Flip97(), (lambda: {"config": {}, "downloads": [_row97], "packs": []}), (lambda: None)
+    _pt97.by_key, _pt97._begin = (lambda k: ({}, {"key": k})), (lambda r, p, f: _begun97.append(r["key"]))
+    _pt97.STATE["held"] = False
+    _pt97._start_next()
+finally:
+    _pt97.LOCK, _pt97.load, _pt97.save, _pt97.by_key, _pt97._begin, _pt97.STATE["held"] = _keep97
+check("queue: a row cancelled while the lock was free is not brought back",
+      _row97["state"] == "cancelled" and not _begun97)
 
 # ---- a YouTube card carries its name, in two lines at most
 import pd_live as _pl81, pd_sports as _ps81
@@ -5038,6 +5231,10 @@ try:
           _guard215("stoppedDL", _on215) == [("start", "h1")])
     check("a running pack with a download coming in is left running",
           _guard215("downloading", _on215) == [])
+    _QB215.state, _QB215.calls = "uploading", []
+    _pt215.STATE["data"] = {"config": {}, "packs": [{"hash": "h1"}], "downloads": [], "whole": ["h1"]}
+    _pt215._guard_packs()
+    check("a pack kept whole, nothing asked from it, is left running", _QB215.calls == [])
     check("a pack whose downloads are all done is left stopped",
           _guard215("stoppedUP", [{"hash": "h1", "index": 0, "state": "done"}]) == [])
     _pt215.STATE["held"] = True
@@ -5827,11 +6024,11 @@ finally:
 _st287 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "settings.js"), encoding="utf-8").read()
 _dl287 = _st287[_st287.index("async function drawLive"):]
 _dl287 = _dl287[:_dl287.index("into._liveTimer = setTimeout")]
-check("Now playing: everything is read before the list is cleared, downloads are listed once, and Link merge sits over Workers",
+check("Now playing: everything is read before the list is cleared, downloads are listed once, and Link merge and Torrents sit over Workers",
       'await get("/torrents/log")' not in _dl287 and _dl287.count("(data.downloading || []).forEach") == 1 and "book.downloads" not in _dl287
       and _dl287.count("await ") == _dl287[:_dl287.index('into.innerHTML = "";')].count("await ")
       and "try { s = tick.last = await get(\"/merge\"); }" in _st287
-      and "mergeBlock(right);" + chr(10) + "      right.appendChild(work);" in _st287)
+      and "mergeBlock(right);" + chr(10) + "      torrentBlock(right);" + chr(10) + "      right.appendChild(work);" in _st287)
 
 # ---- the cache copies only what is on a screen while a film comes in or the library scans
 import ast as _ast288, time as _time288, types as _types288
@@ -6066,7 +6263,7 @@ check("unpack: first part found, per cent read, half a film held back, and Unpac
       and _ptu.unpack_progress("... 12%\b\b\b\b 45%") == 45 and _ptu.unpack_progress("none") is None
       and _half is None and _whole == [os.path.join(_du, "x.mkv")]
       and '"state": "unpacking"' in _srvu
-      and '(d.state === "unpacking" ? "unpacking " : "downloading ")' in _jsu
+      and '(d.state === "unpacking" ? "unpacking " : d.state === "copying" ? "copying " : "downloading ")' in _jsu
       and '"unpacking" -> "Unpacking "' in _rtu
       and 'head.classList.add("golink");' in _jsu and 'tab = "remote";' in _jsu)
 
@@ -6203,10 +6400,10 @@ import pd_follow as _pfQ, tempfile as _tfQ
 _dQ = _tfQ.mkdtemp(prefix="pdq")
 open(os.path.join(_dQ, "here.mkv"), "wb").write(b"x" * 10)
 _wQ = [{"why": "kept ahead", "name": "far.mkv", "size": 5},
-       {"why": "on a screen now", "name": "here.mkv", "size": 10},
-       {"why": "on a screen now", "name": "copying.mkv", "size": 7},
-       {"why": "on a screen now", "name": "wanted.mkv", "size": 9},
-       {"why": "on a screen now", "name": "wanted.mkv", "size": 9, "side": 0}]
+       {"part": "x", "why": "on a screen now", "name": "here.mkv", "size": 10},
+       {"part": "x", "why": "on a screen now", "name": "copying.mkv", "size": 7},
+       {"part": "x", "why": "on a screen now", "name": "wanted.mkv", "size": 9},
+       {"part": "x", "why": "on a screen now", "name": "wanted.mkv", "size": 9, "side": 0}]
 _srcQ = open(_pfQ.__file__, encoding="utf-8").read()
 _svQ = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
 check("cache: the first on a screen and not held is put first; held or being copied is not; "
@@ -6607,6 +6804,23 @@ finally:
     _ptG.load, _ptG.save, _ptG.QB = _wasG
 check("sync back: a file another torrent here seeds as well is never removed",
       not _twoG["ok"] and "another torrent seeds" in _twoG["why"] and _removedG == [_fileG])
+_alsoG.clear()
+_gonePrioG.clear()
+_dataG["downloads"][0].pop("off", None)
+
+
+def _heldG(path):
+    raise PermissionError("in use")
+
+
+try:
+    _ptG.load, _ptG.save, _ptG.QB = (lambda: _dataG), (lambda: None), _QBG
+    _stuckG = _ptG.let_go("g1", 0, lambda p, m: True, _alG, remove=_heldG)
+finally:
+    _ptG.load, _ptG.save, _ptG.QB = _wasG
+check("sync back: a file that will not go is put back on and said, not left off for good",
+      not _stuckG["ok"] and "could not remove" in _stuckG["why"] and _gonePrioG == [0, 1]
+      and not _dataG["downloads"][0].get("off"))
 _homesT = {"m": "main", "b": "both", "c": "copy"}
 _itemsT = [{"hash": "m", "index": 1}, {"hash": "b", "index": 2}, {"hash": "c", "index": 3},
            {"hash": "c", "index": 4}]
@@ -6985,9 +7199,9 @@ check("subtitles by name: each one fetched is read before it is kept, and anothe
 
 import pd_follow as _pf400, tempfile as _tf400
 _d400 = _tf400.mkdtemp()
-_w400 = [{"name": "Film.mkv", "why": "on their watchlist", "size": 9},
-         {"name": "Show.S01E03.mkv", "why": "kept ahead", "hot": True, "size": 5},
-         {"name": "Show.S01E04.mkv", "why": "kept ahead", "hot": False, "size": 5}]
+_w400 = [{"part": "x", "name": "Film.mkv", "why": "on their watchlist", "size": 9},
+         {"part": "x", "name": "Show.S01E03.mkv", "why": "kept ahead", "hot": True, "size": 5},
+         {"part": "x", "name": "Show.S01E04.mkv", "why": "kept ahead", "hot": False, "size": 5}]
 check("copies: the episodes kept ahead of a screen put down any other copy in flight, not only the one on screen",
       _pf400.first_on_screen(_w400, _d400, "Film.mkv") == "Show.S01E03.mkv"
       and _pf400.is_hot(_w400[1]) and not _pf400.is_hot(_w400[0]) and not _pf400.is_hot(_w400[2])

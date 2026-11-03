@@ -2527,18 +2527,19 @@
       el.querySelector(".pmeta .note").textContent = [
         d.state === "queued"
           ? "queued" + (d.place ? " · " + d.place + " ahead" : "")
-          : (d.state === "unpacking" ? "unpacking " : "downloading ") +
+          : (d.state === "unpacking" ? "unpacking " : d.state === "copying" ? "copying " : "downloading ") +
             Math.round((d.progress || 0) * 100) + "%",
         d.size ? (d.size / 1073741824).toFixed(1) + " GB" : "",
         left,
-        d.who ? "for " + d.who : "",
+        d.who ? (d.state === "copying" ? "to " : "for ") + d.who : "",
         d.from === "pack" ? "from a pack" : d.from === "tracker" ? "from the tracker" : "",
         d.auto ? "by itself" + (d.reason ? ": " + d.reason : "") : "",
         d.on ? "on " + d.on : ""].filter(Boolean).join(" · ");
       el.querySelector(".rate b").textContent = (d.mbit || 0).toFixed(1);
       into.appendChild(el);
     });
-    data.live.forEach((w) => {
+    // a copy to the other server is in the downloads above, not one of the viewers
+    data.live.filter((w) => w.state !== "syncing" && w.how !== "syncing").forEach((w) => {
       const el = document.createElement("div");
       el.className = "person live";
       el.innerHTML = '<div class="pmeta"><b></b><span class="note"></span></div>' +
@@ -10133,6 +10134,44 @@
     tick();
   }
 
+  /* Torrents on both servers and the tracker ratio, off the race page; hidden while it
+     does not answer. */
+  function torrentBlock(into) {
+    const box = block("Torrents");
+    box.classList.add("mergebox", "torrentbox");
+    box.style.display = "none";
+    into.appendChild(box);
+    const table = document.createElement("div");
+    table.className = "mergelinks";
+    box.appendChild(table);
+    const tick = async () => {
+      if (!box.isConnected) return;
+      // a missed answer keeps the box as it was
+      let s = tick.last || {};
+      try { s = tick.last = await get("/torrents/totals"); } catch (e) { /* kept */ }
+      if (!box.isConnected) return;
+      box.style.display = s.up != null ? "" : "none";
+      if (s.up != null) {
+        table.innerHTML = "";
+        const line = (name, said, note) => {
+          const r = document.createElement("div");
+          r.className = "mergerow";
+          r.innerHTML = "<span class='n'></span><span class='s'></span><span class='t'></span>";
+          r.querySelector(".n").textContent = name;
+          r.querySelector(".s").textContent = said;
+          r.querySelector(".t").textContent = note || "";
+          table.appendChild(r);
+        };
+        const mbit = (b) => (b * 8 / 1e6).toFixed(1) + " Mbit/s";
+        line("Upload", mbit(s.up));
+        line("Download", mbit(s.down));
+        line("Tracker ratio", s.ratio == null ? "–" : s.ratio.toFixed(3), s.read ? "" : "estimated");
+      }
+      setTimeout(tick, 5000);
+    };
+    tick();
+  }
+
   async function paneNow(main) {
     if (document.body.classList.contains("monitor")) main.appendChild(designBar());
     // The drawing, the totals and the streams in one column, a box for each worker in
@@ -10166,6 +10205,7 @@
       wiringBlock(left);
       left.append(sum, live);
       mergeBlock(right);
+      torrentBlock(right);
       right.appendChild(work);
     }
     drawLive(live, sum, work);
