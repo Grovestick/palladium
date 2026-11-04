@@ -1775,4 +1775,12 @@ class RouteTest {
         // words alone are the player's to show
         assertFalse(Route.opensATitle("", ""))
     }
+
+    @Test fun anEndThatGoesOnShowsTheLoadingLook() {
+        assertTrue(Route.rollsOn(queued = true, casual = false, seriesNext = false))
+        assertTrue(Route.rollsOn(queued = false, casual = true, seriesNext = false))
+        assertTrue(Route.rollsOn(queued = false, casual = false, seriesNext = true))
+        // a film on its own closes, with its controls
+        assertFalse(Route.rollsOn(queued = false, casual = false, seriesNext = false))
+    }
 }

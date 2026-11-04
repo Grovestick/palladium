@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.19.382",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "No flash of the finished episode's controls when the next one follows"
+    ]
+  },
+  {
+    "version": "0.19.381",
+    "when": "2026-11-03",
+    "title": "Player",
+    "items": [
+      "No flash of the whole set of controls when the next episode loads in the same player"
+    ]
+  },
+  {
     "version": "0.19.380",
     "when": "2026-11-03",
     "title": "Player",

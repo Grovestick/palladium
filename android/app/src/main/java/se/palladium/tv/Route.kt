@@ -7,6 +7,11 @@ package se.palladium.tv
  * that drops connections (RouteTest) rather than tried on a phone.
  */
 object Route {
+    /** Whether a player that has come to the end goes on to another - a queue, a casual
+     *  draw, the next episode - rather than closing: it then shows the loading look. */
+    fun rollsOn(queued: Boolean, casual: Boolean, seriesNext: Boolean): Boolean =
+        queued || casual || seriesNext
+
     /** Whether a notice from the server carries a title or a shuffle to open: the
      *  library's listener acts on those, and a player on screen leaves them to it. */
     fun opensATitle(play: String, shelf: String): Boolean = play.isNotEmpty() || shelf.isNotEmpty()

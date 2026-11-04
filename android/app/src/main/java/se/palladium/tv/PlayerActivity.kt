@@ -2517,8 +2517,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val name = nameBar ?: return
         val v = view ?: return
         // loading: the bar held down where the row was, whatever Media3's own showing
-        // slides it to, and once the row has a size to go by
+        // slides it to, and once the row has a size to go by - and the rest put away
+        // before this frame is drawn, however it came to be shown: the next episode
+        // brought the whole set up for a frame (owner, 2026-11-03)
         if (loadingLook) {
+            hideForLoading(v)
             val bar = timeBar()
             val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
             if (bar != null && row != null && row.height > 0 &&
@@ -2602,6 +2605,22 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         if (cornerRow?.visibility != want) cornerRow?.visibility = want
     }
 
+    /** The parts the loading look keeps away, put away if anything has shown them: Media3
+     *  puts its buttons back as it shows the controls, after anything said to it here. */
+    private fun hideForLoading(v: PlayerView) {
+        val parts = listOfNotNull<android.view.View>(
+            v.findViewById(androidx.media3.ui.R.id.exo_center_controls),
+            v.findViewById(androidx.media3.ui.R.id.exo_minimal_controls),
+            v.findViewById(androidx.media3.ui.R.id.exo_bottom_bar),
+            infoBar, cornerRow)
+        for (part in parts) {
+            if (part.visibility == android.view.View.VISIBLE) {
+                if (part !in hidWhileLoading) hidWhileLoading[part] = part.visibility
+                part.visibility = android.view.View.INVISIBLE
+            }
+        }
+    }
+
     /** While a film or episode loads: the controls without their buttons, the information
      *  line and the corner row - the progress bar and the name are what is left. Off, each
      *  is given back as it was. */
@@ -2611,16 +2630,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val bar = timeBar()
         val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
         if (on) {
-            val parts = listOfNotNull<android.view.View>(
-                v.findViewById(androidx.media3.ui.R.id.exo_center_controls),
-                v.findViewById(androidx.media3.ui.R.id.exo_minimal_controls),
-                row, infoBar, cornerRow)
-            for (part in parts) {
-                if (part.visibility == android.view.View.VISIBLE) {
-                    hidWhileLoading[part] = part.visibility
-                    part.visibility = android.view.View.INVISIBLE
-                }
-            }
+            hideForLoading(v)
             // the bar down where the row of buttons was - where it sits when the
             // controls are shrunk - and without its knob, as it is then
             if (bar != null && row != null && row.height > 0) bar.translationY = row.height.toFloat()
@@ -3087,6 +3097,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                         restartAt(got)
                         return
                     }
+                    // rolling on to another: its loading look from the last frame of
+                    // this one, not Media3's whole set of controls for the one that
+                    // ended, which showed for half a second first (owner, 2026-11-03)
+                    if (Route.rollsOn(queueAhead().isNotEmpty(), casually(),
+                                      autoNext && showKey.isNotEmpty())) lookLoading(true)
                     // something put on casually leads to the next draw; a series rolls
                     // on; a film on its own has nowhere to go
                     if (queueAhead().isNotEmpty()) step(forward = true)
