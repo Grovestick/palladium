@@ -147,6 +147,8 @@ fun EpisodeDownloads(ep: Media, onPage: (() -> Unit)? = null, onTaken: () -> Uni
     var got by remember { mutableStateOf<Api.Carrying?>(null) }
     var said by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    // the tracker's releases, behind Other versions while a pack added here has it
+    var more by remember { mutableStateOf(false) }
     LaunchedEffect(ep.ratingKey) { got = Api.trackerVersions(ep) }
     AlertDialog(
         onDismissRequest = onClose,
@@ -173,7 +175,8 @@ fun EpisodeDownloads(ep: Media, onPage: (() -> Unit)? = null, onTaken: () -> Uni
                         // the pack already added first, then the episode on its own,
                         // then the season packs on the tracker that hold it - each
                         // under a heading saying which it is
-                        Route.releaseGroups(rows.map { it.pack to it.box }).forEach { (heading, at) ->
+                        val kinds = rows.map { it.pack to it.box }
+                        Route.releaseGroupsShown(kinds, more).forEach { (heading, at) ->
                         Text(heading, color = Skin.Fg, fontSize = 13.sp,
                              fontWeight = FontWeight.SemiBold,
                              modifier = Modifier.padding(top = 6.dp))
@@ -240,6 +243,7 @@ fun EpisodeDownloads(ep: Media, onPage: (() -> Unit)? = null, onTaken: () -> Uni
                             }
                         }
                         }
+                        if (Route.moreReleases(kinds, more)) Pill("Other versions", small = true) { more = true }
                     }
                 }
             }

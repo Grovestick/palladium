@@ -2559,9 +2559,12 @@ async function addPopularShow(it) {
       e.seeds ? e.seeds + " seeding" : ""].filter(Boolean).join("  \u00b7  "), "ep:" + e.id)));
     pick.appendChild(group);
   }
-  // every choice on show, not a menu: closed, it read as one pack on offer
-  pick.size = Math.min(12, pick.options.length);
-  pick.classList.toggle("openlist", pick.size > 1);
+  // shut until pressed (owner, 2026-11-06); how many there are said under it, as shut it
+  // read as one pack on offer
+  pick.size = 1;
+  pick.classList.remove("openlist");
+  const choices = found.length + singles.length;
+  if (choices > 1) said.textContent = choices + " to choose from in the menu.";
   pick.value = (found.find((p) => p.pick) || found.find((p) => !p.unsure) || { id: "" }).id;
   tint(pick);
   const single = () => singles.filter((e) => "ep:" + e.id === pick.value)[0];
@@ -3266,8 +3269,11 @@ async function viewHome() {
     if (!any) {
       // on the first row's line, beside the See all at the end of it: both are about
       // the rows rather than about anything on them
+      // beside See all wherever it sits in the heading: asked of the heading itself, a
+      // See all inside a span threw and the front page stopped drawing
       const first = main.querySelector(".cat h2");
-      if (first) first.insertBefore(edit, first.querySelector(".seeall"));
+      const all = first && first.querySelector(".seeall");
+      if (all) all.parentNode.insertBefore(edit, all); else if (first) first.appendChild(edit);
     }
     any = true;
   }
@@ -7865,16 +7871,24 @@ async function episodeDownloads(row, ep) {
     box.appendChild(room);
   }
   // the pack already added first, then the episode on its own, then the season packs
-  // on the tracker that hold it - each under a heading saying which it is
+  // on the tracker that hold it - each under a heading saying which it is. With a pack
+  // added, the tracker's stay behind Other versions, as a film's copies here come first;
+  // without one, the season packs stay behind their own button until it is pressed.
+  const added = rows.some((v) => v.pack);
+  const hidden = [];
   [["From the pack you added", rows.filter((v) => v.pack)],
    ["The episode on its own", rows.filter((v) => !v.pack && !v.box)],
    ["In season packs on the tracker", rows.filter((v) => !v.pack && v.box)]]
-    .forEach(([heading, part]) => {
+    .forEach(([heading, part], g) => {
   if (!part.length) return;
+  const into = document.createElement("div");
+  into.className = "epdlpart";
+  if (g > 0 && (added || g === 2)) { into.hidden = true; hidden.push(into); }
+  box.appendChild(into);
   const named = document.createElement("div");
   named.className = "note epdlhead";
   named.textContent = heading;
-  box.appendChild(named);
+  into.appendChild(named);
   part.forEach((v) => {
     const line = document.createElement("div");
     line.className = "epdlrow";
@@ -7942,9 +7956,17 @@ async function episodeDownloads(row, ep) {
       line.append(add);
     }
     line.append(words);
-    box.appendChild(line);
+    into.appendChild(line);
   });
   });
+  if (hidden.length) {
+    const more = document.createElement("button");
+    more.className = "btn ghost tiny epmore";
+    more.textContent = added ? "Other versions" : "Season packs";
+    more.title = added ? "Releases of this episode on the tracker" : "Season packs on the tracker that hold it";
+    more.onclick = () => { hidden.forEach((p) => { p.hidden = false; }); more.remove(); };
+    box.appendChild(more);
+  }
 }
 
 /* One season's packs on the tracker, above its episodes: pressed, the pack is added as
@@ -13458,16 +13480,14 @@ function watchForNewBuild() {
     try {
       const now = await (await fetch("/config")).json();
       if (now.build && myBuild && now.build !== myBuild) {
+        // never over a film: said when nothing is playing, and the next look after the
+        // film ends says it then. Moved into the player while a film was up, it stood
+        // across the picture (owner, 2026-11-06)
         const note = $("#stale");
-        note.classList.remove("hidden");
-        document.body.classList.add("has-stale");   // make room, do not cover
-        // full screen draws the player and nothing else, so the notice has to live
-        // inside it while a film is up - otherwise it is hidden exactly when a page
-        // is most likely to have been open long enough to go stale
-        const player = $("#player");
-        const watching = !player.classList.contains("hidden");
-        if (watching && note.parentElement !== player) player.appendChild(note);
-        if (!watching && note.parentElement === player) document.body.appendChild(note);
+        const watching = !$("#player").classList.contains("hidden");
+        if (note.parentElement !== document.body) document.body.appendChild(note);
+        note.classList.toggle("hidden", watching);
+        document.body.classList.toggle("has-stale", !watching);   // make room, do not cover
         if (!said) {
           said = true;
           dbg("stale-page", { mine: myBuild, server: now.build });

@@ -282,6 +282,11 @@ def is_youtube(url):
     return bool(re.match(r"(?i)^https?://(www\.|m\.)?(youtube\.com|youtu\.be)/", str(url or "")))
 
 
+#: where yt-dlp was last found, and when: looked for along the PATH on every Settings
+#: answer, it was a sixth of the time that answer took (2026-11-05)
+_YTDLP_FOUND = {"at": 0.0, "is": ""}
+
+
 def ytdlp():
     """yt-dlp: the one kept beside the server's data, else one on the path; "" when
     there is none."""
@@ -289,7 +294,9 @@ def ytdlp():
     here = os.path.join(ROOT["dir"] or "", "tools", "yt-dlp.exe")
     if ROOT["dir"] and os.path.exists(here):
         return here
-    return shutil.which("yt-dlp") or ""
+    if time.time() - _YTDLP_FOUND["at"] > 300:
+        _YTDLP_FOUND.update(at=time.time(), **{"is": shutil.which("yt-dlp") or ""})
+    return _YTDLP_FOUND["is"]
 
 
 def ytdlp_env():

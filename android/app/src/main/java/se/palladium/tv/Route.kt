@@ -17,8 +17,62 @@ object Route {
     fun opensATitle(play: String, shelf: String): Boolean = play.isNotEmpty() || shelf.isNotEmpty()
 
     /** How long the controls stay shrunk to the progress bar and the name before they go;
-     *  Media3's own is two seconds (owner, 2026-11-03). */
-    const val BAR_HELD_MS = 6000L
+     *  Media3's own is two seconds (owner: 6 s 2026-11-03, 4 s 2026-11-04). */
+    const val BAR_HELD_MS = 4000L
+
+    /** Whether a search asks a server and waits for it: not one the reach check last saw
+     *  down, when the asking has a grace (2026-11-05) - asleep at night, the main server
+     *  held every search for fifteen seconds. Unknown is asked. */
+    fun waitedFor(up: Boolean?, grace: Long): Boolean = !(grace > 0 && up == false)
+
+    /** What a press brings up in the player on a television (owner, 2026-11-04): the
+     *  progress bar and the name; the buttons with play/pause and the information line over
+     *  them; the buttons alone. 0: the whole set, as the controls come up by themselves. */
+    const val LOOK_BAR = 1
+    const val LOOK_UPPER = 2
+    const val LOOK_LOWER = 3
+
+    /** The look after a press - "up", "down", "side" or "centre" - from `look`, 0 when the
+     *  controls are away. Up or down brings the lower, anything else the bar; the lower,
+     *  once up, is left to the buttons - but up from play/pause (`atTop`: the remote on the middle
+     *  row, or on none of the controls) goes on to the upper; from the bar or the row below,
+     *  up goes back to pause (owner, 2026-11-04). */
+    /** What the name stands over: the bar, and the row of buttons too unless the bar is all
+     *  that is asked for - Media3 shows the row for a frame first, and the name went up to
+     *  it and came down again. */
+    fun nameOver(barOnly: Boolean): List<String> = if (barOnly) listOf("bar") else listOf("bar", "row")
+
+    /** Whether the picture is shaded and the controls grey: paused by somebody, not while
+     *  it loads or waits for data (owner, 2026-11-05). */
+    fun pausedLook(playWhenReady: Boolean, loading: Boolean): Boolean = !playWhenReady && !loading
+
+    /** How much of the white the controls keep while paused: grey over the shade. */
+    const val PAUSED_INK = 0.55f
+
+    /** Whether the information line shows with the buttons: with no press asked for, or
+     *  the upper; the lower and the bar keep it away (owner, 2026-11-04). */
+    fun infoLineWith(look: Int): Boolean = look == 0 || look == LOOK_UPPER
+
+    /** The look once the controls have shrunk to the bar on their own: the bar's, so a press
+     *  from there starts where a press from nothing would. */
+    fun lookWhenShrunk(look: Int, shrunk: Boolean): Int =
+        if (shrunk && look != 0) LOOK_BAR else look
+
+    fun lookAfter(key: String, look: Int, atTop: Boolean = false): Int = when {
+        look == LOOK_LOWER -> if (key == "up" && atTop) LOOK_UPPER else LOOK_LOWER
+        key == "down" -> LOOK_LOWER
+        key == "up" -> if (look == LOOK_UPPER) LOOK_UPPER else LOOK_LOWER
+        look == LOOK_UPPER -> LOOK_UPPER
+        else -> LOOK_BAR
+    }
+
+    /** How many times a playing reopens a live encode the server refused at a byte (416). */
+    const val ENCODE_REOPENS = 5
+
+    /** Whether a playback error is filed as a fault: not a 416 on an encode that is
+     *  reopened at the second reached - that is how an encode goes on after a cut. */
+    fun filesPlaybackFault(encodeCut: Boolean, reopens: Int): Boolean =
+        !(encodeCut && reopens < ENCODE_REOPENS)
 
     /** How wide a list of releases is drawn: most of the screen, so a release name fits
      *  on a phone held sideways; the platform's dialog stopped at a third of it. */
@@ -46,6 +100,38 @@ object Route {
     /** Whether a resume is the activity's first - the app opening, which stays on the
      *  tab it opens on - rather than a return, which goes to Home. */
     fun isOpening(resumed: Int, openedAt: Int): Boolean = resumed <= openedAt
+
+    /** Back on Home from a film: whether its shelves stay on screen while they are read
+     *  again, rather than a spinner and the page drawn anew (owner, 2026-11-05). */
+    fun quietReturn(tab: String, hasShelves: Boolean, searching: Boolean): Boolean =
+        tab == "home" && hasShelves && !searching
+
+    /** Whether a key went down after `since`: what arrives late does not move the remote
+     *  from where somebody has taken it. */
+    fun movedSince(keyAt: Long, since: Long): Boolean = keyAt > since
+
+    /** The card just played first, the rest in their order: Continue watching as the
+     *  server will have it once the film has said where it got to. */
+    fun <T> toFront(list: List<T>, isIt: (T) -> Boolean): List<T> {
+        val at = list.indexOfFirst(isIt)
+        return if (at <= 0) list else listOf(list[at]) + list.filterIndexed { i, _ -> i != at }
+    }
+
+    /** Frames Continue watching is taken to its start over, back from a film: the first
+     *  is before the row has drawn its new order, so one alone scrolled the old one. */
+    const val DECK_FRONT_FRAMES = 4
+
+    /** The shelves on screen by the name each is asked for under: the season's shelf is
+     *  called what its cards say, so it is the one no other name claims. */
+    fun <T> shelvesByOrder(names: List<String>, seasonal: String,
+                           rows: List<Pair<String, T>>): Map<String, T> {
+        val out = HashMap<String, T>()
+        for ((title, list) in rows) {
+            val n = if (title in names) title else seasonal
+            if (n !in out) out[n] = list
+        }
+        return out
+    }
 
     /** The band across a shuffle's card on Continue watching: a music round says so. */
     fun shuffleBand(shelf: String): String =
@@ -585,6 +671,16 @@ object Route {
                "The episode on its own" to rows.indices.filter { !rows[it].first && !rows[it].second },
                "In season packs on the tracker" to rows.indices.filter { !rows[it].first && rows[it].second })
             .filter { it.second.isNotEmpty() }
+
+    /** The groups shown: with a pack added here, that pack alone until Other versions is
+     *  pressed, as a film shows its copies here first. */
+    fun releaseGroupsShown(rows: List<Pair<Boolean, Boolean>>, more: Boolean): List<Pair<String, List<Int>>> =
+        releaseGroups(rows).let { g -> if (more || !rows.any { it.first }) g else g.take(1) }
+
+    /** Whether the Other versions button stands under the added pack: only while the
+     *  tracker's releases are hidden behind it. */
+    fun moreReleases(rows: List<Pair<Boolean, Boolean>>, more: Boolean): Boolean =
+        !more && rows.any { it.first } && rows.any { !it.first }
 
     /** The collections popup's button for one collection: Add where this is not on
      *  it or only partly, Remove where all of it is. */

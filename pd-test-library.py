@@ -137,7 +137,8 @@ else:
                   [{"ratingKey": "a"}, {"ratingKey": "b", "askedAt": 5}])] == ["b", "a"])
         api.coming_from_tracker = lambda owner=True, who="": [dict(coming, offer=dict(offer))]
     # the same film already held here is not put on the shelf a second time
-    held = next((c for c in before if not c.get("offered")), None)
+    # a film: the games arrived stand on this shelf too, as episodes
+    held = next((c for c in before if not c.get("offered") and c.get("type") == "movie"), None)
     if held:
         api.coming_from_tracker = lambda owner=True, who="": [
             dict(coming, ratingKey="rtffffffffff", title=held["title"], year=held.get("year"))]
@@ -207,7 +208,8 @@ if new:
     print("3. the services chosen under Settings", flush=True)
 
 # ---- 4. the studios behind a film, on its page, asked of the catalogue once
-films = [c for c in cards("/library/sections/1/recentlyAdded") if not c.get("offered")][:6]
+films = [c for c in cards("/library/sections/1/recentlyAdded")
+         if not c.get("offered") and c.get("type") == "movie"][:6]
 named = 0
 for film in films:
     page = cards("/library/metadata/" + str(film["ratingKey"]))
@@ -261,8 +263,8 @@ for (item, title, season), numbers in sorted(seasons.items()):
     for n in sorted(numbers & packed):
         one = (by_number.get(n) or [{}])[0]
         stood_in += 1
-        check("5 %s S%02dE%02d has no file and a pack carries it: the pack's entry is listed"
-              % (title, season, n), bool(one.get("offered")) and str(one.get("ratingKey", "")).startswith("o"),
+        check("5 %s S%02dE%02d has no file and a pack carries it: the pack's entry is listed, under the episode's own key"
+              % (title, season, n), bool(one.get("offered")) and str(one.get("ratingKey", "")).startswith("e"),
               "listed as %r" % one.get("ratingKey"))
 print("5. episodes with no file: %d seasons looked at, %d episodes a pack stands in for"
       % (len(seasons), stood_in), flush=True)
@@ -1143,26 +1145,42 @@ check("55 a service's row: three films to a series, the low-rated and children's
       _row55 == ["m1", "m4", "s1", "s2"], str(_row55))
 print("55. a row a streaming service", flush=True)
 
-# ---- 39. a pack taken off a series loses its link unless a download came from it or
-#          another series chose it; the torrent is never touched
+# ---- 39. a pack taken off a series loses its link unless a download is still coming from
+#          it or another series chose it; a finished download no longer holds it; the
+#          torrent is never touched
 _saved39 = (pd_torrents.remove_pack, pd_torrents.drop_show_pack, pd_torrents.load)
 _gone39 = []
 _data39 = {"config": {"showPacks": {"othershow": {"packs": ["hOther"], "season": {}}}},
-           "packs": [], "downloads": [{"hash": "hUsed"}]}
+           "packs": [], "downloads": [{"hash": "hUsed", "state": "downloading"},
+                                      {"hash": "hDone", "state": "done"}]}
 pd_torrents.remove_pack = lambda h: _gone39.append(h) or {"ok": True}
 pd_torrents.drop_show_pack = lambda name, h: None
 pd_torrents.load = lambda: _data39
 try:
     _free39 = m.use_show_pack("Invented Gold Series", info_hash="hFree", drop=True, unlink=True)
     _used39 = m.use_show_pack("Invented Gold Series", info_hash="hUsed", drop=True, unlink=True)
+    _done39 = m.use_show_pack("Invented Gold Series", info_hash="hDone", drop=True, unlink=True)
     _other39 = m.use_show_pack("Invented Gold Series", info_hash="hOther", drop=True, unlink=True)
     _drop39 = m.use_show_pack("Invented Gold Series", info_hash="hPlain", drop=True)
 finally:
     pd_torrents.remove_pack, pd_torrents.drop_show_pack, pd_torrents.load = _saved39
 check("39 removing a pack drops a free link only",
-      _gone39 == ["hFree"] and not _free39.get("kept") and _used39.get("kept")
+      _gone39 == ["hFree", "hDone"] and not _free39.get("kept") and _used39.get("kept")
+      and not _done39.get("kept")
       and _other39.get("kept") and _drop39 == {"ok": True}, "%s %s %s" % (_gone39, _used39, _other39))
 print("39. a pack is removed only when nothing holds on to it", flush=True)
+
+# ---- 39b. background work asks for the other server as the owner on this machine
+try:
+    _sb39 = m.Handler.in_house().standby_now()
+    _sb39ok = isinstance(_sb39, dict) and "where" in _sb39
+except Exception as _e39:
+    _sb39, _sb39ok = repr(_e39), False
+check("39b the standby address read from background work, with no request behind it", _sb39ok, str(_sb39)[:200])
+_bare39 = [ln for ln in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8")
+           if "Handler.__new__(Handler).standby_now" in ln]
+check("39b nothing asks a bare request for the standby address", not _bare39, str(_bare39))
+print("39b. background work finds the other server", flush=True)
 
 # ---- 38. a pack added from a season's page becomes that season's source; a season
 #          choice alone still only sets the source
@@ -1764,6 +1782,526 @@ try:
           str(_rows240))
 finally:
     _con240.close()
+
+# ---- 241. a series carries its wide picture, as a film does
+_con241 = api.lib.db()
+try:
+    _r241 = _con241.execute("SELECT * FROM item WHERE type='show' AND backdrop IS NOT NULL "
+                            "AND backdrop != '' LIMIT 1").fetchone()
+    _m241 = api._show(_con241, _r241) if _r241 else {}
+    check("241 a series with a backdrop sends it as its wide picture",
+          bool(_r241) and _m241.get("art") == "/art/%s/backdrop" % _r241["id"], str(_m241.get("art")))
+finally:
+    _con241.close()
+
+# ---- 242. Start fronts made by their own process stand as made here, whatever their age
+_con242 = api.lib.db()
+_was242 = api.who
+try:
+    _p242 = {"marker": 242}
+    api.who = "t242"
+    api.start_keep([("t242", "movie", _p242)], 1.0)
+    _ask242 = {"rows": "1", "kind": "movie", "seed": "0", "era": ""}
+    _got242 = api.start_page(_con242, lambda k, d="", a=_ask242: a.get(k, d))
+    api.start_forget("t242")
+    _made242 = api.start_page(_con242, lambda k, d="", a=_ask242: a.get(k, d))
+    _sv242 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+    check("242 a front made by the fronts' process is served as it is, a day old or not; forgotten, one is made",
+          _got242 is _p242 and _made242 is not _p242 and isinstance(_made242, dict))
+    check("242 the fronts' process runs on a copy under its own root, once a day",
+          '["--root", work, "--make-fronts", out' in _sv242 and 'made != time.strftime("%Y-%m-%d")' in _sv242
+          and '"palladium-server.exe")]' in _sv242 and "if PACKAGED else [sys.executable, os.path.abspath(__file__)])" in _sv242)
+finally:
+    api.start_forget("t242")
+    api.who = _was242
+    _con242.close()
+
+# ---- 243. the app reaches everyone at eight, if nothing holds it back; the owner at once
+_d243 = os.path.join(root, "t243")
+_root243, _static243 = os.path.join(_d243, "root"), os.path.join(_d243, "static")
+os.makedirs(_root243); os.makedirs(_static243)
+_was243 = (m.ROOT, m.STATIC, m.app_problems)
+
+
+def _app243(code, name):
+    with open(os.path.join(_static243, "palladium.apk"), "w") as f:
+        f.write("apk " + name)
+    with open(os.path.join(_static243, "version.json"), "w") as f:
+        json.dump({"versionCode": code, "versionName": name}, f)
+
+
+try:
+    m.ROOT, m.STATIC = _root243, _static243
+    _held243 = ["1 open fault report"]
+    m.app_problems = lambda since: list(_held243)
+    _app243(10, "0.1.10")
+    _first243 = m.app_release()
+    _app243(11, "0.1.11")
+    _back243 = m.app_release()
+    # the role decided by the app routes themselves, never one left on the handler
+    _guest243 = m.Handler.__new__(m.Handler); _guest243.role = "owner"
+    _guest243.who = lambda path: None
+    _owner243 = m.Handler.__new__(m.Handler); _owner243.role = "guest"
+    _owner243.who = lambda path: "owner"
+    _away243 = m.Handler.__new__(m.Handler); _away243.who = lambda path: None
+    _away243.owner_away = True
+    for _h243 in (_guest243, _owner243, _away243):
+        _h243.path = "/app/version"
+    _g243 = open(_guest243.app_for_asker()[0]).read()
+    _o243 = open(_owner243.app_for_asker()[0]).read()
+    _a243 = open(_away243.app_for_asker()[0]).read()
+    _keen243 = m.Handler.__new__(m.Handler); _keen243.role = "guest"
+    _keen243.app_channel = lambda: "latest"
+    _calm243 = m.Handler.__new__(m.Handler); _calm243.role = "owner"
+    _calm243.app_channel = lambda: "daily"
+    _k243 = open(_keen243.app_for_asker()[0]).read()
+    _c243 = open(_calm243.app_for_asker()[0]).read()
+    _held243.clear()
+    _out243 = m.app_release()
+    _again243 = m.app_release()
+    _g2_243 = open(_guest243.app_for_asker()[0]).read()
+    check("243 the first app here is the released one; a newer one waits while a fault is open",
+          _first243.startswith("app 0.1.10 released") and _back243.startswith("app 0.1.11 held back"), _first243 + " | " + _back243)
+    check("243 held back, a guest is given the released app and the owner the newest, at home or away",
+          _g243 == "apk 0.1.10" and _o243 == "apk 0.1.11" and _a243 == "apk 0.1.11",
+          _g243 + " | " + _o243 + " | " + _a243)
+    _sv243 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+    check("243 the day of the eight o'clock look is kept on disk, so a restart after eight lets nothing out",
+          'mark = os.path.join(ROOT, APP_RELEASED, "looked")' in _sv243 and "f.write(today)" in _sv243)
+    check("243 Settings decide: a guest on Latest gets the newest, the owner on Daily the released one",
+          _k243 == "apk 0.1.11" and _c243 == "apk 0.1.10", _k243 + " | " + _c243)
+    check("243 with nothing open it goes to everyone, once",
+          _out243.startswith("app 0.1.11 released") and _again243 == "" and _g2_243 == "apk 0.1.11", _out243)
+finally:
+    m.ROOT, m.STATIC, m.app_problems = _was243
+    shutil.rmtree(_d243, ignore_errors=True)
+
+# ---- 244. one reading of the settings for the length of an answer, and only on its thread
+_a244 = m.read_settings()
+_b244 = m.read_settings()
+with m.settings_held() as _h244:
+    _c244 = m.read_settings()
+    _d244 = m.read_settings()
+_e244 = m.read_settings()
+check("244 held, the settings are read once for the answer; outside it each reading is its own",
+      _c244 is _d244 is _h244 and _a244 is not _b244 and _e244 is not _c244 and _a244 == _e244)
+
+# ---- 245. what keeping a person costs, counted on one connection, as playback picks the file
+_who245 = "me"
+_own245 = m.Handler.in_house().follower_cost(_who245)
+_files245, _size245, _seen245 = 0, 0, set()
+_con245 = api.lib.db()
+try:
+    import pd_localapi as _pl245
+    _keys245 = [str(r["key"]) for r in _con245.execute(
+        "SELECT key FROM progress WHERE who = ? AND position > 30 AND position < " + _pl245.FINISHED_SQL +
+        " AND COALESCE(casual, 0) = 0 ORDER BY updated DESC LIMIT 40", (_who245,))]
+    _h245 = m.Handler.in_house()
+    for _k245 in _keys245 + [str(k) for k in _h245.watchlist_of(_who245)[:40]] + [str(k) for k in _h245.casual_ahead(_who245)]:
+        if _k245 in _seen245:
+            continue
+        _seen245.add(_k245)
+        _f245 = (api.file_for(_k245, 0) or {}).get("file")
+        _r245 = _con245.execute("SELECT size FROM file WHERE path=?", (_f245,)).fetchone() if _f245 else None
+        if _r245:
+            _files245 += 1
+            _size245 += _r245["size"] or 0
+finally:
+    _con245.close()
+check("245 a person's cost is the same files and gigabytes as file_for counted them",
+      _own245["files"] == _files245 and _own245["gb"] == round(_size245 / 1e9, 1), "%s vs %s %s" % (_own245, _files245, _size245))
+
+# ---- 246. a viewer who watched something has their Start fronts made again
+api.start_stale_take()
+api.start_watched("t246")
+_took246 = api.start_stale_take()
+_none246 = api.start_stale_take()
+_some246, _day246 = os.path.join(root, "t246_some.json"), os.path.join(root, "t246_day.json")
+with open(_day246, "w", encoding="utf-8") as f:
+    json.dump({"day": "d", "fronts": [{"who": "a", "kind": "movie", "page": 1}, {"who": "b", "kind": "movie", "page": 2}]}, f)
+with open(_some246, "w", encoding="utf-8") as f:
+    json.dump({"day": "d", "fronts": [{"who": "a", "kind": "movie", "page": 9}]}, f)
+m.fronts_merge(_some246, _day246)
+with open(_day246, encoding="utf-8") as f:
+    _merged246 = {(x["who"], x["kind"]): x["page"] for x in json.load(f)["fronts"]}
+_lp246 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_localapi.py"), encoding="utf-8").read()
+check("246 watched: the viewer waits for new fronts once, theirs replace their old ones, the rest stand",
+      _took246 == ["t246"] and _none246 == [] and _merged246 == {("a", "movie"): 9, ("b", "movie"): 2}
+      and _lp246.count("self.start_watched(self.who)") == 2, str(_merged246))
+
+# ---- 247. a race or game read in stands on Recently added films, wearing New, newest first
+import pd_sports as _sp247
+_con247 = api.lib.db()
+try:
+    _rows247 = _con247.execute(
+        "SELECT e.id, MAX(COALESCE(f.mtime, f.ctime)) AS came FROM episode e JOIN item i ON i.id=e.item_id "
+        "JOIN file f ON f.episode_id=e.id WHERE i.type='show' AND i.title IN ('NFL','Formula 1') "
+        "GROUP BY e.id ORDER BY came DESC LIMIT 1").fetchall()
+    if _rows247:
+        _at247 = float(_rows247[0]["came"])
+        _in247 = api._games_arrived(_con247, now=_at247 + 60)
+        _out247 = api._games_arrived(_con247, now=_at247 + _sp247.ARRIVED_DAYS * 86400 + 60)
+        check("247 a game read in a minute ago leads the games on Recently added, an episode; gone after the days",
+              bool(_in247) and _in247[0]["ratingKey"] == str(_rows247[0]["id"]) and _in247[0]["type"] == "episode"
+              and all(c["ratingKey"] != str(_rows247[0]["id"]) for c in _out247))
+finally:
+    _con247.close()
+_page247 = api.route(api.lib.db(), "/library/sections/1/recentlyAdded", {}) or {}
+_lp247 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_localapi.py"), encoding="utf-8").read()
+check("247 Recently added films carries the games arrived, after what is coming in",
+      "items = coming + self._games_arrived(con) + items" in _lp247 and bool(_page247))
+check("247 a game from the tracker wears its own drawn poster once it is here",
+      api._game_poster("NFL", "D:/x/NFL.2026.10.25.Cincinnati.Bengals.Vs.Baltimore.Ravens.720p.WEB.H264-G/a.mkv")
+      == "/art/%s/poster" % _sp247.read_name("NFL.2026.10.25.Cincinnati.Bengals.Vs.Baltimore.Ravens.720p.WEB.H264-G")["event"]
+      and api._game_poster("Some Show", "D:/x/NFL.2026.10.25.A.Vs.B.720p.WEB.H264-G/a.mkv") is None)
+if _rows247 and _in247:
+    check("247 and the card on the shelf carries it", str(_in247[0].get("thumb") or "").startswith("/art/sp"),
+          str(_in247[0].get("thumb")))
+    check("247 and when it came in, which the app orders the shelf by",
+          int(_in247[0].get("addedAt") or 0) == int(_at247), str(_in247[0].get("addedAt")))
+check("247 a game file named in lower case is filed by its folder's name",
+      _sp247.told("D:/x/NFL.2026.10.25.Cincinnati.Bengals.Vs.Baltimore.Ravens.720p.WEB.H264-G/"
+                  "nfl.2026.10.25.cincinnati.bengals.vs.baltimore.ravens.720p.web.h264-g.mkv")[3]
+      .startswith("Cincinnati Bengals"))
+
+# ---- 248. the shuffle's next go to the copy under the keys of the files this machine holds
+_h248 = m.Handler.__new__(m.Handler)
+_who248 = [w for w, u in (m.read_settings().get("users") or {}).items()
+           if isinstance(u, dict) and u.get("shuffles")]
+_ahead248 = [k for w in _who248 for k in _h248.casual_ahead(w)]
+_packed248 = [k for k in _ahead248 if str(k).startswith("o") and m.Handler.as_held(k) != k]
+check("248 the shuffle's next are listed under the library's keys where the file is here",
+      bool(_ahead248) and not _packed248, str(_packed248[:5]))
+
+# ---- 249. one id per file: the title's key and the code of the name, the same in any folder
+import pd_library as _lb249
+_con249 = api.lib.db()
+try:
+    _rows249 = _con249.execute("SELECT item_id, episode_id, path, fid FROM file").fetchall()
+finally:
+    _con249.close()
+_off249 = [r["path"] for r in _rows249 if r["fid"] != _lb249.file_id(r["episode_id"] or r["item_id"], r["path"])]
+check("249 every file in the library carries its file id, made from its title and its name",
+      bool(_rows249) and not _off249, str(_off249[:3]))
+check("249 a file's id is the same on disk, on the cache and inside its pack",
+      _lb249.file_id("e5d4ce2d5d554", r"D:\Download\MacGyver.S01-S07\Season 1\MacGyver.S01E04.The.Gauntlet.1080p.Web.HEVC.x265-JoeBee.mkv")
+      == _lb249.file_id("e5d4ce2d5d554", r"D:\Palladium\MacGyver.S01E04.The.Gauntlet.1080p.Web.HEVC.x265-JoeBee.mkv")
+      == _lb249.file_id("e5d4ce2d5d554", "MacGyver.S01-S07/Season 1/macgyver.s01e04.the.gauntlet.1080p.web.hevc.x265-joebee.mkv")
+      == "e5d4ce2d5d554-c4043735")
+
+# ---- 250. a film inside a pack carries the title id the library files it under once here
+import pd_torrents as _pt250
+_con250 = api.lib.db()
+try:
+    _held250 = {_lb249.file_code(r["path"]): (r["episode_id"] or r["item_id"])
+                for r in _con250.execute("SELECT path, item_id, episode_id FROM file")}
+    _both250 = [f for p in _pt250.load()["packs"] for f in p.get("films") or []
+                if _lb249.file_code(f.get("path") or "") in _held250][:300]
+    _off250 = []
+    for _f in _both250:
+        _t, _fid = _pt250.ids_of(_f, api.lib, _con250)
+        if _t != _held250[_lb249.file_code(_f["path"])]:
+            _off250.append(os.path.basename(_f["path"]))
+finally:
+    _con250.close()
+check("250 pack films read from their names carry the library's own title id (%d checked)" % len(_both250),
+      len(_both250) > 50 and not _off250, str(_off250[:3]))
+
+# ---- 251. a pack title answers to its title id: its card, its page, its downloads
+if not _pt250.STATE.get("lib"):
+    _pt250.STATE["lib"] = lambda: api.lib
+_pt250.HELD["at"] = 0.0
+_held251 = _pt250.held_keys()
+_films251 = [f for p in _pt250.load()["packs"] for f in p.get("films") or [] if f.get("titleId")]
+_only251 = next((f for f in _films251 if f.get("kind") != "episode" and f["titleId"] not in _held251), None)
+_have251 = next((f for f in _films251 if f["titleId"] in _held251), None)
+_con251 = api.lib.db()
+try:
+    if _only251:
+        _card251 = api.metadata_for(_con251, _only251["titleId"], brief=True) or {}
+        _old251 = api.metadata_for(_con251, _only251["key"], brief=True) or {}
+        check("251 a title only a pack has: its card under the title id, from its title id or its old pack key",
+              _pt250.only_in_pack(_only251["titleId"]) and _pt250.only_in_pack(_only251["key"])
+              and _card251.get("ratingKey") == _only251["titleId"] == _old251.get("ratingKey"),
+              "%s %s" % (_card251.get("ratingKey"), _old251.get("ratingKey")))
+    if _have251:
+        _lib251 = api.metadata_for(_con251, _have251["titleId"], brief=True) or {}
+        check("251 a pack title that is here is the library's own, under the same key",
+              not _pt250.only_in_pack(_have251["titleId"]) and not _pt250.only_in_pack(_have251["key"])
+              and _lib251.get("ratingKey") == _have251["titleId"] and not _lib251.get("offered"),
+              str(_lib251.get("ratingKey")))
+finally:
+    _con251.close()
+check("251 an old pack key is its title's key wherever a key is kept",
+      bool(_films251) and m.Handler.as_held(_films251[0]["key"]) == _films251[0]["titleId"])
+_dl251 = next((d for d in _pt250.load()["downloads"]
+               if str(d.get("key") or "").startswith("o") and _pt250.title_of(d["key"]) != d["key"]), None)
+if _dl251:
+    check("251 a download made under a pack key answers to the title's id",
+          (_pt250.latest_download(_pt250.title_of(_dl251["key"])) or {}).get("key") is not None)
+
+# ---- 252. the pack keys written down move onto their titles: shuffles, collections, watchlists
+import re as _re252
+_known252 = _pt250.pack_keys_moved()["titles"]
+def _count252(o):
+    if isinstance(o, dict):
+        return sum(_count252(v) for v in o.values())
+    if isinstance(o, list):
+        return sum(_count252(v) for v in o)
+    return 1 if isinstance(o, str) and o in _known252 else 0
+_before252 = m.read_settings() or {}
+_n_before252 = _count252(_before252)
+_first252 = None
+for _u in (_before252.get("users") or {}).values():
+    for _r in ((_u or {}).get("shuffles") or {}).values():
+        _o = [k for k in (_r or {}).get("order") or [] if k in _known252]
+        if _o:
+            _first252 = (_r, (_r.get("order") or []).index(_o[0]), _o[0])
+            break
+    if _first252:
+        break
+_moved252 = m.retire_pack_keys()
+_after252 = m.read_settings() or {}
+check("252 every pack key written down is moved onto its title (%d were)" % _n_before252,
+      _moved252 == _n_before252 and _count252(_after252) == 0
+      and sorted(_after252) == sorted(_before252)
+      and len(_after252.get("users") or {}) == len(_before252.get("users") or {}),
+      "%d moved, %d left" % (_moved252, _count252(_after252)))
+check("252 and a second sweep finds nothing to move", m.retire_pack_keys() == 0)
+_root252 = _pt250.STATE.get("root")
+_pt250.STATE["root"] = None
+_early252 = _pt250.all_named()
+_pt250.STATE["root"] = _root252
+check("252 the sweep does not take packs not read yet for packs all named", not _early252 and _pt250.all_named())
+
+# ---- 253. a release is chosen by its file id, and says its own download state
+_groups253 = {}
+for _p in _pt250.load()["packs"]:
+    for _f in _p.get("films") or []:
+        if _f.get("kind") != "episode" and _f.get("fid"):
+            _groups253.setdefault(_pt250._same(_f), []).append((_f, _p))
+_two253 = next((g for g in _groups253.values() if len(g) >= 2), None)
+if _two253:
+    _vers253 = _pt250._versions(_two253)
+    _fids253 = [f["fid"] for f, _ in _two253]
+    check("253 each release of a film is listed under its file id, and that id finds that copy",
+          [v["key"] for v in _vers253] == _fids253
+          and all(_pt250.by_key(v["key"])[1] is f for v, (f, _) in zip(_vers253, _two253)),
+          str([v["key"] for v in _vers253][:3]))
+
+# ---- 254. a programme only packs carry: its own key on its card, its page and its seasons open
+_pt250.PROGRAMMES["at"] = 0.0
+_pt250.HELD["at"] = 0.0
+_pt250.STATE["shows"] = None
+_shows254 = list(_pt250.offered_shows())
+check("254 offered programmes are listed, none under a pack's own key (%d)" % len(_shows254),
+      bool(_shows254) and not any(str(c.get("ratingKey")).startswith("os") for c in _shows254))
+_lone254 = next((c for c in _shows254 if str(c.get("ratingKey")) not in _pt250.library_shows()), None)
+check("254 there is a programme only packs carry to try", _lone254 is not None)
+if _lone254:
+    _k254 = str(_lone254["ratingKey"])
+    _page254 = cards("/library/metadata/" + _k254)
+    _kids254 = cards("/library/metadata/%s/children" % _k254)
+    check("254 a programme only packs carry opens: its page and its seasons, under its own key",
+          bool(_page254) and _page254[0].get("type") == "show" and bool(_kids254)
+          and str(_kids254[0].get("ratingKey")).startswith(_k254 + "-s"),
+          "%s %s" % (str(_page254[:1])[:150], str(_kids254[:1])[:150]))
+    if _kids254:
+        _eps254 = cards("/library/metadata/%s/children" % _kids254[0]["ratingKey"])
+        check("254 and a season's episodes, under the episodes' own keys",
+              bool(_eps254) and all(str(e.get("ratingKey")).startswith("e") and e.get("offered") for e in _eps254)
+              and _eps254[0].get("grandparentRatingKey") == _k254, str(_eps254[:1])[:200])
+    check("254 the old name-made key still opens the same page",
+          (cards("/library/metadata/" + _pt250.show_key(_lone254["title"])) or [{}])[0].get("ratingKey") == _k254)
+_any254 = next(iter(_pt250._episodes_by_show()), None)
+check("254 what a collection writes down for a programme is its episodes' own keys",
+      bool(_any254) and bool(_pt250.offered_keys(_any254))
+      and not any(str(k).startswith("o") for k in _pt250.offered_keys(_any254)))
+
+# ---- 255. a download coming in from the tracker: its card under the key it will have
+_con255 = api.lib.db()
+try:
+    _ep255 = _con255.execute("SELECT f.path, f.episode_id FROM file f WHERE f.episode_id IS NOT NULL "
+                             "AND lower(f.path) LIKE '%s0_e0%' LIMIT 1").fetchone()
+    _film255 = _con255.execute("SELECT f.path, f.item_id FROM file f WHERE f.episode_id IS NULL "
+                               "AND f.path LIKE '%1080p%' LIMIT 1").fetchone()
+finally:
+    _con255.close()
+_rows255 = []
+_real255 = m.coming_in, m.landing
+try:
+    for _r255 in (_ep255, _film255):
+        if _r255:
+            _stem255 = os.path.splitext(os.path.basename(_r255[0]))[0]
+            m.coming_in = lambda s=_stem255: [{"name": s, "progress": 0.5, "from": "tracker", "state": "downloading"}]
+            m.landing = lambda: []
+            _lib255 = api.lib.db()
+            try:
+                _want255 = api.lib.key_of_file(_lib255, "show" if _r255 is _ep255 else "movie", _r255[0])
+            finally:
+                _lib255.close()
+            _rows255.append((m.tracker_coming()[0]["ratingKey"], _want255))
+finally:
+    m.coming_in, m.landing = _real255
+check("255 a download coming in stands under the title id its file will have",
+      len(_rows255) == 2 and all(a == b for a, b in _rows255), str(_rows255))
+
+# ---- 256. what people fetched themselves goes on their watchlists, once; the house's own fetches do not
+_s256 = m.read_settings() or {}
+_s256.pop("watchFilled", None)
+m.write_settings(_s256, merge=False)
+_mine256 = [d for d in _pt250.load()["downloads"] if not d.get("auto") and d.get("token")]
+_auto256 = [d for d in _pt250.load()["downloads"] if d.get("auto") and d.get("token")]
+def _wlb256(st, tok):
+    mine = st if tok == "me" else (st.get("users") or {}).get(tok) or {}
+    return set(str(k) for k in mine.get("watchlist") or [])
+_before256 = m.read_settings() or {}
+_asked256 = {(str(d["token"]), m.watch_key_of(d.get("titleId") or d.get("key"))) for d in _mine256}
+_house256 = {(str(d["token"]), m.watch_key_of(d.get("titleId") or d.get("key"))) for d in _auto256} - _asked256
+_house256 = {(t, k) for t, k in _house256 if k and k not in _wlb256(_before256, t)}
+# one film somebody fetched and has watched since: marked watched on the copy
+def _who256(tok):
+    return (str(_before256.get("ownerIs") or "") or "me") if tok == "me" else tok
+_seenone256 = next(((str(d["token"]), m.watch_key_of(d.get("titleId") or d.get("key"))) for d in _mine256
+                    if m.watch_key_of(d.get("titleId") or d.get("key"))
+                    and m.watch_key_of(d.get("titleId") or d.get("key")) not in _wlb256(_before256, str(d["token"]))),
+                   None)
+if _seenone256:
+    _c256 = api.lib.db()
+    try:
+        _c256.execute("INSERT OR REPLACE INTO progress (who, key, position, duration, updated, marked) "
+                      "VALUES (?, ?, 0, 0, ?, 1)", (_who256(_seenone256[0]), _seenone256[1], int(time.time())))
+        _c256.commit()
+    finally:
+        _c256.close()
+def _watched256(tok, key):
+    c = api.lib.db()
+    was = api.who
+    try:
+        api.who = _who256(tok)
+        return api._watched(c, key)
+    finally:
+        api.who = was
+        c.close()
+import pd_tracker as _tr256
+_log256 = list(_tr256.STATE.get("log") or [])
+_tr256.STATE["log"] = []          # the pack fetches alone, so what the house fetched is told apart
+try:
+    _added256 = m.fill_watchlists()
+finally:
+    _tr256.STATE["log"] = _log256
+_after256 = m.read_settings() or {}
+def _wl256(tok):
+    mine = _after256 if tok == "me" else (_after256.get("users") or {}).get(tok) or {}
+    return set(str(k) for k in mine.get("watchlist") or [])
+_miss256 = [d.get("key") for d in _mine256 if m.watch_key_of(d.get("titleId") or d.get("key"))
+            and not _watched256(str(d["token"]), m.watch_key_of(d.get("titleId") or d.get("key")))
+            and m.watch_key_of(d.get("titleId") or d.get("key")) not in _wl256(str(d["token"]))]
+check("256 a film somebody fetched and has watched since is not put back on their watchlist",
+      _seenone256 is not None and _seenone256[1] not in _wl256(_seenone256[0]), str(_seenone256))
+check("256 every title somebody fetched themselves is on their own watchlist (%d added)" % _added256,
+      _added256 > 0 and not _miss256 and _after256.get("watchFilled"), str(_miss256[:3]))
+_tracker256 = {k for t, k in _house256}
+check("256 a title only the house fetched by itself is not put on anybody's watchlist (%d looked at)" % len(_house256),
+      bool(_house256) and not [(t, k) for t, k in _house256 if k in _wl256(t)
+                               and not any(k == kk for tt, kk in _asked256)])
+check("256 and the pass runs once", m.fill_watchlists() == 0)
+_ep256 = next((d for d in _mine256 if str(_pt250.title_of(d.get("key"))).startswith("e")), None)
+if _ep256:
+    check("256 a single episode fetched puts nothing on the watchlist - not it, not its programme",
+          m.watch_key_of(_ep256["key"]) == "", m.watch_key_of(_ep256["key"]))
+check("256 a single episode from the tracker puts nothing on it either",
+      m.watch_key_of("", "Some.Show.S02E05.1080p.WEB.h264-GRP") == "")
+_con256 = api.lib.db()
+try:
+    _show256 = _con256.execute("SELECT i.id, i.title FROM item i JOIN episode e ON e.item_id=i.id "
+                               "WHERE i.type='show' AND e.season=1 LIMIT 1").fetchone()
+finally:
+    _con256.close()
+if _show256:
+    _rel256 = "%s.S01.1080p.BluRay.x264-GRP" % re.sub(r"[^A-Za-z0-9]+", ".", _show256[1]).strip(".")
+    check("256 a season fetched from the tracker puts its programme on the watchlist, once",
+          m.watch_key_of("", _rel256) == str(_show256[0]), "%s -> %s" % (_rel256, m.watch_key_of("", _rel256)))
+
+# ---- 257. one torrent, several films asked for: its line is the one coming in, once
+import pd_torrents as _pt257
+
+
+class _QB257:
+    def __init__(self, *a):
+        pass
+
+    def _call(self, *a, **k):
+        return json.dumps([{"hash": "AB257", "name": "A Pack 257", "state": "downloading",
+                            "dlspeed": 5e6, "size": 9e9, "added_on": 1}]).encode()
+
+
+_d257 = {"config": {}, "packs": [], "downloads": [
+    {"key": "k1", "hash": "ab257", "title": "Coming In", "state": "downloading", "progress": 0.4,
+     "mbit": 40.0, "size": 3, "who": "Ann"},
+    {"key": "k2", "hash": "ab257", "title": "Behind It", "state": "queued", "size": 4, "who": "Ann"}]}
+_was257 = (_pt257.QB, _pt257.load, _pt257._place)
+try:
+    _pt257.QB, _pt257.load, _pt257._place = _QB257, (lambda: _d257), (lambda k: 1)
+    m.COMING["at"] = 0.0
+    _rows257 = [(r["name"], r.get("state"), r.get("mbit")) for r in m.coming_in()]
+finally:
+    _pt257.QB, _pt257.load, _pt257._place = _was257
+    m.COMING["at"] = 0.0
+check("257 a torrent with two films asked for: the one coming in on its line, the other queued once",
+      _rows257 == [("Coming In", "downloading", 40.0), ("Behind It", "queued", 0.0)], str(_rows257))
+
+# ---- 258. what a cache server downloads for somebody is on the main server's line too
+_was258 = (dict(m.CACHE_ACTIVE), _pt257._following)
+try:
+    _pt257._following = lambda: {}
+    m.CACHE_ACTIVE.update(at=time.time(), asked=time.time(), rows=[
+        {"ratingKey": "t1", "offer": {"token": "tokA", "on": "C"}},
+        {"ratingKey": "t2", "offer": {"token": "tokB", "on": "C"}},
+        {"ratingKey": "t0", "offer": {"token": "tokA", "on": "C"}}])
+    _own258 = m.with_cache_downloads([{"ratingKey": "t0", "offer": {"token": "tokA"}}])
+    _ann258 = m.with_cache_downloads([], "tokA")
+finally:
+    m.CACHE_ACTIVE.update(_was258[0])
+    _pt257._following = _was258[1]
+check("258 the owner's line: this server's, then the cache's, a title once",
+      [r["ratingKey"] for r in _own258] == ["t0", "t1", "t2"], str(_own258))
+check("258 a guest's line: their own from the cache, and no token in it",
+      [r["ratingKey"] for r in _ann258] == ["t1", "t0"]
+      and not any("token" in r["offer"] for r in _ann258), str(_ann258))
+
+# ---- 259. a film that is an episode as well: its page and its search card play the episode
+_con259 = api.lib.db()
+try:
+    _ep259 = next((r for r in _con259.execute(
+        "SELECT e.id, e.title, e.aired FROM episode e WHERE e.aired LIKE '____-%' AND EXISTS "
+        "(SELECT 1 FROM file f WHERE f.episode_id = e.id)").fetchall()
+        if len(str(r["title"] or "").split()) >= 4 and len(str(r["title"])) >= 14
+        and not _con259.execute("SELECT 1 FROM item WHERE type='movie' AND lower(title)=lower(?)",
+                                (r["title"],)).fetchone()), None)
+    if _ep259:
+        _y259 = int(str(_ep259["aired"])[:4])
+        _one259 = {"title": str(_ep259["title"]).upper(), "year": _y259 - 1}
+        check("259 a film by an episode's name, aired within a year: the episode",
+              api._arrived_since(_con259, _one259) == str(_ep259["id"]))
+        check("259 the same name years apart is another film",
+              api._arrived_since(_con259, dict(_one259, year=_y259 - 3)) == "")
+        _hubs259 = [{"type": "movie", "Metadata": [
+            {"ratingKey": "rt259none", "type": "movie", "title": _ep259["title"], "year": _y259}]}]
+        api._twins_in_search(_con259, _hubs259)
+        _card259 = _hubs259[0]["Metadata"][0]
+        check("259 its search card is the episode, with the film's name beside it",
+              _card259.get("ratingKey") == str(_ep259["id"]) and _card259.get("aka", {}).get("year") == _y259,
+              str(_card259)[:200])
+    _short259 = _con259.execute(
+        "SELECT e.title, e.aired FROM episode e WHERE length(e.title) BETWEEN 4 AND 9 AND e.aired LIKE '____-%' "
+        "AND EXISTS (SELECT 1 FROM file f WHERE f.episode_id = e.id) LIMIT 1").fetchone()
+    if _short259:
+        check("259 a name of one or two short words is never taken for an episode",
+              api._episode_twin(_con259, _short259["title"], int(str(_short259["aired"])[:4])) == "")
+finally:
+    _con259.close()
+check("259 there is an episode to try it on", _ep259 is not None)
 
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):

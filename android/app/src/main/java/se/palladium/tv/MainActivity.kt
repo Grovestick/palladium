@@ -175,6 +175,12 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic
         var homeBare = false
 
+        /** When a key last went down here: what the shelves do on their own after a
+         *  return does not take the remote back from somebody already moving. */
+        @Volatile
+        @JvmStatic
+        var keyAt = 0L
+
         /** Whether the first focus of the run has been placed. Until it has, the
          *  server picker refuses it, so the tab is what the remote starts on. */
         //: state, not a plain field: the picker's answer to "may I be focused" is
@@ -186,6 +192,8 @@ class MainActivity : AppCompatActivity() {
     private var lastBareBack = 0L
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.action == android.view.KeyEvent.ACTION_DOWN)
+            keyAt = android.os.SystemClock.uptimeMillis()
         // Nothing on the screen to go back into: twice closes the app, from here
         // rather than from a handler inside the list that may not be there. This is
         // the one key that has to work when nothing else does.
@@ -1963,6 +1971,24 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         }
 
         SettingsHeading("UPDATES")
+        // which app this viewer is offered: each version as it is built, or the one
+        // let out at eight once nothing is wrong with it (owner, 2026-11-05)
+        var channel by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) { channel = Api.appChannel() }
+        if (channel.isNotEmpty()) {
+            SettingsRow("App updates",
+                        if (channel == "latest") "Each new version as soon as it is built"
+                        else "The day's version, at eight in the morning, once nothing is wrong with it") {
+                Pill("Latest", active = channel == "latest") {
+                    channel = "latest"
+                    ctx.lifecycleScope.launch { channel = Api.setAppChannel("latest").ifEmpty { channel } }
+                }
+                Pill("Daily", active = channel == "daily") {
+                    channel = "daily"
+                    ctx.lifecycleScope.launch { channel = Api.setAppChannel("daily").ifEmpty { channel } }
+                }
+            }
+        }
         // The server, from the same house as the server. A screen away from home is
         // told what is running and nothing else: it cannot see what happens next, and
         // the machine it would be restarting is not in front of anybody.
@@ -2908,6 +2934,14 @@ private class Browse {
     var openedAt: Pair<Int, Int>? = null
     /** the last return to the front already answered by going Home */
     var returnSeen = 0
+    /** the next read of Home keeps its shelves on screen and swaps each in as it arrives */
+    var quietLoad = false
+    /** and Continue watching goes to its start, the remote on its first card */
+    var deckFront = false
+    /** when the app came back to the front, against the last key */
+    var returnedAt = 0L
+    /** the card on Continue watching just played: moved first while the film covers Home */
+    var playedFront = ""
     val gridState = androidx.compose.foundation.lazy.grid.LazyGridState()
     val rowsState = androidx.compose.foundation.lazy.LazyListState()
     /** home row a title was opened from */
@@ -3234,6 +3268,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             !Route.isOpening(cameBack, MainActivity.openedAt)) {
             browse.returnSeen = cameBack
             browse.collectionOn = null
+            // back on Home from a film: the shelves stay up while they are read again, not
+            // a spinner and the whole page drawn anew (2026-11-05)
+            browse.quietLoad = Route.quietReturn(browse.tab, browse.rows.isNotEmpty(),
+                                                 browse.query.isNotBlank())
+            // and the film just watched is first in Continue watching: the row from its
+            // start, unless a title page waits for the remote to come back to its poster
+            browse.deckFront = browse.openedKey.isEmpty() && browse.query.isBlank()
+            browse.returnedAt = android.os.SystemClock.uptimeMillis()
             // back to Home: Start is only where the app opens
             browse.tab = "home"
             // after the film has said where it got to. Both happen at once when
@@ -3249,6 +3291,26 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             browse.loaded = ""
         }
     }
+    // A card played from Continue watching is put first, the row at its start and the
+    // remote on it, once the film covers Home: backing out finds it all in place already
+    // rather than moving when the shelf is read again (owner, 2026-11-05)
+    val homeLife = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(homeLife) {
+        val watch = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            val key = browse.playedFront
+            if (event != androidx.lifecycle.Lifecycle.Event.ON_STOP || key.isEmpty())
+                return@LifecycleEventObserver
+            browse.playedFront = ""
+            browse.rows = browse.rows.map { (title, list) ->
+                if (title == DECK) title to Route.toFront(list) { it.ratingKey == key }
+                else title to list
+            }
+            browse.rowStates[DECK]?.requestScrollToItem(0)
+            browse.focusKey = key
+        }
+        homeLife.lifecycle.addObserver(watch)
+        onDispose { homeLife.lifecycle.removeObserver(watch) }
+    }
     // Keyed on what was loaded as well as on what is wanted. Coming back from a film
     // clears the first to ask for a fresh read, and on the tab the film was started
     // from the second does not change - so nothing re-ran, the shelf kept the place
@@ -3259,7 +3321,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // the same search asked again while the catalogue or the tracker answers: the
         // hits stay on the screen until the new ones are in, rather than a spinner
         val quiet = browse.query.isNotBlank() && browse.query.trim() == browse.queryShown
-        if (!quiet) browse.loading = true
+        val keepShelves = browse.quietLoad.also { browse.quietLoad = false }
+        if (!quiet && !keepShelves) browse.loading = true
         browse.failed = null
         browse.matching = -1
         val tab = browse.tab
@@ -3344,18 +3407,44 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     // so nothing is ever put in above what is on screen and the page
                     // stays at its top. Continue watching comes first.
                     val got = java.util.concurrent.ConcurrentHashMap<String, List<Media>>()
+                    // back from a film: the shelves on screen stand until their own answer
+                    // is in, each then swapped in its place
+                    val had = if (keepShelves) Route.shelvesByOrder(
+                        order.map { it.first }, SEASONAL, browse.rows) else emptyMap()
                     order.map { (name, get) ->
                         launch {
                             got[name] = askAgain(get) { short.add(name) }
-                            val ready = order.takeWhile { (n, _) -> got.containsKey(n) }
+                            val ready = if (keepShelves) order
+                                        else order.takeWhile { (n, _) -> got.containsKey(n) }
                             browse.rows = ready.mapNotNull { (n, _) ->
-                                got[n]?.takeIf { it.isNotEmpty() }?.let {
+                                // one that could not be read keeps what it showed
+                                (got[n]?.takeIf { it.isNotEmpty() || n !in short } ?: had[n])
+                                    ?.takeIf { it.isNotEmpty() }?.let {
                                     // the season's shelf is called what its cards say
                                     (if (n == SEASONAL) it.first().shelf.ifEmpty { n }
                                      else n) to it
                                 }
                             }
                             if (ready.isNotEmpty()) browse.loading = false
+                            if (name == DECK && browse.deckFront) {
+                                browse.deckFront = false
+                                val first = got[DECK]?.firstOrNull()?.ratingKey.orEmpty()
+                                // not once a key has gone down since the return: the
+                                // shelf arrived after somebody had moved on and took
+                                // the remote back to its first card (owner, 2026-11-05)
+                                if (first.isNotEmpty() &&
+                                        !Route.movedSince(MainActivity.keyAt, browse.returnedAt)) {
+                                    // after the row has drawn its new order: asked at once
+                                    // it scrolled the old one, and the row then kept its
+                                    // place by the card that had been first on screen,
+                                    // which left the film just watched cut off at the left
+                                    repeat(Route.DECK_FRONT_FRAMES) {
+                                        androidx.compose.runtime.withFrameNanos { }
+                                        runCatching { browse.rowStates[DECK]?.scrollToItem(0) }
+                                    }
+                                    browse.focusKey = first
+                                }
+                            }
                         }
                     }.joinAll()
                     if (short.isNotEmpty()) {
@@ -4331,8 +4420,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                     }
                                     if (drew == null) {
                                         browse.notice = "Nothing to play on that shelf"
-                                    } else if (drew.media.offered ||
-                                               drew.media.ratingKey.startsWith("o")) {
+                                    } else if (drew.media.offered) {
                                         // Drawn from a pack rather than the library: the
                                         // server has already asked for it. The collection
                                         // stays, its poster showing the download.
@@ -4743,6 +4831,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                     // not, so the test was never true and none of it
                                     // ran.
                                     // the player at once, loading there
+                                    browse.playedFront = m.ratingKey
                                     playFromCard(ctx, m, shelf = true)
                                 } else if (title == DECK && !m.isFolder) {
                                     // asked for in full first. A row on this shelf is
@@ -4750,6 +4839,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                     // file - and a film that cannot say what it is
                                     // cannot be played as it is, so every resume from
                                     // here went through the encoder.
+                                    browse.playedFront = m.ratingKey
                                     playFromCard(ctx, m, shelf = false)
                                 } else {
                                     browse.openedRow = title; browse.openedKey = m.ratingKey
@@ -6678,10 +6768,13 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             }
             // and another copy coming in from a pack: the same line, its own Cancel. Only
             // the tracker's were here, so a copy taken from a pack started unseen.
-            Api.downloading.value.filter {
+            // the tracker's own come once, below, with the words from this list: listed
+            // here as well, one download stood twice with two Cancels (2026-11-05)
+            val coming = Api.downloading.value.filter {
                 Route.takingIsFor("", it.title, it.year ?: 0, full.ratingKey, full.title, full.year) &&
                     it.offerState in setOf("queued", "downloading")
-            }.forEach { d ->
+            }
+            coming.filter { !it.offerTracker }.forEach { d ->
                 Pill("✕ Cancel  ·  " +
                          Route.offerLine(d.offerState, d.offerVersion, d.offerProgress, d.offerMbit,
                                          d.offerEta, d.offerPlace, d.offerWords),
@@ -6698,7 +6791,11 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // finished: gone from the page - the film is in the library now, and
                 // a line saying so only sat there
                 if (one.done) return@forEach
-                Pill("✕ Cancel " +
+                val said = coming.firstOrNull { it.offerTracker }
+                Pill(if (said != null) "✕ Cancel  ·  " +
+                         Route.offerLine(said.offerState, said.offerVersion, said.offerProgress,
+                                         said.offerMbit, said.offerEta, said.offerPlace, said.offerWords)
+                     else "✕ Cancel " +
                          (if (one.state == "queued") "queued"
                           else "$pct%") +
                          (if (one.mbit > 0)

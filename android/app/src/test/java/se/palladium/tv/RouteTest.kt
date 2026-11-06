@@ -1598,6 +1598,20 @@ class RouteTest {
                      Route.releaseGroups(listOf(false to false)))
     }
 
+    @Test fun anAddedPackHidesTheTrackersReleasesBehindOtherVersions() {
+        val rows = listOf(false to true, true to false, false to false)
+        assertEquals(listOf("From the pack you added" to listOf(1)), Route.releaseGroupsShown(rows, false))
+        assertTrue(Route.moreReleases(rows, false))
+        assertEquals(3, Route.releaseGroupsShown(rows, true).size)
+        assertFalse(Route.moreReleases(rows, true))
+        // no pack added: the tracker's all at once, no button
+        val none = listOf(false to true, false to false)
+        assertEquals(2, Route.releaseGroupsShown(none, false).size)
+        assertFalse(Route.moreReleases(none, false))
+        // only the pack: nothing behind the button
+        assertFalse(Route.moreReleases(listOf(true to false), false))
+    }
+
     @Test fun markPopupsSayAddOrRemoveAsItStands() {
         assertEquals("Remove", Route.shelfAct("all"))
         assertEquals("Add", Route.shelfAct("some"))
@@ -1767,6 +1781,90 @@ class RouteTest {
         // Media3 gives the progress bar alone two seconds before the controls go
         assertTrue(Route.BAR_HELD_MS > 2000L)
         assertTrue(Route.BAR_HELD_MS <= 10000L)
+        assertEquals(4000L, Route.BAR_HELD_MS)
+    }
+
+    @Test fun aSearchDoesNotWaitForAServerSeenDown() {
+        assertFalse(Route.waitedFor(false, 1500L))
+        assertTrue(Route.waitedFor(true, 1500L))
+        assertTrue(Route.waitedFor(null, 1500L))
+        // without a grace, as the shelves ask, every server is waited for
+        assertTrue(Route.waitedFor(false, 0L))
+    }
+
+    @Test fun aShelfArrivingLateLeavesTheRemoteWhereItWasTaken() {
+        assertTrue(Route.movedSince(keyAt = 2000L, since = 1000L))
+        // the back press that came home was before the return
+        assertFalse(Route.movedSince(keyAt = 900L, since = 1000L))
+    }
+
+    @Test fun onlyAPauseShadesThePictureAndGreysTheControls() {
+        assertTrue(Route.pausedLook(playWhenReady = false, loading = false))
+        assertFalse(Route.pausedLook(playWhenReady = true, loading = false))
+        // loading is not a pause, whatever the player says
+        assertFalse(Route.pausedLook(playWhenReady = false, loading = true))
+        assertTrue(Route.PAUSED_INK in 0.3f..0.8f)
+    }
+
+    @Test fun theInformationLineComesWithNoPressOrTheUpper() {
+        assertTrue(Route.infoLineWith(0))
+        assertTrue(Route.infoLineWith(Route.LOOK_UPPER))
+        assertFalse(Route.infoLineWith(Route.LOOK_LOWER))
+        assertFalse(Route.infoLineWith(Route.LOOK_BAR))
+    }
+
+    @Test fun theBarAloneHoldsTheNameOverTheBar() {
+        assertEquals(listOf("bar"), Route.nameOver(true))
+        assertEquals(listOf("bar", "row"), Route.nameOver(false))
+    }
+
+    @Test fun theControlsShrunkToTheBarAreTheBarLook() {
+        assertEquals(Route.LOOK_BAR, Route.lookWhenShrunk(Route.LOOK_LOWER, true))
+        assertEquals(Route.LOOK_BAR, Route.lookWhenShrunk(Route.LOOK_UPPER, true))
+        assertEquals(Route.LOOK_LOWER, Route.lookWhenShrunk(Route.LOOK_LOWER, false))
+        // nothing asked for: nothing chosen
+        assertEquals(0, Route.lookWhenShrunk(0, true))
+        // and a centre press from there brings the bar alone
+        assertEquals(Route.LOOK_BAR, Route.lookAfter("centre", Route.lookWhenShrunk(Route.LOOK_LOWER, true)))
+    }
+
+    @Test fun backFromAFilmKeepsHomesShelvesOnScreen() {
+        assertTrue(Route.quietReturn("home", true, false))
+        // nothing to keep, another tab's page, or a search: read as before
+        assertFalse(Route.quietReturn("home", false, false))
+        assertFalse(Route.quietReturn("films", true, false))
+        assertFalse(Route.quietReturn("home", true, true))
+        val names = listOf("Continue watching", "Seasonal", "Popular films")
+        val had = Route.shelvesByOrder(names, "Seasonal",
+            listOf("Continue watching" to 1, "Christmas" to 2, "Popular films" to 3))
+        assertEquals(mapOf("Continue watching" to 1, "Seasonal" to 2, "Popular films" to 3), had)
+        // more than the one frame before the row has drawn its new order
+        assertTrue(Route.DECK_FRONT_FRAMES > 1)
+        // the card played goes first while the film covers Home, the rest keep their order
+        assertEquals(listOf("c", "a", "b", "d"), Route.toFront(listOf("a", "b", "c", "d")) { it == "c" })
+        assertEquals(listOf("a", "b"), Route.toFront(listOf("a", "b")) { it == "a" })
+        assertEquals(listOf("a", "b"), Route.toFront(listOf("a", "b")) { it == "x" })
+    }
+
+    @Test fun upOrDownBringsTheLowerUpAgainTheUpperAnythingElseTheBar() {
+        assertEquals(Route.LOOK_BAR, Route.lookAfter("side", 0))
+        assertEquals(Route.LOOK_BAR, Route.lookAfter("centre", 0))
+        assertEquals(Route.LOOK_LOWER, Route.lookAfter("up", 0))
+        assertEquals(Route.LOOK_LOWER, Route.lookAfter("down", 0))
+        // from the bar: up and down open their row, the rest stay on the bar
+        assertEquals(Route.LOOK_LOWER, Route.lookAfter("up", Route.LOOK_BAR))
+        assertEquals(Route.LOOK_LOWER, Route.lookAfter("down", Route.LOOK_BAR))
+        assertEquals(Route.LOOK_BAR, Route.lookAfter("side", Route.LOOK_BAR))
+        // the upper stays for scrubbing; down goes to the lower, which keeps every key
+        assertEquals(Route.LOOK_UPPER, Route.lookAfter("side", Route.LOOK_UPPER))
+        assertEquals(Route.LOOK_LOWER, Route.lookAfter("down", Route.LOOK_UPPER))
+        assertEquals(Route.LOOK_LOWER, Route.lookAfter("up", Route.LOOK_LOWER))
+        // up from play/pause, the top of the lower: the upper (owner, 2026-11-04)
+        assertEquals(Route.LOOK_UPPER, Route.lookAfter("up", Route.LOOK_LOWER, atTop = true))
+        assertEquals(Route.LOOK_LOWER, Route.lookAfter("side", Route.LOOK_LOWER, atTop = true))
+        // up twice from nothing: the lower, then the upper
+        assertEquals(Route.LOOK_UPPER, Route.lookAfter("up", Route.lookAfter("up", 0), atTop = true))
+        assertEquals(Route.LOOK_UPPER, Route.lookAfter("up", Route.LOOK_UPPER))
     }
 
     @Test fun aPlayerLeavesTitlesToOpenToTheLibrary() {
@@ -1782,5 +1880,13 @@ class RouteTest {
         assertTrue(Route.rollsOn(queued = false, casual = false, seriesNext = true))
         // a film on its own closes, with its controls
         assertFalse(Route.rollsOn(queued = false, casual = false, seriesNext = false))
+    }
+
+    @Test fun aReopenedEncodeCutIsNoFault() {
+        assertFalse(Route.filesPlaybackFault(true, 0))
+        assertFalse(Route.filesPlaybackFault(true, Route.ENCODE_REOPENS - 1))
+        // reopened five times and still refused: that is a fault
+        assertTrue(Route.filesPlaybackFault(true, Route.ENCODE_REOPENS))
+        assertTrue(Route.filesPlaybackFault(false, 0))
     }
 }

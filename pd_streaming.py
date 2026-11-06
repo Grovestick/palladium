@@ -1570,15 +1570,18 @@ def by_name(lib, words, most=BY_NAME_MOST, patience=6):
                 results.append(one)
     by_tmdb, _ = _held(lib)
     today = time.strftime("%Y-%m-%d")
+    flat = lambda t: " ".join(re.sub(r"[^a-z0-9]+", " ", str(t or "").lower()).split())
     out = []
     for one in results:
         when = str(one.get("release_date") or "")[:10]
         # out: with votes enough to be a film people saw; not out yet: one people
-        # are waiting for, shown as upcoming
+        # are waiting for, shown as upcoming. A title typed out in full is shown
+        # whatever its votes: a 1996 film with 12 was never found by its name (2026-11-06)
         coming = when > today and float(one.get("popularity") or 0) >= UPCOMING_POPULAR
+        exact = flat(one.get("title")) == flat(low)
         if (len(when) != 10 or not one.get("poster_path")
                 or (when > today and not coming)
-                or (not coming and int(one.get("vote_count") or 0) < 20)
+                or (not coming and not exact and int(one.get("vote_count") or 0) < 20)
                 or by_tmdb.get(("movie", int(one.get("id") or 0)))):
             continue
         out.append({

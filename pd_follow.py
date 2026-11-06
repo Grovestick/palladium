@@ -1880,8 +1880,9 @@ def _take_for_copy(one, rows, request=None, told=None):
             continue
         try:
             said = request(str(r["key"]), str(r.get("token") or "me"), str(r.get("who") or ""),
-                           float(r.get("cap") or 0), float(r.get("most") or 0), auto=True,
-                           reason=str(r.get("reason") or "asked for on the main server"))
+                           float(r.get("cap") or 0), float(r.get("most") or 0),
+                           auto=bool(r.get("auto")), reason=str(r.get("reason") or ""),
+                           handed=True)
         except Exception as e:
             log_line("pack request %s not taken: %s" % (r.get("key"), e))
             continue

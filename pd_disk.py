@@ -146,6 +146,16 @@ def outside_from(torrents, copying_drives):
     return out
 
 
+def busy(drive):
+    """What keeps a drive from taking a second download: a download, the copy or a check
+    going there, this server's or from outside. "" when none."""
+    with LOCK:
+        going = [one["kind"] for one in HELD.values() if one["drive"] == drive]
+        going += list(OUTSIDE.get(drive, []))
+    going = sorted((k for k in going if k in ("download", "copy", "check")), key=lambda k: KINDS[k])
+    return "%s on %s" % (WORDS[going[0]], drive or "the disk") if going else ""
+
+
 def set_outside(found):
     with LOCK:
         OUTSIDE.clear()

@@ -97,8 +97,8 @@ def problems(facts, now=None):
         out.append("the backup has not run since %s" % time.strftime("%d %b", time.localtime(backup["at"])))
     tracker = facts.get("tracker") or {}
     if tracker.get("cookie") and tracker.get("expired"):
-        out.append("the tracker session has expired: searches and the account figures stop "
-                   "until it is signed in again")
+        out.append("the tracker session has expired and the indexer could not sign in again: "
+                   "searches and the account figures stop")
     if int(facts.get("faults") or 0):
         out.append("%d fault report%s open" % (facts["faults"], "" if facts["faults"] == 1 else "s"))
     for w in facts.get("workers") or []:

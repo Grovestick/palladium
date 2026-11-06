@@ -231,13 +231,36 @@ def ask_jackett(words, kind="search"):
     return learned
 
 
-def cookie():
-    """The signed-in session to search with, as the owner last gave it."""
+#: the local indexer's TorrentLeech settings: the session it signed in with is among them
+JACKETT_TL = os.path.join(os.environ.get("PROGRAMDATA", ""), "Jackett", "Indexers", "torrentleech.json")
+
+
+def jackett_cookie():
+    """The session the local indexer holds. It signs in again by itself and writes the new
+    one here, so nobody hands a cookie over while it runs."""
+    try:
+        with open(JACKETT_TL, encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and r.get("id") == "cookieheader":
+            return " ".join(str(r.get("value") or "").split())
+    return ""
+
+
+def given_cookie():
+    """The session the owner last handed over: the way in where there is no indexer."""
     try:
         import pd_torrents
         return str((pd_torrents.load().get("config") or {}).get("trackerCookie") or "")
     except Exception:
         return ""
+
+
+def cookie():
+    """The signed-in session: the indexer's, else the one handed over."""
+    return jackett_cookie() or given_cookie()
 
 
 def keep_cookie(said):
@@ -289,18 +312,26 @@ def keep_warm():
     """
     if HELD["on"]:
         return None
-    said = cookie()
-    if not said:
+    tried = list(dict.fromkeys(c for c in (jackett_cookie(), given_cookie()) if c))
+    if not tried:
         return False
-    try:
-        ask = urllib.request.Request(
-            "https://www.torrentleech.org/torrents/browse",
-            headers={"User-Agent": "Mozilla/5.0", "Cookie": said})
-        with urllib.request.urlopen(ask, timeout=30) as answer:
-            body = answer.read(400000).decode("utf-8", "replace")
-    except Exception:
-        return False                      # the tracker being away is not the session
-    gone = "Login ::" in body or "login-form" in body
+    body = ""
+    for said in tried:
+        body = page(said)
+        if body is None:
+            return False                  # the tracker being away is not the session
+        if not signed_out(body):
+            break
+    if signed_out(body) and jackett()[1]:
+        # every session has run out: the indexer signs in again when a search finds it
+        # logged out, and writes the new session where jackett_cookie reads it
+        ask_jackett("sign in check 2000")
+        fresh = jackett_cookie()
+        if fresh and fresh not in tried:
+            body = page(fresh)
+            if body is None:
+                return False
+    gone = signed_out(body)
     with LOCK:
         STATE["why"] = ("the session has expired - sign in again and hand it over"
                         if gone else "")
@@ -315,6 +346,23 @@ def keep_warm():
         except OSError:
             pass
     return not gone
+
+
+def page(said):
+    """The tracker's browse page read with one session; None when the tracker is away."""
+    try:
+        ask = urllib.request.Request(
+            "https://www.torrentleech.org/torrents/browse",
+            headers={"User-Agent": "Mozilla/5.0", "Cookie": said})
+        with urllib.request.urlopen(ask, timeout=30) as answer:
+            return answer.read(400000).decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def signed_out(body):
+    """Whether a page the tracker gave is its login page."""
+    return "Login ::" in body or "login-form" in body
 
 
 #: the account's figures as last read off the tracker's own pages
@@ -940,7 +988,10 @@ def landing_now(log, done, held, now):
     """Finished tracker fetches of films the library has not read in yet.
 
     `log` is the tracker's own log, `done` maps a flat release name to the time
-    qBittorrent finished it, `held(title, year)` says whether the library has the film.
+    qBittorrent finished it, `held(title, year, name)` says whether the library has the
+    film or the release's own file: a game named by its date is filed as an episode of
+    its league and never matched as a film, so it stood at 100% for the whole quarter
+    hour after it could be watched (2026-11-05).
     Between the torrent finishing and the scan, the card fell back to Download and
     then dropped off the release row; it stays at 100% until the film is there.
     Films only: an episode has no year to be matched by.
@@ -956,7 +1007,7 @@ def landing_now(log, done, held, now):
         title, year = bare(name)
         if not year or re.search(r"\bS\d{1,2}(E\d{1,3})?\b", name, re.I):
             continue
-        if held(title, year):
+        if held(title, year, name):
             continue
         out.append({"name": name, "progress": 1.0, "mbit": 0.0, "eta": 0,
                     "size": int(t.get("size") or 0), "who": t.get("who") or "",

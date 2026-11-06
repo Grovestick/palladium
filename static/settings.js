@@ -2369,7 +2369,7 @@
           const w = Object.assign({}, w0, { from: whose[which] || "" });
           // On the film, not on the name: the row a stream raises is named for the
           // viewer and the row a player's report raises is named for the device, so
-          // one person watching one thing arrived as "Olof" with no position and
+          // one person watching one thing arrived as the owner's name with no position and
           // "Streamer" with one, and neither row said what was happening.
           // The key alone, where there is one. It was the key joined to the episode
           // label, and only the machine a player reports to fills that in - so one
@@ -7196,7 +7196,9 @@
     else if (tab === "music") await paneMusic(main);
     else if (tab === "reports") await paneReports(main);
     else if (tab === "health") await paneHealth(main);
-    else paneSubs(main);
+    // waited for like every other pane: not waited for, it drew onto the page built out
+    // of sight after that page had been swapped in, and the tab stayed empty (2026-11-05)
+    else await paneSubs(main);
     // on Settings and nowhere else: it is about the machine as a whole, and under
     // Library or Users it read as belonging to what was above it
 

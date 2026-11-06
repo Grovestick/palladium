@@ -400,7 +400,7 @@ fun startShuffle(ctx: Context, shelf: String, onOpen: (Media) -> Unit, at: Strin
             return@launch
         }
         val full = (runCatching { Api.metadata(drew.media) }.getOrNull() ?: drew.media)
-        if (drew.media.offered || drew.media.ratingKey.startsWith("o")) {
+        if (drew.media.offered) {
             onOpen(full)
             return@launch
         }

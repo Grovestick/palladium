@@ -1706,6 +1706,49 @@ class LocalAPI:
         """Which file of this title the viewer chose, by path; nothing means the best."""
         return (viewer_settings(self.who).get("copyPick") or {}).get(str(key), "")
 
+    @staticmethod
+    def _game_poster(series, path):
+        """The drawn poster of the race or game a file under a sport's series is, by its
+        folder's name or its own; None for anything else."""
+        import pd_sports
+        if series not in pd_sports.FILED_UNDER:
+            return None
+        for name in (os.path.basename(os.path.dirname(str(path or ""))),
+                     os.path.splitext(os.path.basename(str(path or "")))[0]):
+            said = pd_sports.read_name(name)
+            if said:
+                return "/art/%s/poster" % said["event"]
+        return None
+
+    def _games_arrived(self, con, now=None):
+        """Races and games read in over the last few days, newest first, as Recently
+        added films carries them: an episode of its sport, so on no film shelf, and the
+        card that had said Downloading went and nothing came in its place (2026-11-05)."""
+        import pd_sports
+        since = (time.time() if now is None else now) - pd_sports.ARRIVED_DAYS * 86400
+        marks = ",".join("?" * len(pd_sports.FILED_UNDER))
+        try:
+            rows = con.execute(
+                "SELECT e.id, MAX(COALESCE(f.mtime, f.ctime)) AS came FROM episode e "
+                "JOIN item i ON i.id = e.item_id JOIN file f ON f.episode_id = e.id "
+                "WHERE i.type='show' AND i.title IN (" + marks + ") "
+                "GROUP BY e.id HAVING came > ? ORDER BY came DESC LIMIT 10",
+                tuple(pd_sports.FILED_UNDER) + (since,)).fetchall()
+        except Exception:
+            return []
+        out = []
+        for r in rows:
+            card = self.metadata_for(con, str(r["id"]), brief=True)
+            if card:
+                # when it came in: the app orders this shelf by it, and a card without it
+                # went to the far end (2026-11-05)
+                card["addedAt"] = int(r["came"] or 0)
+                # New while it stands here, whenever it was played
+                if not self._watched(con, str(r["id"])):
+                    card["fresh"] = True
+                out.append(card)
+        return out
+
     def _sport_card(self, con, e, brief=True):
         """A race or a game: the episode it is filed under once a release of it is
         here, and otherwise its card to fetch from."""
@@ -1954,9 +1997,10 @@ class LocalAPI:
     def _held_series(self, con, key):
         """The library's series for a key of the same programme on offer. Both pages existed
         for one series, the offer's without the episodes held (2026-11-01)."""
+        import pd_torrents
+        key = pd_torrents.as_pack_show(key)
         if not str(key).startswith("os"):
             return None
-        import pd_torrents
         for row in con.execute("SELECT id, title FROM item WHERE type='show'"):
             if pd_torrents.show_key(row["title"] or "") == key:
                 return str(row["id"])
@@ -2363,6 +2407,9 @@ class LocalAPI:
             "countries": [c for c in str(row["countries"] or "").split(",") if c],
             "thumb": (f"/art/{row['id']}/poster" if row["poster"]
                       else self._drawn_series_art(row["title"])),
+            # the wide picture, as a film's: without it the front page's slide drew the
+            # poster across the screen
+            "art": f"/art/{row['id']}/backdrop" if row["backdrop"] else None,
             "guid": f"imdb://{row['imdb_id']}" if row["imdb_id"] else None,
             "addedAt": row["added"],
             "viewedLeafCount": seen,
@@ -2461,6 +2508,12 @@ class LocalAPI:
         }
         if prog and not out["viewCount"]:
             out["viewOffset"] = int((prog["position"] or 0) * 1000)
+        # a race or game: its own drawn poster, as on the Sports row before it was here.
+        # Filed under its sport, which has none, it came in with no picture (2026-11-05)
+        if show and not show["poster"] and files:
+            drawn = self._game_poster(show["title"], files[0]["path"])
+            if drawn:
+                out["thumb"] = out["parentThumb"] = drawn
         # seconds of channel ident a fresh start begins past
         import pd_leads
         hook = getattr(self, "lead_rules", None)
@@ -2531,9 +2584,9 @@ class LocalAPI:
             tmdb = int(row["tmdb_id"])
         elif key.startswith("rt"):
             tmdb = int((pd_streaming.one_of(key) or {}).get("tmdb") or 0)
-        elif key.startswith("o"):
+        else:
             import pd_torrents
-            _, film = pd_torrents.by_key(key)
+            _, film = pd_torrents.by_key(key) if pd_torrents.only_in_pack(key) else (None, None)
             tmdb = int((film or {}).get("tmdb") or 0)
         parts = pd_streaming.saga(self.lib, tmdb) if tmdb else []
         out = []
@@ -2972,7 +3025,7 @@ class LocalAPI:
                     coming = self._newest_asked_first(coming)
                 except Exception:
                     coming = []
-                items = coming + items
+                items = coming + self._games_arrived(con) + items
             else:
                 # A season at a time. Adding a series used to put one card on the shelf
                 # per episode - twenty-two of the same programme, pushing everything
@@ -3442,15 +3495,18 @@ class LocalAPI:
             # opening one title is the moment to find out what soundtracks it has,
             # for anything indexed before the library recorded them
             key = m.group(1)
-            if key.startswith("o"):
-                # a film on offer from a torrent pack - and once it has come in, the film
-                # itself, so a page left open on the offer turns into the film's own
-                import pd_torrents
-                here = pd_torrents.arrived(key) or self._held_series(con, key)
+            # A title only a pack has: its page from the pack, under the title's own key -
+            # and once it has come in, the film's own page under that same key, so a page
+            # left open on the offer turns into the film's own (owner, 2026-11-06)
+            import pd_torrents
+            if pd_torrents.only_in_pack(key):
+                here = self._held_series(con, key)
                 if not here:
-                    offer = self._offer_page(key, pd_torrents.metadata(key))
+                    title = pd_torrents.title_of(key)
+                    offer = self._offer_page(title, pd_torrents.metadata(title))
                     return {"size": 1, "Metadata": [offer]} if offer else None
                 key = here
+            key = pd_torrents.title_of(key)
             try:
                 if key.startswith("e"):
                     files = con.execute("SELECT * FROM file WHERE episode_id=?",
@@ -3477,8 +3533,9 @@ class LocalAPI:
             key = m.group(1)
             # a programme on offer, and one of its seasons
             key = self._held_key(con, key)
+            import pd_torrents
+            key = pd_torrents.as_pack_show(key)
             if key.startswith("os"):
-                import pd_torrents
                 offer = re.match(r"^(os[0-9a-f]{10})-s(\d+)$", key)
                 rows = (pd_torrents.offered_episodes(offer.group(1), int(offer.group(2)))
                         if offer else pd_torrents.offered_seasons(key))
@@ -3914,6 +3971,8 @@ class LocalAPI:
             # the film sat in two packs.
             if not hubs and spelt and len(spelt.strip()) >= 4 and not place:
                 hubs = self._near_misses(con, spelt, listed)
+            # a film here as an episode: the episode, under the film's name
+            self._twins_in_search(con, hubs)
             # the closest titles first, and with a year in the words, that year only
             hubs = closest_first(hubs, spelt, want_year)
             # the catalogue still being asked: the page asks again in a moment
@@ -4186,6 +4245,7 @@ class LocalAPI:
                 self._set_watched(con, key, path.endswith("/:/scrobble"))
                 if path.endswith("/:/scrobble") and self.shelf_forget:
                     self.shelf_forget(key)
+                self.start_watched(self.who)
             return {"size": 0}
 
         if path == "/:/timeline":                        # the client reports progress here
@@ -4197,6 +4257,8 @@ class LocalAPI:
             # episode watched from its page stayed on the shelf as half-watched.
             if key and dur and self.watched_through(pos, dur, key) and self.shelf_forget:
                 self.shelf_forget(key)
+            if key and dur and self.watched_through(pos, dur, key):
+                self.start_watched(self.who)
             # half way through, which is where somebody is watching rather than sampling.
             # Not in a shuffle: what comes after a drawn episode is the next draw, which
             # the round fetches for itself - this fetched ten in season order for it.
@@ -4538,10 +4600,11 @@ class LocalAPI:
             out = {}
             for name, holds in pd_torrents._episodes_by_show().items():
                 for film, _ in holds:
-                    k = str(film.get("key") or "")
-                    if k in want:
-                        out[k] = (name, int(film.get("season") or 0),
-                                  int(film.get("episode") or 0), film)
+                    # by its pack key or by its title id, whichever the shelf holds
+                    for k in (str(film.get("key") or ""), str(film.get("titleId") or "")):
+                        if k and k in want:
+                            out[k] = (name, int(film.get("season") or 0),
+                                      int(film.get("episode") or 0), film)
             return out
         except Exception:
             return {}
@@ -4562,7 +4625,8 @@ class LocalAPI:
                     "WHERE id IN (%s)" % marks, ids):
                 out[r["id"]] = (str(r["item_id"]), int(r["season"] or 0),
                                 int(r["number"] or 0))
-        offers = self._offered_homes([k for k in keys if str(k).startswith("o")])
+        import pd_torrents
+        offers = self._offered_homes([k for k in keys if pd_torrents.only_in_pack(k)])
         if offers:
             try:
                 import pd_torrents
@@ -4571,7 +4635,7 @@ class LocalAPI:
                     mine[pd_torrents.show_key(r["title"] or "")] = str(r["id"])
                 for key, (name, season, number, _film) in offers.items():
                     show = pd_torrents.show_key(name)
-                    out[key] = (mine.get(show, show), season, number)
+                    out[key] = (mine.get(show) or pd_torrents.programme_id(name), season, number)
             except Exception:
                 pass
         return out, offers
@@ -4579,11 +4643,14 @@ class LocalAPI:
     def _arrived_as(self, con, keys):
         """Offered keys whose episode has since come in, as the library's episode key;
         a key the shelf already holds once is dropped."""
-        offered = self._offered_homes([k for k in keys if str(k).startswith("o")])
+        import pd_torrents
         out, have = [], set()
         for k in keys:
-            k = str(k)
-            if k.startswith("o") and k not in offered:
+            # one key for a title, held or not: a pack copy's old key is its title's
+            k = pd_torrents.title_of(k)
+            # an old pack key the packs no longer know - a pack taken away, or not yet named -
+            # asked of its page, which answers as the episode once it has come in
+            if pd_torrents.old_pack_key(k) and not pd_torrents.only_in_pack(k):
                 got = self.metadata_for(con, k, brief=True) or {}
                 now = str(got.get("ratingKey") or "")
                 if got.get("type") == "episode" and is_episode(now):
@@ -4605,6 +4672,7 @@ class LocalAPI:
         Episodes a pack can give are folded in beside the ones here, into the same
         season: a programme half held and half offered read as two programmes.
         """
+        import pd_torrents
         out, seen = [], set()
         # a pack's key for an episode downloaded since: no pack holds it, so it found
         # no season and stood as a loose episode beside its own season
@@ -4675,10 +4743,10 @@ class LocalAPI:
                 card["ratingKey"] = "%s-s%d" % where
                 # offered until one of its episodes is here, which is what decides
                 # whether the client draws it as something to download
-                if all(str(k).startswith("o") for k in mine):
+                if all(pd_torrents.only_in_pack(k) for k in mine):
                     card["offered"] = True
                 whole = counted.get(where, 0) + sum(
-                    1 for k in mine if str(k).startswith("o"))
+                    1 for k in mine if pd_torrents.only_in_pack(k))
                 card["leafCount"] = whole or len(mine)
                 card["title"] = card.get("title") or "Season %d" % where[1]
                 # what is actually on the shelf, when it is not the whole thing
@@ -5412,11 +5480,33 @@ class LocalAPI:
             return self._start_page(con, one)
         key = (str(self.who), kind, str(one("seed", "0") or "0"), str(one("era", "") or ""))
         kept = self._START_KEPT.get(key)
-        if kept and not fresh and time.time() - kept[0] < self.START_KEPT_FOR:
+        # made once a day by the fronts' own process; an older one stands until the next
+        # is in rather than being made here while somebody waits
+        if kept and not fresh and (key[2:] == ("0", "") or time.time() - kept[0] < self.START_KEPT_FOR):
             return kept[1]
         page = self._start_page(con, one)
         self._START_KEPT[key] = (time.time(), page)
         return page
+
+    #: viewers who have watched something since their fronts were made: theirs are made
+    #: again on the next round of the fronts' process (owner, 2026-11-05)
+    _START_STALE = set()
+
+    def start_watched(self, who):
+        """This viewer finished or marked something: their Start fronts are made again."""
+        self._START_STALE.add(str(who))
+
+    def start_stale_take(self):
+        """The viewers waiting for new fronts, taken off the list."""
+        took = sorted(self._START_STALE)
+        self._START_STALE.difference_update(took)
+        return took
+
+    def start_keep(self, fronts, at):
+        """Fronts made elsewhere - the fronts' own process - kept as if made here:
+        (who, kind, page) each."""
+        for who, kind, page in fronts:
+            self._START_KEPT[(who, "show" if kind == "show" else "movie", "0", "")] = (at, page)
 
     def start_forget(self, who):
         """A viewer's kept fronts dropped: what they told Start changes what it shows."""
@@ -5431,13 +5521,13 @@ class LocalAPI:
             "SELECT DISTINCT who FROM watchlog WHERE updated > ? AND who IS NOT NULL "
             "AND who <> ''", (since,)).fetchall()]
 
-    def start_make_ahead(self, con, pause=None):
-        """Every active viewer's Start front made now - films and series, as it opens.
-        Whose it is is this thread's own, as a request's is, and put back after. How
-        many were made."""
+    def start_make_ahead(self, con, pause=None, only=None):
+        """Every active viewer's Start front made now - films and series, as it opens -
+        or `only` these viewers'. Whose it is is this thread's own, as a request's is,
+        and put back after. How many were made."""
         made, was = 0, self.who
         try:
-            for who in self.start_active(con):
+            for who in (only or self.start_active(con)):
                 self.who = who
                 for kind in ("movie", "show"):
                     # a breath between two: fourteen made back to back held the server
@@ -5482,10 +5572,10 @@ class LocalAPI:
             if pick_key else None
         # or a series offered from a pack and not downloaded yet: it can be the week's
         # pick too, its page the place to ask for the episodes (owner, 2026-11-01)
-        if pick is None and str(said.get("key") or "").startswith("o"):
+        import pd_torrents
+        if pick is None and pd_torrents.only_in_pack(said.get("key")):
             try:
-                import pd_torrents
-                pick = pd_torrents.metadata(str(said["key"]))
+                pick = pd_torrents.metadata(pd_torrents.title_of(said["key"]))
             except Exception:
                 pick = None
         # each vibe's picture, and whether there is anything in it - for films and series
@@ -5994,7 +6084,8 @@ class LocalAPI:
         offered = None
         for item, w in weights.items():
             row = con.execute("SELECT genres, year FROM item WHERE id=?", (item,)).fetchone()
-            if not row and str(item).startswith("o"):
+            import pd_torrents
+            if not row and pd_torrents.only_in_pack(item):
                 # a pack's film, told about from the Start tab: its genres from the pack
                 if offered is None:
                     try:
@@ -6998,7 +7089,55 @@ class LocalAPI:
             if year and r["year"] and abs(int(r["year"]) - year) > 1:
                 continue
             return str(r["id"])
+        # or a film that is an episode as well: a pilot shown as a film first
+        return self._episode_twin(con, one.get("title"), year)
+
+    def _episode_twin(self, con, title, year):
+        """The episode held here that is this film under its other name: the same title,
+        three words or more, and aired within a year of the film. "" when none. A film page
+        and a search card for it play the episode (owner, 2026-11-06)."""
+        from pd_library import flatten_title
+        want = flatten_title(title or "")
+        if not year or len(str(title or "").split()) < 3 or len(want) < 10:
+            return ""
+        try:
+            rows = con.execute(
+                "SELECT e.id, e.title, e.aired, i.year FROM episode e JOIN item i ON i.id = e.item_id "
+                "WHERE EXISTS (SELECT 1 FROM file f WHERE f.episode_id = e.id)").fetchall()
+        except Exception:
+            return ""
+        for r in rows:
+            if flatten_title(r["title"] or "") != want:
+                continue
+            aired = str(r["aired"] or "")[:4]
+            when = int(aired) if aired.isdigit() else int(r["year"] or 0)
+            if when and abs(when - int(year)) <= 1:
+                return str(r["id"])
         return ""
+
+    def _twins_in_search(self, con, hubs):
+        """Films a search found that are not here as films but are as an episode: the
+        episode's card in their place, under the film's name, and once."""
+        films = next((h for h in hubs if h["type"] == "movie"), None)
+        if not films:
+            return
+        out, seen = [], set()
+        for card in films["Metadata"]:
+            key = str(card.get("ratingKey") or "")
+            twin = ""
+            if card.get("type") == "movie" and not con.execute(
+                    "SELECT 1 FROM file WHERE item_id=? LIMIT 1", (key,)).fetchone():
+                twin = self._episode_twin(con, card.get("title"), int(card.get("year") or 0))
+            if twin:
+                got = self.metadata_for(con, twin, brief=True)
+                if got:
+                    card = dict(got, aka={"title": card.get("title"), "year": card.get("year")})
+                    key = twin
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(card)
+        films["Metadata"] = out
 
     def _cast_of(self, key, kind, tmdb):
         """Who is in a film this house does not hold yet, as its own page shows it.
@@ -7210,6 +7349,9 @@ class LocalAPI:
             if here:
                 got = self.metadata_for(con, str(here), brief=brief)
                 if got:
+                    # an episode standing for the film: both names on it
+                    if got.get("type") == "episode":
+                        got = dict(got, aka={"title": one.get("title"), "year": one.get("year")})
                     return got
             got = self._wearing(pd_streaming.item(one), self._coming_offers())
             if not brief:
@@ -7241,19 +7383,19 @@ class LocalAPI:
                 # where it has come out to be watched: the services' marks on its page
                 got["providers"] = self._providers(number)
             return got
-        if str(key).startswith("o"):
-            # a film on offer from a torrent pack, wherever a title is asked for - and once
-            # it has come in, the film itself: a page left open on the offer turns into it
-            import pd_torrents
-            here = pd_torrents.arrived(str(key))
-            if here:
-                return self.metadata_for(con, here, brief)
-            got = pd_torrents.metadata(str(key))
+        import pd_torrents
+        if pd_torrents.only_in_pack(key):
+            # a title only a pack has, wherever a title is asked for: from the pack, under the
+            # title's own key - the key it keeps once it has come in (owner, 2026-11-06)
+            key = pd_torrents.title_of(key)
+            got = pd_torrents.metadata(key)
             if got and not brief and got.get("type") == "movie":
                 got["Role"] = self._cast_of(str(key), "movie",
                                             got.get("tmdb") or got.get("tmdbId"))
                 got["providers"] = self._providers(got.get("tmdb") or got.get("tmdbId"))
             return got
+        # an old pack key of a title that has come in: the title's own
+        key = pd_torrents.title_of(key)
         if key.startswith("e"):
             row = con.execute("SELECT * FROM episode WHERE id=?", (key,)).fetchone()
             return self._episode(con, row, brief=brief) if row else None

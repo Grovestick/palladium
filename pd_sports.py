@@ -275,6 +275,13 @@ def episode_of(name, rows):
     return None
 
 
+#: the series a downloaded race or game is filed under
+FILED_UNDER = ("Formula 1", "NFL")
+
+#: days a race or game read in stands on Recently added, wearing New
+ARRIVED_DAYS = 3
+
+
 def told(path):
     """The library's hook: (series, season, episode, title) for a downloaded race or
     game, by its file's name or its folder's; None for anything else."""
@@ -285,7 +292,9 @@ def told(path):
     if not read_name(stem) and not read_name(folder):
         return None
     rows = list(pd_tracker.read().values())
-    for name in (stem, folder):
+    # the folder first when the file is named in lower case: the game was filed as
+    # "cincinnati bengals vs baltimore ravens" off its file (2026-11-05)
+    for name in ((folder, stem) if stem == stem.lower() else (stem, folder)):
         got = episode_of(name, rows)
         if got:
             return got

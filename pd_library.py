@@ -513,6 +513,22 @@ def flatten_title(title):
 KEY_LENGTH = 12
 
 
+def file_code(path):
+    """Eight hex digits from a file's own name: lower case, letters and digits only, its ending
+    kept. No folders - the same file sits in different folders on each machine and inside its
+    pack - so a copy has the same code wherever it is. One way only: the name is in the lists."""
+    import hashlib
+    stem, ext = os.path.splitext(os.path.basename(str(path or "").replace("\\", "/")))
+    clean = re.sub(r"[^a-z0-9]+", "", stem.lower()) + ext.lower()
+    return hashlib.sha1(clean.encode("utf-8")).hexdigest()[:8]
+
+
+def file_id(title_id, path):
+    """Which copy: the title it is, and the code of its name - "e5d4ce2d5d554-c4043735".
+    The same on both servers and for a file still inside a pack (owner, 2026-11-06)."""
+    return "%s-%s" % (title_id, file_code(path)) if title_id else ""
+
+
 def title_key(kind, title, year):
     """The key for a film or a programme, from what it is rather than when it arrived.
 
@@ -949,6 +965,21 @@ class Library:
         # over because what arrives is not a film and is deleted on arrival.
         if "hollow" not in cols:
             con.execute("ALTER TABLE file ADD COLUMN hollow INTEGER DEFAULT 0")
+        # which copy, the same on every server: the title's key and the code of the name
+        if "fid" not in cols:
+            # two libraries opened at once - the server and a helper process on the same
+            # file - both saw it missing; the second found it there (gate, 2026-11-06)
+            try:
+                con.execute("ALTER TABLE file ADD COLUMN fid TEXT")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e):
+                    raise
+        # and every file's, made again where its title moved since: a merge or a
+        # renumbering moves the file to another key, and its id follows
+        for r in con.execute("SELECT id, item_id, episode_id, path, fid FROM file").fetchall():
+            want = file_id(r[2] or r[1], r[3])
+            if want and r[4] != want:
+                con.execute("UPDATE file SET fid=? WHERE id=?", (want, r[0]))
         # the language a title was made in, from TMDB: its soundtrack plays first.
         # NULL is not asked yet, "" is asked and TMDB had none.
         if "orig_lang" not in [r[1] for r in con.execute(
@@ -1424,11 +1455,17 @@ class Library:
             was = None if row else self._moved_from(con, path, st)
             self._index_file(con, kind, path, st, moved_from=was, known=bool(row))
             self.scan_state["done"] += 1
+            if self.scan_state["done"] % 50 == 0:
+                con.commit()
+        con.commit()
         # Rows the walk did not produce: either the file is gone, or it is no longer
         # one of ours - a sample, an extra, or a folder taken off the list. Both are
         # reasons to drop it. The exception is a drive that is not plugged in, where
         # every path under it would vanish at once and take the library with it.
+        # The disk is asked first and the rows deleted after: asked inside the write, a
+        # stat of every file on a busy drive held the database from everybody else.
         roots = [f for f, _ in folders if os.path.isdir(f)]
+        going = []
         for row in con.execute("SELECT id, path FROM file").fetchall():
             if row["path"] in seen:
                 continue
@@ -1436,7 +1473,9 @@ class Library:
                 os.path.normcase(row["path"]).startswith(os.path.normcase(r) + os.sep)
                 for r in roots)
             if not os.path.exists(row["path"]) or under_a_live_root:
-                con.execute("DELETE FROM file WHERE id=?", (row["id"],))
+                going.append(row["id"])
+        for gone in going:
+            con.execute("DELETE FROM file WHERE id=?", (gone,))
         con.execute("DELETE FROM item WHERE id NOT IN (SELECT DISTINCT item_id FROM file)")
         # and the episodes of a programme that has just gone: left behind, one with a
         # place in it stood on Continue watching as a card with no programme's name
@@ -1690,12 +1729,14 @@ class Library:
         # costs minutes to rebuild and nothing about the file itself has changed
         ctime = int(getattr(st, "st_ctime", 0) or st.st_mtime)
         probe_clause = "probed=0" if reset_probe else "probed=file.probed"
-        con.execute(f"""INSERT INTO file (item_id, episode_id, path, size, mtime, ctime, probed)
-                       VALUES (?,?,?,?,?,?,0)
+        fid = file_id(episode_id or item_id, path)
+        con.execute(f"""INSERT INTO file (item_id, episode_id, path, size, mtime, ctime, probed, fid)
+                       VALUES (?,?,?,?,?,?,0,?)
                        ON CONFLICT(path) DO UPDATE SET item_id=excluded.item_id,
                          episode_id=excluded.episode_id, size=excluded.size,
-                         mtime=excluded.mtime, ctime=excluded.ctime, {probe_clause}""",
-                    (item_id, episode_id, path, st.st_size, int(st.st_mtime), ctime))
+                         mtime=excluded.mtime, ctime=excluded.ctime, fid=excluded.fid,
+                         {probe_clause}""",
+                    (item_id, episode_id, path, st.st_size, int(st.st_mtime), ctime, fid))
         # "recently added" should mean when it arrived here, not when the scan ran.
         # A moved file gets a new ctime on another drive; it keeps the date it first came.
         # A file already indexed at this path that changed size - the end of a copy, a
@@ -1717,6 +1758,71 @@ class Library:
         return m.group(1) if m else ""
 
     def _upsert_item(self, con, kind, title, year, stay=None):
+        """The item a file of this title is filed under, made if there is none."""
+        found = self._match_item(con, kind, title, year, stay)
+        if found:
+            return found
+        sort = re.sub(r"^(the|a|an)\s+", "", (title or "").lower()).strip()
+        # Its own key, worked out from what it is. A clash would mean two different
+        # titles flattening to the same twelve digits, which at this size is one
+        # chance in fifty million - and if it ever happens the row is already there
+        # under that key and this returns it rather than making a second.
+        mine = title_key(kind, title, year)
+        # Whoever is already under that key. Ordinarily this title itself, on a second
+        # scan; if it is another title, two different films have flattened to the same
+        # digits and one poster is about to stand for both.
+        held = con.execute("SELECT title, year FROM item WHERE id=?", (mine,)).fetchone()
+        if held and (str(held["title"] or "") != str(title or "")
+                     or int(held["year"] or 0) != int(year or 0)):
+            self.note_clash(mine, held["title"], held["year"], title, year)
+        # identified said outright: the column's default did not survive the rebuild
+        # onto text keys, and a row that leaned on it arrived as NULL
+        con.execute("INSERT OR IGNORE INTO item "
+                    "(id, type, title, sort_title, year, added, identified) "
+                    "VALUES (?,?,?,?,?,0,0)", (mine, kind, title, sort, year))
+        return mine
+
+    def item_key_would_be(self, con, kind, title, year):
+        """The key a file of this title would be filed under, writing nothing: the item
+        already here that it would join, or the key it would make. One set of keys for
+        everything - a film inside a pack carries the key it will have once it is here
+        (owner, 2026-11-06)."""
+        return self._match_item(con, kind, title, year) or title_key(kind, title, year)
+
+    def key_of_file(self, con, kind, path):
+        """The key a file at this path would be filed under - an episode's or a film's -
+        read as _index_file reads it, writing nothing. "" when the name says nothing.
+        A film or episode inside a pack is known by this, the key it will have once it
+        is here, not by a key of the pack's (owner, 2026-11-06)."""
+        hook = getattr(self, "told_by_pack", None)
+        told = hook(path) if hook else None
+        music = is_music_video(path)
+        parsed = None if music else (told[0], told[1], told[2]) if told else parse_episode(path)
+        show_year = None
+        if parsed is None and not music:
+            parsed = episode_from_folders(path)
+        if parsed is None and not music:
+            mini = parse_miniseries(path)
+            if mini:
+                parsed, show_year = mini[:3], mini[3]
+        if parsed is None and not music and (kind == "show" or in_a_season_folder(path)):
+            parsed = parse_episode_loose(path)
+        if parsed:
+            show, season, number = parsed
+            item_id = self.item_key_would_be(con, "show", show, show_year)
+            held = con.execute("SELECT id FROM episode WHERE item_id=? AND season=? "
+                               "AND number=?", (item_id, season, number)).fetchone()
+            return held["id"] if held else episode_key(item_id, season, number)
+        if kind == "show":
+            return ""
+        title, year = ((os.path.splitext(os.path.basename(path))[0], 0) if music
+                       else parse_movie(path))
+        if not title:
+            return ""
+        return self.item_key_would_be(con, "movie", title, year)
+
+    def _match_item(self, con, kind, title, year, stay=None):
+        """The item already here that a file of this title joins, or None."""
         sort = re.sub(r"^(the|a|an)\s+", "", (title or "").lower()).strip()
         # the sort title drops the article, so "Harbour" and "The Harbour" of the same
         # year met on it and became one film. A name that only differs by it is a
@@ -1782,24 +1888,7 @@ class Library:
         # No arrival time of its own: it belongs to the files. Stamping the scan time
         # here is what made "recently added" mean "in the order I was indexed" - the
         # MAX() that folds in the file's own date could never beat the current time.
-        # Its own key, worked out from what it is. A clash would mean two different
-        # titles flattening to the same twelve digits, which at this size is one
-        # chance in fifty million - and if it ever happens the row is already there
-        # under that key and this returns it rather than making a second.
-        mine = title_key(kind, title, year)
-        # Whoever is already under that key. Ordinarily this title itself, on a second
-        # scan; if it is another title, two different films have flattened to the same
-        # digits and one poster is about to stand for both.
-        held = con.execute("SELECT title, year FROM item WHERE id=?", (mine,)).fetchone()
-        if held and (str(held["title"] or "") != str(title or "")
-                     or int(held["year"] or 0) != int(year or 0)):
-            self.note_clash(mine, held["title"], held["year"], title, year)
-        # identified said outright: the column's default did not survive the rebuild
-        # onto text keys, and a row that leaned on it arrived as NULL
-        con.execute("INSERT OR IGNORE INTO item "
-                    "(id, type, title, sort_title, year, added, identified) "
-                    "VALUES (?,?,?,?,?,0,0)", (mine, kind, title, sort, year))
-        return mine
+        return None
 
     # ---- media facts --------------------------------------------------------
     def probe_pending(self, limit=100000, paths=None):
@@ -1814,14 +1903,18 @@ class Library:
         else:
             rows = con.execute("SELECT id, path FROM file WHERE probed=0 LIMIT ?", (limit,)).fetchall()
             self.scan_state.update(phase="probing", total=len(rows), done=0)
+        # each file's answer written and committed on its own, after its probe: a write
+        # held open across ffprobe on a busy drive kept every progress save waiting past
+        # its 30 s and failing as "database is locked" (2026-11-01)
         for row in rows:
             if hollow_file(row["path"]):
                 # nothing in it to probe. Left as unprobed so that finishing the
                 # download and scanning again picks it up as the film it becomes.
                 con.execute("UPDATE file SET hollow=1 WHERE id=?", (row["id"],))
+                con.commit()
                 continue
-            con.execute("UPDATE file SET hollow=0 WHERE id=?", (row["id"],))
             info = self.probe(ffprobe, row["path"])
+            con.execute("UPDATE file SET hollow=0 WHERE id=?", (row["id"],))
             if info:
                 con.execute("""UPDATE file SET duration=?, container=?, vcodec=?, acodec=?,
                                width=?, height=?, channels=?, bitrate=?, streams=?,
@@ -1845,10 +1938,9 @@ class Library:
                     fresh = False
                 if not fresh:
                     con.execute("UPDATE file SET probed=1 WHERE id=?", (row["id"],))
+            con.commit()
             if paths is None:
                 self.scan_state["done"] += 1
-                if self.scan_state["done"] % 25 == 0:
-                    con.commit()
         con.commit()
         con.close()
         if paths is None:

@@ -61,6 +61,7 @@ def start(root, lib_of, scan):
     load()
     os.makedirs(drop_folder(), exist_ok=True)
     ensure_worker()
+    threading.Thread(target=name_the_packs, name="palladium-pack-ids", daemon=True).start()
 
 
 #: where somebody puts a torrent file for it to become a pack. Beside the library
@@ -916,6 +917,8 @@ def add_pack(raw=None, path=None, series=""):
         data["packs"].append(pack)
         save()
     ensure_worker()
+    # its films known by the library's keys from the start
+    threading.Thread(target=name_the_packs, name="palladium-pack-ids", daemon=True).start()
     return {"ok": True, "hash": info_hash, "name": name, "films": len(films),
             "refused": refused(pack)}
 
@@ -1029,6 +1032,8 @@ def refill_packs():
                 added += 1
         data["refilled"] = REFILL
         save()
+    if added:
+        threading.Thread(target=name_the_packs, name="palladium-pack-ids", daemon=True).start()
     return added
 
 
@@ -1071,6 +1076,8 @@ def remove_pack(info_hash):
     with LOCK:
         going = [p for p in data["packs"] if p.get("hash") == info_hash]
         data["packs"] = [p for p in data["packs"] if p.get("hash") != info_hash]
+        for p in going:
+            _note_unlinked(data, p)
         save()
     # The file it arrived as goes with it. Left in the folder it would be read again
     # on the next look and the pack would come straight back, which reads as the
@@ -1083,6 +1090,213 @@ def remove_pack(info_hash):
             except OSError:
                 pass
     return {"ok": True}
+
+
+#: an unlinked pack's downloaded files are deleted this long after it was taken off
+#: (owner, 2026-11-04), and only those with another copy in the library
+UNLINKED_CLEAR_DAYS = 30
+#: nor before qBittorrent has seeded the torrent this long: the tracker's ten days, kept
+UNLINKED_SEEDED_DAYS = 12
+#: the two checks a file passes before it goes are at least this far apart
+UNLINKED_CHECK_GAP = 3600
+
+
+def _note_unlinked(data, pack):
+    """A pack off the list: when, so its downloaded files can go UNLINKED_CLEAR_DAYS later."""
+    gone = data.setdefault("unlinked", {})
+    if pack.get("hash") and pack["hash"] not in gone:
+        gone[pack["hash"]] = {"name": pack.get("name") or "", "at": time.time()}
+
+
+def unlinked_due(entry, now, packs, coming):
+    """Whether an unlinked pack's files may be looked at for clearing: its days are up, it
+    has not been added again, and nothing is still downloading from it."""
+    h = entry.get("hash")
+    return (now - float(entry.get("at") or now) >= UNLINKED_CLEAR_DAYS * 86400
+            and h not in packs and h not in coming and not entry.get("cleared"))
+
+
+def unlinked_files(info_hash, rows, files, save_path, content_path):
+    """(index, path, size) of what was downloaded from this pack: a file a finished download
+    came from, whole and switched on in qBittorrent, inside the torrent's own folder.
+    Anything else the folder holds is not this pack's to delete."""
+    done = {int(d.get("index", -1)) for d in rows
+            if d.get("hash") == info_hash and d.get("state") == "done"}
+    root = os.path.normcase(os.path.normpath(str(content_path or "")))
+    # a torrent with no folder of its own: its files lie loose among everybody else's
+    if not content_path or root == os.path.normcase(os.path.normpath(str(save_path or ""))):
+        return []
+    out = []
+    for n, f in enumerate(files):
+        index = int(f.get("index", n))
+        if index not in done or (f.get("priority") or 0) <= 0 or float(f.get("progress") or 0) < 1:
+            continue
+        path = inside(str(save_path or ""), f.get("name") or "")
+        low = os.path.normcase(os.path.normpath(path)) if path else ""
+        if not low or not root or not (low == root or low.startswith(root + os.sep)):
+            continue
+        out.append((index, path, int(f.get("size") or 0)))
+    return out
+
+
+def _other_copy(path, size, own_root):
+    """Another whole file of the same episode or film in the library, outside this torrent's
+    folder: the path of it, or "" when this is the only copy."""
+    lib = STATE["lib"]() if STATE["lib"] else None
+    if not lib:
+        return ""
+    con = lib.db()
+    try:
+        me = con.execute("SELECT item_id, episode_id FROM file WHERE path = ? COLLATE NOCASE",
+                         (path,)).fetchone()
+        if not me:
+            return ""
+        if me["episode_id"]:
+            rows = con.execute("SELECT path, size, hollow FROM file WHERE episode_id = ?",
+                               (me["episode_id"],)).fetchall()
+        else:
+            rows = con.execute("SELECT path, size, hollow FROM file WHERE item_id = ? AND "
+                               "(episode_id IS NULL OR episode_id = '')", (me["item_id"],)).fetchall()
+    finally:
+        con.close()
+    root = os.path.normcase(os.path.normpath(own_root))
+    for r in rows:
+        there = str(r["path"] or "")
+        low = os.path.normcase(os.path.normpath(there))
+        if low == os.path.normcase(os.path.normpath(path)) or low == root or low.startswith(root + os.sep):
+            continue
+        try:
+            if not r["hollow"] and os.path.isfile(there) and os.path.getsize(there) > 0:
+                return there
+        except OSError:
+            continue
+    return ""
+
+
+def _seeded_elsewhere(qb, info_hash, path):
+    """Another torrent in the client holding this very file - a cross-seed over it."""
+    low = os.path.normcase(os.path.normpath(path))
+    for o in qb.all_info():
+        if str(o.get("hash") or "").lower() == info_hash.lower():
+            continue
+        where = os.path.normcase(os.path.normpath(str(o.get("save_path") or "")))
+        if not low.startswith(where + os.sep):
+            continue
+        if any(os.path.normcase(os.path.normpath(inside(str(o.get("save_path") or ""), g.get("name") or ""))) == low
+               for g in qb.files(o["hash"])):
+            return str(o.get("name") or o.get("hash"))
+    return ""
+
+
+def _clear_say(line):
+    try:
+        pd_log.raw("%s %s%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), line, chr(10)),
+                   os.path.join(STATE["root"], "cleared.log"))
+    except OSError:
+        pass
+
+
+def _clear_unlinked():
+    """An unlinked pack's downloaded files, deleted UNLINKED_CLEAR_DAYS after it was taken off.
+
+    Only what was downloaded from that pack, only a file with another copy in the library,
+    never one another torrent seeds, and only after two checks an hour apart found the same
+    file: size and fingerprint. One pack a round; every deletion goes into cleared.log."""
+    data = load()
+    gone = data.setdefault("unlinked", {})
+    now = time.time()
+    packs = {p.get("hash") for p in data["packs"]}
+    if not data.get("unlinkedSeeded"):
+        # packs taken off before this was written down start counting now
+        with LOCK:
+            for d in data["downloads"]:
+                h = d.get("hash")
+                if h and h not in packs and h not in gone and d.get("state") == "done":
+                    gone[h] = {"name": d.get("title") or "", "at": now}
+            data["unlinkedSeeded"] = True
+            save()
+    coming = _still_coming(data["downloads"])
+    due = [h for h, e in gone.items() if unlinked_due(dict(e, hash=h), now, packs, coming)]
+    if not due:
+        return
+    qb = QB(data["config"])
+    # one pack a round, each looked at once an hour: the second check is the next look
+    due = [h for h in due if now - float(gone[h].get("lookedAt") or 0) >= UNLINKED_CHECK_GAP]
+    for h in due[:1]:
+        entry = gone[h]
+        with LOCK:
+            entry["lookedAt"] = now
+            save()
+        held = qb.info(h)
+        if held is None:
+            continue                    # not in the client: nothing to read its files from
+        if float(held.get("seeding_time") or 0) < UNLINKED_SEEDED_DAYS * 86400:
+            continue
+        root = str(held.get("content_path") or "")
+        found = unlinked_files(h, data["downloads"], qb.files(h), held.get("save_path"), root)
+        passed = []
+        for index, path, size in found:
+            try:
+                if not os.path.isfile(path) or os.path.getsize(path) != size:
+                    continue
+                if not _other_copy(path, size, root) or _seeded_elsewhere(qb, h, path):
+                    continue
+                passed.append((index, path, size, fingerprint(path)))
+            except OSError:
+                continue
+        first = entry.get("first") or {}
+        if not first:
+            if passed:
+                with LOCK:
+                    entry["first"] = {p: [s, m] for _, p, s, m in passed}
+                    save()
+                _clear_say("first check %s: %d of %d files may go" % (entry.get("name"), len(passed), len(found)))
+            continue
+        # the second check: only a file both found the same
+        sure = [(i, p, s, m) for i, p, s, m in passed if first.get(p) == [s, m]]
+        if not sure:
+            with LOCK:
+                entry.pop("first", None)
+                save()
+            continue
+        whole = len(sure) == len(found) and len(found) > 0
+        if whole:
+            qb.remove(h, files=False)
+        else:
+            qb.priority(h, [i for i, _, _, _ in sure], 0)
+        removed = []
+        for i, p, s, m in sure:
+            try:
+                # once more at the moment of deleting: the other copy may have gone since
+                other = _other_copy(p, s, root)
+                if not other or os.path.getsize(p) != s:
+                    _clear_say("kept %s: no other copy now" % p)
+                    continue
+                os.remove(p)
+                removed.append(p)
+                _clear_say("deleted %s | %d bytes | %s | other copy %s | pack %s" % (p, s, m, other, h))
+            except OSError as e:
+                _clear_say("kept %s: %s" % (p, e))
+        # folders the deleting emptied: a deleted file's own, up to the torrent's folder
+        top = os.path.normcase(os.path.normpath(root))
+        for p in removed:
+            at = os.path.dirname(p)
+            while os.path.normcase(os.path.normpath(at)) == top or                     os.path.normcase(os.path.normpath(at)).startswith(top + os.sep):
+                try:
+                    if os.listdir(at):
+                        break
+                    os.rmdir(at)
+                except OSError:
+                    break
+                at = os.path.dirname(at)
+        with LOCK:
+            entry.pop("first", None)
+            if whole:
+                entry["cleared"] = now
+            entry["deleted"] = list(entry.get("deleted") or []) + removed
+            save()
+        if removed:
+            STATE["scan_wanted"] = True
 
 
 #: downloads at the same time unless set otherwise, and the most that can be set
@@ -1426,6 +1640,9 @@ def _mirror_house():
                             film[name] = there[name]
     with LOCK:
         # a pack the main server no longer offers goes; one added here by hand stays
+        for x in data["packs"]:
+            if x.get("mirrored") and x.get("hash") not in theirs:
+                _note_unlinked(data, x)
         data["packs"] = [x for x in data["packs"] if not x.get("mirrored") or x.get("hash") in theirs]
         save()
 
@@ -1556,12 +1773,209 @@ def episodes_for(show, season, number):
     return out
 
 
+#: every film in every pack by its pack key and its file id, and by title id its copies; made
+#: again when the packs change
+INDEX = {"sig": None, "keys": {}, "titles": {}, "looked": 0.0}
+
+
+def _index():
+    packs = load()["packs"]
+    # counted at most every few seconds: counting fourteen thousand films on every lookup
+    # made a shelf of six hundred keys take minutes
+    if INDEX["sig"] is not None and INDEX["sig"][0] == id(packs) and time.time() - INDEX["looked"] < 5:
+        return INDEX
+    INDEX["looked"] = time.time()
+    sig = (id(packs), len(packs), sum(len(p.get("films") or []) for p in packs),
+           sum(1 for p in packs for f in p.get("films") or [] if f.get("titleId")))
+    if INDEX["sig"] != sig:
+        keys, titles = {}, {}
+        for pack in packs:
+            for film in pack.get("films") or []:
+                for k in (film.get("key"), film.get("fid")):
+                    if k:
+                        keys[k] = (pack, film)
+                if film.get("titleId"):
+                    titles.setdefault(film["titleId"], []).append((film, pack))
+        INDEX.update(sig=sig, keys=keys, titles=titles)
+    return INDEX
+
+
 def by_key(key):
-    for pack in load()["packs"]:
-        for film in pack.get("films") or []:
-            if film.get("key") == key:
-                return pack, film
-    return None, None
+    """The pack and the film in it for a key: a copy's own (its pack key or file id), or a
+    title id - then the copy its card stands for, the release asked for or else the best, as
+    offered() chooses. One set of keys, the library's (owner, 2026-11-06)."""
+    if not key:
+        return None, None
+    ix = _index()
+    hit = ix["keys"].get(key)
+    if hit:
+        return hit
+    copies = ix["titles"].get(key)
+    if not copies:
+        return None, None
+    film, pack = copies[0]
+    for f, p in copies[1:]:
+        if not _ahead(film, f):
+            film, pack = f, p
+    return pack, film
+
+
+def old_pack_key(key):
+    """Whether a key is shaped like the keys packs gave their films before they carried their
+    titles' ids: the one place that knows the shape, for one the packs no longer know."""
+    key = str(key or "")
+    return key.startswith("o") and not key.startswith("os")
+
+
+def pack_keys_moved():
+    """{"titles": pack key -> title id} for every named film in every pack: what carry_keys
+    takes to move the written-down pack keys onto their titles."""
+    return {"titles": {f["key"]: f["titleId"] for p in load()["packs"] for f in p.get("films") or []
+                       if f.get("key") and f.get("titleId")}}
+
+
+def all_named():
+    """Whether the packs are read and every film in them has its title id. Asked before they
+    are read, an empty list is not "all named": the main server moved nothing on its first
+    look and slept an hour (2026-11-06)."""
+    if not STATE.get("root"):
+        return False
+    films = [f for p in load()["packs"] for f in p.get("films") or []]
+    return bool(films) and all(f.get("titleId") for f in films)
+
+
+def title_of(key):
+    """The title id a key names: a pack copy's key or file id becomes its title's id; any
+    other key is already one."""
+    key = str(key or "")
+    hit = _index()["keys"].get(key)
+    return str((hit[1].get("titleId") if hit else "") or key)
+
+
+#: the library's keys that have a file, looked at once every half minute
+HELD = {"at": 0.0, "keys": frozenset(), "shows": frozenset()}
+
+
+def held_keys():
+    """Every film and episode key the library holds a file for."""
+    if time.time() - HELD["at"] > 30:
+        lib = STATE["lib"]() if STATE["lib"] else None
+        got, shows = set(), set()
+        if lib:
+            con = lib.db()
+            try:
+                for r in con.execute("SELECT item_id, episode_id FROM file"):
+                    got.add(str(r[1] or r[0]))
+                shows = {str(r[0]) for r in con.execute("SELECT id FROM item WHERE type='show'")}
+            finally:
+                con.close()
+        HELD.update(at=time.time(), keys=frozenset(got), shows=frozenset(shows))
+    return HELD["keys"]
+
+
+#: each programme a pack carries by its title id, for those the library has no row of
+PROGRAMMES = {"at": 0.0, "ids": {}, "names": {}}
+
+
+def programme_id(name):
+    """A programme's own key: the library's for one it knows, or the key it will have once an
+    episode is here - the same one set of keys as its episodes (owner, 2026-11-06)."""
+    plain = str(name or "")
+    got = PROGRAMMES["names"].get(plain)
+    if got:
+        return got
+    lib = STATE["lib"]() if STATE["lib"] else None
+    if not lib:
+        return show_key(plain)
+    con = lib.db()
+    try:
+        got = lib.item_key_would_be(con, "show", plain, None)
+    except Exception:
+        return show_key(plain)
+    finally:
+        con.close()
+    PROGRAMMES["names"][plain] = got
+    return got
+
+
+def _programmes():
+    if time.time() - PROGRAMMES["at"] > 300:
+        PROGRAMMES["at"] = time.time()
+        PROGRAMMES["names"] = {}
+        PROGRAMMES["ids"] = {programme_id(name): show_key(name) for name in _episodes_by_show()}
+    return PROGRAMMES["ids"]
+
+
+def as_pack_show(key):
+    """A key of a programme only packs carry - or one of its seasons - as the name-made key the
+    packs group its episodes by, which goes no further than this module and what asks it. Any
+    other key as it was."""
+    key = str(key or "")
+    m = re.match(r"^([0-9a-f]{12})(-s\d+)?$", key)
+    if not m:
+        return key
+    grouped = _programmes().get(m.group(1))
+    if not grouped or m.group(1) in library_shows():
+        return key
+    return grouped + (m.group(2) or "")
+
+
+def library_shows():
+    """The programmes the library has a row of."""
+    held_keys()
+    return HELD["shows"]
+
+
+def only_in_pack(key):
+    """Whether a key names a title a pack carries and the library has no file of: what used
+    to be told by its key starting with "o"."""
+    key = str(key or "")
+    if not key:
+        return False
+    if key.startswith("os") or as_pack_show(key) != key:
+        return True
+    title = title_of(key)
+    return title not in held_keys() and by_key(title)[1] is not None
+
+
+def ids_of(film, lib, con):
+    """(title id, file id) for a film or episode in a pack, read from its name as the
+    library will read it once it is here. ("", "") when the name says nothing."""
+    import pd_library
+    path = "X:/pack/" + str(film.get("path") or "").replace("\\", "/")
+    kind = "show" if (film.get("series") or film.get("kind") == "episode") else "movie"
+    title = lib.key_of_file(con, kind, path) or ""
+    return title, pd_library.file_id(title, path)
+
+
+def name_the_packs(films=None):
+    """Every film in every pack given its title id and file id, once, and saved. Films
+    already named are left; with `films`, those only (a pack just indexed)."""
+    lib = STATE["lib"]() if STATE["lib"] else None
+    if not lib:
+        return 0
+    todo = films if films is not None else [
+        f for p in load()["packs"] for f in p.get("films") or [] if not f.get("fid")]
+    if not todo:
+        return 0
+    named = 0
+    con = lib.db()
+    try:
+        for film in todo:
+            try:
+                title, fid = ids_of(film, lib, con)
+            except Exception:
+                continue
+            if title:
+                with LOCK:
+                    film["titleId"], film["fid"] = title, fid
+                named += 1
+    finally:
+        con.close()
+    if named and films is None:
+        with LOCK:
+            save()
+    return named
 
 
 # ---------------------------------------------------------------- the library's view
@@ -1595,9 +2009,37 @@ def _owned():
     return STATE["owned"]
 
 
-def latest_download(key):
-    rows = [d for d in load()["downloads"] if d.get("key") == key]
-    return rows[-1] if rows else None
+#: the newest download of each copy and of each title, made again when a download is added
+#: or taken off: asked for every episode of every pack, a pass over the list each time
+#: took a page of programmes from a moment to minutes (2026-11-06)
+DOWNLOADS = {"sig": None, "copies": {}, "titles": {}}
+
+
+def _downloads_index():
+    rows = load()["downloads"]
+    sig = (id(rows), len(rows), id(rows[-1]) if rows else 0, _index()["sig"])
+    if DOWNLOADS["sig"] != sig:
+        copies, titles = {}, {}
+        for d in rows:
+            for k in (d.get("key"), d.get("fid")):
+                if k:
+                    copies[str(k)] = d
+            title = title_of(d.get("key"))
+            if title:
+                titles[title] = d
+        DOWNLOADS.update(sig=sig, copies=copies, titles=titles)
+    return DOWNLOADS
+
+
+def latest_download(key, exact=False):
+    """The newest download of a title: asked by its title id, a copy's key or file id - one
+    set of keys, so a record made under a pack key still answers to the title. `exact`: of
+    that one copy only, for a list of releases where each says its own."""
+    key = str(key or "")
+    ix = _downloads_index()
+    if exact:
+        return ix["copies"].get(key)
+    return ix["titles"].get(title_of(key)) or ix["copies"].get(key)
 
 
 def eta_words(seconds):
@@ -1726,13 +2168,14 @@ def _versions(group):
     out = []
     labels = [edition(film) or "Standard" for film, _ in group]
     for (film, _), label in zip(group, labels):
-        got = latest_download(film["key"]) or {}
+        got = latest_download(film["key"], exact=True) or {}
         # two plain releases both read "Standard": the release group tells them apart
         if labels.count(label) > 1:
             base = os.path.splitext(os.path.basename(film.get("path") or ""))[0]
             if "-" in base:
                 label += " " + base.rsplit("-", 1)[1]
-        out.append({"key": film["key"], "label": label,
+        # chosen by its file id: which copy, the same id on every server
+        out.append({"key": film.get("fid") or film["key"], "label": label,
                     "file": os.path.basename(film.get("path") or ""),
                     "size": int(film.get("size") or 0), "state": got.get("state") or "",
                     "progress": float(got.get("progress") or 0)})
@@ -1741,7 +2184,8 @@ def _versions(group):
 
 def _ahead(a, b):
     """Of two releases of one film, the one to offer: the one asked for, else the larger."""
-    asked_a, asked_b = latest_download(a["key"]) is not None, latest_download(b["key"]) is not None
+    asked_a = latest_download(a["key"], exact=True) is not None
+    asked_b = latest_download(b["key"], exact=True) is not None
     if asked_a != asked_b:
         return asked_a
     return int(a.get("size") or 0) >= int(b.get("size") or 0)
@@ -1768,7 +2212,8 @@ def item(film, pack, free=None, versions=()):
                                _place(got.get("key") or film["key"])
                                if got.get("state") == "queued" else 0, got.get("why") or "")
     return {
-        "ratingKey": film["key"], "type": "movie", "title": name,
+        # the title's own key, the one it keeps once it is here; the copy is its fid
+        "ratingKey": film.get("titleId") or film["key"], "fid": film.get("fid") or "", "type": "movie", "title": name,
         # the catalogue's number for it, which is what its cast is asked by
         "tmdb": film.get("tmdb") or 0,
         "titleSort": re.sub(r"^(the|a|an) ", "", name.lower()),
@@ -1932,8 +2377,9 @@ def carries_others(pack, plain):
 
 
 def unlink_pack(name, info_hash):
-    """One pack taken off a programme: its link goes, unless an episode was downloaded
-    from it or another programme chose it. The torrent and its files are never touched."""
+    """One pack taken off a programme: its link goes, unless an episode is still coming
+    from it or another programme chose it. An episode already in is a file in the library
+    on its own and keeps seeding. The torrent and its files are never touched."""
     drop_show_pack(name, info_hash)
     data = load()
     plain = _plain(name)
@@ -1941,9 +2387,8 @@ def unlink_pack(name, info_hash):
     for k, v in (data["config"].get("showPacks") or {}).items():
         if k != plain:
             others |= set(str(h) for h in ((v.get("packs") or []) if isinstance(v, dict) else [v]) if h)
-    used = _came_from(data["downloads"])
-    if info_hash in used:
-        return {"ok": True, "kept": "an episode was downloaded from it - it stays linked"}
+    if info_hash in _still_coming(data["downloads"]):
+        return {"ok": True, "kept": "an episode is still downloading from it - it stays linked"}
     if info_hash in others:
         return {"ok": True, "kept": "another series uses it - it stays linked"}
     if any(p.get("hash") == info_hash and carries_others(p, plain) for p in data["packs"]):
@@ -1966,6 +2411,12 @@ def packs_free(name, config, downloads):
     others = {h for k, v in packs.items() if k != plain for h in chosen(v)}
     used = _came_from(downloads)
     return [h for h in dict.fromkeys(mine) if h not in others and h not in used]
+
+
+def _still_coming(downloads):
+    """The packs a download is still running or queued from."""
+    return {str(d.get("hash")) for d in downloads or []
+            if d.get("hash") and d.get("state") in ("queued", "downloading")}
 
 
 def _came_from(downloads):
@@ -2151,7 +2602,7 @@ def offered_shows():
         seasons = sorted({int(f.get("season") or 0) for f, _ in holds})
         got = [latest_download(f["key"]) or {} for f, _ in holds]
         out.append({
-            "ratingKey": show_key(name), "type": "show", "title": name,
+            "ratingKey": programme_id(name), "type": "show", "title": name,
             "titleSort": re.sub(r"^(the|a|an) ", "", name.lower()),
             "year": film.get("year") or None,
             "originallyAvailableAt": str(film.get("released") or ""),
@@ -2179,7 +2630,7 @@ def offered_shows():
 def offered_seasons(key):
     """Seasons of one offered programme, shaped as library season rows."""
     for name, holds in _episodes_by_show().items():
-        if show_key(name) != key:
+        if show_key(name) != as_pack_show(key):
             continue
         film = holds[0][0]
         by_season = {}
@@ -2189,11 +2640,11 @@ def offered_seasons(key):
             days = sorted(str(f.get("aired") or "")[:10] for f in these if f.get("aired"))
             return days[0] if days else ""
         return [{
-            "ratingKey": "%s-s%d" % (key, season), "type": "season",
+            "ratingKey": "%s-s%d" % (programme_id(name), season), "type": "season",
             # a series pack's season by its folder's name
             "title": season_name(these[0]) or "Season %d" % season, "index": season,
             "leafCount": len(these), "viewedLeafCount": 0,
-            "parentRatingKey": key, "parentTitle": name, "grandparentTitle": name,
+            "parentRatingKey": programme_id(name), "parentTitle": name, "grandparentTitle": name,
             "thumb": ("/art/%s/poster" % film["key"] if film.get("poster")
                       else series_art(name, season) if film.get("series") else None),
             "offered": True,
@@ -2207,10 +2658,11 @@ def offered_seasons(key):
 def episode_item(film, show, pack=None):
     """One offered episode, shaped as a library episode row."""
     got = latest_download(film["key"]) or {}
-    key = show_key(show)
+    key = programme_id(show)
     season = int(film.get("season") or 0)
     return {
-        "ratingKey": film["key"], "type": "episode",
+        # the title's own key, the one it keeps once it is here; the copy is its fid
+        "ratingKey": film.get("titleId") or film["key"], "fid": film.get("fid") or "", "type": "episode",
         "title": film.get("episodeName") or ("Episode %d" % int(film.get("episode") or 0)),
         "index": int(film.get("episode") or 0),
         "parentIndex": season,
@@ -2424,12 +2876,14 @@ def offered_keys(title, season=None):
         these = [f for f, _ in holds
                  if season is None or int(f.get("season") or 0) == int(season)]
         these.sort(key=lambda f: (int(f.get("season") or 0), int(f.get("episode") or 0)))
-        return [f["key"] for f in these]
+        # what a collection writes down: the titles' own keys
+        return [f.get("titleId") or f["key"] for f in these]
     return []
 
 
 def offered_episodes(key, season):
     """Offered episodes of one season, in episode order."""
+    key = as_pack_show(key)
     for name, holds in _episodes_by_show().items():
         if show_key(name) != key:
             continue
@@ -2441,8 +2895,9 @@ def offered_episodes(key, season):
 
 def metadata(key):
     # an offered programme, not one of its files
+    key = as_pack_show(key)
     if str(key).startswith("os"):
-        return next((s for s in offered_shows() if s["ratingKey"] == key), None)
+        return next((s for s in offered_shows() if show_key(s["title"]) == key), None)
     pack, film = by_key(key)
     if not film:
         return None
@@ -2933,12 +3388,14 @@ def take_over_copy(part, size, name=""):
     return said if said.get("ok", True) else said
 
 
-def request(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason=""):
+def request(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason="", handed=False):
     """Fetch one film of a pack for somebody: that file on, everything else off.
 
-    most_gb is the biggest one film they may start, nought for no limit.
+    most_gb is the biggest one film they may start, nought for no limit. handed: the main
+    server passed it on to this cache, which takes it here; whether it is auto is the
+    main server's to say.
     """
-    if house_is_up() and not auto:
+    if house_is_up() and not auto and not handed:
         # a cache downloads nothing while the main server is up: it is asked there
         import urllib.parse
         import pd_follow
@@ -3018,7 +3475,10 @@ def request(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason=""):
                 return {"ok": False,
                         "why": "That would pass this week's download limit: %.1f of %.1f GB "
                                "used, and this film is %.1f GB" % (used, cap_gb, film["size"] / 1e9)}
-        row = {"id": uuid.uuid4().hex[:10], "key": key, "hash": pack["hash"],
+        # the copy's own key, so the record names the file fetched; its title and file id
+        # beside it - what the rest of the house asks by
+        row = {"id": uuid.uuid4().hex[:10], "key": film["key"], "titleId": film.get("titleId") or "",
+               "fid": film.get("fid") or "", "hash": pack["hash"],
                "index": film["index"], "title": film.get("name") or film.get("title"),
                "year": film.get("year"), "size": film["size"], "who": who,
                "token": token, "when": int(time.time()), "state": "queued",
@@ -3028,6 +3488,8 @@ def request(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason=""):
                "auto": bool(auto),
                # why a download nobody pressed for started, for the download log
                "reason": str(reason or "")[:200]}
+        if handed:
+            row["handed"] = True
         if film.get("kind") == "episode":
             # which episode, on the row itself: the title is the programme's name and
             # is the same for all of them
@@ -3039,6 +3501,9 @@ def request(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason=""):
         # the tracker paused on this machine: asked for, and waiting for it to come back
         if STATE.get("held"):
             ahead = ahead or 1
+        # the other server downloading: waits for it, one at a time in the house
+        if not ahead and slot_taken_elsewhere():
+            ahead = 1
         if not ahead:
             row.update(state="downloading", started=int(time.time()))
         data["downloads"].append(row)
@@ -3084,9 +3549,72 @@ def _begin(row, pack, film):
         save()
 
 
+#: one download at a time in the whole house: a server starts one only while the other is
+#: not downloading, or the other's has run under SLOW_MBIT for SLOW_FOR seconds and the
+#: drive this one writes to has nothing else going (owner, 2026-11-06)
+SLOW_MBIT = 30.0
+SLOW_FOR = 600
+#: torrents that are seeding work, not the library's: they hold no slot
+SEEDING_WORK = ("cross-seed", "fl-race")
+#: the other server's last report; ask is set by the server: () -> its /follow/slot answer
+PEER = {"at": 0.0, "asked": 0.0, "said": None, "ask": None}
+
+
+def slot_report(rows=None, now=None):
+    """What this server is downloading, for the other: how many torrents are taking in data,
+    how fast, and how long they have run under SLOW_MBIT (0 when not slow)."""
+    now = now or time.time()
+    if rows is None:
+        try:
+            rows = json.loads(QB(load()["config"])._call(
+                "/api/v2/torrents/info?filter=downloading", timeout=6) or b"[]")
+        except Exception:
+            rows = []
+    going = [t for t in rows if str(t.get("state") or "") in ("downloading", "forcedDL", "stalledDL", "metaDL")
+             and str(t.get("category") or "") not in SEEDING_WORK]
+    mbit = round(sum(float(t.get("dlspeed") or 0) for t in going) * 8 / 1e6, 1)
+    if not going or mbit >= SLOW_MBIT:
+        STATE.pop("slowSince", None)
+    else:
+        STATE.setdefault("slowSince", now)
+    return {"count": len(going), "mbit": mbit,
+            "slowFor": int(now - STATE["slowSince"]) if STATE.get("slowSince") else 0}
+
+
+def peer_slot():
+    """The other server's last report, up to two minutes old; None when not known."""
+    if PEER["ask"] and time.time() - PEER["asked"] > 15:
+        PEER["asked"] = time.time()
+        threading.Thread(target=_ask_peer, name="palladium-peer-slot", daemon=True).start()
+    return PEER["said"] if time.time() - PEER["at"] < 120 else None
+
+
+def _ask_peer():
+    try:
+        said = PEER["ask"]()
+    except Exception:
+        said = None
+    if isinstance(said, dict):
+        PEER.update(said=said, at=time.time())
+
+
+def slot_taken_elsewhere(peer=None, drive_busy=None):
+    """Why a download here waits for the other server, "" when it may start."""
+    peer = peer_slot() if peer is None else peer
+    if not peer or not int(peer.get("count") or 0):
+        return ""
+    if float(peer.get("slowFor") or 0) < SLOW_FOR:
+        return "the other server is downloading"
+    if drive_busy is None:
+        import pd_disk
+        drive_busy = lambda folder: pd_disk.busy(pd_disk.drive_of(folder))
+    busy = drive_busy(save_folder())
+    return "the other server's download is slow, but %s" % busy if busy else ""
+
+
 def _start_next():
     """As many at a time as the setting says, one unless set otherwise: the request that
-    has waited longest starts when one is free."""
+    has waited longest starts when one is free - and the other server is not downloading."""
     if STATE.get("held"):
         return                             # the tracker is paused on this machine
     with LOCK:
@@ -3106,7 +3634,7 @@ def _start_next():
                         if d.get("state") == "failed"
                         and _waiting_for_qbt(d.get("why"))), None)
         was = row.get("state") if row else ""
-    if row is None:
+    if row is None or slot_taken_elsewhere():
         return
     with LOCK:
         # started or cancelled by another thread while the lock was free: not started twice,
@@ -4356,6 +4884,8 @@ def active(token=None):
         if one and not any(o["ratingKey"] == one["ratingKey"] for o in out):
             offer = one.setdefault("offer", {})
             offer["queueKey"] = d["key"]
+            # whose it is, so the main server can show a guest their own coming in here
+            offer["token"] = d.get("token") or ""
             # the owner moves the one coming in as well
             offer["mine"] = d.get("state") == "queued" or token is None
             out.append(one)
@@ -5205,6 +5735,7 @@ def _work():
         _step("keep_merge", keep_merge)
         _step("_start_next", _start_next)
         _step("_guard_packs", _guard_packs)
+        _step("_clear_unlinked", _clear_unlinked)
         _step("_follow_downloads", _follow_downloads)
         _step("_name_arrivals", _name_arrivals)
         _step("_chase_arrivals", _chase_arrivals)

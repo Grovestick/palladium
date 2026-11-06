@@ -12,6 +12,10 @@ _LOCK = threading.Lock()
 COUNTERS = {}
 _COUNTED = {}
 COUNT_EVERY = 60
+#: the counts being made now: one thread counts, the rest answer with the last count.
+#: Each Settings and panel poll counted the whole library again once the minute was
+#: up, and 35 of them at once held the server for minutes (2026-11-05)
+_COUNTING = set()
 
 
 def counter(name, fn):
@@ -26,10 +30,17 @@ def _count(name):
     was = _COUNTED.get(name)
     if was and time.time() - was[0] < COUNT_EVERY:
         return was[1]
+    with _LOCK:
+        if name in _COUNTING:
+            return was[1] if was else None
+        _COUNTING.add(name)
     try:
         got = fn()
     except Exception:
         got = was[1] if was else None
+    finally:
+        with _LOCK:
+            _COUNTING.discard(name)
     _COUNTED[name] = (time.time(), got)
     return got
 

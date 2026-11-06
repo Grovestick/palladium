@@ -463,6 +463,42 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     check("10 drawn again after a change, there is still one card", count() === 1, "found " + count());
   }
 
+  // ---- 10b. every pane of Settings is waited for: one that is not draws onto the page
+  //           built out of sight after it has been swapped in, and its tab stays empty
+  {
+    const SET10b = fs.readFileSync(path.join(__dirname, "static", "settings.js"), "utf8").replace(/\r\n/g, "\n");
+    const from = SET10b.indexOf("  async function drawPage(main) {");
+    const body = SET10b.slice(from, SET10b.indexOf("\n  }\n", from));
+    const calls = body.match(/[^\w.]pane[A-Za-z]+\(main[^)]*\)/g) || [];
+    const loose = calls.filter((m) => !body.includes("await " + m.slice(1)));
+    check("10b every Settings pane is waited for before the page is swapped in, Subtitles too",
+          from > 0 && calls.length > 5 && body.includes("else await paneSubs(main);") && loose.length === 0,
+          loose.join(" "));
+  }
+
+  // ---- 10c. the next Settings page, built out of sight ahead of the heading, does not
+  //           move it: it lost h2:first-child and dropped 20px until the swap
+  {
+    const css = fs.readFileSync(path.join(__dirname, "static", "style.css"), "utf8");
+    const margin = (html) => {
+      const w = new JSDOM("<!doctype html><style>" + css + "</style><main id=main>" + html +
+                          "</main>").window;
+      return w.getComputedStyle(w.document.querySelector("#main > h2")).marginTop;
+    };
+    const plain = margin("<h2>Settings</h2>");
+    const building = margin('<div class="redrawing" style="position:absolute"></div><h2>Settings</h2>');
+    check("10c a subtab press does not move the Settings heading while the next page builds",
+          plain === building, plain + " / " + building);
+  }
+
+  // ---- 10d. the old-version strip never stands over a film
+  {
+    const appSrc = fs.readFileSync(path.join(__dirname, "static", "app.js"), "utf8");
+    check("10d the old-version notice is hidden while a film plays and never moved into the player",
+          appSrc.includes('note.classList.toggle("hidden", watching);')
+          && !appSrc.includes("player.appendChild(note)"));
+  }
+
   // ---- 11. the server picker's light and name: what is known, of the machine answering
   {
     const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
@@ -1461,6 +1497,43 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
           tick.style.cssText);
   }
 
+  // ---- 51b. an episode with a pack added: that pack alone, the tracker's behind Other versions
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    let rows = [{ id: "1", name: "Show S01E01 1080p-A", size: 3e8, have: true, pack: true },
+                { id: "2", name: "Show S01E01 720p-B", size: 2e8, seeds: 9 },
+                { id: "3", name: "Show S01 720p-C", size: 4e9, seeds: 20, box: true, seasonPack: true }];
+    w.fetch = async () => ({ json: async () => ({ free: 50, versions: rows }) });
+    w.eval(SOURCE);
+    const row = w.document.createElement("div");
+    row.innerHTML = '<div class="info"></div>';
+    await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
+    const seen = () => [...row.querySelectorAll(".epdlrow")].filter((l) => !l.closest("[hidden]")).length;
+    const more = row.querySelector(".epmore");
+    const before = seen();
+    if (more) more.click();
+    check("51b the added pack alone; Other versions opens the tracker's and goes",
+          before === 1 && more && more.textContent === "Other versions" && seen() === 3 && !row.querySelector(".epmore"),
+          before + " | " + seen());
+    await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
+    rows = rows.slice(1);
+    await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
+    const packs = row.querySelector(".epmore");
+    const shut = seen();
+    if (packs) packs.click();
+    check("51b no pack added: the season packs stay shut until Season packs is pressed",
+          shut === 1 && packs && packs.textContent === "Season packs" && seen() === 2 &&
+          !row.querySelector(".epmore"), shut + " | " + seen());
+    await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
+    rows = rows.slice(0, 1);
+    await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
+    check("51b no season pack: the episode alone, no button",
+          seen() === 1 && !row.querySelector(".epmore"), String(seen()));
+  }
+
   // ---- 52. the film page's version menu: a version here already is chosen as the copy it is
   {
     const w = page('<div class="verline"><select id="s"><option value="0">F.2000.1080p.x264-A.mkv · 1080p</option>' +
@@ -1576,8 +1649,8 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
   }
 
   // ---- 51. the Add page's packs are a list on show, a doubtful one saying so first
-  check("51 the list is open, not a menu", /pick\.size = Math\.min\(12, pick\.options\.length\);/.test(SOURCE) &&
-        /pick\.classList\.toggle\("openlist", pick\.size > 1\)/.test(SOURCE));
+  check("51 the list is shut until pressed, and says how many it holds", /pick\.size = 1;/.test(SOURCE) &&
+        !/pick\.size = Math\.min\(12/.test(SOURCE) && /" to choose from in the menu\."/.test(SOURCE));
   check("51 a pack of either series says so before its name",
         /new Option\(\[p\.unsure \? "Either series" : "", p\.name,/.test(SOURCE));
 

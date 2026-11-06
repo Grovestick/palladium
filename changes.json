@@ -1,5 +1,378 @@
 [
   {
+    "version": "0.19.425",
+    "when": "2026-11-06",
+    "title": "Guests can send a request; what people fetch goes on their watchlist, Guest requests, watchlist from downloads, one download in the house, Search finds a film by its full title, A film that is also an episode plays the episode",
+    "items": [
+      "Requests: a guest's Request reaches the server - every press from away had been refused",
+      "Watchlist: a film somebody fetches, or the programme of an episode they fetch, goes on their own watchlist - and once, everything they fetched themselves before",
+      "Watchlist: a film somebody downloads goes on their watchlist; a series only when they add its pack or download a season, never for a single episode",
+      "Downloads: one at a time across both servers; a second starts only after ten slow minutes and only on a drive with nothing else going",
+      "Downloads: what the cache server downloads for somebody shows in the download line on the app and the web",
+      "Downloads: a film handed to the cache server is the asker's own download, not one made by itself",
+      "Live: a torrent with several films asked for shows the one coming in, once",
+      "Watchlist: a film somebody downloads goes on their watchlist; a series only when they add its pack or download a season, never for a single episode; what they downloaded before goes on once, leaving out what they have watched",
+      "Search: a film typed out in full is found whatever its number of votes",
+      "Films: a film released as a series' episode - a pilot shown as a film first - opens and plays that episode, from its page and from search, with both names on it"
+    ]
+  },
+  {
+    "version": "0.19.424",
+    "when": "2026-11-06",
+    "title": "Add page's pack list stays shut",
+    "items": [
+      "Web: the Add page's pack list stays shut until pressed, and says how many it holds"
+    ]
+  },
+  {
+    "version": "0.19.423",
+    "when": "2026-11-06",
+    "title": "One set of keys finished",
+    "items": [
+      "Packs: programmes and downloads coming in go by the title's own key too",
+      "Packs: offered programmes open again; stored pack keys are moved as soon as the packs are read",
+      "Lists of programmes and downloads are read through an index, far quicker on a large pack list"
+    ]
+  },
+  {
+    "version": "0.19.422",
+    "when": "2026-11-06",
+    "title": "Pack titles go by the title's own key, Stored pack keys moved onto titles, Releases chosen by file id, The app goes by one set of keys",
+    "items": [
+      "Packs: a title only a pack has is shown, asked for and kept under the key it will have once it is here",
+      "Shuffles, collections and watchlists keep only the titles' own keys; the pack keys written down before are moved onto them",
+      "Packs: each release of a film is chosen by its file id and shows its own download state",
+      "App: a title to download is told by the server's mark, not by the shape of its key"
+    ]
+  },
+  {
+    "version": "0.19.421",
+    "when": "2026-11-06",
+    "title": "Every file has one id",
+    "items": [
+      "Library and packs: every file has an id made from its title and its name, the same on both servers and inside a pack"
+    ]
+  },
+  {
+    "version": "0.19.420",
+    "when": "2026-11-06",
+    "title": "Old-version notice never over a film",
+    "items": [
+      "Web: the reload-for-a-new-version strip waits until nothing is playing; it no longer stands over the film"
+    ]
+  },
+  {
+    "version": "0.19.419",
+    "when": "2026-11-06",
+    "title": "Shuffle's next copied from what is here, An episode opens before its pack fetches",
+    "items": [
+      "Cache server: the shuffle's next episodes are copied from the main server's own files, not fetched from a pack on the cache server",
+      "Shuffle: the next episodes are fetched from a pack once the drawn one is playing, not while it opens"
+    ]
+  },
+  {
+    "version": "0.19.418",
+    "when": "2026-11-05",
+    "title": "Remote stays where it was moved after a return",
+    "items": [
+      "Home: once you press a key after coming back, Continue watching no longer takes the remote back to its first card when it arrives"
+    ]
+  },
+  {
+    "version": "0.19.417",
+    "when": "2026-11-05",
+    "title": "Only a pause shades the picture",
+    "items": [
+      "Player: the picture is shaded only while paused, with the controls grey; while playing the controls come up over the picture as it is"
+    ]
+  },
+  {
+    "version": "0.19.416",
+    "when": "2026-11-05",
+    "title": "Player controls drawn in one place",
+    "items": [
+      "Player: the bar, the buttons, the name and the information line are set together each frame from the look, so none of them jumps or shows for a frame"
+    ]
+  },
+  {
+    "version": "0.19.415",
+    "when": "2026-11-05",
+    "title": "Name stays on the bar from the first frame",
+    "items": [
+      "Player: a centre press puts the name on the bar from the first frame, not over the button row and then down"
+    ]
+  },
+  {
+    "version": "0.19.414",
+    "when": "2026-11-05",
+    "title": "Centre after the lower menu brings the bar",
+    "items": [
+      "Player: once the controls have shrunk to the bar, a centre press brings the bar with the name on it, not the row's place"
+    ]
+  },
+  {
+    "version": "0.19.413",
+    "when": "2026-11-05",
+    "title": "One download line on the title page",
+    "items": [
+      "Title page: a download from the tracker stands once, with one Cancel"
+    ]
+  },
+  {
+    "version": "0.19.412",
+    "when": "2026-11-05",
+    "title": "Worker counts made once, Games arrived lead Recently added",
+    "items": [
+      "Server: a worker's count is made by one request at a time; the others answer with the last count, which had held the server busy for minutes",
+      "Recently added films: a game that has come in stands in its place by arrival, not at the far end"
+    ]
+  },
+  {
+    "version": "0.19.411",
+    "when": "2026-11-05",
+    "title": "Continue watching set while the film plays, A finished game leaves Downloading at once, Games arrived on Recently added, Downloaded games have posters",
+    "items": [
+      "Home: a card played from Continue watching is moved first while the film plays, so backing out finds the row already in place",
+      "Downloads: a finished game filed under its league leaves the downloading row as soon as the library has read its file, not 15 minutes later",
+      "Recently added films: a race or game read in stands there for three days with the New ribbon, filed under its proper name",
+      "Sports: a race or game that has come in keeps its drawn poster on every shelf and page"
+    ]
+  },
+  {
+    "version": "0.19.410",
+    "when": "2026-11-05",
+    "title": "Continue watching from its start",
+    "items": [
+      "Home: back from a film, Continue watching is scrolled to its start once the row has its new order"
+    ]
+  },
+  {
+    "version": "0.19.409",
+    "when": "2026-11-05",
+    "title": "Home stays up when back from a film",
+    "items": [
+      "Home: back from a film keeps the shelves on screen while they are read again, and Continue watching goes to its start with the film just watched first"
+    ]
+  },
+  {
+    "version": "0.19.408",
+    "when": "2026-11-05",
+    "title": "Settings subtabs no longer jump",
+    "items": [
+      "Settings: pressing a subtab no longer moves the page down and back up while the next page loads"
+    ]
+  },
+  {
+    "version": "0.19.407",
+    "when": "2026-11-05",
+    "title": "Settings answer faster; Start remade after watching, Theme from away",
+    "items": [
+      "Settings: its answer reads the settings file once instead of a hundred times, 0.35 s to 0.05 s; People counts each person on one connection, 0.85 s to 0.1 s",
+      "Start fronts are made again for a viewer who has watched something, in the fronts' own process, within ten minutes",
+      "Theme can be changed from away and by guests: the server refused it as something only the owner at home may write"
+    ]
+  },
+  {
+    "version": "0.19.406",
+    "when": "2026-11-05",
+    "title": "Settings Subtitles tab draws",
+    "items": [
+      "Web: the Subtitles tab in Settings shows again - it drew onto the page after it had been swapped in and stayed empty"
+    ]
+  },
+  {
+    "version": "0.19.405",
+    "when": "2026-11-05",
+    "title": "Owner's phone gets the newest app from away",
+    "items": [
+      "App updates: the server decides who is asking when it offers the app, so the owner's screens get the newest from away too; the eight o'clock look is kept on disk, so an install after eight releases nothing"
+    ]
+  },
+  {
+    "version": "0.19.404",
+    "when": "2026-11-05",
+    "title": "App updates: Latest or Daily, Settings save in one place",
+    "items": [
+      "Settings: App updates - Latest gets each new version as it is built, Daily the one let out at eight once nothing is wrong with it; the owner starts on Latest, everyone else on Daily"
+    ]
+  },
+  {
+    "version": "0.19.403",
+    "when": "2026-11-05",
+    "title": "Phone corner buttons stay",
+    "items": [
+      "Phone player: cast, picture size and quality show whenever the controls do; holding adds only the figures along the top"
+    ]
+  },
+  {
+    "version": "0.19.402",
+    "when": "2026-11-05",
+    "title": "App reaches everyone at eight",
+    "items": [
+      "The app reaches everyone at eight each morning, and only if no fault report is open and no app has crashed since it came; the owner's screens have it at once"
+    ]
+  },
+  {
+    "version": "0.19.401",
+    "when": "2026-11-05",
+    "title": "Start fronts process starts, Search rule test",
+    "items": [
+      "Start fronts' process started as the installed server, not as the program behind it: since 0.19.398 every daily making failed with file not found"
+    ]
+  },
+  {
+    "version": "0.19.400",
+    "when": "2026-11-05",
+    "title": "A slow server's search answer fills in",
+    "items": [
+      "App search: a server slower than the second and a half is not cut off - its answer fills in on the next look a moment later"
+    ]
+  },
+  {
+    "version": "0.19.399",
+    "when": "2026-11-05",
+    "title": "Search answers from the first server",
+    "items": [
+      "App search: a server seen down is not waited for, and once one server has answered the others get a second and a half - asleep at night, the main server held every search for fifteen seconds"
+    ]
+  },
+  {
+    "version": "0.19.398",
+    "when": "2026-11-05",
+    "title": "Start fronts once a day, in their own process, Start fronts test",
+    "items": [
+      "Start fronts are made once a day per server, in a process of their own on a copy of the library: on the cache server the old ten-minute round took a whole core for five minutes and searches timed out under it"
+    ]
+  },
+  {
+    "version": "0.19.397",
+    "when": "2026-11-04",
+    "title": "Remote moves in order through the buttons",
+    "items": [
+      "TV player: up and down move one step at a time - bottom row, bar, pause, then the information line; up from the bar or the row below goes back to pause"
+    ]
+  },
+  {
+    "version": "0.19.396",
+    "when": "2026-11-04",
+    "title": "Buttons stay with the top line",
+    "items": [
+      "TV player: the buttons stay up when up opens the information line over them"
+    ]
+  },
+  {
+    "version": "0.19.395",
+    "when": "2026-11-04",
+    "title": "Up from the buttons to the top line",
+    "items": [
+      "TV player: up from the buttons opens the information line wherever the remote is, except on the bottom row; play/pause takes the remote when the buttons come up"
+    ]
+  },
+  {
+    "version": "0.19.394",
+    "when": "2026-11-04",
+    "title": "Up brings the buttons first",
+    "items": [
+      "TV player: up brings the buttons with play/pause, as down does; up again shows the information line"
+    ]
+  },
+  {
+    "version": "0.19.393",
+    "when": "2026-11-04",
+    "title": "Series wide picture and player presses",
+    "items": [
+      "A series sends its wide picture: the front page's slide no longer draws its poster zoomed across the screen",
+      "TV player: up from play/pause shows the information line",
+      "Phone player: a tap brings the controls without the top line; holding brings it, with cast, picture size and quality"
+    ]
+  },
+  {
+    "version": "0.19.392",
+    "when": "2026-11-04",
+    "title": "Player looks on a television",
+    "items": [
+      "TV player: up shows the information line, down the buttons with play/pause, any other press only the progress bar"
+    ]
+  },
+  {
+    "version": "0.19.391",
+    "when": "2026-11-04",
+    "title": "Tracker session from the indexer",
+    "items": [
+      "The tracker session is read from the indexer, which signs in again by itself; no cookie to hand over",
+      "Signed out only when the indexer cannot sign in again; the exact ratio is read through its session",
+      "Web: an episode's season packs stay shut behind Season packs until pressed"
+    ]
+  },
+  {
+    "version": "0.19.390",
+    "when": "2026-11-04",
+    "title": "Fault reports fixed",
+    "items": [
+      "Library: probing and the scan's file check no longer hold the database while reading the disk; progress saves stopped failing as locked",
+      "Server: moving a pack to its home and telling the cache of a request find the other server again",
+      "App: a live encode reopened after a cut is no longer filed as a fault",
+      "Web: the front page's edit button is placed beside See all wherever it sits"
+    ]
+  },
+  {
+    "version": "0.19.389",
+    "when": "2026-11-04",
+    "title": "Pack Remove after download, Unlinked packs cleared",
+    "items": [
+      "Series: Remove takes a pack off once its downloads are in; the episodes already in stay and keep seeding",
+      "Series: an unlinked pack's downloaded files are deleted 30 days after it was taken off, only where the library has another copy, after two checks an hour apart; each deletion goes into cleared.log"
+    ]
+  },
+  {
+    "version": "0.19.388",
+    "when": "2026-11-04",
+    "title": "Bar-only step 4 s",
+    "items": [
+      "Player: the progress bar alone stays 4 s before it goes, was 6 s"
+    ]
+  },
+  {
+    "version": "0.19.387",
+    "when": "2026-11-04",
+    "title": "Episode releases: added pack first",
+    "items": [
+      "An episode's release list shows the added pack alone; Other versions opens the tracker's releases"
+    ]
+  },
+  {
+    "version": "0.19.386",
+    "when": "2026-11-04",
+    "title": "Player",
+    "items": [
+      "Between two episodes the bar and the name show together, not the bar first"
+    ]
+  },
+  {
+    "version": "0.19.385",
+    "when": "2026-11-04",
+    "title": "Player",
+    "items": [
+      "The bar keeps its colour off until the next episode's picture is up"
+    ]
+  },
+  {
+    "version": "0.19.384",
+    "when": "2026-11-04",
+    "title": "Player",
+    "items": [
+      "The next episode follows without the bar flashing white or the name sliding in"
+    ]
+  },
+  {
+    "version": "0.19.383",
+    "when": "2026-11-04",
+    "title": "Player",
+    "items": [
+      "When the next episode follows, the bar shows no name until the next one's is in, not the one that ended"
+    ]
+  },
+  {
     "version": "0.19.382",
     "when": "2026-11-03",
     "title": "Player",

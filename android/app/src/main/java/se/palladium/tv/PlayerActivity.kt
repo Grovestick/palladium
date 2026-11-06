@@ -467,14 +467,21 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     //: a film or episode loading: the controls show the progress bar and the name only,
     //: until the first picture or a press (owner, 2026-11-03)
     private var loadingLook = true
-    //: what the loading look hid, and how each was, to be given back as it was
-    private val hidWhileLoading = mutableMapOf<android.view.View, Int>()
     //: the controls' own timeout, put aside while it loads: the loading look goes by the
     //: first picture, not by a clock that started before it
     private var timeoutBeforeLoading = -1
     //: the minimised bar - progress bar and name, the buttons slid away - already given
     //: its longer stay this time round
     private var barHeld = false
+    //: on a television, what the press that brought the controls up chose (Route.LOOK_*),
+    //: 0 for the whole set
+    private var look = 0
+    //: Media3's parts the look or the loading put away, given back as soon as neither
+    //: wants them away; and whether the bar is held down where the row of buttons is
+    private val keptAway = mutableSetOf<android.view.View>()
+    private var barPinned = false
+    //: a phone: the finger held down brought the top line; its lift is not a tap
+    private var held = false
     private var season = 0
     private var number = 0
     private var decoderName = ""
@@ -555,7 +562,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     finish()
                     return@launch
                 }
-                if (drew.media.offered || drew.media.ratingKey.startsWith("o")) {
+                if (drew.media.offered) {
                     // its collection, the poster wearing the download; the episode's page
                     // when the shelf is not a collection
                     Api.openDrawn.value = Pair(card.shuffleId, drew.media)
@@ -1233,8 +1240,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         })
         nameBar?.translationY = -260f
         frame.viewTreeObserver.addOnPreDrawListener {
-            nameOnTheBar(frame)
-            topWithTheButtons()
+            dress()
             true
         }
         // the shrink ends between frames, so it is looked for on a beat while the
@@ -1539,10 +1545,18 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
 
         // A phone: two taps on the left third of the picture go back as the back arrow
         // does, on the right third forward as the forward arrow does; one tap still
-        // brings the controls up, and the middle is left to that
+        // brings the controls up, and the middle is left to that. A tap brings them with
+        // the corner buttons - cast, picture size, quality - but not the figures along the
+        // top; held, with those too (owner, 2026-11-04, 2026-11-05)
         if (!onTelevision()) {
             val taps = android.view.GestureDetector(this,
                 object : android.view.GestureDetector.SimpleOnGestureListener() {
+                    override fun onLongPress(e: android.view.MotionEvent) {
+                        val v = view ?: return
+                        held = true
+                        setLook(0)
+                        v.showController()
+                    }
                     override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
                         val v = view ?: return false
                         val p = v.player ?: return false
@@ -1564,8 +1578,14 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     view?.showController()
                     return@setOnTouchListener true
                 }
+                if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                    held = false
+                    if (view?.isControllerFullyVisible != true) setLook(Route.LOOK_LOWER)
+                }
                 taps.onTouchEvent(ev)
-                false
+                // the lift after a hold: Media3 would take it as a tap and put them away
+                held && (ev.actionMasked == android.view.MotionEvent.ACTION_UP ||
+                         ev.actionMasked == android.view.MotionEvent.ACTION_CANCEL)
             }
         }
 
@@ -1573,6 +1593,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // transport bar times out they go with it, and a tap brings all three back.
         player.setControllerVisibilityListener(
             PlayerView.ControllerVisibilityListener { visibility ->
+                if (visibility != android.view.View.VISIBLE) setLook(0)
                 // a child of the bar hides with it; a floating fallback needs telling
                 // gone while it loaded: the next time they come up it is for somebody,
                 // all of them. First, so what it gives back is hidden again just below.
@@ -2510,39 +2531,6 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private fun timeBar(): androidx.media3.ui.DefaultTimeBar? =
         view?.findViewById(androidx.media3.ui.R.id.exo_progress)
 
-    /** The name just over whichever part of the transport is highest on screen now - in
-     *  one layout the progress bar, in another the row of buttons - where it is drawn this
-     *  frame, its slide included. Nothing of it shown: the name stays where it was. */
-    private fun nameOnTheBar(frame: android.view.View) {
-        val name = nameBar ?: return
-        val v = view ?: return
-        // loading: the bar held down where the row was, whatever Media3's own showing
-        // slides it to, and once the row has a size to go by - and the rest put away
-        // before this frame is drawn, however it came to be shown: the next episode
-        // brought the whole set up for a frame (owner, 2026-11-03)
-        if (loadingLook) {
-            hideForLoading(v)
-            val bar = timeBar()
-            val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
-            if (bar != null && row != null && row.height > 0 &&
-                    bar.translationY != row.height.toFloat()) {
-                bar.translationY = row.height.toFloat()
-            }
-        }
-        val mine = IntArray(2).also { frame.getLocationInWindow(it) }
-        var highest = Int.MAX_VALUE
-        for (id in intArrayOf(androidx.media3.ui.R.id.exo_progress,
-                              androidx.media3.ui.R.id.exo_bottom_bar)) {
-            val part = v.findViewById<android.view.View>(id) ?: continue
-            if (part.height <= 0 || !part.isShown) continue
-            val at = IntArray(2).also { part.getLocationInWindow(it) }
-            highest = minOf(highest, at[1] - mine[1])
-        }
-        if (highest == Int.MAX_VALUE) return
-        val want = (highest - 14 - frame.height).toFloat()
-        if (name.translationY != want) name.translationY = want
-    }
-
     /**
      * Media3 shrinks the controls to the progress bar for two seconds before they go, fixed
      * inside it; that was too short to read the name (owner, 2026-11-03). Its hide is put
@@ -2576,6 +2564,128 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         return f.get(pcv)
     }
 
+    /**
+     * The controls as this frame shows them, held every frame because Media3 puts its own
+     * parts back as it shows them. From the loading and the look:
+     *  - loading: the bar and the name only, the bar down where the row of buttons was, and
+     *    neither while the name is empty (owner, 2026-11-03, 2026-11-04)
+     *  - the bar - a centre or sideways press, or the controls shrunk on their own: the
+     *    buttons away and the bar down where their row was (owner, 2026-11-04, 2026-11-05)
+     *  - the lower: Media3's whole set; the upper: that and the information line
+     *  - no press: the information line and the corner row come and go with the buttons,
+     *    going as they slide away, not with the bar after (owner, 2026-11-03)
+     * The name last, over what the rest left: placed first, it stood a frame over the row
+     * Media3 had just shown and then fell to the bar (owner, 2026-11-05).
+     */
+    private fun dress() {
+        val v = view ?: return
+        val up = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+            ?.visibility == android.view.View.VISIBLE
+        val step = uxStep()
+        // shrunk to the bar by the controls' own timeout: the bar look, so a press from
+        // there starts where a press from nothing does. Left as the lower, centre brought
+        // the row's place back and the name stood over it (owner, 2026-11-05)
+        if (up && !loadingLook) look = Route.lookWhenShrunk(look, step == UX_ONLY_BAR)
+        val barOnly = loadingLook || (up && look == Route.LOOK_BAR)
+        val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
+        keepAway(listOfNotNull(
+            v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_center_controls)
+                ?.takeIf { barOnly },
+            row?.takeIf { barOnly },
+            v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_minimal_controls)
+                ?.takeIf { loadingLook }))
+        val bar = timeBar()
+        pinBar(bar, row, barOnly)
+        if (loadingLook) {
+            showIf(bar, !nameBar?.text.isNullOrEmpty())
+            showIf(infoBar, false)
+            showIf(cornerRow, false)
+        } else if (up) {
+            val buttons = when (step) {
+                UX_ALL, UX_SLIDING_IN -> true
+                UX_ONLY_BAR, UX_SLIDING_AWAY -> false
+                else -> null
+            }
+            if (buttons != null) {
+                showIf(infoBar, buttons && Route.infoLineWith(look))
+                // the phone's corner buttons - cast, picture size, quality - stay with the
+                // controls; only the figures along the top wait for a hold (owner, 2026-11-05)
+                showIf(cornerRow, buttons)
+            }
+        }
+        shade(v)
+        placeName(v, barOnly)
+    }
+
+    /** Paused: the picture shaded and everything over it grey. Playing: neither - Media3
+     *  shaded the picture whenever the controls were up (owner, 2026-11-05). */
+    private fun shade(v: PlayerView) {
+        val paused = Route.pausedLook(current()?.playWhenReady ?: true, loadingLook)
+        showIf(v.findViewById(androidx.media3.ui.R.id.exo_controls_background), paused)
+        val ink = if (paused) Route.PAUSED_INK else 1f
+        for (part in listOf<android.view.View?>(
+                v.findViewById(androidx.media3.ui.R.id.exo_center_controls),
+                v.findViewById(androidx.media3.ui.R.id.exo_bottom_bar),
+                v.findViewById(androidx.media3.ui.R.id.exo_progress),
+                nameBar, infoBar, cornerRow)) {
+            if (part != null && part.alpha != ink) part.alpha = ink
+        }
+    }
+
+    /** These of Media3's parts away this frame, and any put away before given back. */
+    private fun keepAway(parts: List<android.view.View>) {
+        for (part in parts) {
+            if (part.visibility == android.view.View.VISIBLE) {
+                part.visibility = android.view.View.INVISIBLE
+                keptAway.add(part)
+            }
+        }
+        for (part in keptAway.filter { it !in parts }) {
+            part.visibility = android.view.View.VISIBLE
+            keptAway.remove(part)
+        }
+    }
+
+    /** The bar held down where the row of buttons is, as Media3 has it when shrunk; let go,
+     *  it goes back only if it was held here - Media3 moves it itself when it shrinks. */
+    private fun pinBar(bar: android.view.View?, row: android.view.View?, on: Boolean) {
+        if (bar == null) return
+        if (on) {
+            val down = row?.height?.takeIf { it > 0 }?.toFloat() ?: return
+            if (bar.translationY != down) bar.translationY = down
+            barPinned = true
+        } else if (barPinned) {
+            bar.translationY = 0f
+            barPinned = false
+        }
+    }
+
+    private fun showIf(part: android.view.View?, on: Boolean) {
+        val want = if (on) android.view.View.VISIBLE else android.view.View.INVISIBLE
+        if (part != null && part.visibility != want) part.visibility = want
+    }
+
+    /** The name just over the highest of what it stands over - the bar, and the row of
+     *  buttons unless the bar is all there is - where that is drawn this frame, its slide
+     *  included. Nothing of it shown: the name stays where it was. */
+    private fun placeName(v: PlayerView, barOnly: Boolean) {
+        val name = nameBar ?: return
+        val frame = name.parent as? android.view.View ?: return
+        val mine = IntArray(2).also { frame.getLocationInWindow(it) }
+        var highest = Int.MAX_VALUE
+        for (over in Route.nameOver(barOnly)) {
+            val id = if (over == "row") androidx.media3.ui.R.id.exo_bottom_bar
+                     else androidx.media3.ui.R.id.exo_progress
+            val part = v.findViewById<android.view.View>(id) ?: continue
+            if (part.height <= 0 || !part.isShown) continue
+            val at = IntArray(2).also { part.getLocationInWindow(it) }
+            highest = minOf(highest, at[1] - mine[1])
+        }
+        if (highest == Int.MAX_VALUE) return
+        val want = (highest - 14 - frame.height).toFloat()
+        if (name.translationY != want) name.translationY = want
+    }
+
     /** Media3's step for the controls - all up, only the bar, sliding away - or -1 when it
      *  cannot be read, and then nothing of ours goes by it. */
     private fun uxStep(): Int = runCatching {
@@ -2587,38 +2697,14 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         f.getInt(lm)
     }.getOrDefault(-1)
 
-    /** The information line and the corner row on a shrink: they go as the buttons slide
-     *  away, not two seconds later with the bar (owner, 2026-11-03), and come back with the
-     *  buttons. Looked at every frame, so they go with the first frame of the slide. */
-    private fun topWithTheButtons() {
-        if (loadingLook) return
-        val step = uxStep()
-        val want = when (step) {
-            UX_ONLY_BAR, UX_SLIDING_AWAY -> android.view.View.INVISIBLE
-            UX_ALL, UX_SLIDING_IN -> android.view.View.VISIBLE
-            else -> return
-        }
-        val up = view?.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
-            ?.visibility == android.view.View.VISIBLE
-        if (!up) return
-        if (infoBar?.visibility != want) infoBar?.visibility = want
-        if (cornerRow?.visibility != want) cornerRow?.visibility = want
-    }
-
-    /** The parts the loading look keeps away, put away if anything has shown them: Media3
-     *  puts its buttons back as it shows the controls, after anything said to it here. */
-    private fun hideForLoading(v: PlayerView) {
-        val parts = listOfNotNull<android.view.View>(
-            v.findViewById(androidx.media3.ui.R.id.exo_center_controls),
-            v.findViewById(androidx.media3.ui.R.id.exo_minimal_controls),
-            v.findViewById(androidx.media3.ui.R.id.exo_bottom_bar),
-            infoBar, cornerRow)
-        for (part in parts) {
-            if (part.visibility == android.view.View.VISIBLE) {
-                if (part !in hidWhileLoading) hidWhileLoading[part] = part.visibility
-                part.visibility = android.view.View.INVISIBLE
-            }
-        }
+    /** The time bar drawn empty - played, held and knob in the colour of the rest - or in
+     *  Media3's own colours again. */
+    private fun barBlank(on: Boolean) {
+        val bar = timeBar() ?: return
+        val rest = androidx.media3.ui.DefaultTimeBar.DEFAULT_UNPLAYED_COLOR
+        bar.setPlayedColor(if (on) rest else androidx.media3.ui.DefaultTimeBar.DEFAULT_PLAYED_COLOR)
+        bar.setScrubberColor(if (on) rest else androidx.media3.ui.DefaultTimeBar.DEFAULT_SCRUBBER_COLOR)
+        bar.setBufferedColor(if (on) rest else androidx.media3.ui.DefaultTimeBar.DEFAULT_BUFFERED_COLOR)
     }
 
     /** While a film or episode loads: the controls without their buttons, the information
@@ -2628,33 +2714,29 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         loadingLook = on
         val v = view ?: return
         val bar = timeBar()
-        val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
+        dress()
         if (on) {
-            hideForLoading(v)
-            // the bar down where the row of buttons was - where it sits when the
-            // controls are shrunk - and without its knob, as it is then
-            if (bar != null && row != null && row.height > 0) bar.translationY = row.height.toFloat()
+            // without its knob, as when the controls are shrunk
             bar?.hideScrubber(false)
             if (timeoutBeforeLoading < 0) {
                 timeoutBeforeLoading = v.controllerShowTimeoutMs
                 v.controllerShowTimeoutMs = 0
             }
         } else {
-            bar?.translationY = 0f
+            bar?.visibility = android.view.View.VISIBLE
             bar?.showScrubber(0)
             if (timeoutBeforeLoading >= 0) {
                 v.controllerShowTimeoutMs = timeoutBeforeLoading
                 timeoutBeforeLoading = -1
             }
             // the information line and the corner row go with the controls: up only if
-            // the controls still are
+            // the controls still are, and then as the look has them
             val up = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
                 ?.visibility == android.view.View.VISIBLE
-            for ((part, was) in hidWhileLoading) {
-                part.visibility = if (up || (part !== infoBar && part !== cornerRow)) was
-                                  else android.view.View.GONE
+            if (!up) {
+                infoBar?.visibility = android.view.View.GONE
+                cornerRow?.visibility = android.view.View.GONE
             }
-            hidWhileLoading.clear()
         }
     }
 
@@ -2664,6 +2746,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val v = view ?: return
         val bar = timeBar() ?: return
         if (nextUp.value != null) return
+        // down chose the buttons: play/pause keeps the remote
+        if (look == Route.LOOK_LOWER) return
         val focus = currentFocus
         val transport = setOf(androidx.media3.ui.R.id.exo_play_pause,
                               androidx.media3.ui.R.id.exo_rew_with_amount,
@@ -2714,13 +2798,24 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             centreTook = centre
             return true
         }
+        val key = when (code) {
+            android.view.KeyEvent.KEYCODE_DPAD_UP -> "up"
+            android.view.KeyEvent.KEYCODE_DPAD_DOWN -> "down"
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> "side"
+            else -> "centre"
+        }
         if (!v.isControllerFullyVisible) {
+            // up or down the buttons with play/pause, up again the information line, the rest the bar
+            setLook(Route.lookAfter(key, 0))
             v.showController()
-            val sideways = code == android.view.KeyEvent.KEYCODE_DPAD_LEFT ||
-                           code == android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+            val sideways = key == "side"
             // after the controller's own request for the pause button; and left or
             // right moves the film at once rather than only bringing the bar up
             bar.post {
+                if (look == Route.LOOK_LOWER) {
+                    pauseTakesTheRemote()
+                    return@post
+                }
                 bar.requestFocus()
                 if (sideways) {
                     bar.setKeyTimeIncrement(keyStepMs(0))
@@ -2731,6 +2826,31 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             centreTook = centre
             return true
         }
+        // the bar or the upper: up and down open their row, left, right and centre stay
+        // with the bar. The lower: up from play/pause and its skips, or with the remote on
+        // none of the controls; from the bar or the row below, up is the way back to pause
+        if (look != 0) {
+            val middle = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_center_controls)
+            val controls = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+            val atTop = focus == null || (middle != null && (focus === middle || isInside(middle, focus))) ||
+                (controls != null && focus !== controls && !isInside(controls, focus))
+            val next = Route.lookAfter(key, look, atTop)
+            // down out of the upper: the information line goes and the remote moves on
+            // down as it would, from pause to the bar and the row below - one step at a time
+            if (look == Route.LOOK_UPPER && next == Route.LOOK_LOWER) {
+                setLook(next)
+                v.showController()
+                return false
+            }
+            if (next != look) {
+                setLook(next)
+                v.showController()
+                // the upper keeps the buttons and the remote where it was
+                if (next == Route.LOOK_LOWER) v.post { pauseTakesTheRemote() }
+                else if (next == Route.LOOK_BAR) bar.post { bar.requestFocus() }
+                return true
+            }
+        }
         if (centre && focus === bar && event.repeatCount == 0 &&
                 android.os.SystemClock.uptimeMillis() - lastScrubKey > 1200) {
             current()?.let { p -> if (p.isPlaying) p.pause() else p.play() }
@@ -2739,6 +2859,32 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             return true
         }
         return false
+    }
+
+    private fun playPauseButton(): android.view.View? =
+        view?.findViewById(androidx.media3.ui.R.id.exo_play_pause)
+
+    /** The lower's remote on play/pause. Asked as the controls come up it was left on the
+     *  player itself, so it is asked again once they are drawn, and where it went is said. */
+    private fun pauseTakesTheRemote(tries: Int = 3) {
+        val pp = playPauseButton() ?: return
+        if (look != Route.LOOK_LOWER) return
+        if (currentFocus !== pp) pp.requestFocus()
+        if (currentFocus === pp || tries <= 1) {
+            if (tries <= 1 && currentFocus !== pp)
+                log("lower: play/pause did not take the remote; on " +
+                    (currentFocus?.let { runCatching { resources.getResourceEntryName(it.id) }
+                        .getOrDefault(it.javaClass.simpleName) } ?: "nothing"))
+            return
+        }
+        pp.postDelayed({ pauseTakesTheRemote(tries - 1) }, 150)
+    }
+
+    /** A look chosen by a press, shown from this frame on. */
+    private fun setLook(n: Int) {
+        if (look == n) return
+        look = n
+        dress()
     }
 
     private fun isInside(parent: android.view.View, child: android.view.View): Boolean {
@@ -2789,6 +2935,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     else -> !p.isPlaying
                 }
                 if (wanted) p.play() else p.pause()
+                if (onTelevision() && view?.isControllerFullyVisible != true) setLook(Route.LOOK_BAR)
                 view?.showController()
             }
             return true
@@ -3008,6 +3155,9 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             override fun onRenderedFirstFrame() {
                 if (pictureAt == 0L) pictureAt = android.os.SystemClock.elapsedRealtime()
                 mark("first picture")
+                // the bar in its colours again, now that it holds this one's place: given
+                // back as the next began, it showed the last one's end in white for a moment
+                barBlank(false)
                 // loaded: the bar and the name stay a while over the picture, then go at
                 // once - Media3's slide out starts from the bar's usual place, up high
                 if (loadingLook) {
@@ -3101,7 +3251,14 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     // this one, not Media3's whole set of controls for the one that
                     // ended, which showed for half a second first (owner, 2026-11-03)
                     if (Route.rollsOn(queueAhead().isNotEmpty(), casually(),
-                                      autoNext && showKey.isNotEmpty())) lookLoading(true)
+                                      autoNext && showKey.isNotEmpty())) {
+                        lookLoading(true)
+                        // the bar alone until the next one's name is set: the one that
+                        // ended stood over the next while it loaded (owner, 2026-11-04)
+                        nameBar?.text = ""
+                        // and empty, not the finished one's bar run full in white
+                        barBlank(true)
+                    }
                     // something put on casually leads to the next draw; a series rolls
                     // on; a film on its own has nowhere to go
                     if (queueAhead().isNotEmpty()) step(forward = true)
@@ -3122,6 +3279,11 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 // drop the link and wander off to whatever else is paired
                 keepLinkWarm(!isPlaying)
                 holdTheScreen(isPlaying)
+                dress()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                dress()                            // paused or not: the shade and the grey
             }
 
             /**
@@ -3137,7 +3299,22 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 // reason for it - which is all anybody had to work from afterwards.
                 // Once per code per playing: the retries below would otherwise send
                 // the same line six times in twenty seconds.
-                if (saidFaults.add(error.errorCodeName)) {
+                // A live encode cut in the middle - the server restarted, the line
+                // blinked - is refused (416) when the player asks to carry on at a
+                // byte: an encode has no byte N, and the server used to start again at
+                // the second in the address, which put the picture back to wherever
+                // this encode began. It is opened again at the second reached. Five a
+                // playing, and never a direct play, which carries on by itself.
+                val encodeCut = !direct && !onCastNow() &&
+                    generateSequence(error.cause) { it.cause }
+                        .filterIsInstance<
+                            androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()
+                        .any { it.responseCode == 416 }
+                // that one reopened is the encode's own way on, written to the log only:
+                // filed as a fault, every install during an encode was one (2026-11-04)
+                val fileIt = Route.filesPlaybackFault(encodeCut, encodeReopens)
+                if (!fileIt) log("encode cut (416) at " + position() + "s: opening again")
+                if (fileIt && saidFaults.add(error.errorCodeName)) {
                     val note = listOf(
                         "playback failed",
                         "code=" + error.errorCodeName + " (" + error.errorCode + ")",
@@ -3153,18 +3330,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 // fresh request replaced the newer player's encode on the server, which
                 // then ended after two seconds and the shuffle went to the next episode.
                 if (isFinishing || newest !== this@PlayerActivity) return
-                // A live encode cut in the middle - the server restarted, the line
-                // blinked - is refused (416) when the player asks to carry on at a
-                // byte: an encode has no byte N, and the server used to start again at
-                // the second in the address, which put the picture back to wherever
-                // this encode began. It is opened again at the second reached. Five a
-                // playing, and never a direct play, which carries on by itself.
-                val encodeCut = !direct && !onCastNow() &&
-                    generateSequence(error.cause) { it.cause }
-                        .filterIsInstance<
-                            androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()
-                        .any { it.responseCode == 416 }
-                if (encodeCut && encodeReopens < 5) {
+                if (encodeCut && encodeReopens < Route.ENCODE_REOPENS) {
                     encodeReopens++
                     val at = whereItIs()
                     log("encode cut: opened again at " + (at / 1000) + "s")
@@ -5071,8 +5237,12 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 go.putStringArrayListExtra("queueBack", ArrayList(
                     if (forward) behind + now else behind.dropLast(1)))
             }
+            // one player into the next without the window sliding in: the bar stays put
+            // and the name does not come in from the side (owner, 2026-11-04)
+            go.addFlags(android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION)
             startActivity(go)
             finish()
+            @Suppress("DEPRECATION") overridePendingTransition(0, 0)
         }
     }
 

@@ -863,6 +863,71 @@ for _s in _sk.all_of():
 check("white text on the red accent, dark text on the gold", _sk.on("#e50914") == "#ffffff"
       and _sk.on("#d9a441") == "#111111")
 
+# ---- a shuffle's pack fetches wait for the episode it opened to play
+_srvmod = _load_server() if "_load_server" in globals() else None
+_src_fp = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_ns_fp = {}
+exec(_src_fp[_src_fp.index("def first_picture(rows, who):"):_src_fp.index("def copies_coming(rows):")], _ns_fp)
+_fp = _ns_fp["first_picture"]
+check("a pack fetch waits while the viewer's episode opens, and goes once it plays",
+      not _fp([{"who": "Owner", "state": "buffering", "position": 0}], "Owner")
+      and not _fp([{"who": "Owner", "state": "playing", "position": 0}], "Owner")
+      and not _fp([{"who": "Owner", "state": "paused", "position": 500}], "Owner")
+      and not _fp([{"who": "Cache", "how": "syncing", "state": "playing", "position": 9}], "Cache")
+      and _fp([{"who": "Owner", "state": "playing", "position": 3}], "Owner")
+      and "not first_picture(WATCHING.snapshot(), who)" in _src_fp)
+
+# ---- a guest may ask for a film the house has not got: the app shows them Request
+_gsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_glist = _gsrc[_gsrc.index("GUEST_MAY_POST = ("):]
+_glist = _glist[:_glist.index(chr(10) + "        # Giving the password")]
+check("a guest's Request reaches the server", '"/requests"' in _glist)
+
+# ---- one set of keys: nothing tells a pack title by an "o" on its key, server or app
+_srcs = {n: open(os.path.join(os.path.dirname(os.path.abspath(__file__)), *n.split("/")), encoding="utf-8").read()
+         for n in ("pd-server.py", "pd_localapi.py",
+                   "android/app/src/main/java/se/palladium/tv/MainActivity.kt",
+                   "android/app/src/main/java/se/palladium/tv/PlayerActivity.kt",
+                   "android/app/src/main/java/se/palladium/tv/StartScreen.kt")}
+# every form: a call, one word in a tuple of prefixes, or a pattern for the shape
+_o_left = [n for n, t in _srcs.items() if 'startswith("o")' in t or 'startsWith("o")' in t
+           or __import__('re').search(r'startswith\(\([^)]*"o"', t) or '"^o[' in t or 'r"^o[' in t]
+check("no pack title is told by an o on its key, on the server or in the app: %s" % _o_left, not _o_left)
+
+# ---- a title page lists a tracker download once: the coming-in list carries it too
+_ma = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                        "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
+_api = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                         "se", "palladium", "tv", "Api.kt"), encoding="utf-8").read()
+check("a tracker download stands once on its title page, with one Cancel",
+      "coming.filter { !it.offerTracker }.forEach" in _ma
+      and 'it.offerTracker = offer.optBoolean("tracker", false)' in _api)
+
+# ---- a job's count is made by one thread at a time; the others answer with the last one
+import pd_beat as _bt
+import threading as _th
+_gate, _calls = _th.Event(), []
+def _slow():
+    _calls.append(1)
+    _gate.wait(5)
+    return (len(_calls), 0)
+_bt.counter("t-count", _slow)
+_bt._COUNTED["t-count"] = (0.0, (7, 0))
+_first = _th.Thread(target=lambda: _bt._count("t-count"))
+_first.start()
+import time as _tm
+for _ in range(100):
+    if _calls:
+        break
+    _tm.sleep(0.01)
+_meanwhile = [_bt._count("t-count") for _ in range(5)]
+_gate.set()
+_first.join(5)
+check("a stale count is made once while others ask: they get the last count, not a count of their own",
+      _calls == [1] and _meanwhile == [(7, 0)] * 5 and _bt._count("t-count") == (1, 0))
+_bt.COUNTERS.pop("t-count", None)
+_bt._COUNTED.pop("t-count", None)
+
 # ---- a finished tracker fetch stays on its card until the library has read it
 import pd_tracker as _srv
 if True:
@@ -875,15 +940,26 @@ if True:
              _srv.release_flat("Other.Film.2025.1080p.WEB-DL.H.264-GRP.mkv"): _now - 60,
              _srv.release_flat("A.Show.S02E03.1080p.WEB.H264-GRP.mkv"): _now - 60,
              _srv.release_flat("Old.Film.2024.1080p.BluRay.x264-GRP.mkv"): _now - 5000}
-    _held = lambda title, year: title == "Other Film"
+    _held = lambda title, year, name="": title == "Other Film"
     _got = _srv.landing_now(_log, _done, _held, _now)
     check("finished, not read in yet: kept at 100%% with who asked: %s" % [g["name"] for g in _got],
           [g["name"] for g in _got] == ["Some Film 2026 1080p WEB-DL H 264-GRP"]
           and _got[0]["progress"] == 1.0 and _got[0]["who"] == "guest" and _got[0]["from"] == "tracker")
     check("one still downloading is not landing",
-          not _srv.landing_now(_log[:1], {}, lambda t, y: False, _now))
+          not _srv.landing_now(_log[:1], {}, lambda t, y, n="": False, _now))
     check("held, an episode, or finished long ago: gone from the list",
           not _srv.landing_now(_log[1:], _done, _held, _now))
+    # a game named by its date is an episode of its league: held by its own file
+    _game = [{"name": "NFL 2026 10 25 Home Vs Away 720p WEB H264-GRP", "at": _now - 600}]
+    _gdone = {_srv.release_flat("NFL.2026.10.25.Home.Vs.Away.720p.WEB.H264-GRP"): _now - 60}
+    _gfile = {_srv.release_flat("nfl.2026.10.25.home.vs.away.720p.web.h264-grp.mkv")}
+    check("a game read in under its league leaves the list at once, by its own file",
+          _srv.landing_now(_game, _gdone, lambda t, y, n="": False, _now)
+          and not _srv.landing_now(_game, _gdone,
+                                   lambda t, y, n="": _srv.release_flat(n) in _gfile, _now))
+_pssrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+check("the server's landing check looks for the release's own file in the library",
+      "pd_tracker.release_flat(name) in read_in" in _pssrc)
 _lasrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_localapi.py"), encoding="utf-8").read()
 check("the release row's dates match held films on every listing, not only on the row's own page",
       _lasrc.count("self._mark_held()") >= 2 and "changed = self._mark_held()" in _lasrc)
@@ -4173,6 +4249,38 @@ try:
 finally:
     _sh4.rmtree(_root4, ignore_errors=True)
 
+# ---- web: the front page's edit button goes beside See all wherever it sits
+_js263 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
+check("web: Home's edit button inserted beside See all's own parent, never the heading's",
+      "if (all) all.parentNode.insertBefore(edit, all);" in _js263 and "first.insertBefore(edit" not in _js263)
+
+# ---- probing holds no write open: another connection can write while ffprobe runs
+_root262 = _tf4.mkdtemp(prefix="pd-probe-")
+try:
+    _lib262 = _lb2.Library(_root262)
+    _c262 = _lib262.db()
+    for _n in range(3):
+        _f262 = os.path.join(_root262, "f%d.mkv" % _n)
+        open(_f262, "wb").write(b"\1" * 4096)
+        _c262.execute("INSERT INTO file (item_id, path, size, mtime, probed) VALUES ('i', ?, 4096, 0, 0)", (_f262,))
+    _c262.commit(); _c262.close()
+    _blocked262 = []
+    def _probe262(ffprobe, path):
+        _o = _sq262.connect(_lib262.dbpath, timeout=0.2)
+        try:
+            _o.execute("UPDATE file SET size=size WHERE path=?", (path,)); _o.commit()
+        except _sq262.OperationalError as e:
+            _blocked262.append(str(e))
+        finally:
+            _o.close()
+        return None
+    import sqlite3 as _sq262
+    _lib262.probe = _probe262
+    _lib262.probe_pending()
+    check("probing: no write is held open while a file is probed", _blocked262 == [])
+finally:
+    _sh4.rmtree(_root262, ignore_errors=True)
+
 # ---- music video playlists: made, named, filled in order, deleted; an unreadable file is left alone
 import pd_music as _pm5
 _root5 = _tf4.mkdtemp(prefix="pd-playlists-")
@@ -5402,9 +5510,12 @@ check("screens: /screen/play takes a shuffle to carry on, and the screen draws i
 
 # ---- app search waits as the web page does, and asks again when a server was silent
 _api226 = open(os.path.join(_h214, "android", "app", "src", "main", "java", "se", "palladium", "tv", "Api.kt"), encoding="utf-8").read()
-check("app: a search waits fifteen seconds for each server and asks again when one said nothing",
-      "const val SEARCH_PATIENCE = 15_000L" in _api226
-      and "if (answered < Servers.merged(ctx).size) searchFilling = true" in _api226)
+check("app: a search gives each server fifteen seconds but shows the first answer after a grace, "
+      "keeps a slow one's answer for the next look, and asks again when an up server said nothing",
+      "const val SEARCH_PATIENCE = 15_000L" in _api226 and "const val SEARCH_GRACE = 1_500L" in _api226
+      and 'heardFrom(ctx, SEARCH_PATIENCE, SEARCH_GRACE, "search|$q")' in _api226
+      and "LateAnswer(lateScope.async { ask() })" in _api226
+      and "if (answered < Servers.merged(ctx).count { Reach.upRow(it) != false }) searchFilling = true" in _api226)
 
 # ---- a film page's More like this fills the room under the words, the row at the foot
 check("app: More like this is as large as the room under the film's words allows",
@@ -5586,7 +5697,7 @@ finally:
 # ---- an episode's releases: the added pack first, then single episodes, then season packs
 _ed248 = open(os.path.join(_h214, "android", "app", "src", "main", "java", "se", "palladium", "tv", "EpisodeDownloads.kt"), encoding="utf-8").read()
 check("downloads: an episode's releases stand under headings, the pack you added first",
-      "Route.releaseGroups(rows.map { it.pack to it.box }).forEach { (heading, at) ->" in _ed248
+      "Route.releaseGroupsShown(kinds, more).forEach { (heading, at) ->" in _ed248
       and '"Tracker",' not in _ed248)
 
 # ---- the watchlist and collection buttons open popups: Add or Remove as it stands, Go to
@@ -5666,6 +5777,94 @@ _d260 = [{"hash": "aa", "state": "cancelled"}, {"hash": "bb", "state": "done"},
 check("packs: only a download that brought something keeps a pack linked",
       _pt260._came_from(_d260) == {"bb", "cc"}
       and _pt260.packs_free("X", {"showPacks": {"x": {"packs": ["aa", "bb"]}}}, _d260) == ["aa"])
+check("packs: Remove keeps a pack only while an episode is still coming from it",
+      _pt260._still_coming(_d260 + [{"hash": "ee", "state": "queued"}]) == {"cc", "ee"})
+
+# ---- an unlinked pack's downloaded files: 30 days on, two checks, another copy, nothing else
+_day = 86400
+check("unlinked: due after 30 days, not when added again, still coming or cleared",
+      _pt260.unlinked_due({"hash": "a", "at": 1}, 30 * _day + 1, set(), set())
+      and not _pt260.unlinked_due({"hash": "a", "at": 1}, 29 * _day, set(), set())
+      and not _pt260.unlinked_due({"hash": "a", "at": 0}, 31 * _day, {"a"}, set())
+      and not _pt260.unlinked_due({"hash": "a", "at": 0}, 31 * _day, set(), {"a"})
+      and not _pt260.unlinked_due({"hash": "a", "at": 0, "cleared": 1}, 31 * _day, set(), set()))
+_rows261 = [{"hash": "a", "index": 0, "state": "done"}, {"hash": "a", "index": 1, "state": "done"},
+            {"hash": "a", "index": 2, "state": "downloading"}, {"hash": "b", "index": 3, "state": "done"},
+            {"hash": "a", "index": 4, "state": "done"}, {"hash": "a", "index": 5, "state": "done"}]
+_files261 = [{"index": 0, "name": "P/S01/e1.mkv", "size": 5, "priority": 1, "progress": 1},
+             {"index": 1, "name": "P/S01/e2.mkv", "size": 5, "priority": 0, "progress": 1},
+             {"index": 2, "name": "P/S01/e3.mkv", "size": 5, "priority": 1, "progress": 1},
+             {"index": 3, "name": "P/S01/e4.mkv", "size": 5, "priority": 1, "progress": 1},
+             {"index": 4, "name": "P/S01/e5.mkv", "size": 5, "priority": 1, "progress": 0.5},
+             {"index": 5, "name": "P/../../x.mkv", "size": 5, "priority": 1, "progress": 1}]
+_got261 = _pt260.unlinked_files("a", _rows261, _files261, os.path.join("D:" + os.sep, "Dl"),
+                                os.path.join("D:" + os.sep, "Dl", "P"))
+check("unlinked: only a finished download's file, whole, switched on, inside the pack's folder",
+      [i for i, _, _ in _got261] == [0]
+      and _pt260.unlinked_files("a", _rows261, _files261, os.path.join("D:" + os.sep, "Dl"),
+                                os.path.join("D:" + os.sep, "Dl")) == [])
+
+# the whole round on files of its own: a fake client and a library holding a second copy of e1
+import tempfile as _tf261, sqlite3 as _sq261
+_tmp261 = _tf261.mkdtemp()
+_dl261 = os.path.join(_tmp261, "Dl")
+_P261 = os.path.join(_dl261, "P")
+os.makedirs(os.path.join(_P261, "S01"))
+_e1 = os.path.join(_P261, "S01", "e1.mkv")
+_e2 = os.path.join(_P261, "S01", "e2.mkv")
+_nfo = os.path.join(_P261, "info.nfo")
+_other = os.path.join(_tmp261, "Other", "e1 1080p.mkv")
+os.makedirs(os.path.dirname(_other))
+for _f, _b in ((_e1, b"x" * 50), (_e2, b"y" * 60), (_nfo, b"n"), (_other, b"z" * 70)):
+    open(_f, "wb").write(_b)
+_db261 = os.path.join(_tmp261, "lib.db")
+_c = _sq261.connect(_db261)
+_c.execute("create table file (path text, item_id text, episode_id text, size int, hollow int)")
+_c.executemany("insert into file values (?,?,?,?,0)", [(_e1, "s", "ep1", 50), (_other, "s", "ep1", 70),
+                                                       (_e2, "s", "ep2", 60)])
+_c.commit(); _c.close()
+class _Lib261:
+    def db(self):
+        c = _sq261.connect(_db261); c.row_factory = _sq261.Row; return c
+_removed261 = []
+class _QB261:
+    def __init__(self, cfg): pass
+    def info(self, h):
+        return {"hash": h, "seeding_time": 40 * _day, "save_path": _dl261, "content_path": _P261}
+    def files(self, h):
+        return [{"index": 0, "name": "P/S01/e1.mkv", "size": 50, "priority": 1, "progress": 1},
+                {"index": 1, "name": "P/S01/e2.mkv", "size": 60, "priority": 1, "progress": 1}]
+    def all_info(self):
+        return [{"hash": "a", "save_path": _dl261}]
+    def remove(self, h, files=False): _removed261.append(("remove", h, files))
+    def priority(self, h, idx, v): _removed261.append(("priority", h, tuple(idx), v))
+_keep261 = {k: _pt260.STATE.get(k) for k in ("root", "data", "lib", "scan_wanted")}
+_qb_keep261 = _pt260.QB
+try:
+    _pt260.QB = _QB261
+    _pt260.STATE.update(root=_tmp261, lib=lambda: _Lib261(), data={
+        "config": {}, "packs": [], "unlinkedSeeded": True,
+        "downloads": [{"hash": "a", "index": 0, "state": "done"}, {"hash": "a", "index": 1, "state": "done"}],
+        "unlinked": {"a": {"name": "P", "at": time.time() - 31 * _day}}})
+    _pt260._clear_unlinked()
+    _after_first = os.path.exists(_e1) and not _removed261
+    _pt260.STATE["data"]["unlinked"]["a"]["lookedAt"] -= 3601
+    _pt260._clear_unlinked()
+    check("unlinked: nothing deleted at the first check; at the second only the file with another copy",
+          _after_first and not os.path.exists(_e1) and os.path.exists(_e2) and os.path.exists(_nfo)
+          and os.path.exists(_other) and _removed261 == [("priority", "a", (0,), 0)]
+          and "cleared" not in _pt260.STATE["data"]["unlinked"]["a"])
+    # a pack added back is left alone, whatever its days
+    open(_e1, "wb").write(b"x" * 50)
+    _pt260.STATE["data"]["packs"] = [{"hash": "a"}]
+    _pt260.STATE["data"]["unlinked"]["a"].pop("lookedAt", None)
+    _pt260._clear_unlinked(); _pt260.STATE["data"]["unlinked"]["a"]["lookedAt"] = 0; _pt260._clear_unlinked()
+    check("unlinked: a pack added again keeps every file", os.path.exists(_e1))
+finally:
+    _pt260.QB = _qb_keep261
+    _pt260.STATE.update(_keep261)
+    import shutil as _sh261
+    _sh261.rmtree(_tmp261, ignore_errors=True)
 
 # ---- qBittorrent through the link merge tool while it runs with two links, straight out otherwise
 import pd_torrents as _pt261
@@ -5768,9 +5967,9 @@ class _Fake270:
     def start_page(self, con, one, fresh=False): pass
 _p270 = []
 _n270 = _pl270.LocalAPI.start_make_ahead(_Fake270(), None, pause=lambda: _p270.append(1))
-check("start: fronts made ahead ten minutes after a start, with a pause between each",
-      "START_AHEAD_AFTER = 600" in _srv270 and "pause=lambda: time.sleep(START_AHEAD_GAP)" in _srv270
-      and _n270 == 4 and len(_p270) == 3)
+check("start: fronts first looked at ten minutes after a start, made once a day in their own process",
+      "START_AHEAD_AFTER = 600" in _srv270 and "fronts_make()" in _srv270
+      and "api.start_make_ahead(con, only=only or None)" in _srv270 and _n270 == 4 and len(_p270) == 3)
 
 # ---- a watchlisted film that gets a source is said once; one that already had one never
 import pd_streaming as _ps271
@@ -6709,10 +6908,11 @@ try:
           and [r["key"] for r in _ptH.for_copy()] == ["fk"])
     _gotH = []
     _tH = _pfH.take_for_copy({}, _ptH.for_copy(),
-                             request=lambda *a, **k: _gotH.append((a[0], k.get("auto"))) or {"ok": True},
+                             request=lambda *a, **k: _gotH.append((a[0], k.get("auto"), k.get("handed"))) or {"ok": True},
                              told=lambda ids: _ptH.copy_took(ids))
-    check("pack home: the copy server downloads it as its own, and it leaves the list",
-          _gotH == [("fk", True)] and len(_tH) == 1 and _ptH.for_copy() == [])
+    check("pack home: the copy server takes it as handed on, somebody's own download and not "
+          "one made by itself, and it leaves the list",
+          _gotH == [("fk", False, True)] and len(_tH) == 1 and _ptH.for_copy() == [])
     _ptH._following = lambda: {"master": "x"}
     _ptH.set_home("hh", "main")
     check("pack home: back to this server, nothing more is sent", _ptH.home_of("hh") == "main"
@@ -7295,6 +7495,142 @@ check("downloads: a film out of a pack shows its own size, progress and time lef
 check("followers: the same machine at a new address keeps one row, the live one",
       "if k != where and v.get(\"token\") == held]:" in _sv440
       and "urllib.parse.urlsplit(str(k)).hostname == host]" not in _sv440)
+
+# ---- the tracker session: the indexer's own, renewed by the indexer
+import json as _j450
+import tempfile as _tf450
+import pd_tracker as _tr450
+_d450 = _tf450.mkdtemp()
+_f450 = os.path.join(_d450, "torrentleech.json")
+_was450 = (_tr450.JACKETT_TL, _tr450.given_cookie, _tr450.page, _tr450.jackett, _tr450.ask_jackett,
+           _tr450.account_of)
+
+
+def _jw450(c):
+    with open(_f450, "w", encoding="utf-8") as f:
+        _j450.dump([{"id": "sitelink", "value": "x"}, {"id": "cookieheader", "value": c}], f)
+
+
+_live450 = {"new": "<b>Logout</b>"}
+_poked450 = []
+try:
+    _tr450.JACKETT_TL = _f450
+    _tr450.given_cookie = lambda: "given"
+    _tr450.page = lambda c: _live450.get(c, "<form class=login-form>")
+    _tr450.jackett = lambda: ("http://j", "k")
+    _tr450.account_of = lambda b: None
+    _tr450.HELD["on"] = False
+    check("tracker: no indexer settings, the handed-over session", _tr450.cookie() == "given")
+    _jw450(" old  one ")
+    check("tracker: the indexer's session comes first", _tr450.cookie() == "old one")
+    _tr450.ask_jackett = lambda w, kind="search": (_poked450.append(w), _jw450("new"))
+    _ok450 = _tr450.keep_warm()
+    check("tracker: every session out, a search makes the indexer sign in again and its new one is used",
+          _ok450 and _poked450 and not _tr450.STATE["sessionGone"])
+    _poked450.clear()
+    _tr450.ask_jackett = lambda w, kind="search": _poked450.append(w)
+    _jw450("old")
+    _ok450 = _tr450.keep_warm()
+    check("tracker: signed out only when the indexer could not sign in again",
+          _ok450 is False and _poked450 and _tr450.STATE["sessionGone"])
+    _poked450.clear()
+    _jw450("new")
+    check("tracker: a live session asks the indexer nothing",
+          _tr450.keep_warm() and not _poked450 and not _tr450.STATE["sessionGone"])
+finally:
+    (_tr450.JACKETT_TL, _tr450.given_cookie, _tr450.page, _tr450.jackett, _tr450.ask_jackett,
+     _tr450.account_of) = _was450
+
+_sv460 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_gm460 = _sv460[_sv460.index("GUEST_MAY_POST = ("):]
+_gm460 = _gm460[:_gm460.index('")' + chr(10))]
+check("guests: a theme is each viewer's own to save, a guest's and the owner's from away",
+      '"/skins"' in _gm460)
+
+# ---- one download at a time in the house: the other server's slot
+import pd_torrents as _ptS1
+_wasS1 = dict(_ptS1.STATE)
+try:
+    _ptS1.STATE.pop("slowSince", None)
+    _fastS1 = [{"state": "downloading", "dlspeed": 10e6, "category": ""}]
+    _slowS1 = [{"state": "stalledDL", "dlspeed": 1e5, "category": ""}]
+    _seedS1 = [{"state": "downloading", "dlspeed": 1e5, "category": "cross-seed"}]
+    _r1 = _ptS1.slot_report(_fastS1, now=1000)
+    _r2 = _ptS1.slot_report(_slowS1, now=1000)
+    _r3 = _ptS1.slot_report(_slowS1, now=1700)
+    _r4 = _ptS1.slot_report(_fastS1, now=1800)
+    _r5 = _ptS1.slot_report(_seedS1, now=1900)
+finally:
+    _ptS1.STATE.clear()
+    _ptS1.STATE.update(_wasS1)
+check("slot: a fast download is no slow one; slow is counted from when it went under, and a "
+      "fast moment starts it over; seeding work holds no slot",
+      _r1 == {"count": 1, "mbit": 80.0, "slowFor": 0} and _r2["slowFor"] == 0 and _r3["slowFor"] == 700
+      and _r4["slowFor"] == 0 and _r5["count"] == 0)
+_freeS1 = lambda folder: ""
+_fullS1 = lambda folder: "the copy on G:"
+check("slot: the other server idle or unknown, this one starts",
+      _ptS1.slot_taken_elsewhere({"count": 0}, _freeS1) == ""
+      and _ptS1.slot_taken_elsewhere({}, _freeS1) == "")
+check("slot: the other downloading, fast or slow for under ten minutes, this one waits",
+      _ptS1.slot_taken_elsewhere({"count": 1, "slowFor": 0}, _freeS1)
+      and _ptS1.slot_taken_elsewhere({"count": 1, "slowFor": 599}, _freeS1))
+check("slot: slow for ten minutes, a second opens - unless this one's drive is busy",
+      _ptS1.slot_taken_elsewhere({"count": 1, "slowFor": 600}, _freeS1) == ""
+      and _ptS1.slot_taken_elsewhere({"count": 1, "slowFor": 900}, _fullS1))
+_dS1 = {"packs": [{"hash": "hs", "films": [{"key": "ks", "index": 0, "size": 5, "path": "a/b.mkv"}]}],
+        "downloads": [], "forCopy": [], "home": {}, "config": {}}
+_was2S1 = (_ptS1.load, _ptS1.save, _ptS1._following, _ptS1.ensure_worker, _ptS1.free_gb,
+           _ptS1.QB, dict(_ptS1.PEER), _ptS1.refused)
+try:
+    _ptS1.load, _ptS1.save, _ptS1._following = (lambda: _dS1), (lambda: None), (lambda: {})
+    _ptS1.ensure_worker, _ptS1.free_gb = (lambda: None), (lambda f: None)
+    _ptS1.QB, _ptS1.refused = None, (lambda pack: "")
+    _ptS1.PEER.update(said={"count": 1, "mbit": 90.0, "slowFor": 0}, at=time.time(), asked=time.time())
+    _qS1 = _ptS1.request("ks", "tok", "Ann")
+    _startedS1 = []
+    _was3S1 = _ptS1._begin
+    _ptS1._begin = lambda *a: _startedS1.append(a)
+    try:
+        _ptS1._start_next()
+        _waitedS1 = not _startedS1
+        _ptS1.PEER.update(said={"count": 0}, at=time.time())
+        _ptS1._start_next()
+    finally:
+        _ptS1._begin = _was3S1
+finally:
+    (_ptS1.load, _ptS1.save, _ptS1._following, _ptS1.ensure_worker, _ptS1.free_gb,
+     _ptS1.QB) = _was2S1[:6]
+    _ptS1.PEER.clear()
+    _ptS1.PEER.update(_was2S1[6])
+    _ptS1.refused = _was2S1[7]
+check("slot: asked for while the other server downloads, it queues; it starts once the other is done",
+      _qS1.get("state") == "queued" and _waitedS1 and len(_startedS1) == 1, )
+
+# ---- search by name: a film's full title finds it, however few votes it has
+import pd_streaming as _psN1
+
+
+class _LibN1:
+    def tmdb(self, path, **k):
+        return {"results": [
+            {"id": 9101, "title": "A Rare Film Nine", "release_date": "1996-04-18", "poster_path": "/p.jpg",
+             "vote_count": 12},
+            {"id": 9102, "title": "A Rare Film Nine Returns", "release_date": "1998-01-01",
+             "poster_path": "/q.jpg", "vote_count": 3}]}
+
+
+_wasN1 = _psN1._held, _psN1._keep_searched
+try:
+    _psN1._held = lambda lib: ({}, {})
+    _psN1._keep_searched = lambda rows: None
+    _psN1.FOUND_BY_NAME.pop("a rare film nine", None)
+    _gotN1 = [r["title"] for r in _psN1.by_name(_LibN1(), "A Rare Film Nine")]
+finally:
+    _psN1._held, _psN1._keep_searched = _wasN1
+    _psN1.FOUND_BY_NAME.pop("a rare film nine", None)
+check("search: a film found by its full title whatever its votes; one with few that only "
+      "starts with the words stays out", _gotN1 == ["A Rare Film Nine"])
 
 print("RULES FAILED: %d" % len(FAILS) if FAILS else "RULES PASSED")
 for f in FAILS:

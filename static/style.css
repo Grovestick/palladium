@@ -53,7 +53,8 @@ google-cast-launcher{--connected-color:var(--accent);--disconnected-color:var(--
 main{padding:18px 18px 60px;overflow-x:hidden;overflow-x:clip}
 h2{display:flex;align-items:baseline;gap:14px;font-size:15px;letter-spacing:.04em;
   text-transform:uppercase;color:var(--dim);margin:26px 0 12px}
-h2:first-child{margin-top:6px}
+/* and while Settings builds its next page out of sight ahead of the heading */
+h2:first-child,main>.redrawing:first-child+h2{margin-top:6px}
 /* Air between one shelf and the next: the rows ran into each other, and a heading
    standing clear of the posters above it is what says the shelf has ended. Half a
    line of the heading's own type, on top of the gap it already had. */

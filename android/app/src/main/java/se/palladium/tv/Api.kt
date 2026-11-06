@@ -8,6 +8,10 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -871,6 +875,7 @@ object Api {
                     it.offerWords = offer.optString("words", "")
                     it.offerStage = offer.optString("stage", "")
                     it.offerHeldKey = offer.optString("heldKey", "")
+                    it.offerTracker = offer.optBoolean("tracker", false)
                     it.offerVersion = offer.optString("version", "")
                         .takeIf { v -> v != "null" }.orEmpty()
                     it.offerEta = if (offer.isNull("eta")) -1L else offer.optLong("eta", -1L)
@@ -927,7 +932,7 @@ object Api {
      */
     private suspend fun fromSome(ctx: Context, patience: Long = 6000L,
                                  call: suspend (Server) -> List<Media>): List<Media> {
-        val (got, answered) = heardFrom(ctx, patience, call)
+        val (got, answered) = heardFrom(ctx, patience, call = call)
         if (answered == 0) throw java.io.IOException("no machine answered")
         return got
     }
@@ -940,19 +945,57 @@ object Api {
      * was busy copying, the ask ran out of patience, and the television said there
      * were no films. The count is what tells them apart.
      */
-    private suspend fun heardFrom(ctx: Context, patience: Long = 6000L,
+    /** A server's answer to one asking with a grace, kept past it: the next asking of
+     *  the same words picks it up instead of starting over. */
+    private class LateAnswer(val answer: Deferred<List<Media>?>)
+    private val lateAnswers = java.util.concurrent.ConcurrentHashMap<String, LateAnswer>()
+    private val lateScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private suspend fun heardFrom(ctx: Context, patience: Long = 6000L, grace: Long = 0L,
+                                  late: String = "",
                                   call: suspend (Server) -> List<Media>):
             Pair<List<Media>, Int> =
         withContext(Dispatchers.IO) {
             coroutineScope {
-                val asked = Servers.merged(ctx).map { srv ->
-                    async {
-                        withTimeoutOrNull(patience) {
-                            runCatching { call(srv) }.getOrNull()
+                val servers = Servers.merged(ctx)
+                val asked: List<Deferred<List<Media>?>?> = servers.map { srv ->
+                    val ask = suspend { withTimeoutOrNull(patience) { runCatching { call(srv) }.getOrNull() } }
+                    when {
+                        // a machine the reach check last saw down is not waited for, with
+                        // a grace: asleep, it held every search for its whole patience
+                        !Route.waitedFor(Reach.upRow(srv), grace) -> null
+                        grace <= 0 -> async { ask() }
+                        // asked outside this call, so a slow machine is not cut off at the
+                        // grace: what it says arrives with the next asking of these words
+                        else -> {
+                            // answers nobody asked for again are let go
+                            if (lateAnswers.size > 40)
+                                lateAnswers.entries.removeIf { it.value.answer.isCompleted }
+                            val k = late + "|" + srv.base
+                            (lateAnswers[k] ?: LateAnswer(lateScope.async { ask() })
+                                .also { lateAnswers[k] = it }).answer
                         }
                     }
                 }
-                val got = asked.map { it.await() }
+                val got = if (grace <= 0) asked.map { it?.await() } else {
+                    // the first answer, then the others for at most `grace` more
+                    val first = CompletableDeferred<Unit>()
+                    val watching = asked.filterNotNull().map { d ->
+                        launch { if (d.await() != null) first.complete(Unit) }
+                    }
+                    withTimeoutOrNull(patience) { first.await() }
+                    val until = System.currentTimeMillis() + grace
+                    val heard = asked.map { d ->
+                        d?.let { withTimeoutOrNull(maxOf(1L, until - System.currentTimeMillis())) { it.await() } }
+                    }
+                    watching.forEach { it.cancel() }
+                    // an answer read is gone, so the next asking hears anything filled in
+                    // since; one still on its way stays for it
+                    servers.forEachIndexed { at, srv ->
+                        if (asked[at]?.isCompleted == true) lateAnswers.remove(late + "|" + srv.base)
+                    }
+                    heard
+                }
                 // which of them said nothing, by name: a shelf drawn from one machine
                 // while another holds most of the library is a short library, not a
                 // small one, and it looked the same on the screen
@@ -2942,7 +2985,7 @@ object Api {
         // caches in, and cut off at six the app showed the other server's answer alone
         // - the web page, which waits, found more. A server still silent is asked
         // again, as a catalogue still filling in is.
-        val (got, answered) = heardFrom(ctx, SEARCH_PATIENCE) { srv ->
+        val (got, answered) = heardFrom(ctx, SEARCH_PATIENCE, SEARCH_GRACE, "search|$q") { srv ->
             val said = JSONObject(get("/local/hubs/search?query=$q", srv, SEARCH_PATIENCE.toInt()))
                 .getJSONObject("MediaContainer")
             if (said.optBoolean("askingTracker")) searchAsking = true
@@ -2959,12 +3002,15 @@ object Api {
             }
             out
         }
-        if (answered < Servers.merged(ctx).size) searchFilling = true
+        // a machine known to be down is not waited for, nor asked again and again
+        if (answered < Servers.merged(ctx).count { Reach.upRow(it) != false }) searchFilling = true
         return sortMerged(got, "originallyAvailableAt:desc").sortedBy { it.match }
     }
 
     /** How long a search waits for each server. */
     const val SEARCH_PATIENCE = 15_000L
+    /** once one server has answered a search, how much longer the others are waited for */
+    const val SEARCH_GRACE = 1_500L
 
     /** A name a search found, and the server that knows their face. */
     data class Face(val who: Media.Player, val srv: Server?, val held: Int = 0)
@@ -4225,6 +4271,18 @@ object Api {
     }
 
     /** Whether an episode should roll into the next one. */
+    /** "latest" or "daily": which app this viewer is offered. */
+    suspend fun appChannel(): String = withContext(Dispatchers.IO) {
+        try { JSONObject(get("/settings")).optString("appChannel", "daily") }
+        catch (e: Exception) { "" }
+    }
+
+    suspend fun setAppChannel(to: String): String = withContext(Dispatchers.IO) {
+        try { JSONObject(post("/settings", JSONObject().put("appChannel", to)))
+                  .optString("appChannel", to) }
+        catch (e: Exception) { "" }
+    }
+
     suspend fun autoNext(): Boolean = withContext(Dispatchers.IO) {
         try { JSONObject(get("/settings")).optBoolean("autoNext", true) }
         catch (e: Exception) { true }

@@ -387,6 +387,7 @@ if check("11 two episodes on the shelf", len(victims) == 2):
     # what is held and what packs offer are read again, not from a minute ago
     pd_torrents.STATE["owned"] = None
     pd_torrents.STATE["by_show_at"] = 0.0
+    pd_torrents.HELD["at"] = 0.0
     # staged: no pack carries the first (whatever a real pack lists for either is hidden),
     # one pack carries the second
     hide = set(h.packed_for(con, [lost, packed]).values())
@@ -398,7 +399,12 @@ if check("11 two episodes on the shelf", len(victims) == 2):
            if key == want and int(season) == int(row["s"]) else []))
     pd_torrents.offered_keys = lambda title, season=None: [
         k for k in real_keys(title, season) if str(k) not in hide]
-    pool = [k for k in pool if str(k) not in hide]
+    # a pack's copy carries its episode's own key now: hiding the packs' copies hides them
+    # from "only in a pack" too, and the two staged episodes stay counted
+    real_only = pd_torrents.only_in_pack
+    pd_torrents.only_in_pack = lambda k: str(k) == "ofake00000001" or (
+        real_only(k) and str(k) not in hide)
+    pool = [k for k in pool if str(k) not in hide or str(k) in (lost, packed)]
     _, after = h.shuffle_shelf(cid)
     after = [str(k) for k in after]
     check("11 an episode whose file has gone and no pack carries leaves the hat", lost not in after)
@@ -414,7 +420,9 @@ if check("11 two episodes on the shelf", len(victims) == 2):
     check("11 in a round's order the pack's key takes the place the episode had",
           at < len(now) and now[at] == "ofake00000001" and packed not in now,
           "place %d holds %s" % (at, now[at] if at < len(now) else None))
-    got = [h.shuffle_draw(cid).get("key") for _ in range(len(pool) + 5)]
+    # into the next round too: one still to come gives way to all that are here, and may be
+    # behind the round's place - a round and a bit failed one run in four
+    got = [h.shuffle_draw(cid).get("key") for _ in range(3 * (len(pool) + 5))]
     check("11 the one with no pack is not drawn, however far Next is pressed", lost not in got)
     check("11 the one a pack carries is drawn, as the pack's", "ofake00000001" in got and packed not in got)
     check("11 neither is listed as next under its library key",
@@ -461,6 +469,7 @@ if check("11 two episodes on the shelf", len(victims) == 2):
     con.close()
     h.follows_a_main = lambda: False
     pd_torrents.offered_episodes, pd_torrents.offered_keys = real_offered, real_keys
+    pd_torrents.only_in_pack = real_only
 kept = H.held_keys(m.local().lib.db(), ["oabc", "coll:x", "e000000000000", "0123456789ab"])
 check("11 a pack's key and a key of another shape are kept, a library key with no row is not",
       kept == {"oabc", "coll:x"}, str(kept))

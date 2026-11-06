@@ -389,6 +389,8 @@ data class Media(
     var offerStage: String = ""
     /** a pack copy of a film the library holds already: that film's key, to play meanwhile */
     var offerHeldKey: String = ""
+    /** straight from the tracker, not out of a pack: the title page's own line stops it */
+    var offerTracker: Boolean = false
     var offerEta: Long = -1L
     /** who asked for it, and how many downloads are ahead of it while it waits */
     var offerWho: String = ""
