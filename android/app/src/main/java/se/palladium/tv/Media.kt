@@ -271,6 +271,10 @@ data class Media(
     fun widePicture(): String? = art.ifEmpty {
         if (Regex("^[0-9a-f]{12}$").matches(ratingKey)) "/art/$ratingKey/backdrop" else thumb
     }
+    /** On the one Recently added list and held only by this other server. */
+    var elsewhere: String = ""
+    /** And that server is off: greyed. */
+    var away: Boolean = false
     /** Off the popular list and not held yet: pressing it puts it in the library. */
     var addable: Boolean = false
     /** The next episode of a series being waited on: not here yet, and when it airs. */

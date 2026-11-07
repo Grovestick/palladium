@@ -90,6 +90,7 @@ def rotate_log(where, most_mb=LOG_KEPT_MB):
 
 rotate_log(os.path.join(ROOT, "debug.log"))
 import pd_log  # noqa: E402
+import pd_subtap
 pd_log.setup(ROOT)
 # A crash in native code - an access violation, twice in a day - leaves no Python trace
 # and no log line: every thread's stack is written down when it happens.
@@ -753,6 +754,26 @@ def cached_subtitle(where):
     return None
 
 
+def keep_tapped_subtitle(video, index, text):
+    """A track read whole from a play of the film, kept where a lifted track is kept."""
+    where = sub_cache_path(video, index)
+    os.makedirs(os.path.dirname(where), exist_ok=True)
+    with open(where, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def sub_reader_waits(video):
+    """Why a read of a film for its subtitles should stop: the workers' gate, and the buffers
+    of whoever plays off its drive. The film's own viewer counts - a read of the film on the
+    screen is what stalled it - where drive_loaded lets work for a screen go on."""
+    import pd_disk
+    import pd_speed
+    why = worker_waits(other_drive=pd_disk.drive_of(video) not in playing_drives())
+    if not why and not pd_speed.copy_may_run(aheads_on_drive(video)):
+        why = "somebody on this drive is filling their buffer"
+    return why
+
+
 def head_subtitle(video, index, seconds=SUB_HEAD, patience=180, start=0):
     """A stretch of a track, quickly, for somebody who has pressed play: from `start`,
     in the film's own clock.
@@ -775,14 +796,11 @@ def head_subtitle(video, index, seconds=SUB_HEAD, patience=180, start=0):
     cmd += ["-i", video, "-map", "0:%d" % int(index), "-vn", "-an",
             # an output limit, so ffmpeg stops reading once it is past the mark
             "-to", str(start + int(seconds)), "-f", "webvtt", "pipe:1"]
-    proc = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-    try:
-        out, _ = proc.communicate(timeout=patience)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    import pd_workers
+    _, out, stopped = pd_workers.run_yielding(cmd, lambda: sub_reader_waits(video), patience)
+    if stopped:
         return None
-    said = whole_stamps((out or b"").decode("utf-8", "replace"))
+    said = whole_stamps(out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out or ""))
     if said.count("-->") < 1:
         return None
     try:
@@ -975,20 +993,14 @@ def _pull_subtitle(video, index, where, patience):
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
            "-i", video, "-map", "0:%d" % int(index), "-vn", "-an",
            "-f", "webvtt", "pipe:1"]
-    proc = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            bufsize=0)
-    try:
-        out, _ = proc.communicate(timeout=patience)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        raise
-    said = whole_stamps((out or b"").decode("utf-8", "replace"))
+    import pd_workers
+    code, out, _ = pd_workers.run_yielding(cmd, lambda: sub_reader_waits(video), patience)
+    said = whole_stamps(out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out or ""))
     # Kept only when whole: ffmpeg stopped part way - the disk too busy, the process
     # ended - handed back the first 209 lines of a 1612-line track, and that was kept
     # as the track for good. The container says how many lines it holds.
     declared = declared_cues(video, index)
-    whole = proc.returncode == 0 and (not declared or said.count("-->") >= 0.9 * declared)
+    whole = code == 0 and (not declared or said.count("-->") >= 0.9 * declared)
     if said.count("-->") >= 1 and whole:
         try:
             os.makedirs(os.path.dirname(where), exist_ok=True)
@@ -2928,7 +2940,7 @@ def _ask_cache_downloads():
         if row.get("revoked") or name in names or time.time() - float(row.get("when") or 0) > 900:
             continue
         try:
-            req = _ureq.Request(where.rstrip("/") + "/torrents/active",
+            req = _ureq.Request(where.rstrip("/") + "/follow/active",
                                 headers={"X-Palladium-House": "1"})
             with _ureq.urlopen(req, timeout=3) as answer:
                 said = json.loads(answer.read().decode("utf-8", "replace") or "{}")
@@ -2964,6 +2976,184 @@ def ask_other_slot():
         if int(said.get("count") or 0):
             return said
     return said
+
+
+#: what the other server holds, as it last said, kept across a restart: its films stay on the
+#: list, greyed, while it is off
+PEER_FILMS = {"rows": [], "name": "", "up": True, "read": False, "dated": {}, "music": []}
+PEER_ASK_EVERY = 60
+
+
+def peer_recent():
+    """(films the other server holds, its name, whether it answered when last asked). Off means
+    an ask failed: how long ago it answered said off for a list nobody had opened in a while."""
+    if not PEER_FILMS["read"]:
+        PEER_FILMS["read"] = True
+        try:
+            with open(os.path.join(ROOT, "peer_recent.json"), encoding="utf-8") as f:
+                kept = json.load(f)
+            PEER_FILMS.update(rows=kept["rows"], name=kept["name"], dated=kept.get("dated") or {},
+                              music=kept.get("music") or [])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return (PEER_FILMS["rows"], PEER_FILMS["name"], PEER_FILMS["up"], PEER_FILMS["dated"],
+            PEER_FILMS["music"])
+
+
+def keep_peer_recent():
+    """The other server asked every minute, whether or not anybody is looking at the list."""
+    while True:
+        peer_recent()
+        _ask_peer_recent()
+        time.sleep(PEER_ASK_EVERY)
+
+
+def copy_answers():
+    """Whether a cache answers now, asked for each download a pack would send to it."""
+    import urllib.request as _ureq
+    for where, row in list(Handler.FOLLOWERS.items()):
+        if row.get("revoked"):
+            continue
+        try:
+            req = _ureq.Request(where.rstrip("/") + "/follow/slot", headers={"X-Palladium-House": "1"})
+            with _ureq.urlopen(req, timeout=3):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def peer_art(key, which):
+    """The poster or backdrop of a film on the other server's list, fetched from it once and
+    kept beside this server's own pictures; None for a key not on that list - this is no
+    way to fetch anything else off the other machine - or when it cannot be had."""
+    import urllib.parse as _uparse
+    import urllib.request as _ureq
+    import pd_torrents
+    key = str(key or "")
+    if which not in ("poster", "backdrop") or not re.fullmatch(r"[0-9a-f]{12}", key):
+        return None
+    if not any(str(c.get("ratingKey") or "") == key for c in peer_recent()[0]):
+        return None
+    kept = os.path.join(ROOT, "cache", "peer_%s_%s.jpg" % (key, which))
+    try:
+        with open(kept, "rb") as f:
+            return f.read()
+    except OSError:
+        pass
+    try:
+        one = pd_torrents._following()
+        if one:
+            url = (one["master"].rstrip("/") + "/local/art/%s/%s?t=%s"
+                   % (key, which, _uparse.quote(one["key"])))
+            req = _ureq.Request(url, headers={"X-Palladium-App": "follower"})
+        else:
+            where = next((w for w, row in list(Handler.FOLLOWERS.items()) if not row.get("revoked")), "")
+            if not where:
+                return None
+            # as a follower asks for pictures: the house header is for /follow, and the
+            # other machine refused a picture asked with it (403)
+            req = _ureq.Request(where.rstrip("/") + "/local/art/%s/%s" % (key, which),
+                                headers={"X-Palladium-App": "follower"})
+        with _ureq.urlopen(req, timeout=8) as answer:
+            blob = answer.read()
+    except Exception:
+        return None
+    # a picture, not an error page
+    if not (blob[:2] == bytes([0xFF, 0xD8]) or blob[:4] == bytes([0x89, 80, 78, 71])):
+        return None
+    try:
+        os.makedirs(os.path.dirname(kept), exist_ok=True)
+        with open(kept + ".tmp", "wb") as f:
+            f.write(blob)
+        os.replace(kept + ".tmp", kept)
+    except OSError:
+        pass
+    return blob
+
+
+def _ask_peer_recent():
+    import urllib.request as _ureq
+    import pd_follow
+    import pd_torrents
+    try:
+        said = None
+        one = pd_torrents._following()
+        if one:
+            said = pd_follow.ask(one, "/follow/recent", 8)
+        else:
+            for where, row in list(Handler.FOLLOWERS.items()):
+                if row.get("revoked") or time.time() - float(row.get("when") or 0) > 900:
+                    continue
+                req = _ureq.Request(where.rstrip("/") + "/follow/recent",
+                                    headers={"X-Palladium-House": "1"})
+                with _ureq.urlopen(req, timeout=8) as answer:
+                    said = json.loads(answer.read().decode("utf-8", "replace") or "{}")
+                break
+        if not (isinstance(said, dict) and isinstance(said.get("films"), list)):
+            PEER_FILMS["up"] = False
+            return
+        PEER_FILMS.update(rows=said["films"], name=str(said.get("name") or ""), up=True,
+                          dated=dict(said.get("dated") or {}), music=list(said.get("music") or []))
+        path = os.path.join(ROOT, "peer_recent.json")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"rows": PEER_FILMS["rows"], "name": PEER_FILMS["name"],
+                       "dated": PEER_FILMS["dated"], "music": PEER_FILMS["music"]}, f)
+        os.replace(path + ".tmp", path)
+    except Exception:
+        PEER_FILMS["up"] = False          # off: its films stay as it last said, greyed
+
+
+#: who the other server is sending films to, as (address, key), asked at most every 5 s
+PEER_LIVE = {"at": 0.0, "marks": {}, "asking": False}
+
+
+def peer_live():
+    """(viewer address, title key) of every film the other server is sending now. Never waits:
+    asked behind the caller, and an old answer stands in meanwhile."""
+    if time.time() - PEER_LIVE["at"] >= 5 and not PEER_LIVE["asking"]:
+        PEER_LIVE.update(at=time.time(), asking=True)
+        threading.Thread(target=_ask_peer_live, name="palladium-peer-live", daemon=True).start()
+    return PEER_LIVE["marks"]
+
+
+def _ask_peer_live():
+    import urllib.request as _ureq
+    import pd_follow
+    import pd_torrents
+    try:
+        said = None
+        one = pd_torrents._following()
+        if one:
+            said = pd_follow.ask(one, "/follow/live", 3)
+        else:
+            for where, row in list(Handler.FOLLOWERS.items()):
+                if row.get("revoked"):
+                    continue
+                req = _ureq.Request(where.rstrip("/") + "/follow/live", headers={"X-Palladium-House": "1"})
+                with _ureq.urlopen(req, timeout=3) as answer:
+                    said = json.loads(answer.read().decode("utf-8", "replace") or "{}")
+                break
+        PEER_LIVE["marks"] = peer_marks(said)
+    except Exception:
+        PEER_LIVE["marks"] = {}
+    finally:
+        PEER_LIVE["asking"] = False
+
+
+def peer_marks(said):
+    """{(address, key): Mbit the other server sends} of each film being watched in a /watching
+    answer; copies left out."""
+    rows = (said or {}).get("live") if isinstance(said, dict) else None
+    out = {}
+    for r in rows or []:
+        if isinstance(r, dict) and r.get("how") != "syncing" and r.get("key"):
+            try:
+                mbit = float(r.get("mbit") or 0)
+            except (TypeError, ValueError):
+                mbit = 0.0
+            out[(str(r.get("address") or ""), str(r.get("key") or ""))] = mbit
+    return out
 
 
 def with_cache_downloads(got, token=None):
@@ -4806,9 +4996,13 @@ def watch_news_pass():
                 if time.time() - float(n.get("at") or 0) < WATCH_NEWS_KEEP]
         deck = [d for d in (mine.get("deckArrivals") or [])
                 if time.time() - float(d.get("at") or 0) < DECK_ARRIVAL_KEEP]
+        fetched = {str(k) for k in mine.get("watchFetched") or []}
         for key in newly:
             one = pd_streaming.one_of(key) or {}
             how = pd_streaming.source_of(key)
+            # downloaded by this viewer: its arrival says it is now on the watchlist, not this
+            if key in fetched:
+                continue
             news.append({"key": key, "title": str(one.get("title") or ""),
                          "how": how, "at": int(time.time())})
             told += 1
@@ -4828,6 +5022,148 @@ def watch_news_pass():
     if ask:
         pd_streaming.ask_tracker_slowly(ask)
     return told
+
+
+#: seconds between looks for watchlist titles that have just come in
+WATCH_ARRIVALS_EVERY = 60
+#: when the last look was: what came in since is what blinks. In memory - after a restart
+#: the first look reaches back ten minutes
+WATCH_ARRIVALS = {"at": 0.0}
+
+
+def tokens_by_name(stored):
+    """{name as written, lower case: token} for every invitation and the owner ("me"): how
+    the tracker log's who is read as a person."""
+    by_name = {}
+    for token, mine in (stored.get("users") or {}).items():
+        if isinstance(mine, dict):
+            for n in (mine.get("myName"), Handler.name_of_token(token)):
+                if n:
+                    by_name.setdefault(str(n).strip().lower(), token)
+    for n in (stored.get("myName"), stored.get("ownerName"), "you", "me"):
+        if n:
+            by_name[str(n).strip().lower()] = "me"
+    return by_name
+
+
+def came_in_at(con, key):
+    """When the newest file of a film or an episode came in, 0 for one not here."""
+    row = con.execute("SELECT MAX(COALESCE(f.mtime, f.ctime)) FROM file f WHERE f.episode_id=? "
+                      "OR (f.item_id=? AND f.episode_id IS NULL)", (str(key), str(key))).fetchone()
+    return float((row or [0])[0] or 0)
+
+
+def games_onto_watchlists(stored, api, con, now=None):
+    """A race or a game somebody downloaded, on their watchlist once it has come in - an
+    episode, which nothing else puts there (owner, 2026-11-06). [(token, key)] added."""
+    import pd_tracker
+    with pd_tracker.LOCK:
+        log = list(pd_tracker.STATE.get("log") or [])
+    who_of = {release_flat(t.get("name")): str(t.get("who") or "") for t in log if not t.get("auto")}
+    if not who_of:
+        return []
+    by_name = tokens_by_name(stored)
+    users = stored.setdefault("users", {})
+    added = []
+    for card in api._games_arrived(con, now=now):
+        key = str(card.get("ratingKey") or "")
+        paths = [r[0] for r in con.execute("SELECT path FROM file WHERE episode_id=?", (key,))]
+        who = next((who_of.get(release_flat(os.path.basename(p))) or
+                    who_of.get(release_flat(os.path.basename(os.path.dirname(p)))) for p in paths
+                    if who_of.get(release_flat(os.path.basename(p))) or
+                    who_of.get(release_flat(os.path.basename(os.path.dirname(p))))), "")
+        token = by_name.get(who.strip().lower()) if who else None
+        mine = stored if token == "me" else users.get(token) if token else None
+        if not isinstance(mine, dict):
+            continue
+        listed = [str(k) for k in mine.get("gamesListed") or []]
+        if key in listed:
+            continue
+        mine["gamesListed"] = (listed + [key])[-100:]
+        had = [str(k) for k in (mine.get("watchlist") or [])]
+        if key not in had:
+            mine["watchlist"] = ([key] + had)[:400]
+        fetched = [str(k) for k in mine.get("watchFetched") or []]
+        if key not in fetched:
+            mine["watchFetched"] = (fetched + [key])[-100:]
+        added.append((token, key))
+    return added
+
+
+def title_for_news(con, key):
+    """A title as the line on screen names it: a film's title, an episode's programme and
+    its place or its own name for a game; "" when not known."""
+    import pd_streaming
+    if str(key).startswith("rt"):
+        return str((pd_streaming.one_of(key) or {}).get("title") or "")
+    row = con.execute("SELECT title FROM item WHERE id=?", (str(key),)).fetchone()
+    if row:
+        return str(row[0] or "")
+    row = con.execute("SELECT e.title, e.season, e.number, i.title FROM episode e JOIN item i "
+                      "ON i.id = e.item_id WHERE e.id=?", (str(key),)).fetchone()
+    if not row:
+        return ""
+    if row[3] in __import__("pd_sports").FILED_UNDER:
+        return str(row[0] or row[3])
+    return "%s S%02dE%02d" % (row[3], int(row[1] or 0), int(row[2] or 0))
+
+
+def watch_arrivals_pass(now=None):
+    """Every viewer's watchlist: a film or a game whose file has come in since the last
+    look blinks the Watchlist heading until the viewer opens it (owner, 2026-11-06); a
+    game somebody downloaded is put there first. A title added that was here already does
+    not blink: its file came in long before. How many lit."""
+    import pd_streaming
+    now = time.time() if now is None else now
+    since = WATCH_ARRIVALS["at"] or now - 600
+    WATCH_ARRIVALS["at"] = now
+    stored = read_settings() or {}
+    if not stored:
+        return 0
+    api = local()
+    con = api.lib.db()
+    lit = 0
+    try:
+        games = games_onto_watchlists(stored, api, con, now=now)
+        changed = bool(games)
+        people = [("me", stored)] + [(k, v) for k, v in (stored.get("users") or {}).items()
+                                     if isinstance(v, dict)]
+        for who, mine in people:
+            blink = [str(k) for k in mine.get("watchBlink") or []]
+            was = list(blink)
+            for key in [str(k) for k in mine.get("watchlist") or []]:
+                if key in blink:
+                    continue
+                held = str((pd_streaming.one_of(key) or {}).get("here") or "") if key.startswith("rt") else key
+                if (who, key) in games or (held and came_in_at(con, held) > since - 5):
+                    blink.append(key)
+                    lit += 1
+                    # downloaded by them: said once, as now on the watchlist (owner, 2026-11-06)
+                    if key in [str(k) for k in mine.get("watchFetched") or []]:
+                        news = list(mine.get("watchNews") or [])
+                        news.append({"key": key, "title": title_for_news(con, held or key),
+                                     "how": "fetched", "at": int(now)})
+                        mine["watchNews"] = news
+            if blink != was:
+                mine["watchBlink"] = blink[-50:]
+                changed = True
+        if changed:
+            write_settings(stored, merge=False)
+    finally:
+        con.close()
+    return lit
+
+
+def keep_watch_arrivals():
+    """Every minute: what has just come in, on the watchlists that hold it."""
+    import pd_beat
+    pd_beat.sleep("watcharrivals", 60)
+    while True:
+        try:
+            watch_arrivals_pass()
+        except Exception as e:
+            pd_log.raw("%s watch arrivals: %s%s" % (time.strftime("%H:%M:%S"), str(e)[:200], chr(10)))
+        pd_beat.sleep("watcharrivals", WATCH_ARRIVALS_EVERY)
 
 
 def keep_watch_news():
@@ -5383,7 +5719,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # the track they chose, a subtitle fetched for a film they are watching, and a
         # report. Everything else here changes the library, the invitations, or files
         # on disk, and belongs to whoever owns the server.
-        GUEST_MAY_POST = ("/applog", "/log", "/trace", "/feedback",
+        GUEST_MAY_POST = ("/applog", "/log", "/trace", "/feedback", "/watchlist/seen",
                           "/feedback/cancel", "/settings",
                           "/subs/pick", "/copy/pick",
                           "/subs/find", "/subs/get", "/subs/auto", "/subs/sync",
@@ -6162,6 +6498,86 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 })
             self.save_collections(shelves)
             self.reply_json({"collections": self.collections()})
+            return
+        if path == "/rip":
+            # a remux of this title made into a 1080p x264 copy beside it, on this server
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_rip
+            import pd_torrents
+            if pd_torrents._following():
+                self.reply_json({"ok": False, "why": "rips are made on the main server"})
+                return
+            body = self.read_json() or {}
+            key, path_in = str(body.get("key") or ""), str(body.get("path") or "")
+            con = local().lib.db()
+            try:
+                row = con.execute("SELECT i.title, i.year, f.path, f.bitrate FROM file f JOIN item i "
+                                  "ON i.id = f.item_id WHERE f.item_id=? AND f.path=? "
+                                  "AND f.episode_id IS NULL", (key, path_in)).fetchone()
+            finally:
+                con.close()
+            if not row:
+                self.reply_json({"ok": False, "why": "that file is not one of this film's"})
+                return
+            # the file's bitrate is kept in kbit/s
+            if not pd_rip.is_remux(row[2], float(row[3] or 0) / 1000):
+                self.reply_json({"ok": False, "why": "only a remux is ripped"})
+                return
+            # made by the ripper, a program of its own on this machine: it outlives a restart
+            self.reply_json(pd_rip.ask(key, row[2], row[0], row[1], float(row[3] or 0) / 1000,
+                                       str(body.get("profile") or "")))
+            return
+        if path == "/disk/hold":
+            # a program beside this server reading a drive - the ripper - asking whether to wait
+            if not (self.role == "owner" and self.client_address[0] in ("127.0.0.1", "::1")):
+                self.send_error(403, "not allowed")
+                return
+            import pd_speed
+            body = self.read_json() or {}
+            # a background worker like any other: the gate they all ask, its disk turn taken
+            why = worker_waits(in_line=True, idle_priority=True)
+            if not why and not pd_speed.copy_may_run(aheads_on_drive(str(body.get("path") or ""))):
+                why = "somebody on this drive is filling their buffer"
+            self.reply_json({"hold": why})
+            return
+        if path in ("/disk/turn", "/disk/done"):
+            # a program beside this server - the ripper - taking a turn on a drive from the
+            # same queue every job of this server's takes one from: a download or the copy
+            # goes first, watching never waits, and the health page shows it
+            if not (self.role == "owner" and self.client_address[0] in ("127.0.0.1", "::1")):
+                self.send_error(403, "not allowed")
+                return
+            import pd_disk
+            body = self.read_json() or {}
+            if path == "/disk/done":
+                pd_disk.done(str(body.get("ident") or ""))
+                self.reply_json({"ok": True})
+                return
+            kind = str(body.get("kind") or "work")
+            if kind not in pd_disk.KINDS or kind == "watch":
+                kind = "work"
+            ident, why = pd_disk.ask(str(body.get("path") or ""), kind, str(body.get("label") or "")[:120],
+                                     ident=str(body.get("ident") or "") or None)
+            self.reply_json({"ident": ident, "why": why})
+            return
+        if path == "/rip/cancel":
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_rip
+            body = self.read_json() or {}
+            self.reply_json({"ok": pd_rip.cancel(str(body.get("id") or ""))})
+            return
+        if path == "/watchlist/seen":
+            # the Watchlist opened: what was blinking there has been seen
+            stored = self.settings_file()
+            mine = self.viewer_settings(stored)
+            if mine.get("watchBlink"):
+                mine["watchBlink"] = []
+                write_settings(stored, merge=False)
+            self.reply_json({"ok": True})
             return
         if path == "/watchlist":
             # "that one, later": a film, an episode or a whole series, kept in this
@@ -7948,6 +8364,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not got:
                     pd_tracker.ask_for("%s S%02dE%02d" % (want, season, number_ep), 0)
                     got = pd_tracker.episodes_of(want, season).get(number_ep, [])[:25]
+                elif body.get("fresh"):
+                    pd_tracker.ask_waiting("%s S%02d" % (want, season), 0, Handler.FRESH_MOST)
+                    got = pd_tracker.episodes_of(want, season).get(number_ep, [])[:25]
                 else:
                     threading.Thread(target=pd_tracker.quietly(pd_tracker.ask_for),
                                      args=("%s S%02d" % (want, season), 0),
@@ -7972,6 +8391,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if full and flat(full) != flat(want):
                         pd_tracker.ask_for(full, year)
                         got = pd_tracker.find(full, year, imdb or number)[:25]
+            elif want and body.get("fresh"):
+                # a page's second ask or a plain press on Download: the search behind the
+                # list waited for, and the list as of now
+                pd_tracker.ask_waiting(want, year, Handler.FRESH_MOST)
+                got = pd_tracker.find(want, year, number)[:25]
             elif want:
                 # already known: the list opens on what is held and is asked about
                 # behind it, so the next open carries whatever has been posted since
@@ -8014,6 +8438,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 out.append({"id": r.get("id"), "name": r.get("name"),
                             "kind": r.get("kind", ""),
                             "seeds": int(r.get("seeds") or 0), "size": size,
+                            # downloading it counts nothing against the account
+                            "freeleech": pd_tracker.freeleech(r),
                             # the picture's bitrate as h264 would need it, Mbit/s
                             "quality": quality_of(r.get("name"), size, length),
                             # the picture's own bitrate, Mbit/s, for the list
@@ -8299,7 +8725,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              "asked": len(todo), "waiting": len(rows)})
             return
         if path == "/shows/packs":
-            if not self.owner_fetching():
+            if not self.may_fetch():
                 self.send_error(403, "not allowed")
                 return
             body = self.read_json() or {}
@@ -8330,7 +8756,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/shows/addpack":
             # a popular programme's page: into the library, with the version chosen
             # there added as a pack - a link, nothing downloaded
-            if not self.owner_fetching():
+            if not self.may_fetch():
                 self.send_error(403, "not allowed")
                 return
             body = self.read_json() or {}
@@ -8340,6 +8766,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.reply_json({"error": "could not add that one"})
                 return
             said = {"key": key}
+            # a series added from its pack: on the watchlist of whoever added it
+            self.onto_watchlist(key)
             if body.get("id"):
                 got = use_show_pack(show, str(body.get("id")))
                 if got.get("error"):
@@ -8349,7 +8777,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/shows/add":
             # a card off the popular list pressed: ticked, given its library entry,
             # and the key handed back so the page can open it
-            if not self.owner_fetching():
+            if not self.may_fetch():
                 self.send_error(403, "not allowed")
                 return
             body = self.read_json() or {}
@@ -12055,12 +12483,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return False
 
     def watch_fetched(self, key="", release=""):
-        """Something this viewer fetched, on their watchlist: the film, or the episode's
-        programme (owner, 2026-11-06)."""
+        """Something this viewer fetched, on their watchlist: a film, or a programme for a
+        season (owner, 2026-11-06). Kept as fetched as well, so its arrival says it is now on
+        the watchlist rather than that it was."""
         try:
-            return self.onto_watchlist(watch_key_of(key, release))
+            listed = watch_key_of(key, release)
+            if not listed:
+                return False
+            got = self.onto_watchlist(listed)
+            stored = self.settings_file()
+            mine = self.viewer_settings(stored)
+            had = [str(k) for k in mine.get("watchFetched") or []]
+            if listed not in had:
+                mine["watchFetched"] = (had + [listed])[-100:]
+                write_settings(stored, merge=False)
+            return got
         except Exception:
             return False
+
+    def fetched_here(self):
+        """The library keys of what this viewer downloaded onto their watchlist."""
+        import pd_streaming
+        mine = self.viewer_settings(self.settings_file())
+        out = set()
+        for k in mine.get("watchFetched") or []:
+            k = str(k)
+            out.add(str((pd_streaming.one_of(k) or {}).get("here") or "") if k.startswith("rt") else k)
+        return out - {""}
 
     @staticmethod
     def name_of_token(token):
@@ -13715,6 +14164,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def prefer_sound(self):
         """Which soundtrack to put forward, where the name says what it is."""
         return self.wish("preferSound", self.SOUNDS)
+
+    #: seconds a release list asked for as of now waits for the tracker
+    FRESH_MOST = 12
 
     def let_them_fetch(self):
         """What people other than the owner may bring into the house."""
@@ -16974,6 +17426,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 continue
             sided.add(side["name"])
             out.append(dict(side, hot=live))
+        # a music video, said as one: the other machine keeps it in a folder of that
+        # name, which is how its library tells it from a film
+        import pd_library
+        if pd_library.is_music_video(path):
+            for one in out:
+                one["music"] = True
         return out
 
     def sync_subtitle(self, key, mi=0, index=0, skey="", sub="", save=True, why=""):
@@ -20598,14 +21056,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ext = os.path.splitext(path)[1].lstrip(".").lower()
         ctype = {"mkv": "video/x-matroska", "mp4": "video/mp4", "m4v": "video/mp4",
                  "webm": "video/webm", "avi": "video/x-msvideo"}.get(ext, "video/mp4")
-        start, end = 0, size - 1
         rng = self.headers.get("Range")
+        asked_for = byte_range(rng, size)
+        if asked_for is None:
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        start, end = asked_for
         if rng and rng.startswith("bytes="):
-            a, _, b = rng[6:].partition("-")
-            if a:
-                start = int(a)
-            if b:
-                end = min(int(b), size - 1)
             self.send_response(206)
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
         else:
@@ -20650,6 +21110,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         whom = self.client_address[0]
         if copying_out:
             Handler.SYNC_NOW[whom] = sid
+        # once: asked for every block it read the settings file for each of them
+        viewer = self.watcher()
         with open(path, "rb") as f:
             f.seek(start)
             while remaining > 0:
@@ -20663,9 +21125,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     chunk = self.block_from_copy(share, at, want)
                     if chunk:
                         f.seek(at + len(chunk))
-                        Handler.CARRIED[self.watcher()] = (
+                        Handler.CARRIED[viewer] = (
                             lambda c: (c[0], c[1] + len(chunk), time.time()))(
-                                Handler.CARRIED.get(self.watcher()) or (0, 0, 0))
+                                Handler.CARRIED.get(viewer) or (0, 0, 0))
                 if chunk is None and not copying_out:
                     chunk = warm_block(path, at, want)
                     if chunk:
@@ -20676,9 +21138,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         chunk = f.read(want)
                         disk += time.monotonic() - began
                         if chunk:
-                            Handler.CARRIED[self.watcher()] = (
+                            Handler.CARRIED[viewer] = (
                                 lambda c: (c[0] + len(chunk), c[1], time.time()))(
-                                    Handler.CARRIED.get(self.watcher()) or (0, 0, 0))
+                                    Handler.CARRIED.get(viewer) or (0, 0, 0))
                     except OSError as e:
                         trouble = "the disk stopped answering: %s" % e
                         break
@@ -20691,6 +21153,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not chunk:
                     trouble = "the file ended %d bytes early" % remaining
                     break
+                # A film being played, once it is more than a look at the file's index: its
+                # subtitles are read from these same blocks, so lifting them does not read
+                # the film a second time (owner, 2026-11-06)
+                if not copying_out and taken >= 16:
+                    pd_subtap.feed(path, at, chunk)
                 at += len(chunk)
                 taken += 1
                 # and held back while anybody is watching. Nothing is stopped: it
@@ -20734,8 +21201,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         # a viewer whose buffer is running down: the copy stops until
                         # it is full again, not walks - a while at a time, so the other
                         # machine's read never waits long enough to give up
+                        # and while a viewer on the drive it reads is filling their buffer:
+                        # the speed handler's rule, from the buffers (2026-11-06)
+                        import pd_speed
                         held = 0
-                        while held < Handler.COPY_HOLD_MOST and playback_short():
+                        while held < Handler.COPY_HOLD_MOST and (
+                                playback_short() or not pd_speed.copy_may_run(aheads_on_drive(path))):
                             time.sleep(1)
                             held += 1
                 if copying_out and ceiling > 0 and taken % 4 == 0:
@@ -22169,6 +22640,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # half minute make it two, for the panel's mark beside the stream
                 mine, theirs, last = Handler.CARRIED.get(row.get("who")) or (0, 0, 0)
                 row["sources"] = 2 if (theirs > 0 and time.time() - last < 30) else 1
+                # and a player reading the film off both machines itself: the other one
+                # is sending this viewer the same title (dual stream in the app)
+                # and the speed is both together: what this one sends was all the row said
+                there = (str(row.get("address") or ""), str(row.get("key") or ""))
+                if row.get("how") != "syncing" and there in peer_live():
+                    row["sources"] = 2
+                    row["mbit"] = round(float(row.get("mbit") or 0) + peer_live()[there], 1)
                 # How much picture that screen is holding, and whether it has run out.
                 # The players have reported this for a long time and the page has
                 # always been ready to draw it - it was simply never put on the row,
@@ -22269,6 +22747,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # and what is coming in: every download is something going on in the house
             try:
                 coming = coming_in() + copies_coming(live)
+                # and a remux being ripped to 1080p: work on this machine somebody asked for
+                try:
+                    import pd_rip
+                    coming += [{"name": "%s (%s) - %s - %s" % (r["title"], r["year"], r.get("profile") or "rip",
+                                                         pd_rip.stage(r)), "state": "ripping",
+                                "progress": r["progress"], "eta": r["eta"] or 0, "mbit": 0.0,
+                                "who": "", "from": ""} for r in pd_rip.running()]
+                except Exception:
+                    pass
                 if coming:
                     said["downloading"] = coming
             except Exception:
@@ -23676,6 +24163,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/gpu/hls":
             self.gpu_hls(q)
             return
+        if path == "/rip/remuxes":
+            # every film with a remux, for the ripper's own page: the files that can be ripped
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_rip
+            con = local().lib.db()
+            try:
+                rows = con.execute(
+                    "SELECT i.id, i.title, i.year, f.path, f.size, f.bitrate, f.height, f.vcodec, f.mtime "
+                    "FROM file f JOIN item i ON i.id = f.item_id WHERE f.episode_id IS NULL "
+                    "AND i.type = 'movie' ORDER BY i.sort_title").fetchall()
+            finally:
+                con.close()
+            films = {}
+            for key, title, year, fpath, size, rate, height, codec, mtime in rows:
+                if not pd_rip.is_remux(fpath, float(rate or 0) / 1000):
+                    continue
+                one = films.setdefault(key, {"key": key, "title": title, "year": year, "files": [], "added": 0})
+                one["files"].append({"path": fpath, "gb": round(float(size or 0) / 1e9, 1),
+                                     "mbit": round(float(rate or 0) / 1000, 1), "height": height,
+                                     "codec": codec or ""})
+                one["added"] = max(one["added"], int(mtime or 0))
+            self.reply_json({"films": list(films.values())})
+            return
+        if path == "/rip":
+            # the rips of one title, or all of them: state and how far, for the film page
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            import pd_rip
+            key = (q.get("key") or [""])[0]
+            said = pd_rip.state(key or None)
+            # the profiles starred on the ripper's page: a button each on the film page
+            self.reply_json({"jobs": said.get("jobs") or [], "profile": said.get("profile") or "",
+                             "offered": said.get("offered") or ([said["profile"]] if said.get("profile") else []),
+                             "away": bool(said.get("away"))})
+            return
+        if path == "/watchlist/blink":
+            # what on this viewer's watchlist has come in since they last opened it: the
+            # Watchlist heading blinks while there is any
+            mine = self.viewer_settings(self.settings_file())
+            listed = {str(k) for k in mine.get("watchlist") or []}
+            self.reply_json({"keys": [k for k in mine.get("watchBlink") or [] if str(k) in listed]})
+            return
         if path == "/watchlist/news":
             # a film on this viewer's watchlist that has got a source since they were
             # last told: each said once, on whichever screen asks first
@@ -23706,6 +24238,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 ready += pd_tracker.ready_for(mine, since, local().lib)
             except Exception:
                 pass
+            # one this viewer downloaded and so has on their watchlist is said by the
+            # watchlist's own line, "now on your watchlist" - not twice (owner, 2026-11-06)
+            ready = [r for r in ready if str(r.get("key") or "") not in self.fetched_here()]
             self.reply_json({"now": now, "ready": ready})
             return
         if path == "/torrents/totals":
@@ -23734,6 +24269,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # and what a cache server is downloading for the house: a pack that lives there
             # is fetched there, and was on no list here (2026-11-06)
             got = with_cache_downloads(pd_torrents.active(mine), mine)
+            # and a rip being made or waiting, the owner's: on the same line as a download,
+            # on the web, in the app and on the panel (owner, 2026-11-06)
+            if self.role == "owner":
+                try:
+                    import pd_rip
+                    got = got + pd_rip.line_rows()
+                except Exception:
+                    pass
             # the panel asks for copies to the other server as well: the owner's only
             if "sync=1" in self.path and self.role == "owner":
                 got = got + [{"title": "Copy: " + str(c["name"])[:40], "offer": {
@@ -23840,6 +24383,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                        if bare_in(spelt, o.get("title"))
                                        or near(spelt, o.get("title")) >= 0.8][:60]})
             return
+        if path == "/follow/active":
+            # what this cache is downloading, for the main server's download line: its
+            # own /torrents/active is refused to a caller marked as the main server, which
+            # may reach only /follow, so the line never showed what came in here (2026-11-06)
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if self.role != "owner" and not (invite and invite.get("follows")):
+                self.send_error(403, "not allowed")
+                return
+            import pd_torrents
+            got = pd_torrents.active(None)
+            self.reply_json({"MediaContainer": {"size": len(got), "Metadata": got}})
+            return
+        if path == "/follow/live":
+            # who this server is sending films to, for the other's "two sources" mark
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if self.role != "owner" and not (invite and invite.get("follows")):
+                self.send_error(403, "not allowed")
+                return
+            self.reply_json({"live": [{"address": r.get("address"), "key": r.get("key"), "how": r.get("how"),
+                                       "mbit": r.get("mbit")}
+                                      for r in WATCHING.snapshot()]})
+            return
+        if path == "/follow/recent":
+            # the films held here, for the one Recently added list both servers show
+            invite = INVITES.check(self.bearer(), self.app_name())
+            if self.role != "owner" and not (invite and invite.get("follows")):
+                self.send_error(403, "not allowed")
+                return
+            import socket as _s
+            con = local().lib.db()
+            try:
+                films = local().held_recent(con)
+                dated, music = local().held_dates(con)
+            finally:
+                con.close()
+            self.reply_json({"films": films, "dated": dated, "music": music,
+                             "name": str(local().lib.config().get("serverName") or "") or _s.gethostname()})
+            return
         if path == "/follow/slot":
             # what this server is downloading, for the other: one at a time in the house
             invite = INVITES.check(self.bearer(), self.app_name())
@@ -23922,6 +24503,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                    q.get("offset", ["0"])[0])
                 return
             head_from = 0
+            tapped = False
             try:
                 offset = float(q.get("offset", ["0"])[0])
                 video = (local().file_for(q.get("key", [""])[0],
@@ -23931,6 +24513,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     ready = cached_subtitle(sub_cache_path(video, index))
                     if ready is not None:
                         said = ready
+                    elif pd_subtap.wait_for(video, index, 5):
+                        # being played: what its own blocks have shown so far, marked partial
+                        # so the player asks again as it goes
+                        said, partial = pd_subtap.vtt(video, index), True
+                        tapped = True
+                    elif sub_reader_waits(video):
+                        # somebody is short: nothing is read now, and the player asks again
+                        said, partial = "WEBVTT\n\n", True
                     else:
                         # Nobody has lifted this track out yet, and doing the whole of
                         # it means reading the film end to end. Take the first twenty
@@ -24001,7 +24591,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # gets near the end of it rather than running out of subtitles
             if partial:
                 self.send_header("X-Palladium-Subs", "partial")
-                self.send_header("X-Palladium-Subs-Until", str(head_from + SUB_HEAD))
+                # read from a play: only as far as the player has fetched, so it asks again soon
+                self.send_header("X-Palladium-Subs-Until",
+                                 str(int(last_cue(body)) if tapped else head_from + SUB_HEAD))
             self.end_headers()
             self.wfile.write(body)
             return
@@ -24434,7 +25026,7 @@ def warm_subtitles():
                         break           # the drive is someone else's now
                     try:
                         pull_subtitles_all(video, indexes, why="subtitle warm-up",
-                                           stop=lambda v=video: drive_loaded(v))
+                                           stop=lambda v=video: drive_loaded(v) or sub_reader_waits(v))
                     except Exception:
                         pass
                 for index in indexes:
@@ -24712,6 +25304,24 @@ def stills_inputs():
     return progress, files, done
 
 
+def byte_range(said, size):
+    """The (start, end) a Range header asks of a file of `size` bytes: the whole file when
+    there is no Range, None when it cannot be served (416). A last-N ask (bytes=-N) is the
+    end of the file; a start past the end, an end before the start, several ranges or a
+    number that is no number cannot be served - a player's offset that wrapped negative
+    answered 500 and wrote a fault report each time (3,300 of them, 2026-11-06)."""
+    if not said or not str(said).startswith("bytes="):
+        return 0, size - 1
+    m = re.fullmatch(r"bytes=(\d*)-(\d*)", str(said).strip())
+    if not m or not (m.group(1) or m.group(2)) or size <= 0:
+        return None
+    if not m.group(1):
+        return max(0, size - int(m.group(2))), size - 1
+    start = int(m.group(1))
+    end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+    return (start, end) if start <= end else None
+
+
 def disks_busy():
     """Why the disks are wanted for something else just now: a film coming in, or the
     library reading what has arrived. "" when neither."""
@@ -24739,9 +25349,32 @@ def playback_short():
     Playback with its buffer full leaves the background free to work."""
     try:
         return bool(Handler.a_film_is_struggling(WATCHING.snapshot())
-                    or Handler.disk_reading_slow())
+                    or Handler.disk_reading_slow()
+                    # and the signal that holds qBittorrent: a buffer under 30 s and
+                    # falling, or a stall - one handler for downloads and the copy
+                    or Handler.how_thin() in ("back", "panic"))
     except Exception:
         return True
+
+
+def aheads_on_drive(path):
+    """The seconds ahead each viewer has who plays a film off the drive `path` is on, None
+    for one whose player has not said lately. A direct play only: a transcode's depth is the
+    encoder's lead, 0 for the whole film in a browser, and held every copy off its drive."""
+    drive = os.path.splitdrive(str(path or ""))[0].upper()
+    out = []
+    try:
+        for r in WATCHING.snapshot():
+            if not str(r.get("how") or "").startswith("direct"):
+                continue
+            film = (local().file_for(str(r.get("key") or ""), 0) or {}).get("file") or ""
+            if not drive or os.path.splitdrive(film)[0].upper() != drive:
+                continue
+            said = Handler.AHEAD.get(str(r.get("who") or "") + "/" + str(r.get("address") or ""))
+            out.append(float(said[0]) if said and time.time() - (said[1] or 0) < 60 else None)
+    except Exception:
+        pass
+    return out
 
 
 def background_waits():
@@ -24847,7 +25480,7 @@ def drive_loaded(path):
     return worker_waits(other_drive=drive not in playing_drives())
 
 
-def worker_waits(for_screen=False, card=False, other_drive=False, in_line=False):
+def worker_waits(for_screen=False, card=False, other_drive=False, in_line=False, idle_priority=False):
     """THE gate every background worker asks: why it should wait now, or "". Work for a
     title on a screen now never waits; everything else waits while a viewer is short of
     disk, a download is coming in, the cache copies or the library scans.
@@ -24855,12 +25488,16 @@ def worker_waits(for_screen=False, card=False, other_drive=False, in_line=False)
     other_drive: reading a drive nobody is playing from, so a viewer short of disk is
     no reason to wait.
     in_line: takes its turn from the disk's line, which knows the copies and downloads on
-    its own drive: one on another drive is no reason to wait."""
+    its own drive: one on another drive is no reason to wait.
+    idle_priority: uses only the processor nothing else wants, and is often what fills it: a
+    busy processor is no reason to wait - the ripper paused itself otherwise. Nor is memory,
+    which an encoder stopped where it is goes on holding, so it would wait for ever."""
     if for_screen:
         return ""
     import pd_boss
-    if pd_boss.stressed():
-        return "server under stress: " + pd_boss.stressed()
+    stress = pd_boss.stressed()
+    if stress and not (idle_priority and stress.startswith(("processor", "memory"))):
+        return "server under stress: " + stress
     if not other_drive and playback_short():
         return "a viewer is short of disk"
     why = "" if in_line else background_waits()
@@ -25597,6 +26234,9 @@ def main():
         # and the watchlists' films not out or not on the tracker yet, looked at for one
         threading.Thread(target=keep_watch_news, name="palladium-watchnews",
                          daemon=True).start()
+        # and what has just come in, blinking the Watchlist heading of whoever has it listed
+        threading.Thread(target=keep_watch_arrivals, name="palladium-watcharrivals",
+                         daemon=True).start()
         # and where each series was made, asked of the catalogue a few at a time
         threading.Thread(target=keep_countries, name="palladium-countries",
                          daemon=True).start()
@@ -25626,9 +26266,18 @@ def main():
         # title somebody opens: 285 torrents are five seconds the first time. After
         # start(): asked before it, the state was read from nowhere and kept empty
         pd_torrents.warm_unfinished()
+        # subtitles read from the blocks a film is played from
+        import pd_gpu as _pg
+        import pd_localapi
+        pd_localapi.PEER_RECENT = peer_recent
+        pd_localapi.PEER_ART = peer_art
+        threading.Thread(target=keep_peer_recent, name="palladium-peer-recent", daemon=True).start()
+        pd_subtap.configure(lambda: _pg.FFMPEG or "ffmpeg",
+                            lambda v, i: os.path.exists(sub_cache_path(v, i)), keep_tapped_subtitle)
         # who is running low, so downloading and seeding go gently meanwhile
         start_speed()
         pd_torrents.STATE["pushRequest"] = push_request
+        pd_torrents.STATE["copyUp"] = copy_answers
         pd_torrents.PEER["ask"] = ask_other_slot
 
         # where each title's story ends, measured by day while the machine is idle

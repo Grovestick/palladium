@@ -2527,7 +2527,8 @@
       el.querySelector(".pmeta .note").textContent = [
         d.state === "queued"
           ? "queued" + (d.place ? " · " + d.place + " ahead" : "")
-          : (d.state === "unpacking" ? "unpacking " : d.state === "copying" ? "copying " : "downloading ") +
+          : (d.state === "unpacking" ? "unpacking " : d.state === "copying" ? "copying "
+             : d.state === "ripping" ? "ripping " : "downloading ") +
             Math.round((d.progress || 0) * 100) + "%",
         d.size ? (d.size / 1073741824).toFixed(1) + " GB" : "",
         left,

@@ -18,6 +18,7 @@ import threading
 
 import pd_beat
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1333,15 +1334,35 @@ def queue_prefs(n):
             "dont_count_slow_torrents": False}
 
 
+def held_for_peer(report=None, taken=None):
+    """Whether this machine's own queue waits for the other server: nothing downloading
+    here and the other holding the slot. A tracker release and a whole torrent wait in
+    qBittorrent's queue, which only the client's own limit holds (2026-11-06)."""
+    report = slot_report() if report is None else report
+    if int(report.get("count") or 0):
+        return False
+    return bool((slot_taken_elsewhere if taken is None else taken)())
+
+
 def keep_at_once(force=False):
-    """The setting put to the client when it differs from what the client has. Returns
-    what was changed, {} when nothing was."""
+    """The setting put to the client when it differs from what the client has: the number
+    at once, or none while the other server has the slot. Returns what was changed, {}
+    when nothing was."""
+    try:
+        held = held_for_peer()
+    except Exception:
+        held = False
+    if held != STATE.get("heldForPeer"):
+        STATE["heldForPeer"] = held
+        force = True
     if not force and time.time() - float(STATE.get("atOnceAt") or 0) < AT_ONCE_EVERY:
         return {}
     STATE["atOnceAt"] = time.time()
     data = load()
     cfg = data["config"]
     want = queue_prefs(slots(data))
+    if held:
+        want = dict(want, queueing_enabled=True, max_active_downloads=0)
     qb = QB(cfg)
     have = qb.preferences()
     changed = {k: v for k, v in want.items() if have.get(k) != v}
@@ -1548,7 +1569,7 @@ def set_config(body):
 
 #: what a cache copies of the main server's match for each film
 MATCH_FIELDS = ("tmdb", "name", "poster", "backdrop", "overview", "rating", "released",
-                "genres", "runtime", "rechecked")
+                "genres", "runtime", "rechecked", "titled")
 
 
 def _following():
@@ -2792,9 +2813,11 @@ def _read_unfinished_now():
     is not counted either: whatever is at that path came from somewhere else."""
     norm = lambda p: os.path.normcase(os.path.normpath(p))
     try:
-        qb = QB(load()["config"])
+        data = load()
+        qb = QB(data["config"])
         rows = json.loads(qb._call("/api/v2/torrents/info", timeout=10) or b"[]")
         done, partial = set(), set()
+        whole = moved_whole(data)
         live = set()
         for t in rows:
             h = str(t.get("hash") or "")
@@ -2818,10 +2841,10 @@ def _read_unfinished_now():
             if was is None or was[0] != mark or short:
                 FILE_LISTS[h] = (mark, qb.files(h))
             root = str(t.get("save_path") or "")
-            for f in FILE_LISTS[h][1]:
+            for n, f in enumerate(FILE_LISTS[h][1]):
                 p = norm(os.path.join(root, str(f.get("name") or "")))
                 progress = float(f.get("progress") or 0)
-                if progress >= 1:
+                if progress >= 1 or (h, int(f.get("index", n))) in whole:
                     done.add(p)
                 elif unfinished_file(progress if fetched else 0,
                                      int(f.get("priority") or 0) if fetched else 0, p):
@@ -2837,6 +2860,16 @@ def _read_unfinished_now():
         # library whenever qBittorrent was off.
         if not UNFINISHED["paths"]:
             UNFINISHED["paths"] = _kept_unfinished()
+
+
+def moved_whole(data):
+    """(hash, index) of every pack file moved in whole from the other server. Its edge pieces
+    hold bytes of films not here, so qBittorrent never counts it past 99%, and read as
+    unfinished it was left out of the library: a whole film playing from one server
+    (2026-11-07, 89 films of one pack)."""
+    return {(str(d.get("hash") or ""), int(d.get("index", -1)))
+            for d in data.get("downloads") or []
+            if d.get("state") == "done" and str(d.get("reason") or "").startswith("moved here")}
 
 
 def _unfinished_file():
@@ -3409,14 +3442,14 @@ def request(key, token, who, cap_gb=0.0, most_gb=0.0, auto=False, reason="", han
         return {"ok": False, "why": "That film is not on offer"}
     # a pack that lives on the copy server is downloaded there, not here; the copy
     # server's own requests (it follows this one) are never sent back
-    if not _following() and home_of(pack["hash"]) == "copy":
+    if not _following() and home_of(pack["hash"]) == "copy" and copy_up():
         # held whole here: the file is moved to the copy, not downloaded there again
         if whole_file(pack["hash"], film["index"]):
             give_to_copy(pack, film, reason or "asked for")
         return send_to_copy(key, token, who, cap_gb, most_gb, auto, reason)
     # split, the copy server first: it comes down there and stays, unless it is whole here
     if (not _following() and home_of(pack["hash"]) == "split" and split_first() == "copy"
-            and not whole_file(pack["hash"], film["index"])):
+            and not whole_file(pack["hash"], film["index"]) and copy_up()):
         return send_to_copy(key, token, who, cap_gb, most_gb, auto, reason)
     # at home on both: the copy server fetches it too, and it comes in here as well
     if not _following() and home_of(pack["hash"]) == "both":
@@ -3581,12 +3614,19 @@ def slot_report(rows=None, now=None):
             "slowFor": int(now - STATE["slowSince"]) if STATE.get("slowSince") else 0}
 
 
-def peer_slot():
-    """The other server's last report, up to two minutes old; None when not known."""
-    if PEER["ask"] and time.time() - PEER["asked"] > 15:
+def peer_slot(wait=False):
+    """The other server's last report, up to two minutes old; None when not known. With
+    wait, one not known is asked now: right after a restart nothing was known, and a
+    download started beside the other server's (2026-11-06)."""
+    fresh = time.time() - PEER["at"] < 120
+    if wait and not fresh and PEER["ask"]:
+        PEER["asked"] = time.time()
+        _ask_peer()
+        fresh = time.time() - PEER["at"] < 120
+    elif PEER["ask"] and time.time() - PEER["asked"] > 15:
         PEER["asked"] = time.time()
         threading.Thread(target=_ask_peer, name="palladium-peer-slot", daemon=True).start()
-    return PEER["said"] if time.time() - PEER["at"] < 120 else None
+    return PEER["said"] if fresh else None
 
 
 def _ask_peer():
@@ -3600,7 +3640,7 @@ def _ask_peer():
 
 def slot_taken_elsewhere(peer=None, drive_busy=None):
     """Why a download here waits for the other server, "" when it may start."""
-    peer = peer_slot() if peer is None else peer
+    peer = peer_slot(wait=True) if peer is None else peer
     if not peer or not int(peer.get("count") or 0):
         return ""
     if float(peer.get("slowFor") or 0) < SLOW_FOR:
@@ -3838,6 +3878,13 @@ def home_of(info_hash):
     nothing moves. Its films are downloaded, kept and seeded there."""
     home = (load().get("home") or {}).get(str(info_hash))
     return home if home in ("copy", "both", "split") else "main"
+
+
+def copy_up():
+    """Whether the copy server answers now. Off, a film pressed for comes down here: kept
+    for its next round, nothing started and nobody was told why."""
+    ask = STATE.get("copyUp")
+    return bool(ask()) if ask else True
 
 
 def split_first():
@@ -5132,7 +5179,7 @@ def _match_some(most=40):
         return False
     waiting = [(p, f) for p, doubled in ((p, _doubled(p)) for p in load()["packs"])
                for f in (p.get("films") or [])
-               if f.get("tmdb") is None or _wrong_year(f)
+               if f.get("tmdb") is None or _wrong_year(f) or _title_unchecked(f)
                or (f.get("kind") == "episode" and f.get("named") != 2 and f.get("tmdb")
                    and (str(f.get("title") or "").lower(), int(f.get("season") or 0)) in doubled)]
     if not waiting:
@@ -5159,15 +5206,15 @@ def _match_some(most=40):
                 if not results:
                     results = lib.tmdb("/search/movie", query=film["title"],
                                        year=year).get("results") or []
-            if not results:
-                results = lib.tmdb("/search/movie", query=film["title"]).get("results") or []
+            # and without it: the question with a year leaves out a film TMDB dates a year off
+            seen = {r.get("id") for r in results}
+            results += [r for r in lib.tmdb("/search/movie", query=film["title"]).get("results") or []
+                        if r.get("id") not in seen]
         except Exception:
             return True                      # asked again on the next pass
-        best = next((r for r in results
-                     if year and str(r.get("release_date") or "")[:4] == str(year)),
-                    results[0] if results else None)
+        best = pick_film(results, film["title"], year)
         with LOCK:
-            film["rechecked"] = True
+            film["rechecked"] = film["titled"] = True
             if not best:
                 if film.get("tmdb") is None:
                     film["tmdb"] = 0
@@ -5280,6 +5327,34 @@ def _match_episode(lib, film):
             if one.get("air_date"):
                 film["aired"] = one["air_date"]
     return True
+
+
+def _plain_title(title):
+    """A title as letters and numbers, without accents, for comparing two."""
+    text = unicodedata.normalize("NFKD", str(title or "")).lower().replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _year_of(result):
+    made = str(result.get("release_date") or "")[:4]
+    return int(made) if made.isdigit() else 0
+
+
+def pick_film(results, title, year):
+    """Which TMDB answer is a pack's film: the same title within two years, nearest first; else
+    the first of that year; else the first. TMDB's order is by popularity."""
+    want = _plain_title(title)
+    same = [r for r in results if year and _year_of(r) and _plain_title(r.get("title")) == want
+            and abs(_year_of(r) - int(year)) <= 2]
+    if same:
+        return min(same, key=lambda r: abs(_year_of(r) - int(year)))
+    return next((r for r in results if year and _year_of(r) == int(year)),
+                results[0] if results else None)
+
+
+def _title_unchecked(film):
+    """A film matched before pick_film judged by title: asked once more."""
+    return bool(film.get("tmdb")) and film.get("kind") != "episode" and not film.get("titled")
 
 
 def _wrong_year(film):
@@ -5569,6 +5644,11 @@ def _follow_downloads():
             # bounces is no use to anybody
             steady = settled * remaining / waiting
             eta = int(remaining / steady) if steady > 0 and remaining > 0 else None
+            # waiting its turn in qBittorrent, or nothing coming in this moment: no time left
+            # to say - the settled rate only decays towards nought, and a queued episode
+            # read thirteen years (2026-11-06)
+            if state.startswith("queued") or speed <= 0:
+                eta = None
             if (abs(progress - float(d.get("progress") or 0)) > 0.0001
                     or mbit != d.get("mbit") or eta != d.get("eta")):
                 d["progress"] = round(progress, 4)

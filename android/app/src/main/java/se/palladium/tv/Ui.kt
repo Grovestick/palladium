@@ -1,6 +1,8 @@
 package se.palladium.tv
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -87,6 +89,7 @@ object Arrivals {
      *  the server's clock: what came in before the app started is not news. */
     suspend fun fresh(): List<String> {
         if (BuildConfig.PLAY) return emptyList()
+        runCatching { WatchBlink.look() }
         // a watchlist's film that has got a source - said on opening the app as well,
         // where it happened while nobody was looking: the server keeps it until then
         val watched = Api.watchNews().filter { it.first.isNotEmpty() }
@@ -101,6 +104,25 @@ object Arrivals {
 
     /** How often a screen looks: a film in is said within seconds of it being whole. */
     const val EVERY_MS = 8_000L
+}
+
+/** Something on this viewer's watchlist has come in since they last opened it - a film or
+ *  a game they downloaded: the Watchlist tab blinks until it is opened (owner, 2026-11-06). */
+object WatchBlink {
+    var on by mutableStateOf(false)
+    private var askedAt = 0L
+
+    /** Asked at most once a minute, from the arrivals look every screen already makes. */
+    suspend fun look() {
+        if (System.currentTimeMillis() - askedAt < 60_000L) return
+        askedAt = System.currentTimeMillis()
+        on = Api.watchBlink() > 0
+    }
+
+    suspend fun seen() {
+        on = false
+        Api.watchSeen()
+    }
 }
 
 object Skin {
@@ -608,7 +630,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // a series on the released shelf wears the season its newest episode is in
             Art(Api.artUrl(m, pixels, if (latestMark) m.latestThumb.ifEmpty { null } else null),
                 m.title,
-                Modifier.fillMaxSize().then(if (m.upcoming) Modifier.alpha(
+                Modifier.fillMaxSize().then(if (m.upcoming || m.away) Modifier.alpha(
                     if (m.fetchable) 0.75f else 0.38f) else Modifier),
                 mark = width / 3)
             if (shuffleOff == 2)
@@ -688,6 +710,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 "REQUEST" -> CornerBand("REQUEST", bandW, Skin.Accent)
                 else -> CornerBand("ADD", bandW)
             }
+            else if (m.away) CornerBand("DOWNLOAD", bandW)
             else if (m.offered && said.isEmpty() && !arrived) CornerBand("DOWNLOAD", bandW)
             if (coming && said.isNotEmpty()) {
                 Row(Modifier.align(Alignment.TopStart).padding(5.dp)
@@ -902,6 +925,9 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
          dim: Boolean = false,
          /* drawn instead of the words, which then only name it for a screen reader */
          icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+         /* an accent ring coming and going: something behind it has come in and not been
+            looked at yet */
+         blink: Boolean = false,
          modifier: Modifier = Modifier, onClick: () -> Unit) {
     // The release of the hold that opened a menu is not a press of what is in it.
     // Dropped here as well as at the window, because a menu that has just appeared
@@ -912,6 +938,10 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
     var focused by remember { mutableStateOf(false) }
     // drawn only where a ring means something; see focusShows()
     val ring = focused && focusShows()
+    val pulse = if (blink) rememberInfiniteTransition(label = "blink").animateFloat(
+        1f, 0f, androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(600),
+            androidx.compose.animation.core.RepeatMode.Reverse), label = "blink").value else 0f
     val bg = when {
         active || primary -> Skin.Accent
         ring || filled -> Skin.Panel2
@@ -926,10 +956,11 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
             // A yellow pill on a dark ground reads as "chosen", which is not the same as
             // "the remote is here". The white ring says the second, over either state,
             // and an accent outline marks a second action that is not the main one.
-            .border(if (ring || outline || ready) 2.dp else 0.dp,
+            .border(if (ring || outline || ready || blink) 2.dp else 0.dp,
                     when {
                         ring -> Color.White
                         ready -> Color.White
+                        blink -> Skin.Accent.copy(alpha = pulse)
                         outline -> Skin.Accent
                         else -> Color.Transparent
                     },

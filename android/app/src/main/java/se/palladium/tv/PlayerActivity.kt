@@ -3765,6 +3765,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
 
     private fun offerTwo() {
         val reader = ways ?: return
+        reader.seconds = durationMs / 1000.0
         // Somebody who does not want a film read off two machines gets it off one -
         // and so does a film being encoded, which cannot be read in stretches at all.
         //
@@ -4239,7 +4240,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     "%, not yet enough to start"
                     else null
 
-                if (!turnedOn && mine && made != null) {
+                // and only once the writing has passed where the film is: before that
+                // the track is empty from here on
+                if (!turnedOn && mine && made != null &&
+                    Route.madeReachesHere(said.at, said.on, durationMs, position())) {
                     if (position() <= 0) {
                         // the picture has not started: switching now would carry a
                         // position of nothing, and the film would begin again
@@ -4358,6 +4362,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     // film was open did nothing (2026-11-03).
                     if (Route.opensATitle(word.play, word.shelf)) {
                         passed = word.id
+                        // and the library behind a playing film is not always listening:
+                        // a title sent while one played was let by (2026-11-07). Whichever
+                        // hears it first opens it.
+                        if (MainActivity.claimPlay(word.id)) openSent(word)
                         continue
                     }
                     MainActivity.noticeSeen.value = word.id
@@ -4367,6 +4375,26 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /** A title or a shuffle sent to this screen, opened as the library would open it: the
+     *  film this player shows makes way for it. */
+    private suspend fun openSent(word: Api.Notice) {
+        if (word.shelf.isNotEmpty()) {
+            // drawn in this player's scope, so it stays open until the next one is up
+            startShuffle(this, word.shelf, { })
+            return
+        }
+        val m = runCatching { Api.item(word.play) }.getOrNull() ?: return
+        var full: Media? = null
+        for (attempt in 0 until 3) {
+            full = runCatching { Api.metadata(m) }.getOrNull()
+            if (full?.partKey != null) break
+            kotlinx.coroutines.delay(2000)
+        }
+        val use = full ?: m
+        play(this, use, word.at, use.startSub())
+        finish()
     }
 
     private fun syncSubtitles(loud: Boolean) {

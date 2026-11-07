@@ -26,9 +26,9 @@ android {
         // small additions, the second is reserved for a real feature release, the first
         // for calling it done. versionCode is separate and only ever counts up, because
         // that is the number Android compares when deciding an APK is an update.
-        versionCode = 1686
+        versionCode = 1707
         // A film's page says what else is like it, in its own years.
-        versionName = "0.19.425"     // one number for the app and the server it ships with
+        versionName = "0.19.446"     // one number for the app and the server it ships with
 
         // Where the app looks for its own updates, whatever server it happens to be
         // browsing. A friend's Palladium serves whatever APK they downloaded, which

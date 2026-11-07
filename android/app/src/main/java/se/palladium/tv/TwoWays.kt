@@ -6,7 +6,6 @@ import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLongArray
 
@@ -19,9 +18,8 @@ import java.util.concurrent.atomic.AtomicLongArray
  * A link twice as quick claims twice as many, which is the whole of the balancing:
  * nothing is measured, the work simply goes where there is room.
  *
- * The lumps reach the player in order, so one that arrives early waits its turn. That
- * is why a lump is two megabytes and not twenty - the longest the quick machine can
- * ever wait on the slow one is the time the slow one needs for a single lump.
+ * The lumps reach the player in order, so one that arrives early waits its turn, and
+ * one running late is asked of the other machine as well: first to arrive is kept.
  *
  * A side that stops answering - a server switched off at ten - is dropped and its lump
  * asked of the other, with the picture still running. The player sees no error and
@@ -29,31 +27,104 @@ import java.util.concurrent.atomic.AtomicLongArray
  * an ordinary read and the film moves house the old way.
  */
 /**
- * Who takes the next stretch of film.
- *
- * One rule: every machine holding this file carries it. Up to [TwoWays.WAYS] of them,
- * and a machine is left out only by not answering.
- *
- * There used to be a second rule here - a machine measured as much slower than
- * another was kept off the stretch the player was about to need - and it cost an
- * evening. A speed is measured once and never decays, so a machine that happened to
- * be busy for its first stretch was left out of every stretch after it: paired,
- * connected, carrying nothing. The case it was written for is already answered
- * elsewhere and better: a stretch that has not arrived in about twice the time the
- * quickest machine would have taken is given up and fetched again (see
- * `patienceFor`), so a slow machine costs one late stretch, not a rule of its own.
+ * Which lump goes to which machine, and which are in hand. No threads and no Android, so
+ * it can be tested; every call is made under the reader's gate.
  */
-internal object Share {
+internal class LumpLine<T>(private val lump: Long, private val ahead: Int) {
+    companion object {
+        const val END = -1L
+        const val WAIT = -2L
+    }
 
-    /**
-     * Whether this machine should leave the stretch to another.
-     *
-     * It should not. Kept as a named rule rather than no rule at all, because this is
-     * the thing that decides whether a film on two machines is read off two machines,
-     * and it is worth being able to say what it does in one line.
-     */
-    @Suppress("UNUSED_PARAMETER")
-    fun leaveIt(ours: Double, best: Double, near: Boolean, idleMs: Long): Boolean = false
+    /** where the next lump starts: the player's place at a lump's edge */
+    var next = 0L
+        private set
+    private var claimed = 0L
+    var end = Long.MAX_VALUE
+    private val owner = HashMap<Long, Int>()
+    private val done = HashMap<Long, T>()
+    private var lateAt = -1L
+    private var askedLate = -1L
+
+    val inHand: Int get() = done.size
+    val nextOwner: Int get() = owner[next] ?: -1
+    val claimedTo: Long get() = claimed
+
+    fun start(at: Long, until: Long) {
+        next = at
+        claimed = at
+        end = until
+        lateAt = -1L
+        askedLate = -1L
+        owner.clear()
+        done.clear()
+    }
+
+    /** The lump for this machine: where it starts, or [END] or [WAIT]. */
+    fun claim(side: Int, alive: (Int) -> Boolean): Long {
+        if (lateAt >= 0) {
+            val wanted = lateAt == next && !done.containsKey(next)
+            if (wanted && owner[next] != side) {
+                lateAt = -1L
+                return next
+            }
+            if (!wanted) lateAt = -1L
+        }
+        while (claimed < end) {
+            val at = claimed
+            val who = owner[at]
+            if (done.containsKey(at) || (who != null && who != side && alive(who))) {
+                claimed += lump
+                continue
+            }
+            // the lump the player needs next is always allowed: it is what makes room
+            if (at > next && (done.size >= ahead || at - next > ahead * lump)) return WAIT
+            claimed += lump
+            owner[at] = side
+            return at
+        }
+        return END
+    }
+
+    /** A lump brought. False when the player is already past it: the slower of two copies. */
+    fun store(at: Long, one: T): Boolean {
+        if (at < next) return false
+        done[at] = one
+        return true
+    }
+
+    /** The lump the player needs next, if it is here. */
+    fun take(size: (T) -> Int): T? {
+        val one = done.remove(next) ?: return null
+        owner.remove(next)
+        next += size(one)
+        return one
+    }
+
+    /** Ask for the next lump from another machine too. False if already asked. */
+    fun late(): Boolean {
+        if (askedLate == next) return false
+        askedLate = next
+        lateAt = next
+        return true
+    }
+
+    /** Everything this machine had taken on goes back to be fetched. */
+    fun giveBack(side: Int) {
+        owner.entries.removeAll { it.value == side }
+        claimed = minOf(claimed, next)
+    }
+
+    /** The next lump goes back, whoever has it. */
+    fun giveBackNext() {
+        owner.remove(next)
+        claimed = minOf(claimed, next)
+    }
+
+    fun clear() {
+        owner.clear()
+        done.clear()
+    }
 }
 
 class TwoWays(
@@ -63,19 +134,33 @@ class TwoWays(
     //: seconds - so a list fixed when the stream opened never had it, and every film
     //: was read off one machine however many held it.
     private val where: () -> List<String>,
+    //: how long the film is, in seconds: nought when not known
+    private val seconds: () -> Double = { 0.0 },
 ) : BaseDataSource(true) {
 
     companion object {
-        /** how much one machine is asked for at a time */
+        /** how much one machine is asked for at a time: each ask costs about 70 ms */
         const val LUMP = 2L * 1024 * 1024
 
-        /** how many lumps may be in hand or in flight before a reader waits */
+        /** how many lumps may be in hand or asked for: a film's memory, on top of the player's */
         const val AHEAD = 6
 
-        /** the longest anything is ever waited for, whatever the sums say */
+        /** a film this heavy needs more than one connection to each machine can bring */
+        const val HEAVY_MBIT = 40.0
+
+        /** and gets these: measured from the streamer, 193 Mbit against 75 for one connection.
+         *  Not every film: a whole lump is waited for at the start and at each jump. */
+        const val HEAVY_LUMP = 8L * 1024 * 1024
+        const val HEAVY_CONNS = 4
+
+        /** Whether a file of this size and length is heavy. Not known: it is not. */
+        fun heavy(bytes: Long, seconds: Double): Boolean =
+            seconds > 0 && bytes > 0 && bytes * 8.0 / seconds >= HEAVY_MBIT * 1_000_000
+
+        /** how long before a machine holding the next lump is put aside */
         const val PATIENCE = 8_000L
 
-        /** and the shortest: below this a busy moment reads as a machine gone */
+        /** the soonest the next lump is asked of another machine as well */
         const val IMPATIENCE = 750L
 
         /** how many machines one film may be read from at once */
@@ -137,15 +222,15 @@ class TwoWays(
         }
     }
 
-    private class Lump(val bytes: ByteArray)
+    private class Lump(val bytes: ByteArray, val size: Int)
 
     private val gate = java.lang.Object()
     private var spec: DataSpec? = null
-    private var end = 0L                    // one past the last byte wanted
     private var head = 0L                   // the next byte the player will read
-    private var claimed = 0L                // the next byte nobody has taken on
-    private val owner = ConcurrentHashMap<Long, Int>()
-    private val done = ConcurrentHashMap<Long, Lump>()
+    private var lump = LUMP
+    private var line = LumpLine<Lump>(LUMP, AHEAD)
+    //: lumps' memory used again: a new block for each freed 26 MB every 2.5 s at this rate
+    private val spare = ArrayList<ByteArray>()
     private val alive = BooleanArray(WAYS) { true }
     //: seconds each side has spent fetching, against what it brought: its speed
     private val spent = DoubleArray(WAYS)
@@ -203,86 +288,42 @@ class TwoWays(
         }
         if (!opened) throw trouble ?: IOException("neither machine is answering")
         head = dataSpec.position
-        claimed = head
         measured = left != C.LENGTH_UNSET.toLong()
-        end = if (!measured) Long.MAX_VALUE else head + left
+        val big = measured && heavy(head + left, seconds())
+        lump = if (big) HEAVY_LUMP else LUMP
+        val conns = if (big) HEAVY_CONNS else 1
+        line = LumpLine<Lump>(lump, AHEAD)
+        line.start(head, if (!measured) Long.MAX_VALUE else head + left)
         stop.set(false)
         fault = null
-        readers = alive.indices.map { side ->
-            Thread({ fetchFor(side) }, "palladium-way-" + side).also {
-                it.isDaemon = true
-                it.start()
+        readers = alive.indices.flatMap { side ->
+            (0 until conns).map { conn ->
+                Thread({ fetchFor(side) }, "palladium-way-" + side + "-" + conn).also {
+                    it.isDaemon = true
+                    it.start()
+                }
             }
         }
         transferStarted(dataSpec)
         return left
     }
 
-    /** The next lump nobody has taken on, or -1 when there is no more film. */
+    /** The next lump for this machine, or -1 when there is no more film. */
     private fun claim(side: Int): Long {
         synchronized(gate) {
             while (!stop.get() && alive[side]) {
-                if (claimed >= end) return -1L
-                val at = claimed
-                claimed += LUMP
-                // a lump already in hand, from before a side was dropped
-                if (done.containsKey(at)) continue
-                // Do not run ahead of the player: these are held in memory. Counted
-                // as lumps in hand rather than as a distance, because a side being
-                // dropped winds the distance back to where the player is - so with a
-                // machine switched off and retried the range said there was room
-                // while the heap filled, and the film died of it at 256 MB.
-                //
-                // Except the one the player is waiting on. Lumps arrive in any order
-                // and are read in order, so a side that took this one on and went
-                // quiet left the six behind it in hand - a full window, none of it
-                // readable, and the machine still answering was not allowed to fetch
-                // the one lump that would have emptied it. It is the only lump that
-                // can make room, so it can never be the one refused for want of room.
-                if (at > head && (done.size >= AHEAD || at - head > AHEAD * LUMP)) {
-                    claimed = at
-                    gate.wait(200)
-                    continue
-                }
-                // Lumps reach the player in order, so one taken on by a slow machine
-                // holds up every lump behind it while the quick one waits. A machine
-                // many times slower was taking one lump in six and the film stopped
-                // on each of them.
-                //
-                // So a slow machine takes only work the player is not about to need:
-                // the far half of what is in hand, never the lump about to be read.
-                // No timing arithmetic - an earlier attempt weighed a lump's fetch
-                // time against how fast the quick machine could clear the queue,
-                // which is not how long the player has, and starved the slow one
-                // altogether. If the quick machine stops, its speed stops counting
-                // and this one takes everything, which is the whole point of it.
-                // and a side counts as quick only while it is still bringing
-                // things in. This read the stopped machine's old speed - it keeps it,
-                // nothing is ever subtracted - and went on leaving the near work to a
-                // machine that had gone, for as long as it took its socket to notice.
-                val warm = android.os.SystemClock.elapsedRealtime() - 5_000
-                val ours = speed(side)
-                val best = (0 until minOf(sides, alive.size))
-                    .filter { alive[it] && (it == side || fetched[it] > warm) }
-                    .map { speed(it) }.maxOrNull() ?: 0.0
-                // ...unless this side has been standing idle. A speed once measured
-                // is kept - nothing is ever subtracted - so a machine that was busy
-                // for its first lump was left out of the near work for the rest of the
-                // film, and on an easy film there is no far work either: it sat there
-                // with the film open and carried nothing. One lump every so often is
-                // how it earns its speed back, and how a film on two machines is read
-                // off both of them rather than one.
-                val idle = android.os.SystemClock.elapsedRealtime() - fetched[side]
-                if (Share.leaveIt(ours, best, at - head < AHEAD * LUMP / 2, idle)) {
-                    claimed = at                    // leave the near work to the quick one
-                    gate.wait(50)
-                    continue
-                }
-                owner[at] = side
-                return at
+                val at = line.claim(side) { alive[it] }
+                if (at == LumpLine.END) return -1L
+                if (at != LumpLine.WAIT) return at
+                gate.wait(200)
             }
         }
         return -1L
+    }
+
+    /** A lump's memory, used again where there is one to spare. Held under [gate]. */
+    private fun recycle(bytes: ByteArray) {
+        if (bytes.size.toLong() == lump && spare.size < AHEAD + 2) spare.add(bytes)
     }
 
     /** One machine, taking whatever lump is next while there is room for it. */
@@ -329,7 +370,7 @@ class TwoWays(
             }
             val at = claim(side)
             if (at < 0) break
-            val want = minOf(LUMP, end - at)
+            val want = minOf(lump, synchronized(gate) { line.end } - at).toInt()
             if (want <= 0) break
             var open = false
             val took = android.os.SystemClock.elapsedRealtime()
@@ -337,13 +378,16 @@ class TwoWays(
                 src.open(DataSpec.Builder()
                              .setUri(Uri.parse(url))
                              .setPosition(at)
-                             .setLength(want)
+                             .setLength(want.toLong())
                              .build())
                 open = true
-                val bytes = ByteArray(want.toInt())
+                val bytes = synchronized(gate) {
+                    if (want.toLong() == lump && spare.isNotEmpty()) spare.removeAt(spare.size - 1)
+                    else ByteArray(want)
+                }
                 var got = 0
-                while (got < bytes.size && !stop.get()) {
-                    val n = src.read(bytes, got, bytes.size - got)
+                while (got < want && !stop.get()) {
+                    val n = src.read(bytes, got, want - got)
                     if (n == C.RESULT_END_OF_INPUT) break
                     got += n
                 }
@@ -358,7 +402,7 @@ class TwoWays(
                     counted()
                 }
                 wait = 5_000L                     // answering again: start over
-                if (got < bytes.size && measured && at + got < end) {
+                if (got < want && measured && at + got < synchronized(gate) { line.end }) {
                     // Short of what was asked for, with the length known from the
                     // open: the machine cut its answer short, which a busy one does.
                     // This used to be read as the film ending there - so the player
@@ -370,8 +414,9 @@ class TwoWays(
                 synchronized(gate) {
                     // short of what was asked for means the film ends here - only
                     // when nobody said how long it was
-                    if (got < bytes.size) end = minOf(end, at + got)
-                    done[at] = Lump(if (got == bytes.size) bytes else bytes.copyOf(got))
+                    if (got < want) line.end = minOf(line.end, at + got)
+                    // the slower of two copies: kept, it held a place in the window for good
+                    if (!line.store(at, Lump(bytes, got))) recycle(bytes)
                     gate.notifyAll()
                 }
             } catch (e: Throwable) {
@@ -434,18 +479,14 @@ class TwoWays(
     /**
      * How long to wait on the machine holding the stretch the player wants.
      *
-     * About twice what the quickest machine standing would need to fetch it instead.
-     * Waiting longer than it would take to fetch again is time the picture spends
-     * stopped for nothing - and it was a flat eight seconds, against a run of film in
-     * hand that is nearer two. So a machine that went busy halfway through a stretch -
-     * somebody else started watching off it - stopped the picture here for six seconds
-     * before anything was done about it. Held under [gate].
+     * About twice what the quickest machine standing would need to fetch it instead;
+     * past that it is asked of that machine as well. Held under [gate].
      */
     private fun patienceFor(side: Int): Long {
         val best = (0 until minOf(sides, alive.size))
             .filter { alive[it] && it != side }.map { speed(it) }.maxOrNull() ?: 0.0
         if (best <= 0.0) return PATIENCE
-        return (LUMP / best * 2000).toLong().coerceIn(IMPATIENCE, PATIENCE)
+        return (lump / best * 2000).toLong().coerceIn(IMPATIENCE, PATIENCE)
     }
 
     /** Bytes a second a side has managed, or nought before it has brought anything. */
@@ -485,13 +526,8 @@ class TwoWays(
                 stranded = true
                 fault = IOException("neither machine is answering")
             } else {
-                // Everything that side had taken on and not brought goes back, not
-                // only the lump it died on. Its name was left on the others, so the
-                // reader waited on a machine that had gone and then gave up - with
-                // the survivor sitting there able to fetch every one of them.
-                owner.entries.removeAll { it.value == side }
-                if (at in 0 until end) claimed = minOf(claimed, at)
-                claimed = minOf(claimed, head)
+                // everything that side had taken on and not brought goes back
+                line.giveBack(side)
             }
             gate.notifyAll()
         }
@@ -500,44 +536,35 @@ class TwoWays(
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         if (length == 0) return 0
         if (held == null) {
-            if (head >= end) return C.RESULT_END_OF_INPUT
+            if (head >= synchronized(gate) { line.end }) return C.RESULT_END_OF_INPUT
             var since = android.os.SystemClock.elapsedRealtime()
             synchronized(gate) {
                 while (held == null) {
                     fault?.let { throw it }
-                    val one = done.remove(head)
+                    val one = line.take { it.size }
                     if (one != null) {
                         held = one
                         heldAt = 0
-                        owner.remove(head)
                         break
                     }
-                    if (head >= end) return C.RESULT_END_OF_INPUT
-                    if (android.os.SystemClock.elapsedRealtime() - since >
-                            patienceFor(owner[head] ?: -1)) {
-                        // whoever took this lump on is not going to bring it
-                        val slow = owner[head] ?: -1
-                        val standing = standing()
-                        if (slow >= 0 && alive[slow] && standing > 1) {
-                            // it is still answering but not with this: put it aside
-                            alive[slow] = false
-                            owner.entries.removeAll { it.value == slow }
-                            claimed = minOf(claimed, head)
-                            gate.notifyAll()
+                    if (head >= line.end) return C.RESULT_END_OF_INPUT
+                    val waited = android.os.SystemClock.elapsedRealtime() - since
+                    val who = line.nextOwner
+                    val standing = standing()
+                    // running late: the other machine fetches it too, and nobody is put aside
+                    if (who >= 0 && standing > 1 && waited > patienceFor(who) && line.late())
+                        gate.notifyAll()
+                    if (waited > PATIENCE) {
+                        if (who >= 0 && alive[who] && standing > 1) {
+                            // answering about itself, sending no film: put it aside
+                            alive[who] = false
+                            line.giveBack(who)
                         } else if (standing > 0) {
-                            // One machine left and this lump belongs to a dead one -
-                            // or to nobody. It used to give up here, which is the
-                            // whole of what went wrong when a server was switched off
-                            // mid-film: the machine that could have carried on was
-                            // sitting there, alive, with nothing asked of it. Hand
-                            // the lump back and wait again.
-                            owner.remove(head)
-                            claimed = minOf(claimed, head)
-                            gate.notifyAll()
-                            since = android.os.SystemClock.elapsedRealtime()
+                            line.giveBackNext()
                         } else {
                             throw IOException("nothing for " + PATIENCE + "ms")
                         }
+                        gate.notifyAll()
                         since = android.os.SystemClock.elapsedRealtime()
                     }
                     // and said out loud, once a second, while it is starved. Which
@@ -549,10 +576,10 @@ class TwoWays(
                     if (moment - said > 1_000) {
                         said = moment
                         android.util.Log.i("Palladium",
-                            "starved at " + head + " of " + end +
-                            " - owner " + (owner[head] ?: -1) +
-                            ", " + done.size + " lumps in hand" +
-                            ", claimed to " + claimed +
+                            "starved at " + head + " of " + line.end +
+                            " - owner " + line.nextOwner +
+                            ", " + line.inHand + " lumps in hand" +
+                            ", claimed to " + line.claimedTo +
                             ", alive " + alive.joinToString(",") { if (it) "y" else "n" } +
                             ", brought " + (0 until minOf(sides, WAYS)).joinToString(",") {
                                 (brought.get(it) / 1024 / 1024).toString() + "MB"
@@ -564,11 +591,14 @@ class TwoWays(
             }
         }
         val one = held ?: return C.RESULT_END_OF_INPUT
-        val take = minOf(length, one.bytes.size - heldAt)
+        val take = minOf(length, one.size - heldAt)
         System.arraycopy(one.bytes, heldAt, buffer, offset, take)
         heldAt += take
         head += take
-        if (heldAt >= one.bytes.size) held = null
+        if (heldAt >= one.size) {
+            held = null
+            synchronized(gate) { recycle(one.bytes) }
+        }
         bytesTransferred(take)
         return take
     }
@@ -578,8 +608,10 @@ class TwoWays(
         synchronized(gate) { gate.notifyAll() }
         readers.forEach { runCatching { it.join(300) } }
         readers = listOf()
-        done.clear()
-        owner.clear()
+        synchronized(gate) {
+            line.clear()
+            spare.clear()
+        }
         held = null
         if (spec != null) {
             spec = null
@@ -603,6 +635,8 @@ class TwoWaysFactory(
     /** the film's address here, and the same film on every other machine that has it */
     @Volatile var main: String = ""
     @Volatile var twins: List<String> = emptyList()
+    /** how long the film is, which says whether it is heavy; nought when not known */
+    @Volatile var seconds: Double = 0.0
 
     override fun createDataSource(): DataSource {
         // Built whether or not the second machine is known yet. Deciding here meant
@@ -610,7 +644,7 @@ class TwoWaysFactory(
         // of the film: the plain source was chosen every time, the share never
         // appeared on the screen, and a server switched off mid-film was a hand-over
         // rather than the split this exists to be.
-        val src: DataSource = Split(inner, { main }, { twins })
+        val src: DataSource = Split(inner, { main }, { twins }, { seconds })
         listener?.let { src.addTransferListener(it) }
         return src
     }
@@ -620,6 +654,7 @@ class TwoWaysFactory(
         private val inner: DataSource.Factory,
         private val here: () -> String,
         private val there: () -> List<String>,
+        private val seconds: () -> Double,
     ) : DataSource {
         private var real: DataSource? = null
         private val listeners = mutableListOf<androidx.media3.datasource.TransferListener>()
@@ -636,7 +671,7 @@ class TwoWaysFactory(
             val film = here()
             val one = if (film.isNotEmpty() && asked == film)
                           TwoWays({ inner.createDataSource() },
-                                  { (listOf(film) + there()).take(TwoWays.WAYS) })
+                                  { (listOf(film) + there()).take(TwoWays.WAYS) }, seconds)
                       else inner.createDataSource()
             listeners.forEach { one.addTransferListener(it) }
             real = one

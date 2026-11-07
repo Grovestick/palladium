@@ -48,6 +48,30 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                    /** what pressing one does instead of downloading it: a series' pack */
                    onTake: ((Api.Carried) -> Unit)? = null) {
     val ctx = LocalContext.current
+    // the search behind this list: said while it runs, and the list drawn again with it
+    var live by remember { mutableStateOf(rows) }
+    var checking by remember { mutableStateOf(onTake == null) }
+    LaunchedEffect(Unit) {
+        if (onTake == null) {
+            val newer = Api.trackerVersions(full, true).rows
+            if (newer.isNotEmpty()) live = newer
+        }
+        checking = false
+    }
+    // Held here, not in the dialog's text: that is drawn again on its own, and a request
+    // kept there started over each time while the window's own focus went to the top
+    // row - the lit row jumped between the two and Down did nothing (2026-11-07).
+    val opening = remember { FocusRequester() }
+    // a dialog is its own window, and a request made before that window has focus is
+    // dropped without a word: asked again until a row holds it, and never after
+    var landed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        repeat(14) {
+            kotlinx.coroutines.delay(150)
+            if (landed) return@LaunchedEffect
+            runCatching { opening.requestFocus() }
+        }
+    }
     AlertDialog(
         onDismissRequest = onClose,
         containerColor = Skin.Panel,
@@ -55,26 +79,18 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.fillMaxWidth(Route.PICKER_WIDTH).widthIn(max = Route.PICKER_MAX.dp),
         title = {
-            Text("Which one" + (if (free >= 0) "  ·  " + Math.round(free) + " GB free" else ""),
+            Text("Which one" + (if (free >= 0) "  ·  " + Math.round(free) + " GB free" else "")
+                 + (if (checking) "  ·  Checking the tracker…" else ""),
                  color = Skin.Fg, fontSize = 18.sp)
         },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 // it opens on the one the settings put forward, lit
-                val opening = remember { FocusRequester() }
-                val first = rows.firstOrNull { it.pick && it.word.isEmpty() }
-                    ?: rows.firstOrNull { it.why.isEmpty() && it.word.isEmpty() } ?: rows.firstOrNull()
-                // a dialog is its own window, and a request made before that window has
-                // focus is dropped without a word: asked again until a row holds it
-                var landed by remember { mutableStateOf(false) }
-                LaunchedEffect(Unit) {
-                    repeat(14) {
-                        kotlinx.coroutines.delay(150)
-                        if (landed) return@LaunchedEffect
-                        runCatching { opening.requestFocus() }
-                    }
-                }
-                rows.forEach { one ->
+                val first = live.firstOrNull { it.pick && it.word.isEmpty() }
+                    ?: live.firstOrNull { it.why.isEmpty() && it.word.isEmpty() } ?: live.firstOrNull()
+                // not keyed: a keyed row was rebuilt under the focus on every redraw, which
+                // let go of the focus and took it back many times a second (2026-11-07)
+                live.forEach { one -> run {
                     var lit by remember(one.id) { mutableStateOf(false) }
                     val ring = lit && focusShows()
                     Column(
@@ -85,7 +101,9 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                             .background(if (ring) Skin.Accent else Skin.Panel2)
                             .onFocusChanged {
                                 lit = it.isFocused || it.hasFocus
-                                if (lit) landed = true
+                                // arrived once the one it opens on has it: the window's own
+                                // first focus lands on the top row before that
+                                if (lit && one === first) landed = true
                             }
                             .focusable()
                             .clickable {
@@ -95,9 +113,12 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                                     one.have -> onSaid("That one is on disk already")
                                     one.why.isNotEmpty() -> onSaid(one.why)
                                     else -> {
-                                        onSaid("Starting the download…")
+                                        // the one it opened on: nobody chose, so the best as of now
+                                        val plain = one === first
+                                        onSaid(if (plain) "Checking the tracker…" else "Starting the download…")
                                         (ctx as AppCompatActivity).lifecycleScope.launch {
-                                            val (got, word) = Api.takeFromTracker(full, one.id)
+                                            val id = if (plain) Api.bestAtPress(full, one.id) else one.id
+                                            val (got, word) = Api.takeFromTracker(full, id)
                                             onSaid(if (got) "" else word)
                                         }
                                     }
@@ -116,7 +137,8 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                             one.word.takeIf { it.isNotEmpty() },
                             "Recommended".takeIf { one.pick && !one.have },
                             Route.versionTag(one.disk, one.have, one.pack, one.box, one.seasonPack),
-                            "${one.seeds} seeding".takeIf { !one.disk && !one.have && one.seeds >= 0 },
+                            "Freeleech".takeIf { one.freeleech },
+                            "${one.seeds} seeding".takeIf { one.seeds >= 0 },
                             one.mbit.takeIf { it > 0 }?.let { "$it Mbit/s" },
                             one.size.takeIf { it > 0 }?.let {
                                 String.format(java.util.Locale.US, "%.1f GB", it / 1073741824.0) },
@@ -125,7 +147,7 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                         Text(under, color = if (ring) Color.Black else Skin.Dim,
                              fontSize = 11.5.sp, modifier = Modifier.padding(top = 2.dp))
                     }
-                }
+                } }
             }
         },
         confirmButton = { Pill("Close") { onClose() } })

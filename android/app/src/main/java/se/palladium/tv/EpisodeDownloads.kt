@@ -149,7 +149,11 @@ fun EpisodeDownloads(ep: Media, onPage: (() -> Unit)? = null, onTaken: () -> Uni
     var busy by remember { mutableStateOf(false) }
     // the tracker's releases, behind Other versions while a pack added here has it
     var more by remember { mutableStateOf(false) }
-    LaunchedEffect(ep.ratingKey) { got = Api.trackerVersions(ep) }
+    LaunchedEffect(ep.ratingKey) {
+        said = "Checking the tracker…"
+        got = Api.trackerVersions(ep, true)
+        if (said == "Checking the tracker…") said = ""
+    }
     AlertDialog(
         onDismissRequest = onClose,
         containerColor = Skin.Panel,

@@ -153,6 +153,12 @@ class MainActivity : AppCompatActivity() {
          */
         val noticeSeen = androidx.compose.runtime.mutableStateOf(0)
 
+        /** The last title sent to this screen that something here has opened: the library
+         *  and a player both hear it, and whichever comes first opens it, once. */
+        private val playClaimed = java.util.concurrent.atomic.AtomicInteger(0)
+
+        fun claimPlay(id: Int): Boolean = Route.claimOnce(playClaimed, id)
+
         /**
          * Bumped whenever a watchlist or shuffle mark is changed.
          *
@@ -2609,6 +2615,84 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
     }
 }
 
+/** A rip beside a remux in each profile starred on the ripper's page, for the owner, and then
+ *  how far each has got. The versions already here go on playing; pressing a running rip asks
+ *  once before stopping it. */
+@Composable
+private fun RipPill(key: String, copy: Copy) {
+    var jobs by remember(key) { mutableStateOf<List<Api.Rip>?>(null) }
+    var asked by remember(key) { mutableStateOf(0) }
+    LaunchedEffect(key, asked) {
+        while (true) {
+            jobs = Api.rips(key)
+            val busy = jobs?.any { it.src == copy.path && it.state in listOf("queued", "pass1", "pass2") }
+            if (busy != true) break
+            kotlinx.coroutines.delay(10_000)
+        }
+    }
+    val list = jobs ?: return
+    val free = mutableListOf<String>()
+    for (profile in Api.ripOffered) {
+        val job = list.lastOrNull { it.src == copy.path && it.profile == profile &&
+                                    it.state != "cancelled" && it.state != "failed" }
+        if (job != null) RipOne(key, copy, profile, job) { asked++ }
+        else if (Route.isRemux(copy.fileName, copy.bitrate)) free += profile
+    }
+    // the profiles not made or making: one Rip pill, its menu the ones starred on the ripper's
+    // page (owner, 2026-11-06)
+    if (free.isNotEmpty()) RipMenu(key, copy, free) { asked++ }
+}
+
+@Composable
+private fun RipMenu(key: String, copy: Copy, profiles: List<String>, changed: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Pill("Rip ▾", filled = true) { open = true }
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for (profile in profiles) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(profile) },
+                    onClick = {
+                        open = false
+                        scope.launch {
+                            val why = Api.ripStart(key, copy.path, profile)
+                            if (why.isNotEmpty())
+                                android.widget.Toast.makeText(ctx, why, android.widget.Toast.LENGTH_SHORT).show()
+                            changed()
+                        }
+                    })
+            }
+        }
+    }
+}
+
+@Composable
+private fun RipOne(key: String, copy: Copy, profile: String, job: Api.Rip?, changed: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var confirming by remember(key, copy.path, profile) { mutableStateOf(false) }
+    val word = Route.ripWord(job?.state, job?.progress ?: 0.0, confirming, profile) +
+               (if (job != null && job.state != "done" && !confirming) " · $profile" else "")
+    Pill(word, filled = true) {
+        scope.launch {
+            when {
+                job == null -> {
+                    val why = Api.ripStart(key, copy.path, profile)
+                    if (why.isNotEmpty())
+                        android.widget.Toast.makeText(ctx, why, android.widget.Toast.LENGTH_SHORT).show()
+                }
+                job.state == "done" -> {}
+                !confirming -> { confirming = true; return@launch }
+                else -> Api.ripCancel(job.id)
+            }
+            confirming = false
+            changed()
+        }
+    }
+}
+
 @Composable
 private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
                           focus: Map<String, FocusRequester> = emptyMap(),
@@ -2634,6 +2718,8 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
         // whole row instead sent every tab to the first one, so two buttons on one
         // line did two different things.
         Pill(label, tab == id, narrow = tight, small = squeeze,
+             // the Watchlist, while something on it has come in and it is not open
+             blink = id == "watchlist" && tab != id && WatchBlink.on,
              modifier = (if (f == null) Modifier else Modifier.focusRequester(f))
                  .then(if (where == null) Modifier else Modifier.onGloballyPositioned {
                      where[id] = it.boundsInWindow().center.x
@@ -2641,6 +2727,8 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
             onTab(id)
         }
     }
+    // the Watchlist open, however it was reached: what blinked there has been seen
+    LaunchedEffect(tab) { if (tab == "watchlist") WatchBlink.seen() }
     tabPill("start", "Start")
     tabPill("home", "Home")
     tabPill("films", "Films")
@@ -2817,6 +2905,9 @@ private class Browse {
     fun takeTabOrder(chosen: String) {
         sortByTab[tab] = sortKey to sortAsc
         sortByTab[chosen]?.let { (k, up) -> sortKey = k; sortAsc = up }
+        // the watchlist opens last watched first, as the web does
+        if (chosen == "watchlist" && tab != "watchlist")
+            Route.WATCHLIST_OPENS.let { (k, up) -> collSortKey = k; collSortAsc = up }
     }
 
     fun leaveMoreRow() {
@@ -3129,6 +3220,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // in the house could not be asked to do. Opened the same way as
                 // pressing it here, so everything after it - the round, the place it
                 // keeps, what plays next - is the same as if somebody had.
+                // a player in front may have opened it already
+                if (Route.opensATitle(word.play, word.shelf) && !MainActivity.claimPlay(word.id)) {
+                    continue
+                }
                 if (word.shelf.isNotEmpty()) {
                     // a shuffle to carry on: drawn as its card draws it
                     startShuffle(ctx, word.shelf, onOpen)
@@ -3972,9 +4067,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                        browse.collSortKey, browse.collSortAsc,
                        onSort = { key ->
                            browse.collSortKey = key
-                           browse.collSortAsc = key !in setOf("addedAt", "quality")
+                           browse.collSortAsc = key !in setOf("addedAt", "quality", "lastViewedAt")
                        },
-                       onFlip = { browse.collSortAsc = !browse.collSortAsc })
+                       onFlip = { browse.collSortAsc = !browse.collSortAsc },
+                       extra = Route.WATCHLIST_ORDERS)
                    GenreControl(browse.genre, browse.genres, matching = browse.matching,
                                 onGenre = { browse.genre = it })
                    DecadeControl(browse.decade, browse.decades,
@@ -4652,7 +4748,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         // it is given, so without this it came up
                         // in whatever order was last chosen
                         // somewhere else.
-                        browse.collSortKey = "originallyAvailableAt"
+                        // Continue watching in its own order: last watched first
+                        browse.collSortKey = if (title == DECK) "lastViewedAt" else "originallyAvailableAt"
                         browse.collSortAsc = false
                         browse.moreRow = title
                         browse.moreList = false
@@ -5569,6 +5666,7 @@ internal fun goToTitle(ctx: android.content.Context, one: Media, onOpen: (Media)
 private fun collectionOrder(list: List<Media>, key: String, asc: Boolean): List<Media> {
     val by = when (key) {
         "addedAt" -> compareBy<Media> { it.addedAt }
+        "lastViewedAt" -> compareBy { it.lastViewedAt }
         "titleSort" -> compareBy { it.titleSort.ifEmpty { it.title }.lowercase() }
         "year" -> compareBy { it.year ?: 0 }
         "quality" -> compareBy { it.maxHeight }
@@ -5579,6 +5677,7 @@ private fun collectionOrder(list: List<Media>, key: String, asc: Boolean): List<
             it.released.ifEmpty { (it.year ?: 0).toString().padStart(4, '0') + "-01-01" }
         }
     }
+    if (key == "lastViewedAt") return Route.byLastWatched(list, asc) { it.lastViewedAt }
     val sorted = list.sortedWith(by.thenBy { it.title.lowercase() })
     val out = if (asc) sorted else sorted.reversed()
     // One programme's seasons and episodes stay in their own order, where the programme
@@ -6890,6 +6989,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                   val copy = full.copies.firstOrNull { it.mi == full.mi }
                   Pill("Version: " + (copy?.brief() ?: (full.mi + 1).toString()) +
                        Route.copiesSaid(full.copies.size)) { versions = true }
+              }
+              // a remux chosen: a 1080p rip of it made beside it, and how far it has got
+              full.copies.firstOrNull { it.mi == full.mi }?.let { copy ->
+                  if (full.type == "movie") RipPill(full.ratingKey, copy)
               }
             }
             otherVersion()

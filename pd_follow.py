@@ -347,6 +347,20 @@ MAGIC = (
 )
 
 
+#: where a music video's copy is kept, under the copies folder (pd_library.MUSIC_FOLDER)
+MUSIC_DIR = "Music videos"
+
+
+def copy_name(item):
+    """A listed file's place under the copies folder: its safe name, and for a music video
+    the Music videos folder in front of it, so the library here files it as one and not
+    as a film. None when the name is refused."""
+    safe = a_safe_name(item.get("name"))
+    if safe and item.get("music"):
+        return os.path.join(MUSIC_DIR, safe)
+    return safe
+
+
 def a_safe_name(name):
     """The bare file name, or None if it has no business being written here.
 
@@ -767,9 +781,13 @@ def subs_for_copy(theirs, keys, paths):
 MACHINE_OWN = ("port", "machineId", "outsideName", "setupDone", "betaKey", "ffmpeg", "copyOf",
                "mirrorOf", "gameMode", "apartPause", "autoRuns", "diskSlots", "reportsSeen",
                "followShows", "grabLatest", "copyPick", "noDolby", "subShift", "subShiftBy",
-               "subsDownloads", "subsLastDownload", "managedCopies")
-#: and a viewer's own that each machine works out for itself
-VIEWER_MACHINE = ("watchNews", "watchSources")
+               "subsDownloads", "subsLastDownload", "managedCopies",
+               # that this machine's one pass of fetched titles onto watchlists has run
+               "watchFilled")
+#: and a viewer's own that each machine works out for itself: what is new on the watchlist,
+#: what blinks it, what they downloaded onto it and the games put there
+VIEWER_MACHINE = ("watchNews", "watchSources", "deckArrivals", "watchBlink", "watchFetched",
+                  "gamesListed")
 
 
 def unplaced(top, viewer_keys, mirrored_viewer):
@@ -2003,13 +2021,15 @@ def copy_file(one, item, folder):
     """Fetch one film or episode, carrying on from whatever is already here. A file a pack here
     carries goes where the pack keeps it, once: played and seeded as one, and it stays."""
     import pd_torrents
-    name = a_safe_name(item.get("name"))
+    name = copy_name(item)
     if not name:
         raise ValueError("refused the name %r" % (item.get("name"),)[:80])
     plain = os.path.join(folder, name)
     # and it lands inside the folder that was asked for, whatever the name says
-    if os.path.dirname(os.path.abspath(plain)) != os.path.abspath(folder):
+    if os.path.dirname(os.path.abspath(plain)) not in (
+            os.path.abspath(folder), os.path.abspath(os.path.join(folder, MUSIC_DIR))):
         raise ValueError("refused a name that points outside the folder")
+    os.makedirs(os.path.dirname(plain), exist_ok=True)
     in_pack = pd_torrents.pack_place(name, item.get("size")) if item.get("side") is None else ""
     into = in_pack or plain
     if in_pack and copy_here(folder, name, in_pack, item.get("size"), item.get("mark") or ""):
@@ -2576,7 +2596,7 @@ def _remember_keys(folder, wanted):
         known = {}
     before = len(known)
     for item in wanted or []:
-        name = a_safe_name(item.get("name"))
+        name = copy_name(item)
         if name and item.get("key"):
             known[name] = item["key"]
     # anything gone from the disk is gone from the book as well
@@ -2718,7 +2738,7 @@ def first_on_screen(wanted, folder, copying):
         # one the round will not fetch: it put the copy in flight down all evening for nothing
         if not item.get("part") or item.get("casual") or not worth_asking_again(item):
             continue
-        safe = a_safe_name(item.get("name"))
+        safe = copy_name(item)
         if not safe or safe == copying:
             continue
         if copy_here(folder, safe, copy_place(folder, safe, item.get("size")), item.get("size")):
@@ -2872,7 +2892,7 @@ def _round(one, lib, api, folder):
         pass
     qualified = set()
     for item in holding:
-        safe = a_safe_name(item.get("name"))
+        safe = copy_name(item)
         if safe:
             qualified.add(kept_path(folder, safe, item.get("size"), item.get("mark") or ""))
     qualified.discard("")
@@ -2917,7 +2937,7 @@ def _round(one, lib, api, folder):
     # is where a watchlist went: named as wanted, never reached, deleted the same
     # night, and asked for again the next one.
     for item in wanted:
-        safe = a_safe_name(item.get("name"))
+        safe = copy_name(item)
         if item.get("part") and safe:
             keeping.add(os.path.join(folder, safe))
 
@@ -2936,7 +2956,7 @@ def _round(one, lib, api, folder):
         if not worth_asking_again(item):
             ROUND["skipped"].add(str(item.get("name") or "")[:60])
             return False
-        safe = a_safe_name(item.get("name"))
+        safe = copy_name(item)
         if not safe:
             with LOCK:
                 STATE["why"] = "refused a file named %.40s" % (item.get("name") or "")
@@ -2986,7 +3006,7 @@ def _round(one, lib, api, folder):
         # why, and for whom, said as it starts: the list it came off changes by the
         # minute, and afterwards there was no way to ask why a file had been copied
         if item.get("side") is None and not os.path.exists(
-                os.path.join(folder, a_safe_name(item.get("name")) or "")):
+                os.path.join(folder, copy_name(item) or "")):
             log_line("copying %s - %s%s" % (
                 item.get("title") or item.get("name") or "?",
                 item.get("why") or "no reason given",
@@ -3059,7 +3079,7 @@ def _round(one, lib, api, folder):
             if fresh:
                 wanted = fresh
                 for w in wanted:
-                    safe = a_safe_name(w.get("name"))
+                    safe = copy_name(w)
                     if w.get("part") and safe:
                         keeping.add(os.path.join(folder, safe))
         except Exception:

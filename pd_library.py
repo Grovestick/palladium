@@ -529,6 +529,22 @@ def file_id(title_id, path):
     return "%s-%s" % (title_id, file_code(path)) if title_id else ""
 
 
+def _alter(con, sql):
+    """A column added. Two starts at once both see it missing: the second finds it done."""
+    try:
+        con.execute(sql)
+    except sqlite3.OperationalError as why:
+        if "duplicate column" not in str(why):
+            raise
+
+
+def arrived_at(ctime, mtime, now):
+    """When a file new to the index came: the later of created and last written. A pack makes
+    its empty files when it is added and writes them when the film is fetched; a copy has a new
+    created time and its source's written time."""
+    return int(max(ctime, min(mtime, now)))
+
+
 def title_key(kind, title, year):
     """The key for a film or a programme, from what it is rather than when it arrived.
 
@@ -930,13 +946,13 @@ class Library:
         # than assumed
         cols = [r[1] for r in con.execute("PRAGMA table_info(watchlog)").fetchall()]
         if "app" not in cols:
-            con.execute("ALTER TABLE watchlog ADD COLUMN app TEXT")
+            _alter(con, "ALTER TABLE watchlog ADD COLUMN app TEXT")
         # the machine a row was played on, and "<machine>:<id>" for a row that came
         # from the other one - empty on a row played here. Both machines keep both.
         if "machine" not in cols:
-            con.execute("ALTER TABLE watchlog ADD COLUMN machine TEXT")
+            _alter(con, "ALTER TABLE watchlog ADD COLUMN machine TEXT")
         if "origin" not in cols:
-            con.execute("ALTER TABLE watchlog ADD COLUMN origin TEXT")
+            _alter(con, "ALTER TABLE watchlog ADD COLUMN origin TEXT")
         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS watchlog_origin "
                     "ON watchlog(origin) WHERE origin IS NOT NULL")
         con.executescript("""
@@ -950,27 +966,27 @@ class Library:
         # a face to put beside the name: added after the table was first made
         if "profile" not in [r[1] for r in con.execute(
                 "PRAGMA table_info(credit)").fetchall()]:
-            con.execute("ALTER TABLE credit ADD COLUMN profile TEXT")
+            _alter(con, "ALTER TABLE credit ADD COLUMN profile TEXT")
         # older databases predate the ctime column
         cols = [r[1] for r in con.execute("PRAGMA table_info(file)").fetchall()]
         if "ctime" not in cols:
-            con.execute("ALTER TABLE file ADD COLUMN ctime INTEGER")
+            _alter(con, "ALTER TABLE file ADD COLUMN ctime INTEGER")
         # what soundtracks a file holds. Empty for everything probed before this
         # existed; filled in the first time somebody opens the title.
         if "atracks" not in cols:
-            con.execute("ALTER TABLE file ADD COLUMN atracks TEXT")
+            _alter(con, "ALTER TABLE file ADD COLUMN atracks TEXT")
         # A file a download left behind: the right name, the right size, the right
         # date, and nothing inside it. Shelved as a film like any other, offered to
         # anybody who pressed it, and handed to the machine keeping copies over and
         # over because what arrives is not a film and is deleted on arrival.
         if "hollow" not in cols:
-            con.execute("ALTER TABLE file ADD COLUMN hollow INTEGER DEFAULT 0")
+            _alter(con, "ALTER TABLE file ADD COLUMN hollow INTEGER DEFAULT 0")
         # which copy, the same on every server: the title's key and the code of the name
         if "fid" not in cols:
             # two libraries opened at once - the server and a helper process on the same
             # file - both saw it missing; the second found it there (gate, 2026-11-06)
             try:
-                con.execute("ALTER TABLE file ADD COLUMN fid TEXT")
+                _alter(con, "ALTER TABLE file ADD COLUMN fid TEXT")
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e):
                     raise
@@ -984,12 +1000,12 @@ class Library:
         # NULL is not asked yet, "" is asked and TMDB had none.
         if "orig_lang" not in [r[1] for r in con.execute(
                 "PRAGMA table_info(item)").fetchall()]:
-            con.execute("ALTER TABLE item ADD COLUMN orig_lang TEXT")
+            _alter(con, "ALTER TABLE item ADD COLUMN orig_lang TEXT")
         # where a title was made, comma-joined country codes: "US", "SE,DK". NULL is
         # not asked yet, "" is asked and the catalogue had none.
         if "countries" not in [r[1] for r in con.execute(
                 "PRAGMA table_info(item)").fetchall()]:
-            con.execute("ALTER TABLE item ADD COLUMN countries TEXT")
+            _alter(con, "ALTER TABLE item ADD COLUMN countries TEXT")
         # A file probed before the column existed was written down as having an empty
         # list of soundtracks rather than none recorded, and the two look the same
         # from the outside. What fills them in on first open skips anything that is
@@ -1024,7 +1040,7 @@ class Library:
             keep = [r[1] for r in info
                     if r[1] not in ("who", "key", "position", "duration", "updated")]
             for name in keep:
-                con.execute("ALTER TABLE progress_new ADD COLUMN %s" % name)
+                _alter(con, "ALTER TABLE progress_new ADD COLUMN %s" % name)
             cols = ", ".join(["who", "key", "position", "duration", "updated"] + keep)
             con.execute("""INSERT INTO progress_new (%s)
                            SELECT %s, key, position, duration, updated%s FROM progress"""
@@ -1037,7 +1053,7 @@ class Library:
         # through it. The tick says so itself now.
         if not any(r[1] == "marked" for r in
                    con.execute("PRAGMA table_info(progress)").fetchall()):
-            con.execute("ALTER TABLE progress ADD COLUMN marked INTEGER DEFAULT 0")
+            _alter(con, "ALTER TABLE progress ADD COLUMN marked INTEGER DEFAULT 0")
             # what the old scheme wrote for a tick: the full duration, and no viewing
             # anywhere in the log to have produced it. Those are hand marks, and they
             # were being argued with.
@@ -1064,7 +1080,7 @@ class Library:
         # where to resume.
         if not any(r[1] == "furthest" for r in
                    con.execute("PRAGMA table_info(progress)").fetchall()):
-            con.execute("ALTER TABLE progress ADD COLUMN furthest REAL DEFAULT 0")
+            _alter(con, "ALTER TABLE progress ADD COLUMN furthest REAL DEFAULT 0")
             # what is already known: a place is at least as far as itself
             con.execute("UPDATE progress SET furthest = position "
                         "WHERE COALESCE(furthest, 0) < COALESCE(position, 0)")
@@ -1074,7 +1090,7 @@ class Library:
         # had chosen.
         if not any(r[1] == "casual" for r in
                    con.execute("PRAGMA table_info(progress)").fetchall()):
-            con.execute("ALTER TABLE progress ADD COLUMN casual INTEGER DEFAULT 0")
+            _alter(con, "ALTER TABLE progress ADD COLUMN casual INTEGER DEFAULT 0")
             # and the rows left behind before there was anywhere to say it: what the
             # log last says about that viewing is whether somebody put it on or chose
             # it. A hand mark is nobody's shuffle and is left alone.
@@ -1745,7 +1761,7 @@ class Library:
             pass
         elif moved_from is None:
             con.execute("""UPDATE item SET added = MAX(COALESCE(added, 0), ?) WHERE id = ?""",
-                        (ctime, item_id))
+                        (arrived_at(ctime, st.st_mtime, time.time()), item_id))
         elif moved_from != item_id:
             con.execute("""UPDATE item SET added = MAX(COALESCE(added, 0),
                              COALESCE((SELECT added FROM item WHERE id = ?), 0)) WHERE id = ?""",

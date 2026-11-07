@@ -35,6 +35,10 @@ img{display:block}
 .tab.hasnews::after{content:attr(data-news);position:absolute;top:-2px;right:-4px;
   min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#c2410c;
   color:#fff;font-size:10px;line-height:16px;text-align:center;font-weight:700}
+/* something on the watchlist has come in since it was last opened: the tab blinks */
+.tab.blink{animation:tabblink 1.2s ease-in-out infinite}
+@keyframes tabblink{0%,100%{box-shadow:0 0 0 2px var(--accent)}50%{box-shadow:0 0 0 2px transparent}}
+@media (prefers-reduced-motion:reduce){.tab.blink{animation:none;box-shadow:0 0 0 2px var(--accent)}}
 #search{background:var(--panel);border:1px solid var(--line);border-radius:999px;
   color:var(--fg);padding:7px 14px;width:260px;outline:none}
 #search:focus{border-color:var(--accent)}
@@ -70,6 +74,12 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 /* min-width:auto would let a long nowrap title widen its own grid track and
    squeeze every other poster in the row - keep all columns identical */
 .card{cursor:pointer;min-width:0}
+.card .unmark{position:absolute;top:6px;left:6px;z-index:3;width:30px;height:30px;border-radius:50%;
+  border:0;background:rgba(11,13,16,.8);color:#fff;font-size:15px;line-height:30px;cursor:pointer;
+  opacity:0;transition:opacity .15s}
+.card:hover .unmark,.card .unmark:focus-visible{opacity:1}
+.card .unmark:hover{background:#c0392b}
+@media (hover:none){.card .unmark{opacity:1}}
 .card .poster{position:relative;aspect-ratio:2/3;border-radius:8px;overflow:hidden;
   background:var(--panel2)}
 .card .poster img{width:100%;height:100%;object-fit:cover;
@@ -149,6 +159,7 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 
 /* the next episode of a series somebody is waiting on: not here, not playable, dated */
 .card.upcoming .poster img{filter:grayscale(1);opacity:.42}
+.card.away .poster img{filter:grayscale(1);opacity:.42}
 .card.upcoming .t,.card.upcoming .s{opacity:.6}
 .ribbon.soon span{background:var(--dim);color:#111}
 /* where a new release can be watched: the services' marks under its title */
@@ -368,6 +379,10 @@ option.capped:disabled{color:#f0704f;opacity:.75}
 .split .menu button{display:block;width:100%;text-align:left;white-space:nowrap;
   padding:9px 14px;border-radius:5px;font-size:14px;color:var(--fg)}
 .split .menu button:hover{background:var(--panel)}
+/* the Rip menu: a plain button, not half of a split one, its menu under it */
+.ripmenu{position:relative;vertical-align:top}
+.ripmenu > .btn{border-radius:999px}
+.ripmenu .menu{position:absolute;top:100%;left:0;width:auto;min-width:100%;z-index:20}
 .actions{align-items:flex-start}
 
 /* the player fills the screen itself, so the video stays an ordinary child element */
@@ -1004,9 +1019,12 @@ body.watching #watermark{display:none}
 
 /* The statistics line, across the top of the player */
 #pl-stats{margin-left:auto;text-align:right;font-size:13.5px;color:#aeb9c6;
-  letter-spacing:.02em;pointer-events:none;min-width:0;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#player.chrome-off #pl-stats{opacity:0;transition:opacity .25s}
+  letter-spacing:.02em;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  /* there, but shown only while the pointer is over it (owner, 2026-11-07) */
+  opacity:0;transition:opacity .25s}
+#pl-stats:hover{opacity:1}
+#player.chrome-off #pl-stats{opacity:0}
 #pl-settings{font-size:16px;opacity:.8}
 #pl-settings:hover{opacity:1}
 

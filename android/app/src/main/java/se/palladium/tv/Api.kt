@@ -817,6 +817,8 @@ object Api {
                 continue
             out.add(Media.from(o).also {
                 it.srv = srv
+                it.elsewhere = o.optString("elsewhere", "")
+                it.away = o.optBoolean("away", false)
                 it.genres = genresOf(o)
                 it.sportRow = o.optBoolean("sportRow", false)
                 it.live = o.optBoolean("live", false)
@@ -1175,7 +1177,11 @@ object Api {
     }
 
     suspend fun recentFilms(ctx: Context) = fromSome(ctx) { srv ->
-        listFrom("/local/library/sections/1/recentlyAdded?count=30", srv)
+        // one list for both servers, which the server joins; a film only the other holds opens there
+        listFrom("/local/library/sections/1/recentlyAdded?count=30&both=1", srv).onEach { m ->
+            // that server off: its page here, where it can be downloaded
+            if (m.elsewhere.isNotEmpty() && !m.away) m.srv = Servers.holderOf(ctx, srv, standby)
+        }
     }.sortedByDescending { it.addedAt }.take(40)
 
     /** The programmes being watched now that the house can put on, most watched first. */
@@ -1679,7 +1685,9 @@ object Api {
                        // that season pack on the tracker, to add to the series as a link
                        val packId: String = "",
                        // a series' pack added already: Route.packWord
-                       val word: String = "")
+                       val word: String = "",
+                       // downloading it counts nothing against the account
+                       val freeleech: Boolean = false)
 
     /**
      * Every version of one film, the most carried first.
@@ -1690,11 +1698,11 @@ object Api {
     /** What the tracker holds for one film, and the room left where it would land. */
     data class Carrying(val free: Double = -1.0, val rows: List<Carried> = emptyList())
 
-    suspend fun trackerVersions(m: Media): Carrying = withContext(Dispatchers.IO) {
+    suspend fun trackerVersions(m: Media, fresh: Boolean = false): Carrying = withContext(Dispatchers.IO) {
         runCatching {
             val said = JSONObject(postTo(m.srv, "/tracker/list", JSONObject()
                 .put("title", m.title).put("year", m.year ?: 0)
-                .put("key", m.ratingKey)))
+                .put("key", m.ratingKey).put("fresh", fresh)))
             val rows = said.optJSONArray("versions") ?: return@runCatching Carrying()
             Carrying(if (said.isNull("free")) -1.0 else said.optDouble("free", -1.0),
                      (0 until rows.length()).mapNotNull { i ->
@@ -1712,11 +1720,18 @@ object Api {
                                      it.optBoolean("pack", false), it.optBoolean("disk", false),
                                      it.optBoolean("box", false),
                                      it.optBoolean("seasonPack", false),
-                                     it.optString("packId", ""))
+                                     it.optString("packId", ""),
+                                     freeleech = it.optBoolean("freeleech", false))
                          }
                      })
         }.getOrDefault(Carrying())
     }
+
+    /** A plain press on Download: the tracker asked again, and the best as of now. */
+    suspend fun bestAtPress(m: Media, pressed: String): String =
+        Route.freshPick(pressed, trackerVersions(m, true).rows.map {
+            Triple(it.id, it.pick, !it.have && it.why.isEmpty())
+        })
 
     suspend fun takeFromTracker(m: Media, id: String = ""): Pair<Boolean, String> =
         withContext(Dispatchers.IO) {
@@ -2592,6 +2607,57 @@ object Api {
         }.getOrDefault(emptyList())
     }
 
+    /** How many titles on this viewer's watchlist have come in since they last opened it. */
+    suspend fun watchBlink(): Int = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(get("/watchlist/blink")).optJSONArray("keys")?.length() ?: 0
+        }.getOrDefault(0)
+    }
+
+    /** A rip of a remux into a 1080p x264 copy beside it, made on the main server. */
+    data class Rip(val id: String, val src: String, val state: String, val progress: Double,
+                   val why: String, val profile: String = "")
+
+    /** The ripper's profiles starred on its page, as the last rips() said them: a pill each. */
+    @Volatile var ripOffered: List<String> = emptyList()
+
+    /** One title's rips, or null where this viewer may not make them (only the owner may) or
+     *  the ripper is not running. */
+    suspend fun rips(key: String): List<Rip>? = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = JSONObject(get("/rip?key=" + java.net.URLEncoder.encode(key, "UTF-8")))
+            if (o.optBoolean("away")) return@runCatching null
+            val offered = o.optJSONArray("offered") ?: JSONArray()
+            ripOffered = (0 until offered.length()).map { offered.optString(it) }.filter { it.isNotEmpty() }
+                .ifEmpty { listOfNotNull(o.optString("profile").ifEmpty { null }) }
+            val arr = o.optJSONArray("jobs") ?: JSONArray()
+            (0 until arr.length()).map { arr.getJSONObject(it) }.map {
+                Rip(it.optString("id"), it.optString("src"), it.optString("state"),
+                    it.optDouble("progress", 0.0), it.optString("why"), it.optString("profile"))
+            }
+        }.getOrNull()
+    }
+
+    /** A rip of this file started: "" when it was, otherwise why not. */
+    suspend fun ripStart(key: String, path: String, profile: String = ""): String = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = JSONObject(post("/rip", JSONObject().put("key", key).put("path", path)
+                .put("profile", profile)))
+            if (o.optBoolean("ok")) "" else o.optString("why", "Could not start the rip")
+        }.getOrDefault("The server did not answer")
+    }
+
+    suspend fun ripCancel(id: String) = withContext(Dispatchers.IO) {
+        runCatching { post("/rip/cancel", JSONObject().put("id", id)) }
+        Unit
+    }
+
+    /** The Watchlist opened: what was blinking has been seen. */
+    suspend fun watchSeen() = withContext(Dispatchers.IO) {
+        runCatching { post("/watchlist/seen", JSONObject()) }
+        Unit
+    }
+
     suspend fun downloadsReady(since: Long): Pair<Long, List<Pair<String, String>>>? =
             withContext(Dispatchers.IO) {
         runCatching {
@@ -2724,7 +2790,10 @@ object Api {
             val holds = runCatching {
                 val arr = JSONObject(get("/local/library/metadata/" + mine, srv))
                     .getJSONObject("MediaContainer").optJSONArray("Metadata")
-                arr != null && arr.length() > 0
+                // held, not only known: a film in a pack there is offered under the same
+                // key, and taken for held it played as an encode of a file that machine
+                // does not have (2026-11-07)
+                arr != null && arr.length() > 0 && Route.heldThere(arr.getJSONObject(0).optBoolean("offered"))
             }.getOrDefault(false)
             if (holds) return@withContext mine
         }
@@ -2944,7 +3013,7 @@ object Api {
         } ?: return null
         // it has to be playable there: a row the main server cannot serve is worse
         // than the copy that can
-        return there.takeIf { it.partKey != null || it.ratingKey.isNotEmpty() }
+        return there.takeIf { !it.offered && (it.partKey != null || it.ratingKey.isNotEmpty()) }
     }
 
     /** One film of a series: its key, "Title (year)", whether it is this one, its poster. */

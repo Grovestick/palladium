@@ -1362,6 +1362,124 @@ class RouteTest {
         assertEquals("Tracker", Route.versionTag(false, false, false, false, false))
     }
 
+    private fun lumps(ahead: Int = 3): LumpLine<Int> =
+        LumpLine<Int>(10L, ahead).also { it.start(0L, 1000L) }
+
+    @Test
+    fun aMachineThatComesBackQuickerTakesMoreLumps() {
+        val line = lumps(6)
+        val first = line.claim(0) { true }
+        val second = line.claim(1) { true }
+        assertEquals(0L, first)
+        assertEquals(10L, second)
+        // side 1 finishes twice while side 0 is on one lump: nothing is split in advance
+        line.store(second, 10)
+        assertEquals(20L, line.claim(1) { true })
+        line.store(20L, 10)
+        assertEquals(30L, line.claim(1) { true })
+    }
+
+    @Test
+    fun theSlowerOfTwoCopiesNeverFillsTheWindow() {
+        val line = lumps(2)
+        for (round in 0 until 20) {
+            val at = line.claim(0) { true }
+            assertEquals(round * 10L, at)
+            assertTrue(line.late())
+            assertEquals("late: the other machine is asked too", at, line.claim(1) { true })
+            assertTrue(line.store(at, 10))
+            assertEquals(10, line.take { it })
+            assertFalse("the second copy is behind the player", line.store(at, 10))
+            assertEquals("nothing is left holding a place", 0, line.inHand)
+        }
+    }
+
+    @Test
+    fun aLateLumpIsNotAskedOfTheMachineAlreadyFetchingIt() {
+        val line = lumps()
+        assertEquals(0L, line.claim(0) { true })
+        assertTrue(line.late())
+        assertFalse("asked once", line.late())
+        assertEquals(10L, line.claim(0) { true })
+        assertEquals(0L, line.claim(1) { true })
+        assertEquals(20L, line.claim(1) { true })
+    }
+
+    @Test
+    fun aFullWindowWaitsButTheNextLumpIsAlwaysAllowed() {
+        val line = lumps(2)
+        assertEquals(0L, line.claim(0) { true })
+        assertEquals(10L, line.claim(1) { true })
+        line.store(10L, 10)
+        assertEquals(20L, line.claim(1) { true })
+        line.store(20L, 10)
+        assertEquals(LumpLine.WAIT, line.claim(1) { true })
+        // the machine holding the next lump goes: it is free to anyone, window or no window
+        line.giveBack(0)
+        assertEquals(0L, line.claim(1) { it != 0 })
+    }
+
+    @Test
+    fun aMachineDroppedGivesBackOnlyWhatItHeld() {
+        val line = lumps(6)
+        assertEquals(0L, line.claim(0) { true })
+        assertEquals(10L, line.claim(1) { true })
+        assertEquals(20L, line.claim(0) { true })
+        line.giveBack(0)
+        val alive = { side: Int -> side != 0 }
+        assertEquals(0L, line.claim(2, alive))
+        assertEquals("side 1 still has 10: not fetched twice", 20L, line.claim(2, alive))
+    }
+
+    @Test
+    fun givenBackAtTheLumpsEdgeNotMidLump() {
+        val line = lumps(6)
+        assertEquals(0L, line.claim(0) { true })
+        line.store(0L, 10)
+        assertEquals(10, line.take { it })
+        assertEquals(10L, line.next)
+        assertEquals(10L, line.claim(1) { true })
+        line.giveBack(1)
+        assertEquals("the edge of a lump, wherever the player is inside the last", 10L, line.claim(0) { it != 1 })
+    }
+
+    @Test
+    fun fourMachinesIsTheMostTheReaderHolds() {
+        assertEquals(4, TwoWays.WAYS)
+    }
+
+    @Test
+    fun aHeavyFilmGetsMoreConnectionsAndANormalOneStaysAsItWas() {
+        val gb = 1024L * 1024 * 1024
+        assertTrue("a 68 GB remux of 98 minutes", TwoWays.heavy(68 * gb, 5882.0))
+        assertFalse("a 5 GB film of two hours", TwoWays.heavy(5 * gb, 7200.0))
+        assertFalse("25 Mbit, a 4K web release", TwoWays.heavy(23 * gb, 7814.0))
+        assertFalse("length not known", TwoWays.heavy(68 * gb, 0.0))
+        assertFalse("size not known", TwoWays.heavy(0L, 5882.0))
+        assertEquals("a normal film's piece", 2L * 1024 * 1024, TwoWays.LUMP)
+        assertEquals(4, TwoWays.HEAVY_CONNS)
+        assertTrue("a heavy film's pieces stay small beside the 144 MB the player holds",
+                   TwoWays.HEAVY_LUMP * TwoWays.AHEAD <= 64L * 1024 * 1024)
+    }
+
+    @Test
+    fun theFilmsEndIsSaid() {
+        val line = LumpLine<Int>(10L, 3).also { it.start(0L, 15L) }
+        assertEquals(0L, line.claim(0) { true })
+        assertEquals(10L, line.claim(0) { true })
+        assertEquals(LumpLine.END, line.claim(0) { true })
+    }
+
+    @Test
+    fun aPlainPressTakesTheBestAsOfNow() {
+        val telesync = Triple("1", false, true)
+        val web = Triple("2", true, true)
+        assertEquals("2", Route.freshPick("1", listOf(telesync, web)))
+        assertEquals("1", Route.freshPick("1", listOf(telesync)))
+        assertEquals("1", Route.freshPick("1", emptyList()))
+        assertEquals("1", Route.freshPick("1", listOf(telesync, Triple("2", true, false))))
+    }
+
     @Test
     fun sagaCaptionSaysThePlaceAndWhileSteppingTheName() {
         assertEquals("2 of 6", Route.sagaCaption(false, "B (2005)", 1, 6, true))
@@ -1733,6 +1851,15 @@ class RouteTest {
     @Test fun aWatchlistedFilmThatGotASourceIsSaidPlainly() {
         assertEquals("X can be downloaded now - it was on your watchlist", Route.watchNewsSaid("X", "fetch"))
         assertEquals("X is here - it was on your watchlist", Route.watchNewsSaid("X", "here"))
+        assertEquals("X is here - it's now on your watchlist", Route.watchNewsSaid("X", "fetched"))
+        assertTrue(Route.isRemux("A.Film.2001.1080p.BluRay.REMUX.AVC.mkv", 0))
+        assertTrue(Route.isRemux("a.mkv", 45_000))
+        assertFalse(Route.isRemux("A.2026.2160p.WEB-DL.DV.HDR.mkv", 25_300))
+        assertFalse(Route.isRemux("A.Film.2001.1080p.BluRay.x264-GRP.mkv", 9_000))
+        assertEquals("Rip", Route.ripWord(null, 0.0))
+        assertEquals("Rip · 2160p x265 · hallowed", Route.ripWord(null, 0.0, profile = "2160p x265 · hallowed"))
+        assertEquals("Ripping 37%", Route.ripWord("pass2", 0.374))
+        assertEquals("Cancel the rip?", Route.ripWord("pass1", 0.1, confirming = true))
     }
 
     @Test fun aSeasonAmongFilmsSaysWhichProgramme() {
@@ -1888,5 +2015,41 @@ class RouteTest {
         // reopened five times and still refused: that is a fault
         assertTrue(Route.filesPlaybackFault(true, Route.ENCODE_REOPENS))
         assertTrue(Route.filesPlaybackFault(false, 0))
+    }
+    @Test
+    fun theWatchlistOpensLastWatchedFirstAndTheUnwatchedKeepTheirPlace() {
+        assertEquals("lastViewedAt" to false, Route.WATCHLIST_OPENS)
+        assertEquals("lastViewedAt", Route.WATCHLIST_ORDERS.first().first)
+        val list = listOf("a" to 0L, "b" to 50L, "c" to 0L, "d" to 90L)
+        assertEquals(listOf("d", "b", "a", "c"),
+                     Route.byLastWatched(list, false) { it.second }.map { it.first })
+        assertEquals(listOf("a", "c", "b", "d"),
+                     Route.byLastWatched(list, true) { it.second }.map { it.first })
+    }
+    @Test
+    fun subtitlesBeingWrittenComeOnOnceTheyHavePassedThePicture() {
+        val hour = 3_600_000L
+        // written to 30 minutes with the film at 20: on. Written to 15: not until the
+        // film is 30 s short of it
+        assertTrue(Route.madeReachesHere(0.5f, true, hour, 20 * 60_000L))
+        assertFalse(Route.madeReachesHere(0.25f, true, hour, 20 * 60_000L))
+        assertFalse(Route.madeReachesHere(0.25f, true, hour, 15 * 60_000L - 10_000L))
+        assertTrue(Route.madeReachesHere(0.25f, true, hour, 15 * 60_000L - Route.MADE_LEAD_MS))
+        // finished, or a film of no known length: on at once, as before
+        assertTrue(Route.madeReachesHere(0.1f, false, hour, 50 * 60_000L))
+        assertTrue(Route.madeReachesHere(0f, true, 0L, 50 * 60_000L))
+    }
+    @Test
+    fun aTitleSentToTheScreenIsOpenedOnceByWhicheverHearsItFirst() {
+        val last = java.util.concurrent.atomic.AtomicInteger(0)
+        assertTrue(Route.claimOnce(last, 5))
+        assertFalse(Route.claimOnce(last, 5))      // the library, a moment after the player
+        assertFalse(Route.claimOnce(last, 4))      // an older one is not opened again
+        assertTrue(Route.claimOnce(last, 6))
+    }
+    @Test
+    fun aFilmOnlyOfferedFromAPackOnTheMainServerPlaysFromTheCopyThatHasIt() {
+        assertFalse(Route.heldThere(offered = true))
+        assertTrue(Route.heldThere(offered = false))
     }
 }

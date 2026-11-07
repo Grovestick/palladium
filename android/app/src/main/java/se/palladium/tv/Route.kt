@@ -16,6 +16,19 @@ object Route {
      *  library's listener acts on those, and a player on screen leaves them to it. */
     fun opensATitle(play: String, shelf: String): Boolean = play.isNotEmpty() || shelf.isNotEmpty()
 
+    /** Whether a machine's answer for a key means it holds the film: one only offered from a
+     *  pack there is not, and the copy that has it plays instead. */
+    fun heldThere(offered: Boolean): Boolean = !offered
+
+    /** Whether this caller is the first to take notice `id`: true once, for the first. */
+    fun claimOnce(last: java.util.concurrent.atomic.AtomicInteger, id: Int): Boolean {
+        while (true) {
+            val was = last.get()
+            if (id <= was) return false
+            if (last.compareAndSet(was, id)) return true
+        }
+    }
+
     /** How long the controls stay shrunk to the progress bar and the name before they go;
      *  Media3's own is two seconds (owner: 6 s 2026-11-03, 4 s 2026-11-04). */
     const val BAR_HELD_MS = 4000L
@@ -159,6 +172,20 @@ object Route {
 
     /** "(3)" after the Version button when there are several copies, nothing for one. */
     fun copiesSaid(copies: Int): String = if (copies > 1) "  ($copies)" else ""
+
+    /** A file worth ripping to 1080p: named a remux, or carrying a Blu-ray's bitrate (kbit/s). */
+    fun isRemux(fileName: String?, bitrateKbps: Int): Boolean =
+        (fileName ?: "").contains("remux", ignoreCase = true) || bitrateKbps >= 40_000
+
+    /** The rip button's word: what pressing starts, or how far the rip of this file is. */
+    fun ripWord(state: String?, progress: Double, confirming: Boolean = false,
+                profile: String = ""): String = when {
+        confirming -> "Cancel the rip?"
+        state == null -> "Rip" + (if (profile.isNotEmpty()) " · $profile" else "")
+        state == "queued" -> "Rip queued"
+        state == "done" -> "Rip made"
+        else -> "Ripping " + (progress * 100).toInt() + "%"
+    }
 
     /** Whether a title's page can list other releases to download: films and episodes. */
     fun hasOtherVersions(type: String?): Boolean = type == "movie" || type == "episode"
@@ -580,6 +607,27 @@ object Route {
 
     /** The orders a shelf opened whole offers instead of the library's own: the
      *  popular shows sort by how popular and how well rated as well; empty for the rest. */
+    /** Last watched first (or last), and what was never watched in the list's own order
+     *  whichever way it is turned, as the web keeps it. */
+    fun <T> byLastWatched(list: List<T>, asc: Boolean, at: (T) -> Long): List<T> =
+        if (asc) list.sortedBy(at) else list.sortedByDescending(at)
+
+    /** How far ahead of the picture subtitles being written must be before they are put on. */
+    const val MADE_LEAD_MS = 30_000L
+
+    /** Whether subtitles written from the sound have got past where the film is, with a lead:
+     *  `at` the share of the film written. Finished, or no length known, they have. */
+    fun madeReachesHere(at: Float, on: Boolean, durationMs: Long, positionMs: Long): Boolean =
+        !on || durationMs <= 0 || at * durationMs >= positionMs + MADE_LEAD_MS
+
+    /** The order the watchlist opens in, and the direction: last watched first. */
+    val WATCHLIST_OPENS = "lastViewedAt" to false
+
+    /** The watchlist's orders: last watched first, then the library's own. */
+    val WATCHLIST_ORDERS = listOf("lastViewedAt" to "Last watched", "addedAt" to "Added",
+                                  "originallyAvailableAt" to "Released", "titleSort" to "Name",
+                                  "year" to "Year", "quality" to "Quality")
+
     fun extraOrders(row: String?, list: Boolean = false): List<Pair<String, String>> =
         // a kept list: its own order first, the one it opens in
         if (list)
@@ -827,9 +875,12 @@ object Route {
                "Favorite TV shows" to favTv).filter { it.second.isNotEmpty() }
 
     /** The word for a watchlisted film that has got a source. */
-    fun watchNewsSaid(title: String, how: String): String =
-        if (how == "here") "$title is here - it was on your watchlist"
-        else "$title can be downloaded now - it was on your watchlist"
+    fun watchNewsSaid(title: String, how: String): String = when (how) {
+        // downloaded by this viewer, and put on their watchlist by doing so
+        "fetched" -> "$title is here - it's now on your watchlist"
+        "here" -> "$title is here - it was on your watchlist"
+        else -> "$title can be downloaded now - it was on your watchlist"
+    }
 
     /** The Play build's credits for the data it shows: the film catalogue, and where
      *  a film streams, which the catalogue has from JustWatch. */
@@ -1187,6 +1238,11 @@ object Route {
         box -> if (seasonPack) "Season pack" else "Box set"
         else -> "Tracker"
     }
+
+    /** What a plain press on Download takes: the list's recommended release, or the one
+     *  pressed. Each row is its id, whether recommended, and whether it can be fetched. */
+    fun freshPick(pressed: String, rows: List<Triple<String, Boolean, Boolean>>): String =
+        rows.firstOrNull { it.second && it.third }?.first ?: pressed
 
     /** The first button on a Start slide: its word, and whether it plays (else it opens
      *  the page). Only a film here plays; one not out yet says when. */

@@ -1470,6 +1470,78 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     check("50 no list says it twice", !/on disk already/i.test(SOURCE), "");
   }
 
+  // ---- 50b. a plain press on Download takes the best as of now
+  {
+    const w = page('<select id="p"><option value="1">one</option></select>',
+                   ["freshPick", "takeBestNow", "releaseName"],
+                   { fetch: async () => ({ json: async () => ({ versions: [
+                     { id: "1", name: "old" }, { id: "2", name: "new.mkv", pick: true }] }) }) });
+    const p = w.document.getElementById("p");
+    await w.takeBestNow(p, { title: "x" });
+    check("50b the recommended one is taken, added to a list that did not have it",
+          p.value === "2" && p.options[1].textContent === "new", p.value);
+    check("50b nothing recommended, on disk or refused: the one pressed stays",
+          w.freshPick([{ id: "2" }], "1") === "1" && w.freshPick([{ id: "2", pick: true, have: true }], "1") === "1"
+          && w.freshPick([{ id: "2", pick: true, why: "too big" }], "1") === "1" && w.freshPick(null, "1") === "1");
+    const gone = page('<select id="p"><option value="1">one</option></select>',
+                      ["freshPick", "takeBestNow", "releaseName"],
+                      { fetch: async () => { throw new Error("no"); } });
+    await gone.takeBestNow(gone.document.getElementById("p"), { title: "x" });
+    check("50b no answer: the one pressed stays", gone.document.getElementById("p").value === "1");
+    check("50b a chosen release is left alone, in both lists",
+          (SOURCE.match(/pick\.onchange = \(\) => \{ pick\.dataset\.chosen = "1";/g) || []).length === 2
+          && (SOURCE.match(/!pick\.dataset\.chosen/g) || []).length === 2);
+    const lists = SOURCE.split('fetch("/tracker/list"').slice(1);
+    check("50b every download list on the page is asked for as of now",
+          lists.length >= 5 && lists.every((l) => /fresh/.test(l.slice(0, 280))), lists.length);
+    check("50b the film page says it is checking and draws the list again",
+          SOURCE.includes("note.textContent = CHECKING_TRACKER") && SOURCE.includes("const newer = await ask(true);"));
+  }
+
+  // ---- 50c. the one Recently added list: a film held only by the other server
+  {
+    const w = page("", ["heldServer"], { HELD_ELSEWHERE: "__held", standbyAddress: () => "http://o:1/",
+                                         standbyName: "Other", CFG: { key: "k" } });
+    const there = w.heldServer();
+    check("50c it opens on the other server, with this viewer's key",
+          there.origin === "http://o:1" && there.token === "k" && there.id === "__held");
+    const none = page("", ["heldServer"], { HELD_ELSEWHERE: "__held", standbyAddress: () => "",
+                                            standbyName: "", CFG: {} });
+    check("50c no other server known: nothing to open on", none.heldServer() === null);
+    check("50c a film on the one list does not name its server on the poster",
+          SOURCE.includes('srv.id !== "__copy" && srv.id !== HELD_ELSEWHERE'));
+    check("50c that server off: greyed, a Download ribbon, and opened on this server to download it",
+          SOURCE.includes('if (it.away) el.classList.add("away");')
+          && SOURCE.includes("it.away ? '<div class=\"ribbon\"><span>Download</span></div>'")
+          && SOURCE.includes('it.elsewhere && !it.away ? HELD_ELSEWHERE'));
+  }
+
+  // ---- 50d. Continue watching's See all keeps the row's order
+  {
+    const w = page("", ["sortLike"], { sortState: { key: "released", dir: "desc" } });
+    const got = w.sortLike([{ title: "a", lastViewedAt: 1 }, { title: "b", lastViewedAt: 3 }, { title: "c", lastViewedAt: 2 }],
+                           { key: "viewed", dir: "desc" }).map((x) => x.title).join("");
+    check("50d last watched first", got === "bca", got);
+    check("50d the full page opens in that order", SOURCE.includes('cat.by === "lastViewedAt" ? "viewed"'));
+  }
+
+  // ---- 50e. a ✕ on a watchlist poster takes it off the list
+  {
+    const posted = [];
+    const w = page('<div id="g"><div class="card" data-key="k1"><div class="poster"></div></div>' +
+                   '<div class="card" data-key="k2"><div class="poster"></div></div></div>',
+                   ["unmarkable", "setMarked"],
+                   { fetch: async (u, o) => { posted.push(JSON.parse(o.body)); return { ok: true, json: async () => ({}) }; },
+                     keepMarks: () => {}, toast: () => {} });
+    const g = w.document.getElementById("g");
+    w.unmarkable(g, [{ ratingKey: "k1" }, { ratingKey: "k2" }]);
+    check("50e every poster has its ✕", g.querySelectorAll(".unmark").length === 2);
+    g.querySelector('.card[data-key="k1"] .unmark').onclick({ stopPropagation() {}, preventDefault() {} });
+    await tick(); await tick();
+    check("50e pressed: taken off, and gone from the page",
+          posted.length === 1 && posted[0].key === "k1" && posted[0].on === false && !g.querySelector('[data-key="k1"]'));
+  }
+
   // ---- 51. an episode's other versions: the one here says On disk, its button too
   {
     const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")

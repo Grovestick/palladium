@@ -190,6 +190,12 @@ object Servers {
         return id
     }
 
+    /** The other server of the pair `asked` is in: its row, else its address with the same key. */
+    fun holderOf(ctx: Context, asked: Server, standby: String): Server =
+        all(ctx).firstOrNull { it.base != asked.base &&
+            (Reach.keepsCopiesOf(it, asked) || Reach.keepsCopiesOf(asked, it)) }
+            ?: if (standby.isNotEmpty()) asked.copy(base = standby.trimEnd('/')) else asked
+
     fun current(ctx: Context): Server? {
         val list = all(ctx)
         if (list.isEmpty()) return null

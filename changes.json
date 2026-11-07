@@ -1,5 +1,223 @@
 [
   {
+    "version": "0.19.446",
+    "when": "2026-11-07",
+    "title": "Download list opens on the recommended one",
+    "items": [
+      "App: the download list holds its row and opens on the recommended release"
+    ]
+  },
+  {
+    "version": "0.19.445",
+    "when": "2026-11-07",
+    "title": "Download list rows not keyed",
+    "items": [
+      "App: the download list's rows are not keyed by release, which rebuilt the focused row on every redraw"
+    ]
+  },
+  {
+    "version": "0.19.444",
+    "when": "2026-11-07",
+    "title": "Download list focus trace, whole",
+    "items": [
+      "App: the download list's focus trace says where the move began"
+    ]
+  },
+  {
+    "version": "0.19.443",
+    "when": "2026-11-07",
+    "title": "Download list focus trace",
+    "items": [
+      "App: the download list says what moves its focus, while the jumping between its first two rows is found"
+    ]
+  },
+  {
+    "version": "0.19.442",
+    "when": "2026-11-07",
+    "title": "Download list keeps its row, Posters fetched from the other server, Back leaves full screen",
+    "items": [
+      "App: the download list no longer jumps between its first two rows, and Down moves on; a version from a pack here says its seeders, in the app and the web",
+      "Recently added: the poster of a film only the other server holds is fetched from it (the first try was refused)",
+      "Web: Back from a film in full screen leaves full screen"
+    ]
+  },
+  {
+    "version": "0.19.441",
+    "when": "2026-11-07",
+    "title": "A film only the cache holds plays from it",
+    "items": [
+      "App: a film only the other server holds, and the main server only offers from a pack, plays from the server that has it instead of stalling"
+    ]
+  },
+  {
+    "version": "0.19.440",
+    "when": "2026-11-07",
+    "title": "Posters of films on the other server, Seeders on versions already here, Music video copies in their own folder, A title sent to a playing screen opens, Unservable ranges answered 416, Dated log",
+    "items": [
+      "Recently added: a film only the other server holds shows its poster, fetched from that server",
+      "Download lists: a version already on the disk says how many seed it, in the web and the app",
+      "Copies: a music video is kept in a Music videos folder on the other server, so it is not listed with the films",
+      "Remote: a title sent to a screen while a film plays opens on it",
+      "Server: a byte range that cannot be served is answered 416, not an error report",
+      "Log: the date is written when the day changes and at start"
+    ]
+  },
+  {
+    "version": "0.19.439",
+    "when": "2026-11-07",
+    "title": "Moved pack films count as whole, Subtitles from the sound come on where they are written, Player statistics on hover",
+    "items": [
+      "Copies: a pack film moved in whole from the other server is in the library there, so it plays from both servers",
+      "Subtitles written from the sound: put on once the writing has passed where the film is, in the app and on the web",
+      "Web player: the statistics in the top bar show only while the pointer is over them"
+    ]
+  },
+  {
+    "version": "0.19.438",
+    "when": "2026-11-07",
+    "title": "Sound shown as it plays, dual stream speed adds both, Watchlist opens last watched first",
+    "items": [
+      "Sound: a film's sound reads as the track that plays (5.1) rather than the mono first in the file, and a transcode keeps its 5.1",
+      "Live list: a film read off both servers shows both servers' speed together",
+      "Watchlist: the web and the app open it last watched first, a series by its newest episode; what was never watched keeps its place"
+    ]
+  },
+  {
+    "version": "0.19.437",
+    "when": "2026-11-07",
+    "title": "Surround sound by default, Dual stream shows as two sources, Continue watching keeps its order, Copies keep their first date, A cross on watchlist posters",
+    "items": [
+      "Sound: a film with several tracks in the same language starts on surround instead of whichever comes first; a track you chose is remembered as before",
+      "Live list: a film the app reads off both servers says two sources, so the panel and the page mark it x2",
+      "Continue watching: See all on the web and Show more in the app list the titles last watched first, as the row does",
+      "Recently added: a film copied to the other server keeps the date it first came, and a music video copied there is not listed as a film",
+      "Watchlist: on the web a cross on each poster takes it off the list"
+    ]
+  },
+  {
+    "version": "0.19.436",
+    "when": "2026-11-07",
+    "title": "Dual stream: heavy films get more connections",
+    "items": [
+      "Dual stream: a film of 40 Mbit or more reads 8 MB pieces over 4 connections to each server; other films read as before",
+      "Recently added: the other server counts as off only when asking it failed, so a film held there no longer turns grey with a Download ribbon while it is on",
+      "Rips and other work at idle priority no longer pause for memory they would go on holding"
+    ]
+  },
+  {
+    "version": "0.19.435",
+    "when": "2026-11-07",
+    "title": "A greyed film can be downloaded",
+    "items": [
+      "Recently added: a film on a server that is off stays grey with a Download ribbon and opens here, so it can be downloaded",
+      "Downloads: a pack's film comes down here when the other server is off, instead of waiting for it"
+    ]
+  },
+  {
+    "version": "0.19.434",
+    "when": "2026-11-06",
+    "title": "Synced films stay off Recently added, Dual stream really adds up",
+    "items": [
+      "Recently added: a synced film the server also holds no longer shows on the list as new",
+      "Dual stream: a late piece is asked of the other server too, instead of putting the slow server out of the film",
+      "Dual stream: the slower copy of a piece no longer takes a place in the reader for good, which slowed a film down over time",
+      "Dual stream: bigger pieces and reused memory",
+      "Recently added: a film on the other server does not carry that server's name on its poster"
+    ]
+  },
+  {
+    "version": "0.19.433",
+    "when": "2026-11-06",
+    "title": "Download lists are fresh, One Recently added list, Start skips a pack copy of a held film, Subtitle readers respect viewers",
+    "items": [
+      "Downloads: every release list on web and app asks the tracker as of now, says Checking the tracker meanwhile and redraws with what it finds",
+      "Downloads: a plain press on Download checks the tracker first and takes the best release at that moment; a release chosen by hand is left alone",
+      "Recently added: one list for both servers, a film once, a film only the other server holds opens there",
+      "Recently added: a synced film keeps the date it first came, so it does not show as new again",
+      "Recently added: films on a server that is off stay on the list in grey",
+      "Start: two starts at once adding the same database column no longer stop the server",
+      "Start: a pack's copy of a film held here is left out by its key as well as its name",
+      "Subtitles: every read of a film for its subtitles stops when a viewer on that drive runs short, the film's own viewer included",
+      "Subtitles: reading them from a playing film never holds its blocks up, and a second read of the file no longer restarts the reader",
+      "Direct play: the viewer's name is read once per stream instead of for every block"
+    ]
+  },
+  {
+    "version": "0.19.432",
+    "when": "2026-11-06",
+    "title": "Recently added and pack matches, Guests can add a series",
+    "items": [
+      "Recently added: a film from a pack is dated when it was downloaded, not when the pack was added",
+      "Packs: a film is matched by its title first, so one dated a year off no longer takes another film's name and poster",
+      "Series: anyone the house lets fetch can add a series from the web or the app; before, adding one answered not allowed and the page said the tracker did not answer",
+      "Series: one added from its pack goes on the watchlist of whoever added it"
+    ]
+  },
+  {
+    "version": "0.19.431",
+    "when": "2026-11-06",
+    "title": "Subtitles from the playing film, Rip gives way to viewers",
+    "items": [
+      "Subtitles: on a direct play they are read from the blocks the film is played from, so lifting them no longer reads a remux a second time",
+      "Rips: paused while somebody watching runs short or is filling their buffer on that drive; it goes on after",
+      "Copies: only a direct play's buffer holds the copy - a transcode in a browser held it for the whole film"
+    ]
+  },
+  {
+    "version": "0.19.430",
+    "when": "2026-11-06",
+    "title": "Copy follows the buffers, Rip stage, Rip on the download line",
+    "items": [
+      "Copies: the copy to the cache server waits while anybody playing off the same drive is filling their buffer and runs while it is full - the fixed 40 Mbit is gone",
+      "Rips: their pass and encode speed show in Now playing, on the film page and on the panel",
+      "Rips: one running or waiting shows on the line under the tabs, on the web and in the app"
+    ]
+  },
+  {
+    "version": "0.19.429",
+    "when": "2026-11-06",
+    "title": "Ripper as its own program, copy gentle on the drive a film plays from, Rip menu, Remuxes for the ripper",
+    "items": [
+      "Films: rips are made by the ripper, a program of its own with a page for its profiles - nine read from release groups' files, starred ones offered as buttons on the film page",
+      "Films: a rip's progress shows in Now playing and on the panel",
+      "Copies: the copy to the cache server holds with the same signal as downloads, and keeps to 40 Mbit on a drive a film is playing from",
+      "Films: one Rip button whose menu is the profiles starred on the ripper's page",
+      "Ripper: lists the films with a remux, so a film can be opened and ripped from the ripper's own page"
+    ]
+  },
+  {
+    "version": "0.19.428",
+    "when": "2026-11-06",
+    "title": "No time left while a download waits its turn",
+    "items": [
+      "Downloads: one waiting its turn in qBittorrent says so, with no time left - a queued episode read many hours"
+    ]
+  },
+  {
+    "version": "0.19.427",
+    "when": "2026-11-06",
+    "title": "Cache downloads in the download line, One download in the house, all kinds, Freeleech on the download list, Rip a remux to 1080p",
+    "items": [
+      "Downloads: what the cache server downloads for somebody shows in the download line on the app and the web - the cache had refused the main server's question",
+      "Downloads: a tracker release and a whole torrent wait in qBittorrent's queue while the other server downloads; right after a restart the other server is asked before anything starts",
+      "Films: a film the tracker carries says Get it, not Request",
+      "Downloads: a tracker release that is freeleech says Freeleech on the download list, on the web and in the app",
+      "Films: a remux chosen in Version can be ripped to a 1080p x264 copy with the trusted groups' settings, made on the main server beside it; its progress shows on the page and the versions there go on playing",
+      "Panel: a download is listed once on the seeding page"
+    ]
+  },
+  {
+    "version": "0.19.426",
+    "when": "2026-11-06",
+    "title": "Games on the Sports row and the watchlist, Downloads say they are now on the watchlist",
+    "items": [
+      "Sports: a game that has come in leads the Sports row with its own poster, no longer on Recently added films",
+      "Watchlist: a game somebody downloads goes on their watchlist once it has come in",
+      "Watchlist: the heading blinks while a film or game on it has just come in, until the Watchlist is opened",
+      "Watchlist: something you downloaded says it is here and now on your watchlist when it comes in; the line for a title that gets a source stays for the rest"
+    ]
+  },
+  {
     "version": "0.19.425",
     "when": "2026-11-06",
     "title": "Guests can send a request; what people fetch goes on their watchlist, Guest requests, watchlist from downloads, one download in the house, Search finds a film by its full title, A film that is also an episode plays the episode",

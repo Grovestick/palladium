@@ -39,7 +39,8 @@ def act(card):
     that is here does; one not out yet says when."""
     if card.get("upcoming"):
         return out_line(card.get("originallyAvailableAt")), False
-    if card.get("offered"):
+    # in a pack here, or carried by the tracker: fetched, not asked for (2026-11-06)
+    if card.get("offered") or card.get("onTracker"):
         return "⤓ Get it", False
     if card.get("askable") or card.get("addable"):
         return "Request", False

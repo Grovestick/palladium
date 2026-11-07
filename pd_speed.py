@@ -4,6 +4,9 @@
   somebody watching on either server  the race page's number, both ways (paused is not watching)
   neither, for a minute               no hold
 
+And the copy to the other machine, by the buffers of whoever plays off the drive it reads:
+it runs while every one of them is full and waits while any is filling (copy_may_run).
+
 Held through qBittorrent's alternative limits. The normal limits are never written, so
 there is nothing to put back and a restart leaves nothing behind. No other code sets a
 speed; a test keeps it so.
@@ -38,6 +41,19 @@ TOTALS = {"at": 0.0, "got": {}}
 
 STATE = {"mbit": DEFAULT_MBIT, "read": 0.0, "low": 0.0, "seen": 0.0, "said": None,
          "there": False, "askedThere": 0.0, "here": False, "askedHere": 0.0, "applied": None, "appliedAt": 0.0}
+
+
+#: seconds of picture a fed player holds: it fills to about fifty and tops up from there. Below
+#: this it is filling, in a burst off the disk the copy would be reading at the same time
+FULL_AHEAD = 45.0
+
+
+def copy_may_run(aheads):
+    """Whether the copy off a drive may read now: every viewer playing off that drive full
+    (FULL_AHEAD or more ahead). An unknown buffer counts as full - a player that does not
+    report holds nobody up. One rule from the buffers, no number of megabits (owner,
+    2026-11-06: the fixed 40 Mbit went)."""
+    return all(a is None or float(a) >= FULL_AHEAD for a in aheads)
 
 
 def wanted(low, watched, mbit):

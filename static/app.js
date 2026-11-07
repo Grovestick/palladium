@@ -245,6 +245,9 @@ window.addEventListener("popstate", () => {
   if (leftPlayerOpen && backToFilm()) return;
   if (playerEntry) {
     playerEntry = false;
+    // out of full screen as well, as closing the player does: Back from a film in full
+    // screen left the page full screen with the library behind it (owner, 2026-11-07)
+    if (document.fullscreenElement) leaveFullscreen();
     stop();
     // and out onto the homepage, drawn again, as closing the player does. This
     // branch stopped the film and left whatever was behind it on screen - a page
@@ -316,7 +319,15 @@ function nowOn(s) {
   window.PD_ON = s;
 }
 // an item of our own is on the cache while the page is handed over to it
-const srvOf = (it) => (it && it.__s ? friendById(it.__s)
+const HELD_ELSEWHERE = "__held";
+/* The other server, for a film on the one list only it holds; none known, this one. */
+function heldServer() {
+  const at = standbyAddress();
+  return at ? { id: HELD_ELSEWHERE, origin: at.replace(/\/$/, ""), name: standbyName || "",
+                token: (CFG && CFG.key) || "" } : null;
+}
+const srvOf = (it) => (it && it.__s === HELD_ELSEWHERE ? heldServer()
+                       : it && it.__s ? friendById(it.__s)
                                     : (CTX && CTX.id === "__copy" ? CTX : null));
 
 /* Parse an invitation. Accepts the whole link, which is what people paste. */
@@ -926,8 +937,31 @@ async function setMarked(item, on) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key: String(item.ratingKey), on: !!on }),
   });
-  if (!r.ok) { toast("Could not change the watchlist"); return; }
+  if (!r.ok) { toast("Could not change the watchlist"); return false; }
   keepMarks(await r.json());
+  return true;
+}
+
+/* The watchlist page's posters: a ✕ on each takes it off the list (owner, 2026-11-07). */
+function unmarkable(g, list) {
+  const byKey = new Map(list.map((x) => [String(x.ratingKey), x]));
+  g.querySelectorAll(".card").forEach((el) => {
+    const it = byKey.get(el.dataset.key);
+    const poster = el.querySelector(".poster");
+    if (!it || !poster) return;
+    const x = document.createElement("button");
+    x.className = "unmark";
+    x.title = "Take off the watchlist";
+    x.setAttribute("aria-label", "Take off the watchlist");
+    x.textContent = "✕";
+    x.onclick = async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (await setMarked(it, false)) el.remove();
+    };
+    poster.appendChild(x);
+  });
+  return g;
 }
 
 /* What this viewer keeps on both machines, and what those keys add up to. */
@@ -1828,7 +1862,7 @@ function card(it, onDeck, coll) {
     // whose shelf this came from, so a merged list is still legible - a friend's, not
     // this house's own copy carrying on while the main server is off: then every poster
     // wore the copy's name
-    (srv && srv.id !== "__copy" ? '<div class="from">' + esc(srv.name) + "</div>" : "") +
+    (srv && srv.id !== "__copy" && srv.id !== HELD_ELSEWHERE ? '<div class="from">' + esc(srv.name) + "</div>" : "") +
     // held in 2160 lines somewhere: on a series that means one season of it may be,
     // which is still the reason to pick it off a shelf
     ((it.maxHeight || 0) >= 1700
@@ -1884,6 +1918,8 @@ function card(it, onDeck, coll) {
       : it.addable && it.checking ? '<div class="ribbon checking"><span>Checking…</span></div>'
       : it.addable && it.onTracker === false ? '<div class="ribbon"><span>Request</span></div>'
       : it.addable ? '<div class="ribbon"><span>Add</span></div>'
+      // on the other server, which is off: greyed, and it can be downloaded here
+      : it.away ? '<div class="ribbon"><span>Download</span></div>'
       : it.offered && !offerWord(it)
         ? '<div class="ribbon"><span>Download</span></div>' : "") +
     ((it.offered || it.askable) && offerWord(it) ? '<div class="offerbadge">' + DOWNLOAD_MARK +
@@ -2032,6 +2068,8 @@ function card(it, onDeck, coll) {
       viewShow(it.grandparentRatingKey, it.grandparentRatingKey + "-s" + it.parentIndex,
                it.ratingKey); }
     : onDeck ? () => resumeFromDeck(it) : () => open(it);
+  // on the other server, which is off: greyed; its page here offers the download
+  if (it.away) el.classList.add("away");
   // the picture plays it; the words say where it lives, and lead there
   if (it.shuffleId) {
     // A shuffle card stands for the shelf, not for the episode showing on it - the
@@ -3074,8 +3112,9 @@ const CATS = [
   // would answer with the same films.
   { id: "seasonal", title: "Seasonal", by: "seasonRank", one: true,
     path: (sec) => ["/library/seasonal", {}] },
-  { id: "newfilms", title: "Recently added in films", by: "addedAt",
-    path: (sec) => ["/library/sections/" + sec.movie + "/recentlyAdded", {}] },
+  // one list for both servers, which this server joins: one machine is asked
+  { id: "newfilms", title: "Recently added in films", by: "addedAt", one: true,
+    path: (sec) => ["/library/sections/" + sec.movie + "/recentlyAdded", { both: 1 }] },
   // Everything that has just come out, in one shelf: what this house holds, what a
   // pack can fetch and what can only be asked for, newest first. They were two rows
   // saying the same thing in two halves.
@@ -3209,7 +3248,7 @@ async function fetchCat(cat, start, size) {
       const c = await api(p, { ...q, start: 0, count: start + size }, srv, true);
       total += c.totalSize || c.size || 0;
       const list = items(c);
-      list.forEach((it) => { it.__s = srv ? srv.id : ""; });
+      list.forEach((it) => { it.__s = it.elsewhere && !it.away ? HELD_ELSEWHERE : srv ? srv.id : ""; });
       return list;
     } catch (e) { return []; }
   }));
@@ -3321,8 +3360,9 @@ async function openCategory(cat, push = true) {
   let g;
   if (all.length >= total) {
     const listed = cat.by === "listRank";
-    const catSort = { key: listed ? "list" : cat.by === "addedAt" ? "added" : "released",
-                      dir: "desc" };
+    // Continue watching opens in the row's order: last watched first
+    const catSort = { key: listed ? "list" : cat.by === "addedAt" ? "added"
+                      : cat.by === "lastViewedAt" ? "viewed" : "released", dir: "desc" };
     const pickGenre = document.createElement("select");
     pickGenre.className = "sortpick";
     const rerender = () => {
@@ -3336,7 +3376,8 @@ async function openCategory(cat, push = true) {
       g = fresh;
       h.querySelector(".count").textContent = shown.length + " items";
     };
-    const bar = sortBar(rerender, catSort, null, listed ? [["list", "List order"]] : null);
+    const bar = sortBar(rerender, catSort, null, listed ? [["list", "List order"]]
+                        : catSort.key === "viewed" ? [["viewed", "Last watched"]] : null);
     const counts = {};
     all.forEach((it) => (it.genres || []).forEach((x) => {
       counts[x] = (counts[x] || 0) + 1;
@@ -3391,7 +3432,7 @@ const SORT_KEYS = { added: "addedAt", name: "titleSort", year: "year",
    first, A first, oldest first - and pressing the one already chosen reverses it. */
 const SORT_DEFAULT_DIR = { added: "desc", name: "asc", year: "asc",
                            released: "desc", quality: "desc", popular: "desc",
-                           list: "desc" };
+                           list: "desc", viewed: "desc" };
 // the shelves open on what came out last: "what is new in the world", which is a
 // better first question than "what did this server notice last"
 // Each shelf keeps its own order. Films open on what came out last; programmes
@@ -3401,6 +3442,8 @@ const SORT_DEFAULT_DIR = { added: "desc", name: "asc", year: "asc",
 const SORT_BY_TAB = { movies: { key: "popular", dir: "desc" },
                       shows: { key: "popular", dir: "desc" } };
 let sortState = SORT_BY_TAB.movies;
+// the watchlist keeps its own order: last watched first, as the app opens it
+const WATCH_SORT = { key: "viewed", dir: "desc" };
 
 /* The one order every list of titles is put in - the shelves, the watchlist, a
    collection - so that choosing Year on Films means the same thing everywhere. */
@@ -3415,6 +3458,7 @@ function sortLike(list, state) {
       return dir * ((a.year || 0) - (b.year || 0));
     }
     if (on.key === "added") return dir * ((a.addedAt || 0) - (b.addedAt || 0));
+    if (on.key === "viewed") return dir * ((a.lastViewedAt || 0) - (b.lastViewedAt || 0));
     if (on.key === "popular") return dir * ((a.popularity || 0) - (b.popularity || 0));
     // a kept list's own order: listRank counts down from its first
     if (on.key === "list") return dir * ((a.listRank || 0) - (b.listRank || 0));
@@ -4173,8 +4217,26 @@ async function saveCollection(body) {
   return said.collections || [];
 }
 
+/* Something on this viewer's watchlist has come in since they last opened it - a film or
+   a game they downloaded: the Watchlist tab blinks until it is opened. */
+async function watchBlink() {
+  let keys = [];
+  try { keys = ((await (await fetch("/watchlist/blink")).json()).keys) || []; }
+  catch (e) { keys = []; }
+  const tab = document.querySelector('.tab[data-view="watchlist"]');
+  if (tab) tab.classList.toggle("blink", keys.length > 0 && !tab.classList.contains("active"));
+}
+setTimeout(watchBlink, 2000);
+setInterval(watchBlink, 60000);
+
 async function viewWatchlist() {
   const seq = ++sectionSeq;
+  // opened: what was blinking has been seen - said every time, so one that came in before
+  // the tab had asked is cleared too; the server writes only when there was something
+  const blinking = document.querySelector('.tab.blink[data-view="watchlist"]');
+  if (blinking) blinking.classList.remove("blink");
+  fetch("/watchlist/seen", { method: "POST", headers: { "Content-Type": "application/json" },
+                            body: "{}" }).catch(() => {});
   onResize = null;
   dropStaleForm();
   // a collection being edited keeps its form through the redraw a sort or a filter makes:
@@ -4244,7 +4306,7 @@ async function viewWatchlist() {
           setPref("collSortDir", collSortState.dir);
           viewWatchlist();
         }, collSortState, COLL_FIRST_DIR)
-      : sortBar(() => viewWatchlist()));
+      : sortBar(() => viewWatchlist(), WATCH_SORT, null, [["viewed", "Last watched"]]));
     listFilterBars(list).forEach((b) => h.appendChild(b));
   }
   h.appendChild(count);
@@ -4353,7 +4415,7 @@ async function viewWatchlist() {
   }
   // no heading over a collection shown whole: the name is already at the top, and
   // "Included" only means something against the "Excluded" that a search puts below it
-  const shown = (here ? collectionItemsSorted(list) : sortLike(list.slice()))
+  const shown = (here ? collectionItemsSorted(list) : sortLike(list.slice(), WATCH_SORT))
     .filter(passesListFilter);
   if (shown.length !== list.length) count.textContent = shown.length + " of " + count.textContent;
   // A shelf holding both is two kinds of thing, and one grid ordered by year put a
@@ -4369,7 +4431,7 @@ async function viewWatchlist() {
       h.innerHTML = '<span class="ct">' + label + '</span><span class="count">' +
         part.length + "</span>";
       main.appendChild(h);
-      main.appendChild(grid(part, 0, false, null));
+      main.appendChild(unmarkable(grid(part, 0, false, null), part));
     });
   } else if (here && films.length && telly.length) {
     [["Films", films], ["Series", telly]].forEach(([label, part]) => {
@@ -4380,7 +4442,7 @@ async function viewWatchlist() {
     });
   } else {
     const g = grid(shown, 0, false, null);
-    main.appendChild(g);
+    main.appendChild(here ? g : unmarkable(g, shown));
   }
   if (!list.length && (here || !favList.length)) {
     const none = document.createElement("div");
@@ -6503,6 +6565,94 @@ function playerBar(m, resume) {
     "</div>";
 }
 
+/* A remux chosen in the Version menu: Rip to 1080p beside it - the trusted groups' x264
+   settings, made on the main server next to the remux - and then how far it has got.
+   Playing any version goes on as before: the rip is a file being written elsewhere. */
+async function ripLine(wrap, m, mi) {
+  const line = wrap.querySelector("#fileline");
+  if (!line || (CFG && CFG.guest) || m.type !== "movie") return;
+  let box = line.querySelector(".ripline");
+  if (!box) {
+    box = document.createElement("span");
+    box.className = "ripline";
+    line.appendChild(box);
+  }
+  const md = (m.Media || [])[mi] || {};
+  const path = (md.Part && md.Part[0] && md.Part[0].file) || "";
+  const remux = /remux/i.test(versionFile(md)) || (md.bitrate || 0) >= 40000;
+  let said = {};
+  try { said = await (await fetch("/rip?key=" + encodeURIComponent(m.ratingKey))).json(); }
+  catch (e) { said = {}; }
+  // the ripper not running: no button that cannot work
+  if (!box.isConnected || said.away) return;
+  const jobs = said.jobs || [];
+  // a button for each profile starred on the ripper's page, each with its own progress
+  const offered = (said.offered && said.offered.length) ? said.offered : (said.profile ? [said.profile] : []);
+  box.textContent = "";
+  let busy = false;
+  const free = [];
+  const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify(body) }).then((r) => r.json());
+  offered.forEach((name) => {
+    const job = jobs.filter((j) => j.src === path && (j.profile || "") === name &&
+                                   j.state !== "cancelled" && j.state !== "failed").pop();
+    if (job && job.state !== "done") {
+      busy = true;
+      const note = document.createElement("span");
+      note.className = "note";
+      note.textContent = (job.state === "queued" ? (job.why ? "Rip " + job.why : "Rip queued")
+        : "Ripping " + Math.round((job.progress || 0) * 100) + "%" +
+          (job.state === "pass1" ? " · pass 1" : job.state === "pass2" ? " · pass 2" : "")) + " · " + name;
+      const stop = document.createElement("button");
+      stop.className = "btn ghost";
+      stop.textContent = "Cancel rip";
+      stop.onclick = async () => { await post("/rip/cancel", { id: job.id }).catch(() => {}); ripLine(wrap, m, mi); };
+      box.append(note, stop);
+      return;
+    }
+    if (job) {
+      const note = document.createElement("span");
+      note.className = "note";
+      note.textContent = name + " rip made - a version of its own";
+      box.append(note);
+      return;
+    }
+    if (remux && path) free.push(name);
+  });
+  // the profiles not made or making yet: one Rip button, its menu the profiles starred on the
+  // ripper's page (owner, 2026-11-06)
+  if (free.length) {
+    const split = document.createElement("span");
+    split.className = "split ripmenu";
+    const go = document.createElement("button");
+    go.className = "btn ghost";
+    go.textContent = "Rip \u25be";
+    go.title = "A smaller copy beside this remux, made by the ripper on the main server; the remux " +
+      "stays. The profiles are the ones starred on the ripper's page.";
+    const menu = document.createElement("span");
+    menu.className = "menu hidden";
+    free.forEach((name) => {
+      const one = document.createElement("button");
+      one.textContent = name;
+      one.onclick = async () => {
+        menu.classList.add("hidden");
+        go.disabled = true;
+        let r = {};
+        try { r = await post("/rip", { key: m.ratingKey, path: path, profile: name }); }
+        catch (e) { r = { why: "the server did not answer" }; }
+        if (!r.ok) { toast(r.why || "Could not start the rip"); go.disabled = false; return; }
+        ripLine(wrap, m, mi);
+      };
+      menu.appendChild(one);
+    });
+    go.onclick = () => menu.classList.toggle("hidden");
+    split.append(go, menu);
+    box.append(split);
+  }
+  clearTimeout(box._again);
+  if (busy) box._again = setTimeout(() => ripLine(wrap, m, mi), 10000);
+}
+
 /* Where a file that belongs to a title goes: a title found by name, no title yet, or
    out of the extras altogether. done() is called once it is saved. */
 function extraPicker(anchor, key, done) {
@@ -6906,11 +7056,12 @@ async function viewOffer(m) {
     // Asked of the tracker itself rather than read off the film: the film is handed
     // about between drawings of this page and the answer here is the same either way.
     (async () => {
-      const ask = async () => {
+      const ask = async (fresh) => {
         try {
           return await (await fetch("/tracker/list", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title: m.title, year: m.year, key: m.ratingKey }) })).json();
+            body: JSON.stringify({ title: m.title, year: m.year, key: m.ratingKey,
+                                   fresh: !!fresh }) })).json();
         } catch (e) { return { versions: [] }; }
       };
       let said = await ask();
@@ -6935,15 +7086,21 @@ async function viewOffer(m) {
           : m.checking ? "Checking" : (m.asked ? "Requested" : "Request");
       }
       if (!fetches && !(said.versions || []).length && b) b._redraw && b._redraw();
-      const rows = (said.versions || []).slice();
       // the pack's own copy is a version like any other: it belongs in the same list,
       // with its size, so choosing is one act rather than two different buttons
-      if (fetches && o.size && !rows.some((v) => v.pack)) {
-        rows.unshift({ id: "", name: (o.file || m.title || "").split(/[\/]/).pop(),
-                       size: o.size, seeds: 0, kind: "from a pack here",
-                       pack: true, why: o.refused || "" });
-      }
+      const rowsOf = (answer) => {
+        const out = (answer.versions || []).slice();
+        if (fetches && o.size && !out.some((v) => v.pack)) {
+          out.unshift({ id: "", name: (o.file || m.title || "").split(/[\/]/).pop(),
+                        size: o.size, seeds: null, kind: "from a pack here",
+                        pack: true, why: o.refused || "" });
+        }
+        return out;
+      };
+      let rows = rowsOf(said);
       if (!rows.length) return;           // nothing to fetch: leave the asking alone
+      const fill = () => {
+      const was = pick.value;
       pick.innerHTML = "";
       rows.forEach((v) => {
         const o = document.createElement("option");
@@ -6951,7 +7108,7 @@ async function viewOffer(m) {
         // the figures first, seeders leading as the list is sorted, then the name
         o.textContent = [
           versionTag(v),
-          v.have || v.disk || v.seeds == null ? "" : v.seeds + " seeding",
+          v.seeds == null ? "" : v.seeds + " seeding",
           v.mbit ? v.mbit + " Mbit/s" : "",
           v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
         ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
@@ -6979,7 +7136,8 @@ async function viewOffer(m) {
       // the recommended one is offered, and failing that the first that could be
       // fetched at all
       const canDo = rows.find((v) => v.pick) || rows.find((v) => !v.why);
-      if (canDo) pick.value = canDo.id;
+      if (pick.dataset.chosen && rows.some((v) => String(v.id) === was)) pick.value = was;
+      else if (canDo) pick.value = canDo.id;
       tint(pick);
       // what the button says: the word, the size of the version chosen and what is
       // left on the drive - the same line the pack's own button shows
@@ -7006,7 +7164,9 @@ async function viewOffer(m) {
       };
       label();
       grab._label = label;
-      pick.onchange = label;
+      pick.onchange = () => { pick.dataset.chosen = "1"; label(); };
+      };
+      fill();
       // a release of it coming in, whichever was picked: the progress button stays
       if (["queued", "downloading", "done"].includes(o.state)) return;
       pick.style.display = "";
@@ -7014,6 +7174,19 @@ async function viewOffer(m) {
       // and the asking steps aside: fetching it is the better answer to the same
       // question, and two buttons for it is one too many
       if (b) b.style.display = "none";
+      // the search behind that list: said while it runs, and the list drawn again with it
+      const note = document.getElementById("offersaid");
+      if (note && !note.textContent) note.textContent = CHECKING_TRACKER;
+      const newer = await ask(true);
+      if (!SCREEN || SCREEN.kind !== "offer" || SCREEN.key !== String(m.ratingKey)) return;
+      if (note && note.textContent === CHECKING_TRACKER) note.textContent = "";
+      if (grab.dataset.hash || grab.dataset.pressed) return;
+      const fresher = rowsOf(newer);
+      if (fresher.length) {
+        said = newer;
+        rows = fresher;
+        fill();
+      }
     })();
   }
   // A release taken from the tracker for this page, queued or coming in: the Download
@@ -7100,7 +7273,13 @@ async function viewOffer(m) {
         return;
       }
       grab.disabled = true;
+      grab.dataset.pressed = "1";
       const said = document.getElementById("offersaid");
+      // nobody chose: the tracker is asked again and the best as of now is taken
+      if (pick && pick.style.display !== "none" && !pick.dataset.chosen) {
+        said.textContent = CHECKING_TRACKER;
+        await takeBestNow(pick, m);
+      }
       said.textContent = "Starting the download…";
       let r;
       try {
@@ -7383,8 +7562,9 @@ async function watchNews() {
   try { news = ((await (await fetch("/watchlist/news")).json()).news) || []; }
   catch (e) { news = []; }
   news.filter((n) => n.title).forEach((n, i) => setTimeout(() => toast(n.title +
-    (n.how === "here" ? " is here - it was on your watchlist"
-                      : " can be downloaded now - it was on your watchlist")), i * 4000));
+    (n.how === "fetched" ? " is here - it's now on your watchlist"
+      : n.how === "here" ? " is here - it was on your watchlist"
+      : " can be downloaded now - it was on your watchlist")), i * 4000));
 }
 setTimeout(watchNews, 3000);
 setInterval(watchNews, 60000);
@@ -7702,7 +7882,7 @@ async function fillDownloads(m, sel) {
   try {
     said = await (await fetch("/tracker/list", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: m.title, year: m.year,
+      body: JSON.stringify({ title: m.title, year: m.year, fresh: true,
                              imdb: m.imdb || "", key: m.ratingKey }) })).json();
   } catch (e) { said = { versions: [] }; }
   const rows = (said.versions || []).filter((v) => !v.disk);
@@ -7716,7 +7896,8 @@ async function fillDownloads(m, sel) {
     // pack here, yellow already on disk, red cannot be downloaded
     // recommended and where it comes from, both: "Recommended" alone hid that it was a pack's
     o.textContent = [v.pick && !v.have ? "Recommended" : "", versionTag(v),
-      v.have || v.seeds == null ? "" : v.seeds + " seeding",
+      v.freeleech ? "Freeleech" : "",
+      v.seeds == null ? "" : v.seeds + " seeding",
       v.mbit ? v.mbit + " Mbit/s" : "",
       v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
       .join("  \u00b7  ") + "   \u2014   " +
@@ -7859,7 +8040,7 @@ async function episodeDownloads(row, ep) {
   try {
     said = await (await fetch("/tracker/list", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: ep.ratingKey, title: show }) })).json();
+      body: JSON.stringify({ key: ep.ratingKey, title: show, fresh: true }) })).json();
   } catch (e) { said = { versions: [] }; }
   const rows = said.versions || [];
   box.textContent = "";
@@ -7896,7 +8077,7 @@ async function episodeDownloads(row, ep) {
     words.textContent = [v.have ? "On disk" : v.pick ? "Recommended" : "",
       // the heading says pack or single; a box still says which
       !v.pack && v.box ? (v.seasonPack ? "Season pack" : "Box set") : "",
-      v.have || v.seeds == null ? "" : v.seeds + " seeding",
+      v.seeds == null ? "" : v.seeds + " seeding",
       v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
       .join("  ·  ") + "   —   " + releaseName(v.name) +
       (v.why ? "   ·   " + v.why : "");
@@ -8099,6 +8280,35 @@ function versionTag(v) {
     : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker";
 }
 
+const CHECKING_TRACKER = "Checking the tracker…";
+
+/* What a plain press on Download takes: the list's recommended release, or the one pressed. */
+function freshPick(rows, pressed) {
+  const best = (rows || []).find((v) => v.pick && !v.have && !v.why);
+  return best ? String(best.id) : String(pressed);
+}
+
+/* The list asked for again as of now and its best selected, added when it was not on the
+   list the page drew. Nothing new or no answer: the one pressed stays. */
+async function takeBestNow(pick, m) {
+  let rows = [];
+  try {
+    rows = (await (await fetch("/tracker/list", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: m.title, year: m.year, imdb: m.imdb || "",
+                             key: m.ratingKey, fresh: true }) })).json()).versions || [];
+  } catch (e) { rows = []; }
+  const id = freshPick(rows, pick.value);
+  if (![...pick.options].some((o) => o.value === id)) {
+    const row = rows.find((v) => String(v.id) === id);
+    const o = document.createElement("option");
+    o.value = id;
+    o.textContent = releaseName(row && row.name);
+    pick.appendChild(o);
+  }
+  pick.value = id;
+}
+
 /* A release as a person reads it: a pack's file carries its extension, a torrent's
    name does not. */
 function releaseName(name) {
@@ -8115,12 +8325,12 @@ function switchVersion(m, label) {
   wrap.appendChild(word);
   word.onclick = async () => {
     word.disabled = true;
-    word.textContent = "Looking…";
+    word.textContent = CHECKING_TRACKER;
     let said = {};
     try {
       said = await (await fetch("/tracker/list", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: m.title, year: m.year,
+        body: JSON.stringify({ title: m.title, year: m.year, fresh: true,
                                imdb: m.imdb || "", key: m.ratingKey }) })).json();
     } catch (e) { said = { versions: [] }; }
     const rows = said.versions || [];
@@ -8140,7 +8350,7 @@ function switchVersion(m, label) {
       // the figures first, seeders leading as the list is sorted, then the name
       o.textContent = [
         versionTag(v),
-        v.have || v.disk || v.seeds == null ? "" : v.seeds + " seeding",
+        v.seeds == null ? "" : v.seeds + " seeding",
         v.mbit ? v.mbit + " Mbit/s" : "",
         v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
       ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
@@ -8174,9 +8384,14 @@ function switchVersion(m, label) {
                ? "  " + (one.size / 1073741824).toFixed(1) + " GB" : ""));
     };
     say();
-    pick.onchange = say;
+    pick.onchange = () => { pick.dataset.chosen = "1"; say(); };
     grab.onclick = async () => {
       grab.disabled = true;
+      // nobody chose: the tracker is asked again and the best as of now is taken
+      if (!pick.dataset.chosen) {
+        grab.textContent = CHECKING_TRACKER;
+        await takeBestNow(pick, m);
+      }
       grab.textContent = "Starting the download…";
       let r = {};
       try {
@@ -8371,7 +8586,9 @@ async function viewMovie(key) {
       const mi = +verPick.value;
       rememberCopy(m, mi);
       fillSubtitleMenu(m, mi);
+      ripLine(wrap, m, mi);
     };
+    ripLine(wrap, m, +verPick.value || 0);
   }
   main.appendChild(wrap);
   sagaRow(wrap, m.ratingKey);
@@ -11806,6 +12023,13 @@ async function followTheMaking(meta) {
         // changing a track on a picture with subtitles burned into it needs a fresh
         // stream, and that stream begins where the film is now - at nought it would
         // begin again
+        again = 8000;
+        return;
+      }
+      // and only once the writing has passed where the film is, half a minute in hand:
+      // before that the track is empty from here on
+      const dur = (S.meta.duration || 0) / 1000;
+      if (dur > 0 && (on.at || 0) * dur < S.pos + 30) {
         again = 8000;
         return;
       }

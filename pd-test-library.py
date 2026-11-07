@@ -961,6 +961,20 @@ finally:
     _con48.close()
 check("48 a title under the floor is never chosen, even when nothing else is there",
       len(_low_pool48) == 3 and _picked48 == [], str([c.get("title") for c in _picked48]))
+# a pack entry matched to the wrong film has another name, and the key of the film held here
+import pd_torrents as _pt48
+_con48 = api.lib.db()
+_was48 = _pt48.offered
+try:
+    _pt48.offered = lambda: []
+    _key48 = next(p["key"] for p in api._start_pool(_con48, "movie") if p["here"])
+    _pt48.offered = lambda: [{"ratingKey": _key48, "title": "A Wrong Match", "rating": 9.9}]
+    _dup48 = [p for p in api._start_pool(_con48, "movie") if p["key"] == _key48]
+finally:
+    _pt48.offered = _was48
+    _con48.close()
+check("48 a pack entry with the key of a film held here is not a second card, whatever it is called",
+      len(_dup48) == 1 and _dup48[0]["here"], str(_dup48))
 check("48 Start's rows hold nothing rated under the floor, and no trash row",
       bool(_rows48) and not _low48 and not any(r["id"].startswith("trash") for r in _rows48),
       str(_low48[:5]))
@@ -1929,7 +1943,7 @@ check("246 watched: the viewer waits for new fronts once, theirs replace their o
       _took246 == ["t246"] and _none246 == [] and _merged246 == {("a", "movie"): 9, ("b", "movie"): 2}
       and _lp246.count("self.start_watched(self.who)") == 2, str(_merged246))
 
-# ---- 247. a race or game read in stands on Recently added films, wearing New, newest first
+# ---- 247. a race or game read in leads the Sports row, wearing New, newest first; not on films
 import pd_sports as _sp247
 _con247 = api.lib.db()
 try:
@@ -1941,15 +1955,21 @@ try:
         _at247 = float(_rows247[0]["came"])
         _in247 = api._games_arrived(_con247, now=_at247 + 60)
         _out247 = api._games_arrived(_con247, now=_at247 + _sp247.ARRIVED_DAYS * 86400 + 60)
-        check("247 a game read in a minute ago leads the games on Recently added, an episode; gone after the days",
+        check("247 a game read in a minute ago leads the games arrived, an episode; gone after the days",
               bool(_in247) and _in247[0]["ratingKey"] == str(_rows247[0]["id"]) and _in247[0]["type"] == "episode"
               and all(c["ratingKey"] != str(_rows247[0]["id"]) for c in _out247))
 finally:
     _con247.close()
 _page247 = api.route(api.lib.db(), "/library/sections/1/recentlyAdded", {}) or {}
-_lp247 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_localapi.py"), encoding="utf-8").read()
-check("247 Recently added films carries the games arrived, after what is coming in",
-      "items = coming + self._games_arrived(con) + items" in _lp247 and bool(_page247))
+_sports247 = api.route(api.lib.db(), "/library/sports", {}) or {}
+_ids247 = {str(r["id"]) for r in _rows247} if _rows247 else set()
+_now247 = api._games_arrived(api.lib.db())
+check("247 Recently added films carries no game arrived",
+      bool(_page247) and not any(str(m.get("ratingKey")) in {str(c["ratingKey"]) for c in _now247}
+                                 for m in _page247.get("Metadata") or []))
+check("247 the Sports row leads with the games arrived, then a card a sport",
+      [str(m.get("ratingKey")) for m in (_sports247.get("Metadata") or [])][:len(_now247)]
+      == [str(c["ratingKey"]) for c in _now247])
 check("247 a game from the tracker wears its own drawn poster once it is here",
       api._game_poster("NFL", "D:/x/NFL.2026.10.25.Cincinnati.Bengals.Vs.Baltimore.Ravens.720p.WEB.H264-G/a.mkv")
       == "/art/%s/poster" % _sp247.read_name("NFL.2026.10.25.Cincinnati.Bengals.Vs.Baltimore.Ravens.720p.WEB.H264-G")["event"]
@@ -2155,8 +2175,16 @@ _auto256 = [d for d in _pt250.load()["downloads"] if d.get("auto") and d.get("to
 def _wlb256(st, tok):
     mine = st if tok == "me" else (st.get("users") or {}).get(tok) or {}
     return set(str(k) for k in mine.get("watchlist") or [])
-_before256 = m.read_settings() or {}
 _asked256 = {(str(d["token"]), m.watch_key_of(d.get("titleId") or d.get("key"))) for d in _mine256}
+# the live server has run this pass already: what it put there is taken off again on the copy,
+# so the pass has to put it back
+_off256 = m.read_settings() or {}
+for _t256, _k256 in _asked256:
+    _u256 = _off256 if _t256 == "me" else (_off256.get("users") or {}).get(_t256)
+    if _k256 and isinstance(_u256, dict):
+        _u256["watchlist"] = [k for k in _u256.get("watchlist") or [] if str(k) != _k256]
+m.write_settings(_off256, merge=False)
+_before256 = m.read_settings() or {}
 _house256 = {(str(d["token"]), m.watch_key_of(d.get("titleId") or d.get("key"))) for d in _auto256} - _asked256
 _house256 = {(t, k) for t, k in _house256 if k and k not in _wlb256(_before256, t)}
 # one film somebody fetched and has watched since: marked watched on the copy
@@ -2302,6 +2330,68 @@ try:
 finally:
     _con259.close()
 check("259 there is an episode to try it on", _ep259 is not None)
+
+# ---- 260. a game somebody downloaded goes on their watchlist and blinks it; opening stops it
+import pd_tracker as _tr260
+_con260 = api.lib.db()
+try:
+    _g260 = _con260.execute(
+        "SELECT e.id, f.path, MAX(COALESCE(f.mtime, f.ctime)) AS came FROM episode e JOIN item i ON i.id=e.item_id "
+        "JOIN file f ON f.episode_id=e.id WHERE i.type='show' AND i.title IN ('NFL','Formula 1') "
+        "GROUP BY e.id ORDER BY came DESC LIMIT 1").fetchone()
+    _old260 = _con260.execute(
+        "SELECT i.id FROM item i JOIN file f ON f.item_id=i.id AND f.episode_id IS NULL WHERE i.type='movie' "
+        "GROUP BY i.id HAVING MAX(COALESCE(f.mtime, f.ctime)) < ? LIMIT 1", (time.time() - 30 * 86400,)).fetchone()
+finally:
+    _con260.close()
+_s260 = m.read_settings() or {}
+_tok260 = next((t for t, u in (_s260.get("users") or {}).items() if isinstance(u, dict)), None)
+check("260 there is a game, an old film and a guest to try it on", bool(_g260 and _old260 and _tok260))
+if _g260 and _old260 and _tok260:
+    _name260 = m.Handler.name_of_token(_tok260) or "guest260"
+    _u260 = _s260["users"][_tok260]
+    _u260["myName"] = _name260
+    _u260["watchlist"] = [str(_old260[0])] + [k for k in (_u260.get("watchlist") or [])
+                                               if str(k) not in (str(_g260["id"]), str(_old260[0]))]
+    for _k260 in ("gamesListed", "watchBlink"):
+        _u260.pop(_k260, None)
+    m.write_settings(_s260, merge=False)
+    _log260 = list(_tr260.STATE.get("log") or [])
+    _tr260.STATE["log"] = [{"name": os.path.basename(_g260["path"]), "who": _name260}]
+    try:
+        _at260 = float(_g260["came"]) + 60
+        m.WATCH_ARRIVALS["at"] = _at260 - 120
+        m.watch_arrivals_pass(now=_at260)
+        _after260 = (m.read_settings() or {})["users"][_tok260]
+        m.watch_arrivals_pass(now=_at260 + 60)
+        _again260 = (m.read_settings() or {})["users"][_tok260]
+        # watched and taken off: not put back by the next look
+        _w260 = m.read_settings() or {}
+        _w260["users"][_tok260]["watchlist"] = [k for k in _w260["users"][_tok260].get("watchlist") or []
+                                               if str(k) != str(_g260["id"])]
+        m.write_settings(_w260, merge=False)
+        m.watch_arrivals_pass(now=_at260 + 120)
+        _gone260 = (m.read_settings() or {})["users"][_tok260]
+    finally:
+        _tr260.STATE["log"] = _log260
+    check("260 a game somebody downloaded is on their watchlist once it has come in, and blinks it",
+          str(_g260["id"]) in _after260.get("watchlist", []) and str(_g260["id"]) in _after260.get("watchBlink", []),
+          str({k: _after260.get(k) for k in ("watchBlink", "gamesListed")})[:200])
+    check("260 a film on the list whose file came in long ago does not blink",
+          str(_old260[0]) not in _after260.get("watchBlink", []))
+    check("260 the game is put there once: the next look adds it no second time",
+          _again260.get("watchlist", []).count(str(_g260["id"])) == 1
+          and _again260.get("watchBlink", []).count(str(_g260["id"])) == 1)
+    check("260 a game somebody downloaded says it is now on their watchlist, once",
+          [n.get("how") for n in _after260.get("watchNews") or [] if n.get("key") == str(_g260["id"])] == ["fetched"]
+          and [n.get("how") for n in _again260.get("watchNews") or [] if n.get("key") == str(_g260["id"])] == ["fetched"],
+          str(_after260.get("watchNews"))[:200])
+    check("260 a game watched and taken off the watchlist is not put back",
+          str(_g260["id"]) not in _gone260.get("watchlist", []))
+    _srv260 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+    check("260 opening the Watchlist clears what blinks, and a guest may say so",
+          'GUEST_MAY_POST = ("/applog", "/log", "/trace", "/feedback", "/watchlist/seen",' in _srv260
+          and 'mine["watchBlink"] = []' in _srv260)
 
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):

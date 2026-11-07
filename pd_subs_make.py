@@ -644,7 +644,9 @@ def main():
             # wait for a stretch to arrive, or for the decoder to finish what is left
             ready = heard_so_far(wav)
             while ready < at + STRETCH and reader.poll() is None:
-                say(min(0.97, (ready / whole) if whole else 0.02),
+                # how far the lines are written, not how far the sound is read ahead:
+                # a player switches to the track once this passes where it is
+                say(min(0.97, (at / whole) if whole else 0.02),
                     "reading the sound, %d of %d minutes"
                     % (ready / 60, (whole or 0) / 60))
                 time.sleep(3)

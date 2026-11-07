@@ -44,6 +44,8 @@ GUEST_PREFIXES = (
     "/gpu/begins",      # where that play will start, asked first
     "/torrents/get",    # one film from a torrent pack, within their week's limit
     "/watchlist/news",  # their own watchlist's films that have got a source
+    "/watchlist/blink", # what on their own watchlist has come in, for the heading to blink
+    "/watchlist/seen",  # and the Watchlist opened, which stops it
     "/torrents/ready",  # their own downloads that have come in, for the word on screen
     "/torrents/active", # how far their own download has got: the handler already
                         # answers a guest with their own rows and nobody else's

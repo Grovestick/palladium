@@ -317,11 +317,25 @@ def pick_audio(auds, native="", liked=None):
     The one this viewer chose for this title before, by language and name. Then the
     language the title was made in (`native`, from TMDB): a Korean film with an
     English dub beside it played the dub. Then English: a release with a dub in front
-    of it played in a language nobody in the house speaks. A commentary is never it.
-    Then the track the file calls default, and failing that the first.
+    of it played in a language nobody in the house speaks. A commentary or an isolated
+    score is never it. Then the track the file calls default, and failing that the first.
+    Several in that language: surround (owner, 2026-11-07), the most channels, and TrueHD
+    only where nothing else is surround, since a device that cannot output it gets none.
     """
     def commentary(a):
-        return "comment" in str(a.get("title") or "").lower()
+        title = str(a.get("title") or "").lower()
+        return "comment" in title or "isolated" in title
+
+    def widest(rows):
+        def wide(n):
+            return int(auds[n].get("channels") or 0)
+        easy = [n for n in rows if str(auds[n].get("codec") or "").lower() not in ("truehd", "mlp")]
+        best = max(easy, key=wide) if easy else None
+        if best is None or wide(best) < 6:
+            hard = [n for n in rows if n not in easy and wide(n) >= 6]
+            if hard:
+                return max(hard, key=wide)
+        return best if best is not None else rows[0]
 
     if isinstance(liked, dict) and liked.get("lang"):
         same = [n for n, a in enumerate(auds)
@@ -332,12 +346,12 @@ def pick_audio(auds, native="", liked=None):
         if same:
             return same[0]
     if native:
-        for n, a in enumerate(auds):
-            if same_language(a.get("lang"), native) and not commentary(a):
-                return n
-    for n, a in enumerate(auds):
-        if str(a.get("lang") or "").lower().startswith("en") and not commentary(a):
-            return n
+        rows = [n for n, a in enumerate(auds) if same_language(a.get("lang"), native) and not commentary(a)]
+        if rows:
+            return widest(rows)
+    rows = [n for n, a in enumerate(auds) if str(a.get("lang") or "").lower().startswith("en") and not commentary(a)]
+    if rows:
+        return widest(rows)
     for n, a in enumerate(auds):
         if a.get("default") and not commentary(a):
             return n
@@ -916,8 +930,11 @@ def media_block(rows, key_prefix="/parts/", aside="", picked="", proved="",
             auds = json.loads(r["atracks"] or "[]")
         except Exception:
             auds = []
+        # the file's sound as it plays: the track picked, not the first in the file
+        playing = {}
         if auds:
             want = pick_audio(auds, native, liked)
+            playing = auds[want]
             for n, a in enumerate(auds):
                 streams.append({
                     "streamType": 2, "id": 300000 + (a.get("index") or n),
@@ -1012,12 +1029,12 @@ def media_block(rows, key_prefix="/parts/", aside="", picked="", proved="",
             # the cache this viewer settled on, if it is this one
             "picked": bool(copy) and r["path"] == copy,
             "container": container_of(r),
-            "videoCodec": r["vcodec"], "audioCodec": r["acodec"],
+            "videoCodec": r["vcodec"], "audioCodec": playing.get("codec") or r["acodec"],
             "width": r["width"], "height": r["height"],
             "videoResolution": ("4k" if height >= 1700 else
                                 "1080" if height >= 900 else
                                 "720" if height >= 650 else str(height or "")),
-            "bitrate": r["bitrate"], "audioChannels": r["channels"],
+            "bitrate": r["bitrate"], "audioChannels": playing.get("channels") or r["channels"],
             "duration": int((r["duration"] or 0) * 1000),
             # which cut this file is, where its name says - or that it is part of
             # the title, which matters more than which cut
@@ -1177,6 +1194,49 @@ def mark_unshuffled(cards, off, extra=None):
         elif str(card.get("ratingKey") or "") in off:
             card["notShuffled"] = True
     return cards
+
+
+#: (films the other server holds, its name, whether it answered lately), from the server
+def _no_peer():
+    return [], "", False, {}, []
+
+
+PEER_RECENT = _no_peer
+
+
+def _no_peer_art(key, which):
+    return None
+
+
+#: set by the server: the bytes of a poster or backdrop of a film only the other server
+#: holds, or None. The one list of both shows those films, and their posters were asked of
+#: this server, which has none (2026-11-07)
+PEER_ART = _no_peer_art
+
+
+def one_list(own, theirs, name, up, held=(), dated=None, music=()):
+    """Recently added for both servers, newest first: a film once, here where it is here.
+    Synced is not new: one on both is dated by when it first came, `dated` the other's
+    arrival time of every film it holds; `held`, the keys of theirs with a file here too,
+    are older than this server's own list and stay off it. A music video copied here is
+    not a film, whatever folder the copy is in: `music`, the other's music video keys."""
+    mark = lambda c: (str(c.get("title") or "").lower(), c.get("year"))
+    first = {mark(c): int(c.get("addedAt") or 0) for c in theirs}
+    dated, music = dated or {}, set(music or ())
+    out, seen = [], set()
+    for card in own:
+        if str(card.get("ratingKey") or "") in music:
+            continue
+        seen.add(mark(card))
+        there = first.get(mark(card)) or int(dated.get(str(card.get("ratingKey") or "")) or 0)
+        if there and int(card.get("addedAt") or 0) > there:
+            card = dict(card, addedAt=there)
+        out.append(card)
+    for card in theirs:
+        if mark(card) not in seen and card.get("ratingKey") not in held:
+            seen.add(mark(card))
+            out.append(dict(card, elsewhere=name, away=not up))
+    return sorted(out, key=lambda c: -int(c.get("addedAt") or 0))
 
 
 class LocalAPI:
@@ -1721,9 +1781,9 @@ class LocalAPI:
         return None
 
     def _games_arrived(self, con, now=None):
-        """Races and games read in over the last few days, newest first, as Recently
-        added films carries them: an episode of its sport, so on no film shelf, and the
-        card that had said Downloading went and nothing came in its place (2026-11-05)."""
+        """Races and games read in over the last few days, newest first, as the Sports row
+        leads with them: an episode of its sport, so on no film shelf, and the card that had
+        said Downloading went and nothing came in its place (2026-11-05)."""
         import pd_sports
         since = (time.time() if now is None else now) - pd_sports.ARRIVED_DAYS * 86400
         marks = ",".join("?" * len(pd_sports.FILED_UNDER))
@@ -2228,6 +2288,34 @@ class LocalAPI:
         except (TypeError, ValueError):
             return 1.0
         return float(row["duration"]) if row and row["duration"] else 1.0
+
+    def _title_art(self, con, key, which, want):
+        """A title's poster or backdrop, `want` pixels wide where asked; a film only the
+        other server holds has its picture from there."""
+        row = con.execute("SELECT poster, backdrop FROM item WHERE id=?", (key,)).fetchone()
+        if not row:
+            got = PEER_ART(key, which)
+            return ("image/jpeg", got) if got else None
+        local = self.lib.artwork(row[which], "w500" if which == "poster" else "w780")
+        if not local:
+            return None
+        if want:
+            sized = self._resized(local, want)
+            if sized:
+                local = sized
+        with open(local, "rb") as f:
+            return ("image/jpeg", f.read())
+
+    def _last_watched(self, con, items):
+        """When this viewer last watched each, a series by its newest episode: the
+        watchlist opens last watched first."""
+        for got in items:
+            if got and not got.get("lastViewedAt"):
+                k = str(got.get("ratingKey") or "")
+                at = con.execute(
+                    "SELECT MAX(updated) FROM progress WHERE who=? AND (key=? OR key IN "
+                    "(SELECT id FROM episode WHERE item_id=?))", (self.who, k, k)).fetchone()
+                got["lastViewedAt"] = int((at and at[0]) or 0)
 
     def _progress(self, con, key):
         # a shuffle's places are its own; an ordinary card resumes only from ordinary play
@@ -2938,7 +3026,9 @@ class LocalAPI:
                 rows = list(pd_tracker.read().values())
                 sport = one("sport", "")
                 if not sport:
-                    return self._page(pd_sports.sport_cards(rows), q)
+                    # the games read in over the last days first, each its own poster, then a
+                    # card a sport (owner, 2026-11-06: not on Recently added films)
+                    return self._page(self._games_arrived(con) + pd_sports.sport_cards(rows), q)
                 found = pd_sports.sport_events(rows, sport)
                 cards = []
                 for n, e in enumerate(found):
@@ -2992,13 +3082,14 @@ class LocalAPI:
         if m:
             kind = "movie" if m.group(1) == "1" else "show"
             if kind == "movie":
-                # only what has a file: a place kept for a film not copied here is a
-                # row with no file, no poster, and the time it was written down
-                rows = con.execute("SELECT * FROM item WHERE type='movie' AND " + NOT_EXTRA +
-                                   " AND EXISTS (SELECT 1 FROM file f WHERE f.item_id=item.id)"
-                                   " ORDER BY added DESC "
-                                   "LIMIT 100").fetchall()
-                items = [self._movie(con, r, brief=True) for r in rows]
+                items = self.held_recent(con)
+                # one list for both servers, for a client that knows where each film is
+                if one("both"):
+                    theirs, name, up, dated, music = PEER_RECENT()
+                    keys = [str(c.get("ratingKey") or "") for c in theirs]
+                    held = {r[0] for r in con.execute(
+                        "SELECT item_id FROM file WHERE item_id IN (%s)" % ",".join("?" * len(keys)), keys)}
+                    items = one_list(items, theirs, name, up, held, dated, music)
                 # every film coming in or queued leads the shelf, one card each, the
                 # one asked for last furthest left
                 try:
@@ -3025,7 +3116,8 @@ class LocalAPI:
                     coming = self._newest_asked_first(coming)
                 except Exception:
                     coming = []
-                items = coming + self._games_arrived(con) + items
+                # games that have come in stand first on the Sports row, not here (owner, 2026-11-06)
+                items = coming + items
             else:
                 # A season at a time. Adding a series used to put one card on the shelf
                 # per episode - twenty-two of the same programme, pushing everything
@@ -3188,6 +3280,7 @@ class LocalAPI:
                     items = self._by_season(con, keys, whole)
                 else:
                     items = [self.metadata_for(con, k, brief=True) for k in keys]
+                    self._last_watched(con, items)
                 # A key can stop being the key. A film starred while a pack was the
                 # only thing carrying it is stored under the pack's key, and the day
                 # it arrives in the library it has a library key - so it stood on the
@@ -4224,19 +4317,7 @@ class LocalAPI:
                 return ("image/jpeg", f.read())
         m = re.match(r"^/art/([0-9a-f]{12})/(poster|backdrop)$", path)
         if m:
-            row = con.execute("SELECT poster, backdrop FROM item WHERE id=?",
-                              (m.group(1),)).fetchone()
-            tmdb_path = row[m.group(2)] if row else None
-            local = self.lib.artwork(tmdb_path, "w500" if m.group(2) == "poster" else "w780")
-            if not local:
-                return None
-            want = int(one("w", "0") or 0)
-            if want:
-                sized = self._resized(local, want)
-                if sized:
-                    local = sized
-            with open(local, "rb") as f:
-                return ("image/jpeg", f.read())
+            return self._title_art(con, m.group(1), m.group(2), int(one("w", "0") or 0))
 
         if path in ("/:/scrobble", "/:/unscrobble"):
             # the names the clients already use for it, kept so nothing needs a new verb
@@ -5734,10 +5815,11 @@ class LocalAPI:
             offered = pd_torrents.offered() if kind == "movie" else pd_torrents.offered_shows()
         except Exception:
             offered = []
+        here_keys = {p["key"] for p in out}
         for o in offered:
             # a pack's copy of something here already: the one here is the one to choose,
-            # and both stood in a row side by side
-            if flat(o.get("title")) in held:
+            # and both stood in a row side by side. By its key too: a wrong match has another name
+            if flat(o.get("title")) in held or str(o.get("ratingKey") or "") in here_keys:
                 continue
             out.append({"key": str(o.get("ratingKey") or ""), "here": False, "kind": kind,
                         "genres": {str(g).strip() for g in o.get("genres") or [] if str(g).strip()},
@@ -7000,6 +7082,24 @@ class LocalAPI:
         except Exception:
             return 0
 
+    def held_dates(self, con):
+        """(arrival time of every film with a file here, the music video keys), for the
+        other server: a copy it receives is dated by when the film first came."""
+        dated = {str(r[0]): int(r[1] or 0) for r in con.execute(
+            "SELECT id, added FROM item WHERE type='movie' AND EXISTS "
+            "(SELECT 1 FROM file f WHERE f.item_id=item.id)")}
+        music = [str(r[0]) for r in con.execute("SELECT id FROM item WHERE " + MUSIC_VIDEO)]
+        return dated, music
+
+    def held_recent(self, con):
+        """The films here, newest first. Only what has a file: a place kept for a film not
+        copied here is a row with no file, no poster, and the time it was written down."""
+        rows = con.execute("SELECT * FROM item WHERE type='movie' AND " + NOT_EXTRA +
+                           " AND EXISTS (SELECT 1 FROM file f WHERE f.item_id=item.id)"
+                           " ORDER BY added DESC "
+                           "LIMIT 100").fetchall()
+        return [self._movie(con, r, brief=True) for r in rows]
+
     def _newest_asked_first(self, cards):
         """Downloads for the front of a shelf: the one asked for last first, each dated
         now less its place so a client ordering by arrival keeps them in this order and
@@ -7462,17 +7562,20 @@ class LocalAPI:
                 auds = json.loads(r["atracks"] or "[]")
             except Exception:
                 auds = []
+            # and its channels and codec are that track's: the first track's mono put a
+            # 5.1 track through as stereo AAC instead of copying it
+            playing = (auds[pick_audio(auds, self.native_of(r["item_id"]),
+                                       self.picked_sound(r["item_id"], who))] if auds else {})
             return {"file": r["path"], "duration": r["duration"] or 0,
                     "videoCodec": r["vcodec"], "width": r["width"], "height": r["height"],
-                    "audioChannels": r["channels"] or 2, "audioCodec": r["acodec"],
+                    "audioChannels": playing.get("channels") or r["channels"] or 2,
+                    "audioCodec": playing.get("codec") or r["acodec"],
                     # which subtitle streams this copy actually holds, so a request to
                     # burn one that is not in it can be refused rather than obeyed
                     "subs": inside,
                     # and which soundtrack to encode when the client has not said:
                     # ffmpeg would take the first, which on a dubbed release is wrong
-                    "audio": (auds[pick_audio(auds, self.native_of(r["item_id"]),
-                                              self.picked_sound(r["item_id"], who))]
-                              .get("index") if auds else None),
+                    "audio": playing.get("index") if auds else None,
                     "title": os.path.basename(r["path"]),
                     # the row, which is the part the file is read by over the network
                     "part": r["id"]}

@@ -11,6 +11,17 @@ import time
 
 LOCK = threading.Lock()
 STATE = {"root": ""}
+#: the day last said in each log, by path: the lines carry the time only, so a deletion
+#: at 22:49 could not be put on a day (2026-11-07)
+DAYS = {}
+
+
+def day_line(where, today):
+    """The line that says the date, when `today` is not the day last said in that log."""
+    if DAYS.get(where) == today:
+        return ""
+    DAYS[where] = today
+    return "---- " + today + chr(10)
 
 
 def setup(root):
@@ -30,7 +41,7 @@ def raw(text, where=None):
     try:
         with LOCK:
             with open(where, "a", encoding="utf-8") as f:
-                f.write(str(text))
+                f.write(day_line(where, time.strftime("%Y-%m-%d")) + str(text))
         return True
     except OSError:
         return False

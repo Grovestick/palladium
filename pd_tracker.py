@@ -170,6 +170,17 @@ def jackett_url(where, key, kind, words):
                                              CATEGORIES))
 
 
+#: how long a release read as freeleech is said to be: freeleech ends, and a mark older than
+#: this is no longer told (2026-11-06)
+FREE_FOR = 12 * 3600
+
+
+def freeleech(row, now=None):
+    """Whether a release was freeleech when last read, within FREE_FOR."""
+    now = time.time() if now is None else now
+    return bool(row.get("freeleech")) and now - float(row.get("freeAt") or 0) < FREE_FOR
+
+
 def ask_jackett(words, kind="search"):
     """Search through the local indexer. Rows in the same shape the feeds give."""
     where, key = jackett()
@@ -207,6 +218,8 @@ def ask_jackett(words, kind="search"):
         size = re.search(r"<size>(\d+)</size>", block)
         seeds = re.search(r'name="seeders" value="(\d+)"', block)
         imdb = re.search(r'name="imdb(?:id)?" value="(tt)?(\d+)"', block)
+        # what downloading it counts against the account: nothing is freeleech
+        factor = re.search(r'name="downloadvolumefactor" value="([\d.]+)"', block)
         title, year = bare(name)
         if not title:
             continue
@@ -217,6 +230,8 @@ def ask_jackett(words, kind="search"):
                "url": "https://www.torrentleech.org/rss/download/%s/%s/%s.torrent"
                       % (ident.group(1), mine, re.sub(r"[^A-Za-z0-9.]+", ".", name)),
                "at": now}
+        if factor:
+            got.update(freeleech=float(factor.group(1)) == 0, freeAt=now)
         with LOCK:
             had = STATE["rows"].get(got["id"])
             if had:
@@ -1170,6 +1185,11 @@ def asked_within(title, year=0, seconds=90.0):
     return time.time() - when < seconds
 
 
+#: searches running, by film, and how long another ask for the same film waits for one
+ASKING = {}
+ASK_WAIT_MOST = 15.0
+
+
 def ask_for(title, year=0, again_after=90.0):
     """Search for one film now, unless it was asked about a moment ago.
 
@@ -1182,6 +1202,11 @@ def ask_for(title, year=0, again_after=90.0):
         return []
     read()
     mark = "%s|%d" % (str(title or "").strip().lower(), int(year or 0))
+    # being asked already: waited for, not asked twice
+    going = ASKING.get(mark)
+    if going is not None:
+        going.wait(ASK_WAIT_MOST)
+        return []
     now = time.time()
     with LOCK:
         when = float((STATE.get("asked") or {}).get(mark) or 0)
@@ -1196,7 +1221,11 @@ def ask_for(title, year=0, again_after=90.0):
         STATE["lately"] = lately
     if time.time() - when < again_after or not room:
         return []
-    got = search(title, year)
+    ASKING[mark] = threading.Event()
+    try:
+        got = search(title, year)
+    finally:
+        ASKING.pop(mark).set()
     if got is None:
         return []                         # gave way: not marked asked
     with LOCK:
@@ -1210,6 +1239,13 @@ def ask_for(title, year=0, again_after=90.0):
         STATE.setdefault("asked", {})[mark] = time.time()
     write()
     return got
+
+
+def ask_waiting(title, year, most):
+    """ask_for with somebody waiting on it: at most so many seconds, and it finishes behind them."""
+    asking = threading.Thread(target=ask_for, args=(title, year), daemon=True)
+    asking.start()
+    asking.join(most)
 
 
 def ask_about(many=1, gap=5.0):
