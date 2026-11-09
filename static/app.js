@@ -666,17 +666,24 @@ async function learnStandby() {
 /* Which of the cache's two addresses to use: the one the background check found
  * answering, else the one that suits the address this page was opened at. */
 function standbyAddress() {
+  // at home with no key of its own, the house network: through the outside name the cache
+  // sees the house's public address and no token, and refuses - posters went blank when
+  // the background check found the outside door first (2026-11-07)
+  if (pageAtHome() && !(CFG && CFG.key)) return standbyGuess()[0] || "";
   // the address the background check last found answering, while that is fresh
   if (REACH.copyAt && Date.now() - REACH.at < 30000 && !thisMachine(REACH.copyAt))
     return REACH.copyAt;
   return standbyGuess()[0] || "";
 }
 
+/* Whether this page was opened at a house address, not through the outside name. */
+function pageAtHome() {
+  return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|localhost)/.test(location.hostname);
+}
+
 /* The cache's two addresses, the likelier first for where this page was opened. */
 function standbyGuess() {
-  const home = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|localhost)/
-    .test(location.hostname);
-  return (home ? [standbyWhere, standbyOut] : [standbyOut, standbyWhere])
+  return (pageAtHome() ? [standbyWhere, standbyOut] : [standbyOut, standbyWhere])
     .map((u) => String(u || "").replace(/\/$/, ""))
     .filter((u, i, all) => u && all.indexOf(u) === i && !thisMachine(u));
 }
@@ -817,7 +824,7 @@ async function offerTheCopy(said) {
   // button that opened a page which could not load.
   let up = false;
   try {
-    await fetch(where.replace(/\/$/, "") + "/app/version",
+    await knock(where.replace(/\/$/, "") + "/app/version",
                 { cache: "no-store", mode: "no-cors" });
     up = true;
   } catch (e) {
@@ -7223,15 +7230,17 @@ async function viewOffer(m) {
       landed();
     } else if (one) {
       grab.dataset.hash = one.hash;
-      grab.disabled = false;
       grab.style.display = "";
-      grab.textContent = takeArmed ? "Press again to cancel"
-        : one.words ? "\u2715 Cancel  \u00b7  " + one.words
-        : "\u2715 Cancel  \u00b7  " +
-          (/^queued/.test(one.state) || (/^stalledDL/.test(one.state) && !one.progress)
+      const how = one.words ? one.words
+        : (/^queued/.test(one.state) || (/^stalledDL/.test(one.state) && !one.progress)
             ? "Queued" : "Downloading " + Math.round((one.progress || 0) * 100) + "%") +
           (one.mbit > 0 ? "  \u00b7  " + one.mbit.toFixed(1) + " Mbit/s" : "");
-      setTimeout(followTake, 3000);
+      // a cancel only in the seconds before it starts: started, it finishes and seeds
+      grab.disabled = !one.mayCancel;
+      if (!one.mayCancel) takeArmed = false;
+      grab.textContent = !one.mayCancel ? how
+        : takeArmed ? "Press again to cancel" : "\u2715 Cancel  \u00b7  " + how;
+      setTimeout(followTake, one.mayCancel ? 1000 : 3000);
     } else if (grab.dataset.hash) {
       // finished or gone: Download again, as the list says
       delete grab.dataset.hash;
@@ -7839,7 +7848,7 @@ function watchFetches() {
         t.name,
       ].filter(Boolean).join("   ·   ");
       one.append(bar, what);
-      if (!t.done) {
+      if (!t.done && t.mayCancel) {
         const off = document.createElement("button");
         off.className = "btn ghost";
         off.textContent = "Cancel";
@@ -7977,11 +7986,17 @@ function offerDownload(m, sel) {
           body: JSON.stringify(pack ? { key: String(v.id).slice(5) }
                                     : { hash: r.hash || "" }) })).json();
       } catch (e) { c = { ok: false, why: "The server did not answer" }; }
-      if (c.ok === false) { off.disabled = false; toast(c.why || "Could not cancel it"); return; }
+      if (c.ok === false) {
+        if (c.started) off.remove(); else off.disabled = false;
+        toast(c.why || "Could not cancel it");
+        return;
+      }
       toast("Download cancelled");
       box.remove();
     };
     box.appendChild(off);
+    // a release's cancel lasts as long as its wait; a pack's film keeps its own rule
+    if (!String(v.id).startsWith("pack:") && r.graceS) setTimeout(() => off.remove(), r.graceS * 1000);
   };
   box.append(go, room);
 }
@@ -8419,7 +8434,7 @@ function switchVersion(m, label) {
                                                             : { hash: r.hash || "" }) })).json();
         } catch (e) { c = { ok: false, why: "The server did not answer" }; }
         if (c.ok === false) {
-          off.disabled = false;
+          if (c.started) off.remove(); else off.disabled = false;
           toast(c.why || "Could not cancel it");
           return;
         }
@@ -8428,6 +8443,8 @@ function switchVersion(m, label) {
         say();
       };
       wrap.appendChild(off);
+      // a release's cancel lasts as long as its wait; a pack's film keeps its own rule
+      if (!chosen.startsWith("pack:") && r.graceS) setTimeout(() => off.remove(), r.graceS * 1000);
     };
     wrap.appendChild(pick);
     wrap.appendChild(grab);
@@ -10262,6 +10279,11 @@ function reopenStream(why) {
   comeBackTries += 1;
   if (comeBackTries > 6) { offerTheCopy("This server is not answering"); return; }               // it is not coming back
   const at = Math.floor(playAt()) + (S.timeBase || 0);
+  // a stream that breaks in the film's last minute has reached its end, as the "ended"
+  // rule reads it: rolled on. Reopened, a place that close to the end starts the title
+  // over - an episode watched to 1322 of 1327 s began again from nought (2026-11-07)
+  const len = S.meta && S.meta.duration ? S.meta.duration / 1000 : 0;
+  if (len && at >= len - 60) { dbg("reopen-at-end", { why: why || "", at: at, length: len }); rollOn(); return; }
   const o = opts();
   o.height = S.height || 0;
   o.mbit = S.mbit || 0;
@@ -10382,7 +10404,7 @@ function watchForHome() {
   watchingForHome = setInterval(async () => {
     if (!cameFrom) { clearInterval(watchingForHome); return; }
     try {
-      await fetch(cameFrom + "/app/version", { cache: "no-store" });
+      await knock(cameFrom + "/app/version", { cache: "no-store" });
     } catch (e) {
       return;                          // still off
     }
@@ -10593,6 +10615,15 @@ const doorOpen = {};
 /* Whether anything answers at an address: the one way this page asks, for the
    background check and the server picker alike. A refusal is an answer - the machine
    is there - and only a request that gets nothing back is a machine that is off. */
+/* Whether an address answers, its answer read to the end. Asked every ten seconds of three
+   addresses and left unread, each answer kept a buffer in the browser: the page open on the
+   cache machine's screen held 25 GB after two days and the machine ran out (2026-11-08). */
+async function knock(where, options) {
+  const r = await fetch(where, options);
+  try { await r.arrayBuffer(); } catch (e) { /* answered; what it said does not matter */ }
+  return r;
+}
+
 async function answersAt(where, fresh, patience) {
   const at = String(where || "").replace(/\/$/, "");
   const had = doorOpen[at];
@@ -10601,7 +10632,7 @@ async function answersAt(where, fresh, patience) {
   const stop = new AbortController();
   const late = setTimeout(() => stop.abort(), patience || 3000);
   try {
-    await fetch(at + "/app/version", { cache: "no-store", signal: stop.signal });
+    await knock(at + "/app/version", { cache: "no-store", signal: stop.signal });
     up = true;
   } catch (e) {
     up = false;
@@ -10784,7 +10815,7 @@ async function handOver() {
   const there = { origin: where.replace(/\/$/, ""), token: key };
   try {
     // is it there at all
-    await fetch(there.origin + "/app/version", { cache: "no-store" });
+    await knock(there.origin + "/app/version", { cache: "no-store" });
     const m = S.meta;
     // By number first. Both machines work a key out from the title and the year and
     // arrive at the same one, which is why the keys are made that way - and asking by

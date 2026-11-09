@@ -3793,13 +3793,17 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // film's on the copy - and the file being played, not the film's first:
         // a film held in several versions plays one of them.
         val film = title.value?.takeIf { it.ratingKey == ratingKey }
-        val playingName = film?.copies?.firstOrNull { c ->
+        val playingCopy = film?.copies?.firstOrNull { c ->
             val part = c.partKey?.substringBefore("?")?.substringAfterLast("/parts/")
             !part.isNullOrEmpty() && streamUrl.contains("/parts/" + part + "?")
-        }?.fileName ?: film?.fileName
-        // and any version the other machine holds, not only its first
+        }
+        val playingName = playingCopy?.fileName ?: film?.fileName
+        val playingSize = playingCopy?.size ?: (film?.copies?.firstOrNull()?.size ?: 0L)
+        // and any version the other machine holds, not only its first - by name and by
+        // length: a file replaced on one machine kept its name, and the two were read as
+        // one film stitched from two files (2026-11-07)
         fun holds(m: Media?) = m != null && !playingName.isNullOrEmpty() &&
-            (m.fileName == playingName || m.copies.any { it.fileName == playingName })
+            m.copies.any { Route.sameFile(it.fileName, it.size, playingName, playingSize) }
         // The same file, on a different machine. Both halves matter: the same name
         // is what says the bytes are identical, and a different machine is the whole
         // point - a film split between two addresses of one computer is one computer
@@ -3866,7 +3870,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                         else it.copy(base = door, outside = it.base)
                     }
                     // its copy of the same file, which need not be its first version
-                    val at = one.copies.indexOfFirst { it.fileName == playingName }
+                    val at = one.copies.indexOfFirst { Route.sameFile(it.fileName, it.size, playingName, playingSize) }
                     val (url, straight) = Api.playbackUrl(
                         if (at >= 0) one.asCopy(at) else one, 0)
                     // the same answer, off the near door: only the address changes
@@ -4117,19 +4121,34 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             // and got sound it could not play.
             val ear = Regex("[?&]audio=([a-z0-9]+)").find(streamUrl)
                 ?.groupValues?.getOrNull(1) ?: "passthrough"
-            val (url, direct) = Api.playbackUrl(other, at,
+            // the version that was playing, not the other machine's first: the 1080p
+            // copy moved over as the 4K remux, from the start (2026-11-07)
+            val same = Route.sameCopy(other.copies.map { it.fileName }, playing?.fileName)
+            val target = if (same >= 0) other.asCopy(same) else other
+            val (url, direct) = Api.playbackUrl(target, at,
                                                 height = asked("height"),
                                                 mbit = asked("mbit"),
                                                 audio = ear,
                                                 channels = asked("ch"))
+            // and the subtitle on the screen and the soundtrack chosen, found again in the
+            // other machine's lists by language and name, as a handover after an error
+            // does: moved with none, the film arrived on the copy with subtitles off
+            // (2026-11-08)
+            val showing = subsIndex() ?: chosenSub()
+            val sub = sameSub(showing, playing?.textSubs(), target.textSubs())
+            val track = sameAudio(chosenAudio(), playing?.audioStreams, target.audioStreams)
+            runCatching { Api.pushSubtitleLook(other.srv) }
+            val carried = playIntent(this@PlayerActivity, target, at, sub, track,
+                                     asked("height"), asked("mbit"), plainSound = soundToKeep())
             log("moving to " + other.srv?.base + " at " + at + "s: " +
-                url.substringBefore("?"))
+                url.substringBefore("?") + (if (sub != null) " · subtitle " + sub else ""))
             // and the rest of the app goes with it: the shelves, what plays next, and
             // whatever is asked for after this film ends
             other.srv?.base?.let { Api.onTheCopyNow(it) }
             android.widget.Toast.makeText(
                 this@PlayerActivity, why, android.widget.Toast.LENGTH_SHORT).show()
-            startActivity(playIntent(this@PlayerActivity, other, at)
+            // the address asked for here, the way it was asked for; the subtitle beside it
+            startActivity(carried
                               .putExtra("url", url)
                               .putExtra("direct", direct)
                               .putExtra("casual", casually()).putExtra("shelf", offTheShelf()))

@@ -1208,6 +1208,22 @@ def _no_peer_art(key, which):
     return None
 
 
+def _no_place_said():
+    return None
+
+
+#: set by the server: a viewer paused or stopped, so the positions travel now
+PLACE_SAID = _no_place_said
+
+
+def _no_peer_holds(keys):
+    return set(), "", False
+
+
+#: set by the server: (which of these keys the other server holds a file for, its name,
+#: whether it answered) - for Continue watching, so a title held there opens there
+PEER_HOLDS = _no_peer_holds
+
 #: set by the server: the bytes of a poster or backdrop of a film only the other server
 #: holds, or None. The one list of both shows those films, and their posters were asked of
 #: this server, which has none (2026-11-07)
@@ -2289,11 +2305,29 @@ class LocalAPI:
             return 1.0
         return float(row["duration"]) if row and row["duration"] else 1.0
 
+    def _mark_held_there(self, items):
+        """Cards with no file here that the other server holds: elsewhere and away set,
+        unplayable and offered taken off - a film in a pack here and whole there is played
+        from there, not shown with a Download ribbon (2026-11-07). One question to the
+        other server for all of them."""
+        missing = [str(r.get("ratingKey") or "") for r in items
+                   if r and (r.get("unplayable") or r.get("offered"))]
+        if not missing:
+            return
+        held, name, up = PEER_HOLDS(missing)
+        for r in items:
+            if r and (r.get("unplayable") or r.get("offered")) and str(r.get("ratingKey") or "") in held:
+                r.pop("unplayable", None)
+                r.pop("offered", None)
+                r["elsewhere"] = name or "the other server"
+                r["away"] = not up
+
     def _title_art(self, con, key, which, want):
         """A title's poster or backdrop, `want` pixels wide where asked; a film only the
         other server holds has its picture from there."""
         row = con.execute("SELECT poster, backdrop FROM item WHERE id=?", (key,)).fetchone()
-        if not row:
+        if not row or not row[which]:
+            # not here, or a place kept for a title the other server holds: its picture
             got = PEER_ART(key, which)
             return ("image/jpeg", got) if got else None
         local = self.lib.artwork(row[which], "w500" if which == "poster" else "w780")
@@ -2305,6 +2339,33 @@ class LocalAPI:
                 local = sized
         with open(local, "rb") as f:
             return ("image/jpeg", f.read())
+
+    def _places_on(self, con, items):
+        """This viewer's place on the cards from the other server: its list says nothing of
+        who is asking, and the places travel between the two (2026-11-07)."""
+        for got in items:
+            if got and got.get("elsewhere") and not (got.get("viewOffset") and got.get("duration")):
+                prog = self._progress(con, str(got.get("ratingKey") or ""))
+                if prog and not got.get("viewOffset") and int(prog["position"] or 0) > 30:
+                    got["viewOffset"] = int(prog["position"] or 0) * 1000
+                # and its length, from the same place: a card for a film not held here had
+                # none, and a bar needs both ends (no bar on Continue watching, 2026-11-07)
+                if prog and not got.get("duration") and float(prog["duration"] or 0) > 0:
+                    got["duration"] = int(float(prog["duration"]) * 1000)
+
+    @staticmethod
+    def _listed_at(items, raw):
+        """When each card was put on the watchlist, a season by its newest episode."""
+        try:
+            listed = json.loads(raw or "{}")
+        except ValueError:
+            listed = {}
+        if not isinstance(listed, dict) or not listed:
+            return
+        for got in items:
+            if got:
+                held = [str(got.get("ratingKey") or "")] + [str(k) for k in got.get("holds") or []]
+                got["listedAt"] = max([int(listed.get(k) or 0) for k in held] or [0])
 
     def _last_watched(self, con, items):
         """When this viewer last watched each, a series by its newest episode: the
@@ -3090,6 +3151,7 @@ class LocalAPI:
                     held = {r[0] for r in con.execute(
                         "SELECT item_id FROM file WHERE item_id IN (%s)" % ",".join("?" * len(keys)), keys)}
                     items = one_list(items, theirs, name, up, held, dated, music)
+                    self._places_on(con, items)
                 # every film coming in or queued leads the shelf, one card each, the
                 # one asked for last furthest left
                 try:
@@ -3299,6 +3361,8 @@ class LocalAPI:
             off = set(one("unshuffled", "").split(",")) - {""}
             if off:
                 mark_unshuffled(items, off)
+            # the watchlist's: when each was put on it
+            self._listed_at(items, one("listed", ""))
             return self._page([i for i in items if i], q)
 
         if path == "/library/onDeck":
@@ -3463,6 +3527,11 @@ class LocalAPI:
                     if not self.file_for(str(key), 0):
                         row["unplayable"] = True
                 items.append(row)
+            # a title whose file is on the other server: said where, and opened there,
+            # as Recently added does - not faded as if it could not be played - with
+            # this viewer's place on it
+            self._mark_held_there(items)
+            self._places_on(con, items)
 
             # and the programmes somebody is up to date with: the next episode, greyed,
             # with when it airs - so a series being waited on does not simply vanish
@@ -4346,6 +4415,9 @@ class LocalAPI:
             if (key and dur and pos / dur >= 0.5 and self.half_way
                     and one("casual", "") not in ("1", "true", "yes")):
                 self.half_way(key)
+            # paused or stopped: the other server is told now, not on its timer
+            if key and one("state", "playing") in ("paused", "stopped"):
+                PLACE_SAID()
             if key and one("state", "playing") != "stopped":
                 self.log_watch_quietly(con, key, pos, dur, one("device", "") or "",
                                        one("client", ""),

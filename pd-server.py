@@ -227,6 +227,18 @@ def outside_host():
     return name or wan_ip()
 
 
+def outside_url(port=None):
+    """The house's address from outside with its scheme: https once a certificate is here
+    and the outside name is set (the certificate is for that name, not for the bare
+    address), http otherwise. "" when nothing is known."""
+    host = outside_host()
+    if not host:
+        return ""
+    named = not re.match(r"^\d+\.\d+\.\d+\.\d+$", host)
+    scheme = "https" if named and tls_context() is not None else "http"
+    return "%s://%s:%d" % (scheme, host, PORT if port is None else port)
+
+
 def local():
     global LOCAL
     if LOCAL is None:
@@ -3033,7 +3045,8 @@ def peer_art(key, which):
     key = str(key or "")
     if which not in ("poster", "backdrop") or not re.fullmatch(r"[0-9a-f]{12}", key):
         return None
-    if not any(str(c.get("ratingKey") or "") == key for c in peer_recent()[0]):
+    if not (any(str(c.get("ratingKey") or "") == key for c in peer_recent()[0])
+            or (local().file_for(key, 0) is None and key in peer_holds([key])[0])):
         return None
     kept = os.path.join(ROOT, "cache", "peer_%s_%s.jpg" % (key, which))
     try:
@@ -3041,6 +3054,8 @@ def peer_art(key, which):
             return f.read()
     except OSError:
         pass
+    if peer_away():
+        return None                       # not asked while it does not answer
     try:
         one = pd_torrents._following()
         if one:
@@ -3166,10 +3181,39 @@ def with_cache_downloads(got, token=None):
             continue
         seen.add(m.get("ratingKey"))
         got.append(m)
+    # and what was handed to a cache server and not taken by it yet: on no list, the film
+    # read as not asked for and Download was pressed again and again (2026-11-08)
+    for m in handed_not_taken(token):
+        if m.get("ratingKey") not in seen:
+            seen.add(m.get("ratingKey"))
+            got.append(m)
     if token is not None:
         for m in got:
             (m.get("offer") or {}).pop("token", None)
     return got
+
+
+def handed_not_taken(token=None):
+    """Films handed to the cache server, as the download list shows a title: waiting, on that
+    machine, until it starts them and lists them itself. Everyone's, or one person's."""
+    import pd_torrents
+    if pd_torrents._following():
+        return []
+    name = next((row.get("name") for row in Handler.FOLLOWERS.values()
+                 if not row.get("revoked") and row.get("name")), "") or "the cache server"
+    out = []
+    for r in pd_torrents.for_copy():
+        if r.get("move") or (token is not None and str(r.get("token") or "") != token):
+            continue
+        one = pd_torrents.metadata(str(r.get("key") or ""))
+        if not one:
+            continue
+        one = dict(one, offer=dict(one.get("offer") or {}, state="queued", stage="queued",
+                                   progress=0.0, words="Starting on " + name, on=name,
+                                   mine=False, who=str(r.get("who") or ""),
+                                   token=str(r.get("token") or ""), queueKey=str(r.get("key") or "")))
+        out.append(one)
+    return out
 
 
 def coming_in():
@@ -3802,7 +3846,7 @@ def fill_watchlists():
             continue
         had = [str(k) for k in (mine.get("watchlist") or [])]
         if key not in had:
-            mine["watchlist"] = ([key] + had)[:400]
+            put_on_watchlist(mine, [key])
             added += 1
     stored["watchFilled"] = int(time.time())
     write_settings(stored)
@@ -3873,6 +3917,19 @@ def carry_keys(moved):
         pd_log.raw("%s carried %d written-down key(s) onto titles that moved%s"
                 % (time.strftime("%H:%M:%S"), count[0], chr(10)))
     return count[0]
+
+
+def put_on_watchlist(mine, keys):
+    """Put titles at the front of a viewer's watchlist, with when: the watchlist sorts by the
+    later of last watched and added. Returns the list."""
+    keys = [str(k) for k in keys]
+    had = [str(k) for k in (mine.get("watchlist") or []) if str(k) not in keys]
+    mine["watchlist"] = (keys + had)[:400]
+    at = mine.get("watchlistAt") if isinstance(mine.get("watchlistAt"), dict) else {}
+    now = int(time.time())
+    at.update({k: now for k in keys})
+    mine["watchlistAt"] = {k: v for k, v in at.items() if k in set(mine["watchlist"])}
+    return mine["watchlist"]
 
 
 def write_settings(stored, merge=True):
@@ -4686,16 +4743,16 @@ HOUSE_LOUDNESS = {"at": 0.0}
 
 
 def take_house_loudness():
-    """On a copy: the main server's readings for the files held here, every half hour, so
-    only what the main server has not measured is measured here. Returns how many taken."""
+    """The other server's readings for the files held here too, every half hour, either way
+    round: a film measured on one is not read through again on the other. Returns how many
+    taken."""
     if time.time() - HOUSE_LOUDNESS["at"] < 1800:
         return 0
     HOUSE_LOUDNESS["at"] = time.time()
-    import pd_follow
-    one = pd_follow.settings(local().lib.config())
-    if not (one.get("on") and one.get("master") and one.get("key")):
-        return 0
-    rows = (pd_follow.ask(one, "/follow/loudness", 30) or {}).get("loudness") or []
+    try:
+        rows = json.loads(peer_fetch("/follow/loudness", 30) or b"{}").get("loudness") or []
+    except ValueError:
+        rows = []
     if not rows:
         return 0
     con = local().lib.db()
@@ -4704,12 +4761,207 @@ def take_house_loudness():
             "SELECT id, path, size FROM file WHERE path IS NOT NULL")]
     finally:
         con.close()
+    import pd_follow
     with LOUDNESS_LOCK:
         got = pd_follow.loudness_for_copy(rows, files, read_loudness())
         if got:
             LOUDNESS.update(got)
             write_loudness()
     return len(got)
+
+
+def peer_away():
+    """Whether the other server is not answering, by the same record the handover reads:
+    asked at most every thirty seconds, two seconds at most. While it is away nothing waits
+    on it - a page asking for posters waited eight seconds a poster with it off (2026-11-08)."""
+    import pd_torrents
+    one = pd_torrents._following()
+    where = (one or {}).get("master") or next(
+        (w for w, row in list(Handler.FOLLOWERS.items()) if not row.get("revoked")), "")
+    return not where or not Handler.answering_now(Handler, where)
+
+
+def peer_fetch(path, timeout=30):
+    """One answer from the other server as bytes, either way round: a copy asks the main
+    server with its key, the main server asks its copy as the house. None when nobody
+    answers, or the other server is marked as not answering."""
+    import urllib.parse as _uparse
+    import urllib.request as _ureq
+    import pd_torrents
+    if peer_away():
+        return None
+    one = pd_torrents._following()
+    if one:
+        url = (one["master"].rstrip("/") + path + ("&" if "?" in path else "?")
+               + "t=" + _uparse.quote(one["key"]))
+        req = _ureq.Request(url, headers={"X-Palladium-App": "follower"})
+    else:
+        where = next((w for w, row in list(Handler.FOLLOWERS.items()) if not row.get("revoked")), "")
+        if not where:
+            return None
+        req = _ureq.Request(where.rstrip("/") + path, headers={"X-Palladium-House": "1"})
+    try:
+        with _ureq.urlopen(req, timeout=timeout) as answer:
+            return answer.read()
+    except Exception:
+        return None
+
+
+#: a title's loudness as the other server read it, by key: {key: (when asked, answer)}
+PEER_READINGS = {}
+
+
+def peer_reading(key):
+    """The other server's reading of a film this one does not hold: {reading, codec} or {}.
+    Asked once in ten minutes a title: the receiver asks every fifteen seconds."""
+    key = str(key or "")
+    had = PEER_READINGS.get(key)
+    if had and time.time() - had[0] < 600:
+        return had[1]
+    import urllib.parse as _uparse
+    try:
+        said = json.loads(peer_fetch("/follow/reading?key=" + _uparse.quote(key), 10) or b"{}")
+    except ValueError:
+        said = {}
+    said = said if isinstance(said, dict) and said.get("reading") else {}
+    PEER_READINGS[key] = (time.time(), said)
+    return said
+
+
+#: what the other server said it holds, by key: {key: (when asked, held)}
+PEER_HELD = {}
+
+
+def peer_holds(keys):
+    """(the keys of these the other server holds a file for, its name, whether it answered).
+    One ask for those not asked in the last two minutes; a server that does not answer
+    holds nothing, and its name is the last one known."""
+    import urllib.parse as _uparse
+    now = time.time()
+    keys = [str(k) for k in keys if k]
+    ask = [k for k in keys if now - PEER_HELD.get(k, (0, False))[0] > 120]
+    up = True
+    if ask:
+        said = None
+        try:
+            said = json.loads(peer_fetch("/follow/held?keys=" + _uparse.quote(",".join(ask[:200])), 4) or b"null")
+        except ValueError:
+            said = None
+        up = isinstance(said, dict)
+        held = set((said or {}).get("held") or [])
+        for k in ask[:200]:
+            PEER_HELD[k] = (now, k in held)
+    name = peer_recent()[1] or ("the other server")
+    return {k for k in keys if PEER_HELD.get(k, (0, False))[1]}, name, up
+
+
+#: when the positions last went across because somebody paused or stopped
+PLACE_SAID_AT = {"at": 0.0}
+
+
+def place_said():
+    """A viewer here paused or stopped: the positions go across now, ten seconds apart at
+    most. A copy sends and fetches itself; the main server asks the copy to fetch."""
+    if time.time() - PLACE_SAID_AT["at"] < 10:
+        return
+    PLACE_SAID_AT["at"] = time.time()
+
+    def go():
+        import pd_follow
+        if not pd_follow.places_now(local()):
+            peer_fetch("/follow/placesnow", 5)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def stills_folder():
+    return os.path.join(local().lib.root, "cache", "frames")
+
+
+def stills_rows():
+    """Every file whose timeline stills are finished here, by name and length:
+    [{id, name, size}]."""
+    folder = stills_folder()
+    con = local().lib.db()
+    try:
+        files = con.execute("SELECT id, path, size FROM file WHERE path IS NOT NULL").fetchall()
+    finally:
+        con.close()
+    return [{"id": str(r["id"]), "name": os.path.basename(r["path"]), "size": int(r["size"] or 0)}
+            for r in files if r["size"] and os.path.exists(os.path.join(folder, str(r["id"]), ".done"))]
+
+
+def stills_to_take(theirs, files, done_here):
+    """Which of the other server's finished stills belong to files here that have none:
+    [(their id, my id)], matched by name and length like the loudness readings."""
+    mine = {}
+    for ident, path, size in files:
+        if size:
+            mine[(os.path.basename(str(path or "")).lower(), int(size))] = str(ident)
+    out = []
+    for r in theirs or []:
+        try:
+            ident = mine.get((str(r["name"]).lower(), int(r["size"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ident and ident not in done_here:
+            out.append((str(r["id"]), ident))
+    return out
+
+
+#: when the other server's stills were last asked for
+PEER_STILLS = {"at": 0.0}
+
+
+def take_peer_stills(most=20):
+    """The other server's finished timeline stills for files held here without any, a few at
+    a time and only while nobody needs the disks: made once in the house, not on each
+    machine. Returns how many films' stills were taken."""
+    if time.time() - PEER_STILLS["at"] < 1800:
+        return 0
+    PEER_STILLS["at"] = time.time()
+    if worker_waits(idle_priority=True):
+        return 0
+    import io as _io
+    import zipfile
+    try:
+        theirs = json.loads(peer_fetch("/follow/stills", 30) or b"{}").get("stills") or []
+    except ValueError:
+        return 0
+    folder = stills_folder()
+    con = local().lib.db()
+    try:
+        files = [(r["id"], r["path"], r["size"]) for r in con.execute(
+            "SELECT id, path, size FROM file WHERE path IS NOT NULL")]
+    finally:
+        con.close()
+    done_here = {str(i) for i, _, _ in files if os.path.exists(os.path.join(folder, str(i), ".done"))}
+    taken = 0
+    for theirs_id, mine_id in stills_to_take(theirs, files, done_here)[:most]:
+        if worker_waits(idle_priority=True):
+            break
+        blob = peer_fetch("/follow/stillpack?id=" + theirs_id, 120)
+        if not blob:
+            continue
+        place = os.path.join(folder, mine_id)
+        try:
+            with zipfile.ZipFile(_io.BytesIO(blob)) as z:
+                names = [n for n in z.namelist() if re.fullmatch(r"[\w.-]+\.jpg", n)]
+                if not names:
+                    continue
+                os.makedirs(place, exist_ok=True)
+                for n in names:
+                    with open(os.path.join(place, n), "wb") as f:
+                        f.write(z.read(n))
+            # finished last, so a half-written folder is made again here rather than kept
+            with open(os.path.join(place, ".done"), "w", encoding="utf-8") as f:
+                f.write("from the other server")
+            taken += 1
+        except (OSError, zipfile.BadZipFile):
+            continue
+    if taken:
+        pd_log.raw("%s stills: taken from the other server for %d films%s"
+                   % (time.strftime("%H:%M:%S"), taken, chr(10)))
+    return taken
 
 
 def worker_reset(name):
@@ -4937,6 +5189,10 @@ def keep_measuring():
         except Exception:
             pass                      # the main server is off: measured here as before
         try:
+            take_peer_stills()
+        except Exception:
+            pass                      # the other server is off: made here as before
+        try:
             measure_the_backlog()
         except Exception:
             pass                      # measuring is never worth taking the server down
@@ -5082,7 +5338,7 @@ def games_onto_watchlists(stored, api, con, now=None):
         mine["gamesListed"] = (listed + [key])[-100:]
         had = [str(k) for k in (mine.get("watchlist") or [])]
         if key not in had:
-            mine["watchlist"] = ([key] + had)[:400]
+            put_on_watchlist(mine, [key])
         fetched = [str(k) for k in mine.get("watchFetched") or []]
         if key not in fetched:
             mine["watchFetched"] = (fetched + [key])[-100:]
@@ -6595,10 +6851,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             keys = self.spread(key)
             marked = [str(k) for k in (mine.get("watchlist") or [])
                       if str(k) != key and str(k) not in keys]
+            mine["watchlist"] = marked[:400]
             if body.get("on", True):
                 # newest first: the order it was thought of
-                marked = keys + marked
-            mine["watchlist"] = marked[:400]
+                marked = put_on_watchlist(mine, keys)
             write_settings(stored)
             full, part = self.rollup(marked)
             self.reply_json({"watchlist": marked, "on": key in marked,
@@ -7567,7 +7823,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(403, "not allowed")
                 return
             rows = (self.read_json() or {}).get("progress") or []
-            self.reply_json({"taken": local().take_progress(rows[:200])})
+            # a place for a title only the copy holds is kept too, against a row made
+            # for it: dropped, Continue watching here never showed what was watched
+            # there (2026-11-07)
+            self.reply_json({"taken": local().take_progress(rows[:200], may_stub=True)})
             return
         if path == "/follow/fetched":
             # A machine that keeps copies saying what it fetched for itself while this
@@ -9021,7 +9280,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             import pd_tracker
             body = self.read_json() or {}
-            self.reply_json(pd_tracker.drop(str(body.get("hash") or "")))
+            self.reply_json(pd_tracker.drop(str(body.get("hash") or ""),
+                                            self.name_of(self.bearer() or "me")))
             return
         if path == "/tracker/cookie":
             # The signed-in session to search the tracker with. Its login form has a
@@ -10001,6 +10261,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "syncBack",
                         # the only folders sync back may remove a film from
                         "syncBackFolders",
+                        # which way the two servers copy for each other: both, toCopy
+                        # or fromCopy - by the same list and the same copy
+                        "syncWay",
+                        # which machines seed the packs whose home is split
+                        "splitSeed",
                         # the megabits a copy may take while somebody is watching.
                         # Twenty unless changed; nought lets it run flat out.
                         "syncMbitWhileWatching",
@@ -10012,6 +10277,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         # computer this one copies from, or the one copying from it
                         "encodeOn"):
                 if key in body:
+                    if key == "syncWay" and body[key] not in SYNC_WAYS:
+                        continue
+                    if key == "splitSeed" and body[key] not in ("copy", "main", "both"):
+                        continue
                     cfg[key] = body[key]
                     if key in ("movies", "tv", "mixed"):
                         changed = key
@@ -10304,13 +10573,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         +5 alone far from it. None until the film is measured; it is measured now."""
         found = local().file_for(str(key or ""), 0) or {}
         part = found.get("part")
+        import pd_receiver
         if part is None:
-            return None
+            # held only on the other server: its reading, which it made when it was played
+            # there; without it this said "measuring" for the whole film (2026-11-07)
+            said = peer_reading(key)
+            heard = pd_receiver.reading_for(said.get("reading"), said.get("codec") or "")
+            if heard is None:
+                return None
+            return pd_receiver.level_for(heard, typical_loudness(is_episode(str(key or ""))))
         with LOUDNESS_LOCK:
             known = read_loudness().get(str(part))
         # one window at 5:00 was up to 9 dB out, which turned a loud film up 13 dB;
         # and a Dolby track is judged by its reading with compression off
-        import pd_receiver
         heard = pd_receiver.reading_for(known, codec_of(part))
         if heard is None:
             return None
@@ -12476,7 +12751,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             had = [str(k) for k in (mine.get("watchlist") or [])]
             if key in had:
                 return False
-            mine["watchlist"] = ([key] + had)[:400]
+            put_on_watchlist(mine, [key])
             write_settings(stored)
             return True
         except Exception:
@@ -13167,14 +13442,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             held = (read_settings() or {}).get("subFit") or {}
             self.reply_json({"fits": {self.fit_key(k): v for k, v in held.items()}})
             return True
-        if path == "/follow/loudness":
-            # every file's loudness measured here, by the file's name and length, for the
-            # copy: it holds the same files and need not read each one through again
+        if path in ("/follow/loudness", "/follow/stills", "/follow/stillpack", "/follow/reading",
+                    "/follow/held", "/follow/placesnow"):
+            # what one server has measured or made, for the other: the copy asks with its
+            # key, the main server asks its copy as the house. Each holds files the other
+            # has too and need not read them through again.
             invite = INVITES.check(self.bearer(), self.app_name())
-            if not (invite and invite.get("follows")) or self.follower_stopped():
+            if (self.role != "owner" and not (invite and invite.get("follows"))) or self.follower_stopped():
                 self.send_error(403, "not allowed")
                 return True
-            self.reply_json({"loudness": loudness_rows()})
+            args = (urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {})
+            if path == "/follow/loudness":
+                self.reply_json({"loudness": loudness_rows()})
+            elif path == "/follow/stills":
+                self.reply_json({"stills": stills_rows()})
+            elif path == "/follow/stillpack":
+                self.send_stillpack(str((args.get("id") or [""])[0]))
+            elif path == "/follow/placesnow":
+                # the other server's viewer paused or stopped: the exchange now
+                import pd_follow
+                threading.Thread(target=pd_follow.places_now, args=(local(),), daemon=True).start()
+                self.reply_json({"ok": True})
+            elif path == "/follow/held":
+                asked = [k for k in str((args.get("keys") or [""])[0]).split(",") if k][:200]
+                self.reply_json({"held": [k for k in asked if local().file_for(k, 0)]})
+            else:
+                self.reply_json(self.reading_of(str((args.get("key") or [""])[0])))
             return True
         if path == "/follow/endings":
             # where each title's story ends, measured here, for the copy: it has no
@@ -13193,6 +13486,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json({"endings": pd_credits.rows_since(since)})
             return True
         return False
+
+    def send_stillpack(self, ident):
+        """One file's finished timeline stills as a zip, for the other server."""
+        import io as _io
+        import zipfile
+        place = os.path.join(stills_folder(), ident)
+        if not re.fullmatch(r"\w+", ident) or not os.path.exists(os.path.join(place, ".done")):
+            self.send_error(404)
+            return
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+            for n in sorted(os.listdir(place)):
+                if n.endswith(".jpg"):
+                    z.write(os.path.join(place, n), n)
+        blob = buf.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(blob)))
+        self.end_headers()
+        self.wfile.write(blob)
+
+    @staticmethod
+    def reading_of(key):
+        """This server's loudness reading of a title's file, and the codec it is judged by."""
+        found = local().file_for(str(key or ""), 0) or {}
+        part = found.get("part")
+        if part is None:
+            return {}
+        with LOUDNESS_LOCK:
+            known = read_loudness().get(str(part))
+        return {"reading": known, "codec": codec_of(part)} if known else {}
 
     def follower_stopped(self):
         """Whether this caller is a machine the owner has stopped.
@@ -13487,6 +13811,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     FROM_COPY = []
     FROM_COPY_LOCK = threading.Lock()
     FROM_COPY_BUSY = [False]
+    #: a fetch from the copy that wrote nothing is tried this many times in all
+    FROM_COPY_TRIES = 3
+    #: what the copy list wants that this server has no file for, from the fullest recent
+    #: asking: {"keys": [(key, why)], "deck": bool, "when": time} - fetched from the copy
+    WANTED_HERE = {"keys": [], "deck": False, "when": 0.0}
 
     #: the last sync back: when, what it took back and let go, and why it stopped if it did
     SYNC_BACK = {"at": 0.0, "busy": False, "fetch": [], "drop": [], "why": ""}
@@ -13627,6 +13956,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 cls.SYNC_BACK["why"] = "torrents not read: %s" % str(e)[:120]
             pd_torrents.STATE["elsewhere"] = {(e["pack"], int(e["index"])): e["path"] for e in elsewhere}
+            # the viewing rule, Sync back on or off: the copy rules read the other way. What the
+            # list the copy fetches by wants and this server has no file for is copied here from
+            # the copy, any pack of theirs, in the list's order - what the copy is showing on a
+            # screen now first - by the same copy as the other way. Not a rule of its own
+            # (owner, 2026-11-07), and worked out again every round, so a restart loses nothing
+            if sync_way(local().lib.config()) in ("both", "fromCopy"):
+                wanted_here = ([(str(k), "on a screen there") for _, k in list(peer_live())]
+                               + list(cls.WANTED_HERE.get("keys") or []))
+                picked = pd_homes.wanted_fetch(wanted_here, pd_torrents.copies_of, here, copy_whole)
+                items = cls.fetch_items(where, picked)
+                if items:
+                    import pd_follow
+                    threading.Thread(target=pd_follow.fetch_back, args=(items, cls.taken_back),
+                                     daemon=True).start()
+            # and what waited on a busy drive last round, tried again
+            if cls.FROM_COPY:
+                cls.take_from_the_copy()
             # the pack's home holds every file: what it lacks and this server has is moved
             # there, one file at a time by the copy's mover
             listed = [r.get("key") for r in pd_torrents.for_copy() if r.get("move")]
@@ -13645,16 +13991,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 films, wanted, here,
                 copy_whole, playing,
                 {p["hash"] for p in data["packs"] if pd_torrents.home_of(p["hash"]) == "both"})
-            with cls.FROM_COPY_LOCK:
-                known = {(str(x.get("hash")), index_of(x)) for x in cls.FROM_COPY}
-                for pack, film in fetch:
-                    if (pack["hash"], int(film["index"])) not in known:
-                        cls.FROM_COPY.append({"where": where, "hash": pack["hash"],
-                                              "index": int(film["index"]), "name": film.get("path"),
-                                              "size": film.get("size"), "title": film.get("title"),
-                                              "syncBack": True})
-            if fetch:
-                cls.take_from_the_copy()
+            cls.queue_from_copy(where, fetch, "sync back")
             def same_on_copy(pack, film):
                 # asked again now, with the fingerprint: whole there, the same length,
                 # the same bytes at both ends and in the middle
@@ -13691,6 +14028,86 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cls.SYNC_BACK["why"] = str(e)[:200]
         finally:
             cls.SYNC_BACK["busy"] = False
+
+    @classmethod
+    def queue_from_copy(cls, where, fetch, why):
+        """Films of the copy's to fetch here, listed once each and the fetching started."""
+        with cls.FROM_COPY_LOCK:
+            known = {(str(x.get("hash")), index_of(x)) for x in cls.FROM_COPY}
+            for pack, film in fetch:
+                if (pack["hash"], int(film["index"])) not in known:
+                    cls.FROM_COPY.append({"where": where, "hash": pack["hash"],
+                                          "index": int(film["index"]), "name": film.get("path"),
+                                          "size": film.get("size"), "title": film.get("title"),
+                                          "syncBack": True, "why": why})
+                    pd_log.raw("%s %s: fetching %s from the copy%s" % (
+                        time.strftime("%Y-%m-%d %H:%M:%S"), why, film.get("title"), chr(10)),
+                        os.path.join(ROOT, "sync_back.log"))
+        if fetch:
+            cls.take_from_the_copy()
+
+    #: (pack, index) -> when it was copied here from the copy server: not offered again for a
+    #: day, so a pack's long read is not started over every round while it runs
+    TAKEN_BACK = {}
+
+    @classmethod
+    def fetch_items(cls, where, picked):
+        """The copy items for pack files the copy server holds whole: its address for the file,
+        the file's place in this server's pack, and the length and fingerprint the copy server
+        reads off its own disk."""
+        import pd_torrents
+        items, now = [], time.time()
+        for pack, film, why in picked:
+            mark, at = str(pack.get("hash") or ""), int(film.get("index", -1))
+            if not mark or at < 0 or now - cls.TAKEN_BACK.get((mark, at), 0) < 86400:
+                continue
+            into = pd_torrents.placed_path(mark, at, str(film.get("path") or ""))
+            if not into:
+                continue
+            try:
+                said = json.loads(peer_fetch("/follow/packwhole?hash=%s&index=%d&mark=1"
+                                             % (urllib.parse.quote(mark), at), 30) or b"{}")
+            except ValueError:
+                said = {}
+            if not said.get("whole") or not said.get("mark"):
+                continue
+            items.append({"name": os.path.basename(into), "into": into, "size": int(said.get("size") or 0),
+                          "mark": str(said["mark"]), "markKind": "pack", "as": "house",
+                          "url": "%s/follow/file?hash=%s&index=%d" % (where, urllib.parse.quote(mark), at),
+                          "title": film.get("title") or film.get("name"), "why": why,
+                          "hash": mark, "index": at})
+        return items
+
+    @classmethod
+    def taken_back(cls, item, path):
+        """A pack file copied here whole from the copy server: written down and read into its pack."""
+        import pd_torrents
+        cls.TAKEN_BACK[(item["hash"], int(item["index"]))] = time.time()
+        pd_torrents.mark_done(item["hash"], item["index"], "copied from the copy server")
+        # read into its pack only where this machine seeds it: a split pack the copy
+        # server seeds is not read here (owner, 2026-11-08)
+        if pd_torrents.seeds_pack_here(item["hash"]):
+            pd_torrents.read_in(item["hash"], item["index"])
+        pd_log.raw("%s took back from the copy: %s%s" % (time.strftime("%H:%M:%S"), item.get("title"), chr(10)))
+
+    @staticmethod
+    def watched_on_copy():
+        """TMDB numbers of the films the copy server is sending a viewer now."""
+        import pd_torrents
+        out = set()
+        con = local().lib.db()
+        try:
+            for _, key in list(peer_live()):
+                row = con.execute("SELECT tmdb_id FROM item WHERE id=?", (key,)).fetchone()
+                if row and row["tmdb_id"]:
+                    out.add(int(row["tmdb_id"]))
+                    continue
+                _, film = pd_torrents.by_key(key)
+                if film and film.get("tmdb"):
+                    out.add(int(film["tmdb"]))
+        finally:
+            con.close()
+        return out
 
     #: torrent -> when it was sent to the copy server, waiting for it to seed there
     HANDED = {}
@@ -13858,9 +14275,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         with urllib.request.urlopen(req, timeout=300) as answer:
                             got = pd_torrents.place_and_recheck(
                                 mark, at, str(one.get("name") or ""), answer, size)
+                    except urllib.error.HTTPError as e:
+                        if e.code == 503:
+                            # the copy's drive is another job's: kept, and asked again
+                            # next round - not a fault, and not dropped (2026-11-07)
+                            with cls.FROM_COPY_LOCK:
+                                cls.FROM_COPY.append(one)
+                            pd_log.raw("%s taking back %s waits: the copy's drive is busy%s"
+                                       % (time.strftime("%H:%M:%S"), one.get("title"), chr(10)))
+                            return
+                        Handler.note_fault(
+                            None, "taking back %s: %s" % (one.get("title"), e))
+                        continue
                     except Exception as e:
                         Handler.note_fault(
                             None, "taking back %s: %s" % (one.get("title"), e))
+                        continue
+                    if not got:
+                        # nothing written: said, and tried again next round, three times in
+                        # all. Dropped without a word, a film cut part way was never fetched
+                        # and its viewer read from one server (2026-11-07)
+                        why = pd_torrents.PLACE_WHY.get("why") or "nothing written"
+                        tries = int(one.get("tries") or 0) + 1
+                        if tries < cls.FROM_COPY_TRIES:
+                            with cls.FROM_COPY_LOCK:
+                                cls.FROM_COPY.append(dict(one, tries=tries))
+                            pd_log.raw("%s taking back %s failed (%s), try %d of %d: again next round%s"
+                                       % (time.strftime("%H:%M:%S"), one.get("title"), why, tries,
+                                          cls.FROM_COPY_TRIES, chr(10)))
+                            return
+                        Handler.note_fault(None, "taking back %s: %s, %d tries" % (one.get("title"), why, tries))
                         continue
                     if got:
                         pd_torrents.mark_done(mark, at, "taken back from the copy")
@@ -13936,7 +14380,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: behind when somebody is named the owner, still in the file and read by
     #: nothing - which is how twelve collections and a front page arrangement came
     #: to vanish on the day their owner took a key of their own.
-    VIEWER_KEYS = ("watchlist", "favorites", "shuffles",
+    VIEWER_KEYS = ("watchlist", "watchlistAt", "favorites", "shuffles",
                    "subtitles", "perTitle", "myAccent", "autoNext", "autoFetch",
                    "autoSync", "watchParty", "subLanguage", "mine", "deckAside",
                    # what this viewer reads subtitles in, and what they read when the
@@ -14798,8 +15242,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         about_me = {
             "mine": {"lan": (("http://%s:%d" % (LAN_IP, PORT))
                              if LAN_IP and self.may_have_the_lan() else ""),
-                     "outside": (("http://%s:%d" % (outside_host(), PORT))
-                                 if outside_host() else ""),
+                     "outside": outside_url(),
                      "name": self.server_name()},
             "follows": self.house_doors(),
         }
@@ -15534,14 +15977,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     @staticmethod
     def shuffle_current(one):
         """The title a round is on, unless it has been finished."""
-        order = [str(k) for k in (one.get("order") or [])]
-        if "pos" in one:
-            pos = int(one.get("pos") if one.get("pos") is not None else -1)
-            on = order[pos] if 0 <= pos < len(order) else ""
-        else:                         # a round written before the order had a place
+        import pd_shuffle
+        if "pos" not in one:          # a round written before the order had a place
             played = [str(k) for k in (one.get("played") or [])]
             on = played[-1] if played else ""
-        return "" if not on or on == str(one.get("done") or "") else on
+            return "" if not on or on == str(one.get("done") or "") else on
+        return pd_shuffle.current(one)
 
     @staticmethod
     def series_shuffle_names(rounds):
@@ -15887,97 +16328,61 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # holds a file for, since nothing can be fetched from a main server that is off.
         copy = self.follows_a_main()
         usable = lambda k: k in inside and (not copy or self.can_be_played(k))
-        places = dict(one.get("at") or {})
-
-        def place_of(key):
-            value = places.get(key)
-            at = int(value.get("at") or 0) if isinstance(value, dict) else int(value or 0)
-            return at if at > 30 else 0
-
-        def ahead_of(i):
-            return next((j for j in range(i + 1, len(order)) if usable(order[j])), None)
-
-        if left_from and not peek and not back:
-            # barely started: no place worth keeping for it
-            if place_of(str(left_from)) == 0 and str(left_from) in places:
-                places.pop(str(left_from), None)
-                one["at"] = places
-
-        if back:
-            to = next((j for j in range(pos - 1, -1, -1) if usable(order[j])), None)
-            if to is None and music:
-                to = next((j for j in range(len(order) - 1, pos, -1) if usable(order[j])), None)
-            if to is None:
-                return {"error": "nothing before this one"}
-            return self.shuffle_moved(stored, one, to, pool)
-
-        current = self.shuffle_current(one)
-        # Carrying on is carrying on what was watched last: an episode of this shelf
-        # played since the round last kept a place - from its page, Continue watching,
-        # another round of the same series - is where it goes on, as Continue watching
-        # says. Watched to its last minute, the round goes on from it to the next one
-        # rather than back to an older place.
-        moved_on = False
-        if resume:
-            newer = self.newest_watched(inside, places)
-            if newer and usable(newer[0]):
-                key, at, over = newer
-                if key in order:
-                    one["pos"] = order.index(key)
-                if over:
-                    one["at"] = {}
-                    pos = int(one.get("pos") if one.get("pos") is not None else pos)
-                    moved_on = True
-                else:
-                    one["at"] = {key: {"at": int(at), "when": int(time.time())}}
-                    Handler.round_moved(one)
-                    write_settings(stored)
-                    self.ask_the_pack([key])
-                    return self.shuffle_said(one, key, pool, self.shuffle_left(one, pool), at)
-        if resume and current and usable(current) and not moved_on:
-            # carrying on: the title the round is on, where it was left - asked of the
-            # pack if only a pack has it, as a draw would have
-            self.ask_the_pack([current])
-            return self.shuffle_said(one, current, pool, self.shuffle_left(one, pool),
-                                     place_of(current))
-
-        to = ahead_of(pos)
-        if to is None and self.follows_a_main():
-            # A copy holds part of the shelf: nothing more here is not the end of the
-            # round, which the main server keeps. The earliest title here plays again
-            # and the place stays where it is.
-            again = next((k for k in order if usable(k)), None)
-            if again is None:
-                return {"error": "nothing on this shelf is here yet"}
-            return self.shuffle_said(one, again, pool, self.shuffle_left(one, pool),
-                                     place_of(again))
-        if to is None:
-            # the end of the order: a new round, drawn afresh
-            self.round_log(cid, one, "end of the order, pool %d" % len(pool))
-            fresh = [str(k) for k in pool]
-            if music:
-                fresh = [str(k) for k in order if str(k) in inside] +                     [k for k in fresh if k not in order]
-            else:
-                random.shuffle(fresh)
-            one.update({"order": fresh, "pos": -1, "done": "",
-                        "run": int(one.get("run") or 1) + 1})
-            order, pos = one["order"], -1
-            to = ahead_of(-1)
-            if to is None:
-                return {"error": "nothing on this shelf can be played here"}
-        # What has to download first is not what plays now: the next in the drawn order
-        # that is here plays, and the one coming in stays next in line while it arrives -
-        # the hat fetches in that order already. Nothing here ahead of it: as before.
-        if not copy:
-            self.ready_first(order, to, usable, self.ready_now)
+        import pd_shuffle
+        # the rules of a round are the shuffle handler's: drawn in advance, its own silent
+        # progress, Next marking the title done for the round (owner, 2026-11-08)
+        if music:
+            # the music videos loop their own order, from where the row was last started,
+            # rather than draw a new one
+            one["next"] = [k for k in order if k in inside] + [str(k) for k in pool if str(k) not in set(order)]
         if peek:
+            # a look moves nothing; at the end of the order the next round is drawn once and
+            # kept, so the move plays what the look showed
+            had_next = list(one.get("next") or [])
+            key = pd_shuffle.peek(one, usable, pool, copy=copy)
+            if not key:
+                return {"error": "nothing on this shelf can be played here"}
+            if list(one.get("next") or []) != had_next:
+                write_settings(stored)
             self.shuffle_derive(one, inside)
-            return self.shuffle_said(one, order[to], pool, self.shuffle_left(one, pool))
-        said = self.shuffle_moved(stored, one, to, pool, drawn=True)
+            return self.shuffle_said(one, key, pool, self.shuffle_left(one, pool))
+        if back:
+            key = pd_shuffle.back(one, usable)
+            if key is None and music:
+                # the music videos wrap: before the first is the last
+                to = pd_shuffle.behind(one, usable, len(order))
+                if to is not None:
+                    one["pos"], one["done"], one["at"] = to, "", {}
+                    key = order[to]
+            if key is None:
+                return {"error": "nothing before this one"}
+            return self.shuffle_moved(stored, one, pool)
+        if resume:
+            key, at, over = pd_shuffle.carry_on(one, usable, pool, seen=self.seen_last, copy=copy)
+            if over:
+                self.round_log(cid, one, "end of the order, pool %d" % len(pool))
+            if not key:
+                return {"error": "nothing on this shelf can be played here"}
+            Handler.round_moved(one)
+            self.shuffle_derive(one, inside)
+            write_settings(stored)
+            self.ask_the_pack([key])
+            return self.shuffle_said(one, key, pool, self.shuffle_left(one, pool), at)
+        key, over = pd_shuffle.forward(one, usable, pool, left_from, copy=copy)
+        if over:
+            self.round_log(cid, one, "end of the order, pool %d" % len(pool))
+        if not key:
+            return {"error": "nothing on this shelf can be played here" if not copy
+                    else "nothing on this shelf is here yet"}
+        # What has to download first is not what plays now: the next in the drawn order
+        # that is here plays, and the one coming in stays next in line while it arrives
+        if not copy and 0 <= int(one.get("pos", -1)) < len(one["order"]):
+            self.ready_first(one["order"], int(one["pos"]), usable, self.ready_now)
+        said = self.shuffle_moved(stored, one, pool)
         self.fetch_ahead(one["queue"][:3])
-        # what a pack has to give, asked for before it is wanted: the one now on and
-        # the ten after it
-        self.ask_the_pack([order[to]] + list(one["queue"]))
+        # what a pack has to give, asked for before it is wanted: the one now on and the
+        # ten after it
+        self.ask_the_pack([said.get("key") or key] + list(one["queue"]))
         return said
 
     @staticmethod
@@ -16036,82 +16441,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 one["done"] = stand.get(str(one["done"]), one["done"])
             if isinstance(one.get("at"), dict):
                 one["at"] = {stand.get(str(k), k): v for k, v in one["at"].items()}
-        order = [str(k) for k in (one.get("order") or [])]
-        # A title once in the order, and the place stays on the title it is on: where
-        # the one the round is on appears twice, the one at the place is the one
-        # kept; any other title keeps its first place.
-        if "pos" in one and one.get("pos") is not None and 0 <= int(one["pos"]) < len(order):
-            at = int(one["pos"])
-            on = order[at]
-            seen, kept, place = set(), [], -1
-            for i, k in enumerate(order):
-                if i == at:
-                    place = len(kept)
-                    kept.append(k)
-                    seen.add(k)
-                elif k != on and k not in seen:
-                    seen.add(k)
-                    kept.append(k)
-            order = kept
-            one["pos"] = place
-        else:
-            order = list(dict.fromkeys(order))
+        import pd_shuffle
         if "pos" not in one:
             # A round from before the order had a place: what it played, in the order
             # it played it, then the rest of its order, and the place on the title it
             # is on.
+            order = [str(k) for k in (one.get("order") or [])]
             played = [str(k) for k in (one.get("played") or [])]
             played = [k for i, k in enumerate(played) if k not in played[:i]]
             order = played + [k for k in order if k not in set(played)]
             pos = len(played) - 1 - int(one.get("back") or 0)
-            one["pos"] = max(-1, min(pos, len(played) - 1))
-        if not order:
-            order = [str(k) for k in pool]
-            random.shuffle(order)
-            one["pos"] = -1
-        # New to the shelf: each in at a random place after the next one - that one
-        # is promised. A title taken off the shelf stays in the order and is stepped
-        # over; on a copy most of the shelf is not here, and the order is the round's.
-        held = set(order)
-        pos = int(one["pos"])
-        for k in (str(k) for k in pool):
-            if k not in held:
-                order.insert(random.randint(min(pos + 2, len(order)), len(order)), k)
-                held.add(k)
-        one["order"] = order
+            one["order"], one["pos"] = order, max(-1, min(pos, len(played) - 1))
+        pd_shuffle.settle(one, [str(k) for k in pool])
         one.pop("back", None)
         self.shuffle_derive(one, set(str(k) for k in pool))
 
     def shuffle_derive(self, one, inside=None):
-        """What older readers of a round look at, from the order and the place: what it
-        has played up to the title it is on, and the ten after it that are still on
-        the shelf - a title that left the shelf stays in the order and is stepped
-        over, and was listed as next all the same."""
-        order, pos = one.get("order") or [], int(one.get("pos") if one.get("pos") is not None else -1)
-        one["played"] = list(order[:pos + 1])
-        ahead = order[pos + 1:]
-        if inside is not None:
-            ahead = [k for k in ahead if k in inside]
-        one["queue"] = list(ahead[:self.SHUFFLE_DEEP])
+        """What older readers of a round look at: what it has played up to the title it is
+        on, and the titles after it still on the shelf."""
+        import pd_shuffle
+        pd_shuffle.derived(one, inside, self.SHUFFLE_DEEP)
 
     def shuffle_left(self, one, pool):
         """How many titles of the shelf the round has still to come to."""
-        ahead = set((one.get("order") or [])[int(one.get("pos") or 0) + 1:])
-        return len([k for k in pool if str(k) in ahead])
+        import pd_shuffle
+        return pd_shuffle.left(one, pool)
 
-    def shuffle_moved(self, stored, one, to, pool, drawn=False):
-        """The round's place moved to one title of its order, kept, and answered with."""
-        one["pos"] = int(to)
-        key = one["order"][to]
-        if one.get("done") == key:
-            one["done"] = ""
+    def shuffle_moved(self, stored, one, pool):
+        """The round kept where the handler moved it, and answered with the title it is on."""
+        import pd_shuffle
+        order = one.get("order") or []
+        pos = int(one.get("pos") if one.get("pos") is not None else -1)
+        key = order[pos] if 0 <= pos < len(order) else ""
         self.shuffle_derive(one, set(str(k) for k in pool))
         Handler.round_moved(one)
         write_settings(stored)
-        value = (one.get("at") or {}).get(key)
-        at = int(value.get("at") or 0) if isinstance(value, dict) else int(value or 0)
         return self.shuffle_said(one, key, pool, self.shuffle_left(one, pool),
-                                 at if at > 30 else 0)
+                                 pd_shuffle.place(one, key))
 
     def round_log(self, cid, one, why):
         """One line in debug.log when a round starts over, and why."""
@@ -16182,6 +16548,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     #: watching's three minutes is a sitcom's last scene, and a place stopped in it was
     #: lost - the round went back to an older place instead
     SHUFFLE_OVER = 60
+
+    def seen_last(self, key):
+        """(position, duration) of this viewer's last shuffle playing of one title, from the watch
+        log - both servers' rows - or their progress row, whichever is newer. None when neither.
+        Ordinary watching is not a shuffle's place (owner, 2026-11-09)."""
+        con = local().lib.db()
+        try:
+            rows = [r for r in (
+                con.execute("SELECT position, duration, updated FROM watchlog WHERE who=? AND key=? "
+                            "AND COALESCE(casual, 0) = 1 ORDER BY updated DESC LIMIT 1",
+                            (self.viewer(), str(key))).fetchone(),
+                con.execute("SELECT position, duration, updated FROM progress WHERE who=? AND key=? "
+                            "AND COALESCE(casual, 0) = 1", (self.viewer(), str(key))).fetchone()) if r]
+        finally:
+            con.close()
+        if not rows:
+            return None
+        r = max(rows, key=lambda r: int(r["updated"] or 0))
+        return float(r["position"] or 0), float(r["duration"] or 0)
 
     def newest_watched(self, inside, places):
         """The title of this shelf this viewer watched last, where, and whether that was
@@ -16272,57 +16657,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
         finally:
             con.close()
-        # A report keeps a place and nothing else: the order and where the round is in
-        # it move only by Next and Back. Moving them here put a title stepped back over
-        # among the played when its player said goodbye, and Next skipped it.
-        done = pd_localapi.LocalAPI.watched_through(position, duration, key)
-        if done or position < 30:
-            if str(key) not in places:
-                return
-            places.pop(str(key), None)
-        else:
-            # One place per shelf, and it is this one. A shuffle draws a title, some
-            # of it is watched, and the next draw leaves that place behind - eight of
-            # them had built up, every one an episode half watched that the copy was
-            # still holding and Continue watching could still offer. A shuffle is one
-            # thing at a time: where it is now is the only place worth keeping.
-            places = {str(key): {"at": int(position), "when": int(time.time())}}
-        one["at"] = places
-        Handler.round_moved(one)
-        write_settings(stored)
-
-    def shuffle_forget(self, key):
-        """Drop one title's place from every shelf this viewer has a round on.
-
-        A shelf keeps where a playing got to so it can be carried on. Only a playing
-        started off the shelf says which shelf it is on, so anything else - the title's
-        own page, another screen, marking it watched - finished the episode and left
-        the place standing. The row then offered to resume something already watched
-        and could not be got rid of by watching it again.
-        """
-        stored = self.settings_file()
-        mine = self.viewer_settings(stored)
-        moved = False
-        for cid, one in (mine.get("shuffles") or {}).items():
-            if not isinstance(one, dict):
-                continue
-            # a round drawn from a pack holds the pack's key; the playing reports the
-            # library's, so both are compared as the library holds them
-            places = one.get("at") or {}
-            gone = [k for k in places if self.as_held(k) == str(key)]
-            if gone:
-                for k in gone:
-                    places.pop(k, None)
-                one["at"] = places
-                Handler.round_moved(one)
-                moved = True
-            # the title the round was on is finished: Resume draws the next one
-            last = [str(k) for k in (one.get("played") or [])][-1:]
-            if last and self.as_held(last[0]) == str(key):
-                one["done"] = last[0]
-                Handler.round_moved(one)
-                moved = True
-        if moved:
+        # the player's report: the place of the title the round is on, the end of it, or
+        # the next one starting by itself - the round follows (shuffle handler)
+        import pd_shuffle
+        if pd_shuffle.follow(one, str(key), float(position or 0), float(duration or 0)):
+            self.shuffle_derive(one)
+            Handler.round_moved(one)
             write_settings(stored)
 
     #: keys that have already asked for what follows them, so a report every ten
@@ -16381,9 +16721,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             pass                    # a film being watched is not held up by this
 
     def title_finished(self, key):
-        """A title finished or marked watched: its shelf places go, and it leaves the
-        viewer's watchlist unless it is one of their favorites."""
-        self.shuffle_forget(key)
+        """A title finished or marked watched: it leaves the
+        viewer's watchlist unless it is one of their favorites. A shuffle's round is not
+        touched: what is watched outside it does not move it (owner, 2026-11-09)."""
         stored = self.settings_file()
         mine = self.viewer_settings(stored)
         # a favorite stays on the watchlist watched or not - that is what makes it one -
@@ -17178,6 +17518,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     local().who = asking
 
             now_named = time.time()
+            missing = []
             wrote_ahead = set()
             Handler.FETCHED_AHEAD = set()
             plan, listed = self.wanted_keys(con, hours, deck, episodes, mine,
@@ -17256,6 +17597,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     got[0]["also"] = [{"why": y, "who": w}
                                       for y, w in Handler.ALSO[str(key)]]
                 want += got
+                # wanted and not here: the same rules read the other way, for the copy
+                # server to send here (sync is the same both ways, 2026-11-07)
+                if not got and not kept:
+                    missing.append((str(key), why))
             # and the book written back when it gained anything, with what has long
             # since fallen off the list dropped from it: a season watched last winter
             # is not worth remembering the first sight of for ever
@@ -17265,6 +17610,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 > AHEAD_DAYS * 86400 * 2]:
                     AHEAD_SINCE.pop(old_key, None)
                 write_ahead()
+            # kept from the fuller asking: a cache asks a light list every minute while
+            # copying, and that one leaves the watchlists out
+            had = Handler.WANTED_HERE
+            if (not mine and not only and kinds is None
+                    and (deck or not had.get("deck") or now_named - float(had.get("when") or 0) > 900)):
+                Handler.WANTED_HERE = {"keys": missing, "deck": bool(deck), "when": now_named}
         finally:
             con.close()
 
@@ -19784,26 +20135,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ownName = self.owner_name()
         con = local().lib.db()
         try:
-            rows = con.execute(
+            # every viewing, the ones the other server wrote down as well: left out, a
+            # guest who watched from the cache counted 44 hours of 72 (2026-11-08)
+            rows = [dict(r) for r in con.execute(
                 "SELECT who, key, title, started, updated, position, duration, casual "
-                "FROM watchlog WHERE origin IS NULL").fetchall()
+                "FROM watchlog").fetchall()]
         finally:
             con.close()
+        viewings = sittings(rows)
         out = {}
         for name, since in windows:
-            mine = [r for r in rows if (r["started"] or 0) >= since]
+            mine = [r for r in viewings if (r["started"] or 0) >= since]
             people, titles = {}, {}
             seconds = 0
             for r in mine:
-                # A viewing lasts from its first report to its last - but a row grows
-                # for as long as reports keep arriving, and a player left running
-                # reports for hours. Nobody watches a twenty-minute episode for
-                # thirty-five hours, which is what one of them claimed: so a viewing
-                # counts for no more than the length of the thing being watched.
-                took = max(0, int(r["updated"] or 0) - int(r["started"] or 0))
-                length = int((r["duration"] or 0) / 1000) if (r["duration"] or 0) > 10000                     else int(r["duration"] or 0)
-                if length > 0:
-                    took = min(took, length)
+                took = r["took"]
                 seconds += took
                 # str, because this is a key: one invitation held a list where its
                 # name should be, and the whole figures page answered 500 rather than
@@ -20397,9 +20743,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def with_link(self, row):
         """An invite as the settings page wants it: the row plus the link to send."""
-        host = outside_host() or LAN_IP
         out = dict(row)
-        out["link"] = "http://%s:%d/s/%s" % (host, PORT, row["token"])
+        out["link"] = ((outside_url() or "http://%s:%d" % (LAN_IP, PORT))
+                       + "/s/" + row["token"])
         out["lanLink"] = "http://%s:%d/s/%s" % (LAN_IP, PORT, row["token"])
         # And the same key on the machine that keeps copies, for when this one is
         # off. A guest cannot be expected to know there is a second address, and a
@@ -20519,9 +20865,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "<meta property='og:description' content='%s, this link is your key "
                 "to a private film library. Watch in a browser, or install the app "
                 "for a phone or a Google TV.'>"
-                "<meta property='og:image' content='http://%s:%d/invite.png'>"
+                "<meta property='og:image' content='%s/invite.png'>"
                 "<meta name='description' content='A private film library.'>"
-                % (invite["name"], outside_host() or LAN_IP, PORT))
+                % (invite["name"], outside_url() or "http://%s:%d" % (LAN_IP, PORT)))
         html = ("<meta name=viewport content='width=device-width,initial-scale=1'>"
                 "<title>Palladium</title>" + card +
                 "<body style='background:#0b0d10;color:#e8ecf1;font:16px system-ui;"
@@ -21018,6 +21364,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 and (str(path).startswith("/follow")
                      or path == "/server" or path == "/server/build"
                      or path == "/watching" or build_file
+                     # and the viewing figures, which count both machines here
+                     or path == "/stats"
                      # and the posters of what it lists without holding
                      or str(path).startswith("/local/art/"))):
             self.guest_name = invite["name"]
@@ -21944,8 +22292,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # an address typed without http:// in front of it is still an address
             if said and not said.startswith(("http://", "https://")):
                 said = "http://" + said
-            outside = said if re.match(r"^https?://[\w.\-]+(:\d+)?$", said) else (
-                "http://%s:%d" % (outside_host(), port) if outside_host() else "")
+            outside = said if re.match(r"^https?://[\w.\-]+(:\d+)?$", said) else outside_url(port)
             def number(name):
                 try:
                     return round(float((args.get(name) or ["0"])[0]), 1)
@@ -22044,10 +22391,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if busy:
                 self.send_error(503, "the drive is busy: " + busy)
                 return
+            # carried on from a byte: the other server's copy resumes where it stopped
+            whole_size = os.path.getsize(where)
+            span = byte_range(self.headers.get("Range"), whole_size)
+            if span is None:
+                pd_disk.done(turn)
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % whole_size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             # only now: after a 200 the 503 above went out as the file's first bytes
-            self.send_response(200)
+            self.send_response(206 if self.headers.get("Range") else 200)
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(os.path.getsize(where)))
+            self.send_header("Content-Length", str(span[1] - span[0] + 1))
+            if self.headers.get("Range"):
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (span[0], span[1], whole_size))
             self.end_headers()
             drive = os.path.splitdrive(where)[0].upper()
             with Handler.SERVING_LOCK:
@@ -22060,14 +22419,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                  size=os.path.getsize(where))
             try:
                 with open(where, "rb") as f:
-                    while True:
+                    f.seek(span[0])
+                    left = span[1] - span[0] + 1
+                    while left > 0:
                         held = 0
                         while held < 120 and playback_short():
                             time.sleep(1)
                             held += 1
-                        lump = f.read(262144)
+                        lump = f.read(min(262144, left))
                         if not lump:
                             break
+                        left -= len(lump)
                         try:
                             self.wfile.write(lump)
                         except Exception:
@@ -22316,6 +22678,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                        or Handler.kind_of(w.get("why") or "") in keep]
                       if keep is not None else holding)
             wanted = [w for w in wanted if not w.get("kept")]
+            # Sync set to from the copy server only: it fetches nothing from here, and keeps
+            # what it holds - holding is still the whole list
+            if sync_way(local().lib.config()) == "fromCopy":
+                wanted = []
             # a film coming in or the library scanning has the disks: only what is on
             # a screen now is copied meanwhile, the rest waits for it
             busy = disks_busy()
@@ -22323,6 +22689,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 wanted = copy_while_busy(wanted)
             import pd_torrents
             self.reply_json({"wanted": wanted, "holding": holding, "busy": busy,
+                             # which machines seed the split packs, and which those are
+                             "splitSeed": {"way": split_seed_way(local().lib.config()),
+                                           "packs": sorted(h for h, v in (pd_torrents.load().get("home") or {}).items()
+                                                           if v == "split")},
                              # films asked for whose pack lives on the copy server
                              "forCopy": pd_torrents.for_copy(),
                              # the copy server's settings, kept here
@@ -23165,8 +23535,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 # this machine's own way in from outside, so the
                                 # drawing can name both doors rather than the
                                 # cache's alone
-                                outside=(("http://%s:%d" % (outside_host(), PORT))
-                                         if outside_host() else "")),
+                                outside=outside_url()),
                 "standby": dict(self.standby_now(), busy=self.copy_is_busy()),
                 # and the machine this one follows, for a drawing made on the
                 # cache: the other half of the pair is the main server, not a cache
@@ -23241,7 +23610,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json({
                 "lan": (("http://%s:%d" % (LAN_IP, PORT))
                         if LAN_IP and self.may_have_the_lan() else ""),
-                "outside": ("http://%s:%d" % (outside_host(), PORT)) if outside_host() else "",
+                "outside": outside_url(),
                 "name": self.server_name(),
                 # the same machine under two addresses answers with one id, which is
                 # how a list of servers keeps from showing it twice.
@@ -23346,10 +23715,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.reply_json(pd_traffic.read())
             return
         if path == "/stats":
-            # What the main server has watched: this week, this month, and since the
-            # library was built. The owner's, like the log it is counted from.
-            if self.role != "owner":
+            # What the house has watched: this week, this month, and since the library was
+            # built. The owner's, like the log it is counted from - and the machine that
+            # follows asks for it, so its page says the same totals.
+            if self.role != "owner" and not self.follows_here():
                 self.send_error(403, "not allowed")
+                return
+            # on the copy: the main server's figures, which count both machines; its own
+            # log holds only what was watched here
+            import pd_torrents
+            if pd_torrents._following():
+                try:
+                    said = json.loads(peer_fetch("/stats", 20) or b"null")
+                except ValueError:
+                    said = None
+                if isinstance(said, dict) and said.get("total"):
+                    self.reply_json(said)
+                    return
+                here = self.watch_stats()
+                here["onlyHere"] = True       # the main server not answering: this machine's own
+                self.reply_json(here)
                 return
             self.reply_json(self.watch_stats())
             return
@@ -23736,11 +24121,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             now.append(k)
                     if now != was:
                         mine["watchlist"] = now
+                        # when each was put on goes with it to its new key
+                        at = mine.get("watchlistAt")
+                        if isinstance(at, dict):
+                            for old, new in moved.items():
+                                if old in at:
+                                    at[new] = max(int(at.pop(old) or 0), int(at.get(new) or 0))
                         write_settings(stored, merge=False)
                         q["keys"] = [",".join(now)]
                 # and gathered into seasons for the same reason the shuffle is:
                 # starring a season writes a mark on each of its episodes
                 q["byseason"] = ["1"]
+                # and when each was put on, for the order it opens in
+                at = self.viewer_settings(self.settings_file()).get("watchlistAt")
+                q["listed"] = [json.dumps(at if isinstance(at, dict) else {})]
             if sub == "/library/favorites":
                 # the same shelf drawing as the watchlist, over this viewer's favourites
                 sub = "/library/watchlist"
@@ -24712,6 +25106,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass  # quiet
 
 
+#: the certificate in use and when its file was last looked at: {ctx, mtime, at}
+TLS = {"ctx": None, "mtime": 0.0, "at": 0.0}
+
+
+def tls_context():
+    """The HTTPS context from tls/fullchain.pem and key.pem, read again when the file
+    changes (renewed every two months); None while there is no certificate."""
+    import ssl
+    now = time.time()
+    if now - TLS["at"] < 60 and TLS["at"]:
+        return TLS["ctx"]
+    TLS["at"] = now
+    chain = os.path.join(ROOT, "tls", "fullchain.pem")
+    key = os.path.join(ROOT, "tls", "key.pem")
+    try:
+        mtime = os.path.getmtime(chain)
+    except OSError:
+        TLS["ctx"] = None
+        return None
+    if TLS["ctx"] is None or mtime != TLS["mtime"]:
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.load_cert_chain(chain, key)
+            TLS.update(ctx=ctx, mtime=mtime)
+        except (OSError, ssl.SSLError) as e:
+            pd_log.raw("%s https: certificate not read: %s%s" % (time.strftime("%H:%M:%S"), e, chr(10)))
+    return TLS["ctx"]
+
+
+def tls_or_plain(sock):
+    """The connection as it should be read: wrapped in TLS when its first byte opens a
+    handshake (0x16) and there is a certificate, as it is otherwise. A caller that sends
+    nothing for a minute is let go."""
+    sock.settimeout(60)
+    first = sock.recv(1, socket.MSG_PEEK)
+    sock.settimeout(None)
+    if first != b"\x16":
+        return sock
+    ctx = tls_context()
+    if ctx is None:
+        raise OSError("https asked for, no certificate here")
+    sock.settimeout(15)
+    wrapped = ctx.wrap_socket(sock, server_side=True)
+    wrapped.settimeout(None)
+    return wrapped
+
+
 #: what the heartbeat counts. Connections accepted rather than requests answered:
 #: the question it exists to settle is whether this process was still taking them.
 BEATS = {"taken": 0}
@@ -24724,6 +25166,22 @@ class Server(socketserver.ThreadingTCPServer):
     def process_request(self, request, client_address):
         BEATS["taken"] += 1
         return socketserver.ThreadingTCPServer.process_request(
+            self, request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        """HTTPS and plain HTTP on the one port: a connection that opens with a TLS
+        handshake is given the certificate in tls/, any other is answered as before - so
+        the links already handed out go on working beside the https ones (2026-11-07)."""
+        if isinstance(request, socket.socket):
+            try:
+                request = tls_or_plain(request)
+            except Exception:
+                try:
+                    request.close()
+                except OSError:
+                    pass
+                return
+        return socketserver.ThreadingTCPServer.process_request_thread(
             self, request, client_address)
     #: How many connections may be waiting to be accepted. Python's own answer is
     #: five, which was plenty while a film was one long connection: it is one stretch
@@ -25304,6 +25762,61 @@ def stills_inputs():
     return progress, files, done
 
 
+#: which way the two servers copy for each other
+SYNC_WAYS = ("both", "toCopy", "fromCopy")
+
+
+def sittings(rows):
+    """The watch log's rows as viewings: one person's rows of one title that overlap in time
+    are one sitting - written by both servers when it moved between them, or opened again -
+    and each sitting counts from its first report to its last, but for no more than the
+    length of what was watched: a player left running reports for hours, and one twenty-
+    minute episode claimed thirty-five of them. Each as {who, key, title, started, took,
+    casual}."""
+    def length(d):
+        d = d or 0
+        return int(d / 1000) if d > 10000 else int(d)
+    groups = {}
+    for r in rows:
+        mark = (str(r.get("who") or ""), str(r.get("key") or "") or str(r.get("title") or ""))
+        groups.setdefault(mark, []).append(r)
+    out = []
+    for (who, _), rs in groups.items():
+        rs.sort(key=lambda r: int(r.get("started") or 0))
+        cur = None
+        for r in rs:
+            start = int(r.get("started") or 0)
+            end = max(int(r.get("updated") or 0), start)
+            if cur and start <= cur["end"]:
+                cur["end"] = max(cur["end"], end)
+                cur["length"] = max(cur["length"], length(r.get("duration")))
+                cur["casual"] = cur["casual"] and bool(r.get("casual"))
+                continue
+            if cur:
+                out.append(cur)
+            cur = {"who": who, "key": r.get("key"), "title": r.get("title"), "started": start,
+                   "end": end, "length": length(r.get("duration")), "casual": bool(r.get("casual"))}
+        if cur:
+            out.append(cur)
+    for v in out:
+        took = v["end"] - v["started"]
+        v["took"] = min(took, v["length"]) if v["length"] > 0 else took
+    return out
+
+
+def split_seed_way(cfg):
+    """Which machines seed split packs: copy, main or both - both when unset."""
+    import pd_torrents
+    way = str((cfg or {}).get("splitSeed") or "both")
+    return way if way in pd_torrents.SPLIT_SEED_WAYS else "both"
+
+
+def sync_way(cfg):
+    """Both ways, to the copy server only, or from it only: the Sync setting, both when unset."""
+    way = str((cfg or {}).get("syncWay") or "both")
+    return way if way in SYNC_WAYS else "both"
+
+
 def byte_range(said, size):
     """The (start, end) a Range header asks of a file of `size` bytes: the whole file when
     there is no Range, None when it cannot be served (416). A last-N ask (bytes=-N) is the
@@ -25608,14 +26121,10 @@ def start_boss():
         return [r for r in live if r.get("how") != "syncing"]
 
     def other_up():
-        url, key = other_server()
-        if not url:
-            return False
-        try:
-            with urllib.request.urlopen(url.rstrip("/") + "/config", timeout=4) as answer:
-                return answer.status == 200
-        except Exception:
-            return False
+        # asked as the two servers ask each other, with the key: /config asked bare was
+        # refused by the main server every minute, so a copy read it as down (2026-11-07)
+        url, _ = other_server()
+        return bool(url) and peer_fetch("/follow/live", 4) is not None
 
     import pd_follow
     one = pd_follow.settings(local().lib.config())
@@ -26271,6 +26780,8 @@ def main():
         import pd_localapi
         pd_localapi.PEER_RECENT = peer_recent
         pd_localapi.PEER_ART = peer_art
+        pd_localapi.PEER_HOLDS = peer_holds
+        pd_localapi.PLACE_SAID = place_said
         threading.Thread(target=keep_peer_recent, name="palladium-peer-recent", daemon=True).start()
         pd_subtap.configure(lambda: _pg.FFMPEG or "ffmpeg",
                             lambda v, i: os.path.exists(sub_cache_path(v, i)), keep_tapped_subtitle)

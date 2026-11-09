@@ -98,9 +98,14 @@ object Arrivals {
         val first = since == 0L
         since = maxOf(since, got.first - 120)
         if (first) return watched
-        return watched + got.second.filter { said.add(it.first) }
-            .map { it.second + " is ready to watch" }
+        val came = got.second.filter { said.add(it.first) }
+        // Home and the watchlist were drawn before it came in: drawn again
+        if (came.isNotEmpty()) landed.intValue += 1
+        return watched + came.map { it.second + " is ready to watch" }
     }
+
+    /** Counts the downloads come in while the app is open; the shelves are keyed on it. */
+    val landed = androidx.compose.runtime.mutableIntStateOf(0)
 
     /** How often a screen looks: a film in is said within seconds of it being whole. */
     const val EVERY_MS = 8_000L

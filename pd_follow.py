@@ -399,6 +399,15 @@ def looks_like_film(path, called=""):
     return head[4:8] in (b"ftyp", b"moov", b"mdat", b"free")
 
 
+def pack_mark(path):
+    """The pack fingerprint the copy server sends with a pack file, or "" when it cannot be read."""
+    import pd_torrents
+    try:
+        return pd_torrents.fingerprint(path)
+    except OSError:
+        return ""
+
+
 def quick_mark(path):
     """The same fingerprint the other machine sends: the size and both ends.
 
@@ -2030,8 +2039,15 @@ def copy_file(one, item, folder):
             os.path.abspath(folder), os.path.abspath(os.path.join(folder, MUSIC_DIR))):
         raise ValueError("refused a name that points outside the folder")
     os.makedirs(os.path.dirname(plain), exist_ok=True)
-    in_pack = pd_torrents.pack_place(name, item.get("size")) if item.get("side") is None else ""
-    into = in_pack or plain
+    # the main server fetching from the copy server: where its own pack keeps the file,
+    # said by the item, and the pack's own fingerprint (sync both ways, 2026-11-07)
+    placed = str(item.get("into") or "")
+    mark_of = pack_mark if item.get("markKind") == "pack" else quick_mark
+    in_pack = (pd_torrents.pack_place(name, item.get("size"))
+               if item.get("side") is None and not placed else "")
+    into = placed or in_pack or plain
+    if placed:
+        os.makedirs(os.path.dirname(placed), exist_ok=True)
     if in_pack and copy_here(folder, name, in_pack, item.get("size"), item.get("mark") or ""):
         return in_pack                     # already in its pack, whole
     # a copy made before this rule, whole beside the pack: put in place, nothing fetched
@@ -2043,8 +2059,13 @@ def copy_file(one, item, folder):
         log_line("put in its pack: %s" % name)
         return in_pack
     if not in_pack and os.path.exists(into) and os.path.getsize(into) == item.get("size"):
-        if not item.get("mark") or quick_mark(into) == item["mark"]:
+        got = mark_of(into) if item.get("mark") else ""
+        if not item.get("mark") or got == item["mark"]:
             return into                    # already here, whole
+        # not read is not different: kept, asked again next round. A read that failed
+        # for want of memory deleted good copies as other files (2026-11-07)
+        if not got:
+            raise ValueError("could not read %s; kept, asked again" % name)
         # the right size and other contents: a copy of an older file. Fetched again;
         # returned as here, it was picked forty times a round and nothing below it came
         os.remove(into)
@@ -2055,14 +2076,16 @@ def copy_file(one, item, folder):
     have = os.path.getsize(part) if os.path.exists(part) else 0
     # a subtitle beside a video is asked for by that video and its number; the film
     # itself by the part it is
-    if item.get("side") is not None:
+    if item.get("url"):
+        url = str(item["url"])            # said whole by the item: a pack file of the copy server's
+    elif item.get("side") is not None:
         url = (one["master"].rstrip("/") + "/follow/side?part=%s&n=%s&t=%s"
                % (item.get("part"), item["side"],
                   urllib.parse.quote(one["key"])))
     else:
         url = (one["master"].rstrip("/") + "/local/parts/" + str(item["part"]) +
                "?t=" + urllib.parse.quote(one["key"]))
-    req = urllib.request.Request(url, headers={"X-Palladium-App": "follower"})
+    req = urllib.request.Request(url, headers={"X-Palladium-App": str(item.get("as") or "follower")})
     if have:
         req.add_header("Range", "bytes=%d-" % have)
     said = int(item.get("size") or 0)
@@ -2110,7 +2133,10 @@ def copy_file(one, item, folder):
         raise ValueError("what arrived is not a film")
     # and it is the film that was offered, not another one of the same length
     offered = str(item.get("mark") or "")
-    if offered and quick_mark(part) != offered:
+    came = mark_of(part) if offered else ""
+    if offered and not came:
+        raise ValueError("could not read what arrived; kept, asked again")
+    if offered and came != offered:
         size_came = os.path.getsize(part)
         os.remove(part)
         log_line("deleted arriving copy %s, %.1f GB: not the file offered" % (name, size_came / 1e9))
@@ -2122,10 +2148,11 @@ def copy_file(one, item, folder):
         os.remove(part + ".want")
     except OSError:
         pass
-    # only what is in the copies folder is on the list a full folder clears from
+    # only what is in the copies folder is on the list a full folder clears from; a file
+    # placed in a pack here by the main server is the pack's, and its caller reads it in
     if in_pack:
         pd_torrents.copied_into_pack(name)
-    else:
+    elif not placed:
         note_ours(folder, into)
     with LOCK:
         STATE["copying"] = ""
@@ -2646,6 +2673,31 @@ def light_round(one, lib=None, api=None):
     except Exception:
         pass
     if api and time.time() - PLACES["at"] > 120:
+        take_places(one, lib, api)
+    try:
+        forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s&keep=%s" % (
+            hours_wanted(one), one.get("episodes") or 6,
+            one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
+            ",".join(kinds_now(one)),
+            urllib.parse.quote(for_whom(one)), keep_days(one))
+        said = ask(one, "/follow/playing?deck=1&" + forward, 30)
+        wanted = said.get("wanted") or []
+        PREEMPT["name"] = first_on_screen(wanted, folder, STATE.get("copying") or "")
+        say_what_is_here(one, folder, wanted)
+        if lib:
+            dress_the_copies(one, lib, folder, wanted)
+            learn_the_facts(one, lib)
+    except Exception:
+        pass
+
+
+#: the position exchange runs one at a time: a pause sends it at once, the round on its timer
+PLACES_LOCK = threading.Lock()
+
+
+def take_places(one, lib, api):
+    """The main server's positions changed since the last ask, into this library."""
+    with PLACES_LOCK:
         PLACES["at"] = time.time()
         try:
             # now and then, everything: see ALL_AGAIN
@@ -2671,21 +2723,51 @@ def light_round(one, lib=None, api=None):
             PLACES["since"] = mark if said.get("more") else mark - 300
         except Exception:
             pass
-    try:
-        forward = "hours=%s&eps=%s&casual=%s&whole=%d&these=%s&for=%s&keep=%s" % (
-            hours_wanted(one), one.get("episodes") or 6,
-            one.get("casualHours") or 0, 1 if one.get("wholeList") else 0,
-            ",".join(kinds_now(one)),
-            urllib.parse.quote(for_whom(one)), keep_days(one))
-        said = ask(one, "/follow/playing?deck=1&" + forward, 30)
-        wanted = said.get("wanted") or []
-        PREEMPT["name"] = first_on_screen(wanted, folder, STATE.get("copying") or "")
-        say_what_is_here(one, folder, wanted)
-        if lib:
-            dress_the_copies(one, lib, folder, wanted)
-            learn_the_facts(one, lib)
-    except Exception:
-        pass
+
+
+def give_places(one, api):
+    """This machine's positions since the last send, to the main server."""
+    with PLACES_LOCK:
+        PLACES["gave"] = time.time()
+        try:
+            # this machine's own viewers, from the last week: an evening here is
+            # the main server's evening, and the main server keeps the book
+            # Everybody who watched here, not only this machine's own viewer.
+            #
+            # An evening on the cache belongs in the same book whoever sat through it:
+            # a guest carried here while the main server was off had his place written
+            # under his own key, and only "me" was ever sent back - so the main server
+            # came up knowing nothing about it and the two shelves disagreed for good.
+            here = _viewers_here(api)
+            mine, mark = api.progress_of(here, PLACES["gavesince"] or
+                                         int(time.time()) - 86400 * 7,
+                                         with_mark=True)
+            if mine:
+                # "me" is this machine's word for whoever set it up; everybody else
+                # travels under the key they already watch by, which is the same key
+                # on both machines
+                for row in mine:
+                    if str(row.get("who") or "") in ("", "me") and HOUSE["owner"]:
+                        row["who"] = HOUSE["owner"]
+                tell(one, "/follow/watched", {"progress": mine})
+                # only as far as was actually sent, or the ones past the end of a
+                # full page are stepped over and never travel
+                PLACES["gavesince"] = mark
+        except Exception:
+            pass
+
+
+def places_now(api):
+    """A viewer paused or stopped: the positions travel now rather than on the timer, so a
+    film stopped on one server starts from the same place on the other (up to five
+    minutes behind before, 2026-11-07). On a copy, both ways; on the main server the
+    copy is asked to fetch."""
+    one = settings(api.lib.config())
+    if one.get("on") and one.get("master") and one.get("key"):
+        give_places(one, api)
+        take_places(one, api.lib, api)
+        return True
+    return False
 
 
 #: a file on a screen now and not here, seen while a long copy runs: that copy steps
@@ -2754,6 +2836,45 @@ def is_hot(item):
 
 #: what the round running now has done, for the line it writes when it ends
 ROUND = {"listed": 0, "copied": 0, "skipped": set()}
+
+
+#: the main server's own copying from the copy server: one round at a time
+FETCH_BACK = threading.Lock()
+
+
+def fetch_back(items, after):
+    """The main server's half of sync: the copy server's files the same list wants, copied here
+    by the same copy as the other way (owner, 2026-11-07). Each item carries its address there
+    (url, asked as "house"), its place here (into) and its fingerprint; after(item, path) reads
+    one into its pack once whole. One at a time; a busy drive there ends the round, and the
+    next round asks again. The number copied."""
+    if not FETCH_BACK.acquire(blocking=False):
+        return 0
+    done = 0
+    try:
+        for item in items:
+            if STOP.is_set():
+                break
+            title = item.get("title") or item.get("name") or "?"
+            log_line("copying %s from the cache server - %s" % (title, item.get("why") or "no reason given"))
+            try:
+                got = copy_file({"master": "", "key": ""}, dict(item, side=None),
+                                os.path.dirname(str(item["into"])))
+            except Busy:
+                log_line("copy of %s waits: the cache server's drive is busy" % title)
+                break
+            except Exception as e:
+                why = str(e) or type(e).__name__
+                log_line("copy of %s stopped: %s" % (title, why[:120]))
+                continue
+            after(item, got)
+            done += 1
+    finally:
+        FETCH_BACK.release()
+        with LOCK:
+            STATE["copying"], STATE["at"] = "", 0.0
+            STATE["size"], STATE["pinned"] = 0, False
+    return done
 
 
 def round_of(one, lib=None, api=None):
@@ -2837,6 +2958,10 @@ def _round(one, lib, api, folder):
     # missing from the queue while it arrived. What the hour decides is what is acted
     # on, below, not what is asked for.
     said = ask(one, "/follow/playing?deck=1&" + forward, 60)
+    # which machines seed the split packs: the main server's setting, kept for the guard
+    if isinstance(said.get("splitSeed"), dict):
+        import pd_torrents
+        pd_torrents.STATE["splitSeedTold"] = said["splitSeed"]
     names = said.get("house")
     if isinstance(names, list):
         HOUSE["people"] = [str(n)[:60] for n in names][:40]
@@ -3059,9 +3184,11 @@ def _round(one, lib, api, folder):
                 STATE["size"], STATE["pinned"] = 0, False
             return
         except Exception as e:
-            log_line("copy of %s stopped: %s" % (item.get("title") or item.get("name") or "?", str(e)[:120]))
+            # an error with no text (MemoryError) is named by its kind, not left blank
+            why = str(e) or type(e).__name__
+            log_line("copy of %s stopped: %s" % (item.get("title") or item.get("name") or "?", why[:120]))
             with LOCK:
-                STATE["why"] = str(e)[:160]
+                STATE["why"] = why[:160]
                 # written down either way; counted towards giving up only when it was
                 # the file: three installs in a morning gave up on three episodes
                 note_trouble(item.get("name") or item.get("title") or "?", e,
@@ -3087,60 +3214,10 @@ def _round(one, lib, api, folder):
     # where the main server had got to in what it is watching, so Continue watching on
     # this machine is the same shelf rather than an empty one
     if api and time.time() - PLACES["at"] > 120:
-        PLACES["at"] = time.time()
-        try:
-            # now and then, everything: see ALL_AGAIN
-            whole = time.time() - PLACES["full"] > ALL_AGAIN
-            if whole:
-                PLACES["full"] = time.time()
-            said = ask(one, "/follow/progress?since=%d"
-                       % (0 if whole else PLACES["since"]), 30)
-            # what an older build filed under "me" while this machine knew its owner
-            # by their key. Moved once, newest note winning, or Continue watching here
-            # keeps reading the half of the evenings written before the fix.
-            if not PLACES.get("merged"):
-                PLACES["merged"] = True
-                mine = owner_here()
-                if mine != "me":
-                    api.merge_places("me", mine)
-            api.take_progress(as_ours(said.get("progress") or []), may_stub=True)
-            dress_the_strangers(one, lib, getattr(api, "stubs_made", []))
-            # the five minutes of overlap are so a place written while this was asked
-            # is not missed. Not when there was more than fitted in one answer: then
-            # "now" is the last place sent, and going back before it never gets past.
-            mark = int(said.get("now") or 0)
-            PLACES["since"] = mark if said.get("more") else mark - 300
-        except Exception:
-            pass
+        take_places(one, lib, api)
     # and back the other way: an evening watched here belongs in the same book
     if api and time.time() - PLACES["gave"] > 300:
-        PLACES["gave"] = time.time()
-        try:
-            # this machine's own viewers, from the last week: an evening here is
-            # the main server's evening, and the main server keeps the book
-            # Everybody who watched here, not only this machine's own viewer.
-            #
-            # An evening on the cache belongs in the same book whoever sat through it:
-            # a guest carried here while the main server was off had his place written
-            # under his own key, and only "me" was ever sent back - so the main server
-            # came up knowing nothing about it and the two shelves disagreed for good.
-            here = _viewers_here(api)
-            mine, mark = api.progress_of(here, PLACES["gavesince"] or
-                                         int(time.time()) - 86400 * 7,
-                                         with_mark=True)
-            if mine:
-                # "me" is this machine's word for whoever set it up; everybody else
-                # travels under the key they already watch by, which is the same key
-                # on both machines
-                for row in mine:
-                    if str(row.get("who") or "") in ("", "me") and HOUSE["owner"]:
-                        row["who"] = HOUSE["owner"]
-                tell(one, "/follow/watched", {"progress": mine})
-                # only as far as was actually sent, or the ones past the end of a
-                # full page are stepped over and never travel
-                PLACES["gavesince"] = mark
-        except Exception:
-            pass
+        give_places(one, api)
     # where the main server is, so a page opened on this machine has a way back to it
     try:
         where_is_the_house(one)

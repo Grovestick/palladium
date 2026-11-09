@@ -1,5 +1,199 @@
 [
   {
+    "version": "0.19.467",
+    "when": "2026-11-09",
+    "title": "Shuffle ignores outside watching",
+    "items": [
+      "Shuffle: a title watched or marked watched outside the shuffle no longer changes its round"
+    ]
+  },
+  {
+    "version": "0.19.466",
+    "when": "2026-11-09",
+    "title": "Shuffle places are its own",
+    "items": [
+      "Shuffle: carrying on resumes only from where the shuffle left a title, never from ordinary watching"
+    ]
+  },
+  {
+    "version": "0.19.465",
+    "when": "2026-11-09",
+    "title": "Home and watchlist after a download",
+    "items": [
+      "App: Home and the watchlist are drawn again when a download you asked for comes in",
+      "App: the watchlist opens by the later of last watched and added, so a title just added or downloaded comes first"
+    ]
+  },
+  {
+    "version": "0.19.464",
+    "when": "2026-11-08",
+    "title": "Shuffle keeps the next title's place",
+    "items": [
+      "Shuffle: moving on to a title already started elsewhere carries it on from where it was left"
+    ]
+  },
+  {
+    "version": "0.19.463",
+    "when": "2026-11-08",
+    "title": "Shuffle rewritten as one handler, Shuffle end",
+    "items": [
+      "Shuffle: each round is drawn in advance and kept; Next marks the title done for that round only",
+      "Shuffle: a second press or a screen behind the times no longer skips two",
+      "Shuffle: carrying on resumes the title at its place, or goes past one watched to its end",
+      "Shuffle: what comes next and what plays when you press Next are the same title",
+      "Shuffle: a title counts as finished where the library's watched-through line and the credits finder put its end"
+    ]
+  },
+  {
+    "version": "0.19.462",
+    "when": "2026-11-08",
+    "title": "The web page no longer fills the browser's memory",
+    "items": [
+      "The web page's checks on whether each server answers read their answers; left unread they filled the browser's memory, 25 GB in two days on the page left open on the cache server's screen"
+    ]
+  },
+  {
+    "version": "0.19.461",
+    "when": "2026-11-08",
+    "title": "The cache server may read the viewing figures",
+    "items": [
+      "The cache server's figures page could not ask the main server for the totals; it may now"
+    ]
+  },
+  {
+    "version": "0.19.460",
+    "when": "2026-11-08",
+    "title": "Viewing figures count both servers",
+    "items": [
+      "The viewing figures count what was watched on the cache server too, and a sitting written down by both servers counts once",
+      "The cache server's figures page shows the same totals as the main server's"
+    ]
+  },
+  {
+    "version": "0.19.459",
+    "when": "2026-11-08",
+    "title": "A film sent to the cache server shows at once",
+    "items": [
+      "A film pressed for whose pack downloads on the cache server shows at once as starting there, instead of nothing until that server begins"
+    ]
+  },
+  {
+    "version": "0.19.458",
+    "when": "2026-11-08",
+    "title": "One setting for who seeds split packs, A pack not seeded here is not read again here, A film moved to the other server keeps its subtitles",
+    "items": [
+      "A new setting: split packs seeded by the cache server, this server or both; the one not seeding keeps them stopped unless a film is coming into one",
+      "A film copied from the cache server into a pack this server does not seed is not read here",
+      "A split pack this server does not seed is neither paused nor read again here while somebody watches",
+      "A film the app moves to the other server when its buffer runs low keeps the subtitle on the screen and the chosen soundtrack"
+    ]
+  },
+  {
+    "version": "0.19.457",
+    "when": "2026-11-08",
+    "title": "A pack read paused for a viewer is read again",
+    "items": [
+      "A pack read paused for a viewer short of disk is read again from the start afterwards; started, it kept only what it had read and the pack's files were switched off"
+    ]
+  },
+  {
+    "version": "0.19.456",
+    "when": "2026-11-08",
+    "title": "The cache server answers at once when the main server is off",
+    "items": [
+      "With the other server off, pages no longer wait on it: posters and what it holds are not asked for until it answers again"
+    ]
+  },
+  {
+    "version": "0.19.455",
+    "when": "2026-11-07",
+    "title": "Sync both ways",
+    "items": [
+      "The main server copies from the cache server what the same list wants and it lacks, with the same copy the cache server uses: it carries on where a copy stopped, checks the file and says why in the log",
+      "A new Sync setting: both ways, to the cache server or from it",
+      "A restart no longer loses a film waiting to be fetched from the cache server"
+    ]
+  },
+  {
+    "version": "0.19.454",
+    "when": "2026-11-07",
+    "title": "Posters from the cache server load on the web page at home, Continue watching draws the bar for films on the cache server",
+    "items": [
+      "A web page opened at home reaches the cache server over the house network, so its posters and films are not refused",
+      "A film on Continue watching that only the cache server holds shows its progress bar"
+    ]
+  },
+  {
+    "version": "0.19.453",
+    "when": "2026-11-07",
+    "title": "The web player goes on at the end of an episode",
+    "items": [
+      "In the web player, a stream that breaks in the last minute of an episode goes on to the next one instead of starting the same episode over"
+    ]
+  },
+  {
+    "version": "0.19.452",
+    "when": "2026-11-07",
+    "title": "A film fetched from the cache server is tried again, Continue watching shows films the cache server holds",
+    "items": [
+      "A film fetched from the cache server that arrives short is tried again next round, three times in all",
+      "The log says why such a fetch wrote nothing",
+      "A film on Continue watching that only the cache server holds has no Download ribbon, opens there and shows how far you got"
+    ]
+  },
+  {
+    "version": "0.19.451",
+    "when": "2026-11-07",
+    "title": "Downloads wait ten seconds before they start",
+    "items": [
+      "A download you press waits 10 s before it starts; Cancel works only in that time",
+      "A started download can no longer be cancelled: it finishes and seeds",
+      "Every cancel is logged with who cancelled it",
+      "A copy that cannot be read is kept and fetched again, not deleted as another file",
+      "A copy that stops on an error with no text says what kind of error it was"
+    ]
+  },
+  {
+    "version": "0.19.450",
+    "when": "2026-11-07",
+    "title": "Both servers' copies must match in length to be read as one",
+    "items": [
+      "App: a film is read off both servers only when both files have the same name and the same length; a file replaced on one server is no longer stitched together with the other's"
+    ]
+  },
+  {
+    "version": "0.19.449",
+    "when": "2026-11-07",
+    "title": "The copy's check of the main server uses its key, HTTPS from outside, Positions and Continue watching shared, Moving keeps its version, a busy copy drive waits",
+    "items": [
+      "Server: the copy asks the main server whether it is up with its key, as it asks everything else; asked bare it was refused every minute and read the main server as down",
+      "Log: stills taken from the other server are said plainly",
+      "Server: HTTPS on the same ports with a Let's Encrypt certificate for the outside name; invite links and addresses from outside are https, and plain http links already handed out go on working",
+      "Continue watching: a title watched on the other server shows here with its place and opens there; places for titles only one server holds are kept on both",
+      "Positions: a pause or stop sends them to the other server at once, not on its two- or five-minute timer",
+      "App: a film moving to the other server keeps the version that was playing, instead of its first",
+      "Copies: a film taken back from a copy whose drive is busy waits for the next round instead of being dropped with a fault report"
+    ]
+  },
+  {
+    "version": "0.19.448",
+    "when": "2026-11-07",
+    "title": "Now playing answers at once on a server without a ripper",
+    "items": [
+      "Server: one without a ripper asks it for a rip once a minute instead of on every Now playing, which took two seconds and made the panel show it as off"
+    ]
+  },
+  {
+    "version": "0.19.447",
+    "when": "2026-11-07",
+    "title": "Watched films copied, loudness and stills shared",
+    "items": [
+      "Copies: a film somebody watches from the other server is fetched here too, so it plays from both; nothing is let go, and Sync back stays a rule of its own",
+      "Sound: a film only the other server holds is levelled by that server's measurement instead of saying measuring",
+      "Copies: loudness measurements and timeline stills made on one server are taken by the other for the same files"
+    ]
+  },
+  {
     "version": "0.19.446",
     "when": "2026-11-07",
     "title": "Download list opens on the recommended one",

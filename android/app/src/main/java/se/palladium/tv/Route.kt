@@ -16,6 +16,22 @@ object Route {
      *  library's listener acts on those, and a player on screen leaves them to it. */
     fun opensATitle(play: String, shelf: String): Boolean = play.isNotEmpty() || shelf.isNotEmpty()
 
+    /** Whether two machines' files are the one file: the same name, and the same length
+     *  where both say it. */
+    fun sameFile(name: String?, size: Long, playing: String?, playingSize: Long): Boolean =
+        !playing.isNullOrEmpty() && name == playing && (size <= 0 || playingSize <= 0 || size == playingSize)
+
+    /** A download's button: a cancel only in the seconds before it starts; started, it
+     *  finishes and seeds, and the button says what it is doing (owner, 2026-11-07). */
+    fun takingButton(mayCancel: Boolean, armed: Boolean, line: String): String =
+        if (!mayCancel) line
+        else if (armed) "Press again to cancel"
+        else "\u2715 Cancel  \u00b7  " + line
+
+    /** Which of the other machine's copies is the file playing here, by name; -1 for none. */
+    fun sameCopy(names: List<String?>, playing: String?): Int =
+        if (playing.isNullOrEmpty()) -1 else names.indexOfFirst { it == playing }
+
     /** Whether a machine's answer for a key means it holds the film: one only offered from a
      *  pack there is not, and the copy that has it plays instead. */
     fun heldThere(offered: Boolean): Boolean = !offered
@@ -620,11 +636,15 @@ object Route {
     fun madeReachesHere(at: Float, on: Boolean, durationMs: Long, positionMs: Long): Boolean =
         !on || durationMs <= 0 || at * durationMs >= positionMs + MADE_LEAD_MS
 
-    /** The order the watchlist opens in, and the direction: last watched first. */
+    /** Where a title stands in the watchlist's order: the later of last watched and put on
+     *  it, so one just added or downloaded comes first. */
+    fun watchlistAt(lastViewedAt: Long, listedAt: Long): Long = maxOf(lastViewedAt, listedAt)
+
+    /** The order the watchlist opens in, and the direction: last watched or added first. */
     val WATCHLIST_OPENS = "lastViewedAt" to false
 
     /** The watchlist's orders: last watched first, then the library's own. */
-    val WATCHLIST_ORDERS = listOf("lastViewedAt" to "Last watched", "addedAt" to "Added",
+    val WATCHLIST_ORDERS = listOf("lastViewedAt" to "Watched or added", "addedAt" to "Added",
                                   "originallyAvailableAt" to "Released", "titleSort" to "Name",
                                   "year" to "Year", "quality" to "Quality")
 

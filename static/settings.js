@@ -4961,6 +4961,58 @@
       // packs at home on the copy: held here only while the copy rules want them
       syncback: (name, last) => {
         const wrap = document.createElement("div");
+        // which way the two servers copy for each other: one list, one copy, both ways
+        const ws = subrow("Sync");
+        const wsSaid = noteOf("");
+        const way = () => mine.syncWay || "both";
+        const wsTell = () => {
+          wsSaid.textContent = way() === "toCopy"
+            ? name + " copies from this server what is being watched, is next or is on a list; this server takes nothing from " + name + "."
+            : way() === "fromCopy"
+              ? "This server copies from " + name + " what is being watched, is next or is on a list and it lacks; " + name + " takes nothing new from here and keeps what it has."
+              : "Each server copies from the other what is being watched, is next or is on a list and it lacks - one list, worked out here, and the same copy both ways. Nothing is deleted on this server.";
+        };
+        [["both", "Both ways"], ["toCopy", "To " + name], ["fromCopy", "From " + name]].forEach(([v, label]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" + (way() === v ? " on" : "");
+          b.textContent = label;
+          b.onclick = async () => {
+            if (way() === v) return;
+            await post("/library/config", { syncWay: v });
+            mine.syncWay = v;
+            ws.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+            wsTell();
+          };
+          ws.appendChild(b);
+        });
+        wsTell();
+        wrap.append(ws, wsSaid);
+        // which machines seed the packs whose home is split: one is enough
+        const ss = subrow("Split packs seeded by");
+        const ssSaid = noteOf("");
+        const seed = () => mine.splitSeed || "both";
+        const ssTell = () => {
+          ssSaid.textContent = seed() === "copy"
+            ? "Only " + name + " seeds the split packs; here they stay stopped, unless a film is coming into one."
+            : seed() === "main"
+              ? "Only this server seeds the split packs; " + name + " keeps them stopped."
+              : "Both servers seed the split packs, each the files it holds.";
+        };
+        [["copy", name], ["main", "This server"], ["both", "Both"]].forEach(([v, label]) => {
+          const b = document.createElement("button");
+          b.className = "btn ghost kind" + (seed() === v ? " on" : "");
+          b.textContent = label;
+          b.onclick = async () => {
+            if (seed() === v) return;
+            await post("/library/config", { splitSeed: v });
+            mine.splitSeed = v;
+            ss.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+            ssTell();
+          };
+          ss.appendChild(b);
+        });
+        ssTell();
+        wrap.append(ss, ssSaid);
         const r = subrow("Sync back");
         const said = noteOf("");
         const tell = () => {

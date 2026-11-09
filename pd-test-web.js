@@ -1733,7 +1733,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
     const w = dom.window;
     let polls = 0;
-    const row = { hash: "h1", key: "rA", title: "New", year: 2026, progress: 0.5 };
+    const row = { hash: "h1", key: "rA", title: "New", year: 2026, progress: 0, mayCancel: true };
     w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(
       String(u) === "/tracker/list" ? { free: 100, versions: [{ id: "9", name: "New.2026.1080p", size: 5e9, seeds: 5 }] }
       : String(u) === "/tracker/active" ? { taking: [polls++ ? Object.assign({}, row, { done: true, progress: 1 }) : row] }
@@ -1753,6 +1753,88 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     await new Promise((r) => setTimeout(r, 3400));
     check("52 finished: the film's own page opens", w._opened === "lib7", String(w._opened));
     check("52 and the button never says Download again", g && !/Download/.test(g.textContent.replace("Downloaded", "")), g && g.textContent);
+  }
+
+  // ---- 56. a check whether an address answers reads the answer to the end
+  {
+    const vm = require("vm");
+    const read = [];
+    const ctx = { Date, setTimeout, clearTimeout, AbortController, doorOpen: {},
+      fetch: async (u) => ({ arrayBuffer: async () => { read.push(u); return new ArrayBuffer(0); } }) };
+    vm.runInNewContext(take("knock") + take("answersAt") + "done = answersAt('http://c:8764', true);", ctx);
+    await ctx.done;
+    const src = SOURCE;
+    check("56 the check reads its answer, and every version check goes through it",
+          read.join() === "http://c:8764/app/version" && ctx.doorOpen["http://c:8764"].up === true
+          && !/await fetch\([^)]*\/app\/version/.test(src.replace(/fetch\("\/app\/version"\)\)\.json/, "")),
+          read.join());
+  }
+
+  // ---- 55. a page opened at home asks the cache over the house network, not the outside name
+  {
+    const vm = require("vm");
+    const pick = (host, key) => {
+      const ctx = { Date, location: { hostname: host, origin: "http://" + host + ":8765" },
+        CFG: { key: key }, REACH: { copyAt: "https://out.example:8764", at: Date.now() },
+        standbyWhere: "http://192.168.1.20:8764", standbyOut: "https://out.example:8764",
+        CTX: null, myLan: "", myOut: "" };
+      vm.runInNewContext(take("pageAtHome") + take("standbyGuess") + take("thisMachine") +
+                         take("standbyAddress") + "result = standbyAddress();", ctx);
+      return ctx.result;
+    };
+    check("55 at home with no key: the house address, even when the outside door answered first; away: the one that answered",
+          pick("127.0.0.1", "") === "http://192.168.1.20:8764"
+          && pick("out.example", "abc") === "https://out.example:8764",
+          pick("127.0.0.1", "") + " / " + pick("out.example", "abc"));
+  }
+
+  // ---- 54. the stream breaking in the last minute is the end: rolled on, not started over
+  {
+    const vm = require("vm");
+    const run = (at) => {
+      const did = [];
+      const ctx = { did, Date, Math, Promise, location: { origin: "http://x" },
+        S: { meta: { ratingKey: "e5", duration: 1327327 }, timeBase: 0, mi: 0 },
+        comingBack: 0, comeBackTries: 0, CTX: null,
+        playAt: () => at, opts: () => ({}), dbg: () => {}, offerTheCopy: () => {},
+        rollOn: async () => { did.push("roll"); }, watchReopen: () => { did.push("reopen"); },
+        play: async () => { did.push("play"); }, handOver: async () => false,
+        standbyAddress: () => "", homeAnswers: () => null, answers: async () => true };
+      vm.runInNewContext(take("reopenStream") + "\nreopenStream('the stream ended');", ctx);
+      return did.join();
+    };
+    const atEnd = run(1322), inside = run(600);
+    check("54 broken at 1322 of 1327 s: rolled on, not reopened; broken at 600 s: reopened",
+          atEnd === "roll" && inside.indexOf("reopen") >= 0 && inside.indexOf("roll") < 0,
+          atEnd + " / " + inside);
+  }
+
+  // ---- 53. a started download has no Cancel: it finishes and seeds
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    const row = { hash: "h1", key: "rA", title: "New", year: 2026, progress: 0.5, mayCancel: false };
+    const posted = [];
+    w.fetch = (u) => { posted.push(String(u)); return Promise.resolve({ json: () => Promise.resolve(
+      String(u) === "/tracker/list" ? { free: 100, versions: [{ id: "9", name: "New.2026.1080p", size: 5e9, seeds: 5 }] }
+      : String(u) === "/tracker/active" ? { taking: [row] }
+      : {}) }); };
+    w.eval(SOURCE);
+    w.moreLikeThis = () => Promise.resolve(null);
+    w.castRow = () => {};
+    w.api = () => Promise.resolve({ Metadata: [] });
+    w.document.body.appendChild(w.document.createElement("main"));
+    w.eval("main = document.querySelector('main')");
+    w.viewOffer({ ratingKey: "rA", type: "movie", title: "New", year: 2026, askable: true, onTracker: true });
+    await new Promise((r) => setTimeout(r, 400));
+    const g = w.document.getElementById("offertracker");
+    if (g) { g.click(); g.click(); }
+    await new Promise((r) => setTimeout(r, 100));
+    check("53 started: the button says how far it has got, no Cancel, and pressing it cancels nothing",
+          g && /50%/.test(g.textContent) && !/Cancel/.test(g.textContent) && g.disabled
+          && !posted.includes("/tracker/cancel"), g && g.textContent);
   }
 
   // ---- 50. an episode asked for: the season is drawn again once it can be played

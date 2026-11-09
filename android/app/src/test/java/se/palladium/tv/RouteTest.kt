@@ -2025,6 +2025,11 @@ class RouteTest {
                      Route.byLastWatched(list, false) { it.second }.map { it.first })
         assertEquals(listOf("a", "c", "b", "d"),
                      Route.byLastWatched(list, true) { it.second }.map { it.first })
+        // one never watched but just put on the list comes before one watched earlier
+        val marks = listOf(Triple("old", 50L, 10L), Triple("new", 0L, 90L), Triple("none", 0L, 0L))
+        assertEquals(listOf("new", "old", "none"),
+                     Route.byLastWatched(marks, false) { Route.watchlistAt(it.second, it.third) }
+                         .map { it.first })
     }
     @Test
     fun subtitlesBeingWrittenComeOnOnceTheyHavePassedThePicture() {
@@ -2051,5 +2056,27 @@ class RouteTest {
     fun aFilmOnlyOfferedFromAPackOnTheMainServerPlaysFromTheCopyThatHasIt() {
         assertFalse(Route.heldThere(offered = true))
         assertTrue(Route.heldThere(offered = false))
+    }
+    @Test
+    fun movingToTheOtherServerKeepsTheVersionThatWasPlaying() {
+        val there = listOf("Film.2160p.Remux.mkv", "Film.1080p.x264-PD.mkv")
+        assertEquals(1, Route.sameCopy(there, "Film.1080p.x264-PD.mkv"))
+        assertEquals(-1, Route.sameCopy(there, "Film.720p.mkv"))
+        assertEquals(-1, Route.sameCopy(there, null))
+    }
+    @Test
+    fun theSameNameWithAnotherLengthIsAnotherFile() {
+        assertTrue(Route.sameFile("Film.mkv", 100L, "Film.mkv", 100L))
+        assertFalse(Route.sameFile("Film.mkv", 101L, "Film.mkv", 100L))
+        assertTrue(Route.sameFile("Film.mkv", 0L, "Film.mkv", 100L))
+        assertFalse(Route.sameFile("Other.mkv", 100L, "Film.mkv", 100L))
+        assertFalse(Route.sameFile("Film.mkv", 100L, null, 100L))
+    }
+    @Test
+    fun aDownloadIsCancelledOnlyBeforeItStarts() {
+        assertEquals("Press again to cancel", Route.takingButton(true, true, "Queued"))
+        assertEquals("\u2715 Cancel  \u00b7  Queued", Route.takingButton(true, false, "Queued"))
+        assertEquals("Downloading 14%", Route.takingButton(false, false, "Downloading 14%"))
+        assertEquals("Downloading 14%", Route.takingButton(false, true, "Downloading 14%"))
     }
 }

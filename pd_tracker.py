@@ -1077,7 +1077,9 @@ def take(ident="", title="", year=0, most_gb=0.0, who="", auto=False, reason="",
         # screen showed - a number, about a film that is simply already here.
         if mark and qb.info(mark) is not None:
             return {"error": "that one is on disk already"}
-        qb.add(raw, where, hold=False)
+        # one somebody pressed waits GRACE_S stopped, so a mistake is undone before the
+        # tracker has seen a byte; one Palladium took by itself starts at once
+        qb.add(raw, where, hold=not auto)
     except Exception as why:
         return {"error": str(why)[:160]}
     # written down so it can be stopped again: a download nobody can cancel is a
@@ -1091,7 +1093,8 @@ def take(ident="", title="", year=0, most_gb=0.0, who="", auto=False, reason="",
                 # that page's download, and its button is its cancel
                 "key": str(key or ""),
                 # whose screens say it is ready when it has come in
-                "token": str(token or ""), "auto": bool(auto)}
+                "token": str(token or ""), "auto": bool(auto),
+                "startAt": 0 if auto else time.time() + GRACE_S}
         # and who asked for it, kept after the download is gone: a release taken
         # straight from the tracker left no name behind
         log = STATE.setdefault("log", [])
@@ -1101,7 +1104,52 @@ def take(ident="", title="", year=0, most_gb=0.0, who="", auto=False, reason="",
                     "reason": str(reason or "")[:200], "via": row.get("via") or ""})
         del log[:-2000]
     write()
-    return {"taken": True, "name": row.get("name"), "where": where, "hash": mark}
+    if not auto:
+        threading.Timer(GRACE_S + 0.5, start_due).start()
+    return {"taken": True, "name": row.get("name"), "where": where, "hash": mark,
+            "graceS": 0 if auto else GRACE_S}
+
+
+#: seconds a download somebody pressed waits, stopped, before it starts: cancelled in
+#: that time it never reached the tracker. Once started it is not cancelled - the
+#: tracker counts a started download, and one dropped at 110 MB was never seeded
+#: (owner, 2026-11-07)
+GRACE_S = 10
+
+
+def may_cancel(said, now=None):
+    """Whether a download may still be cancelled: inside its wait, not yet started."""
+    now = time.time() if now is None else now
+    return bool(said) and not said.get("started") and now < float(said.get("startAt") or 0)
+
+
+def start_due(qb=None):
+    """Start every download whose wait is over. Also after a restart, so one held by a
+    restart inside its wait does not stay stopped."""
+    now = time.time()
+    with LOCK:
+        due = [m for m, s in (STATE.get("taken") or {}).items()
+               if s.get("startAt") and not s.get("started") and not s.get("cancelling")
+               and float(s["startAt"]) <= now]
+    if not due:
+        return []
+    if qb is None:
+        import pd_torrents
+        qb = pd_torrents.QB(pd_torrents.load()["config"])
+    went = []
+    for mark in due:
+        try:
+            qb.start(mark)
+        except Exception:
+            continue
+        went.append(mark)
+        with LOCK:
+            one = (STATE.get("taken") or {}).get(mark)
+            if one is not None:
+                one["started"] = True
+    if went:
+        write()
+    return went
 
 
 #: how long before a film is worth asking about again. One that the tracker had
@@ -1391,6 +1439,8 @@ def taking():
                     "progress": (unpack["progress"] if unpack
                                  else float(held.get("progress") or 0)),
                     "done": done,
+                    # inside its wait: the page offers a cancel, and only then
+                    "mayCancel": may_cancel(said, now),
                     # in the library, and the key its page plays it from
                     "in": bool(said.get("in")), "libKey": landed_key(said) if done else "",
                     "eta": int(held.get("eta") or -1),
@@ -1712,14 +1762,26 @@ def ready_for(tokens, since, lib):
     return out
 
 
-def drop(mark):
-    """Stop one and take what it has written with it."""
+def drop(mark, who="", qb=None):
+    """Stop one inside its wait and take what it has written with it. Started, it is not
+    stopped: it finishes and seeds."""
     mark = str(mark or "")
     if not mark:
         return {"ok": False, "why": "nothing said"}
+    with LOCK:
+        said = (STATE.get("taken") or {}).get(mark)
+        if said is not None and may_cancel(said):
+            said["cancelling"] = True      # and the wait's timer leaves it alone
+            allowed = True
+        else:
+            allowed = False
+    if not allowed:
+        return {"ok": False, "started": True,
+                "why": "It has started: it finishes and seeds"}
     try:
-        import pd_torrents
-        qb = pd_torrents.QB(pd_torrents.load()["config"])
+        if qb is None:
+            import pd_torrents
+            qb = pd_torrents.QB(pd_torrents.load()["config"])
         held = qb.info(mark)
         # A finished one is not a download any more: cancelling it would delete the
         # film off the disk, which is not what the word says on the button.
@@ -1730,9 +1792,17 @@ def drop(mark):
             return {"ok": False, "why": "that one has finished: it is on the disk now"}
         qb.remove(mark, files=True)
     except Exception as why:
+        with LOCK:
+            if said is not None:
+                said.pop("cancelling", None)
         return {"ok": False, "why": str(why)[:140]}
     with LOCK:
         (STATE.get("taken") or {}).pop(mark, None)
+        # who cancelled what, beside who took it
+        log = STATE.setdefault("log", [])
+        log.append({"at": int(time.time()), "who": who or "", "name": (said or {}).get("name") or "",
+                    "size": int((said or {}).get("size") or 0), "cancelled": True})
+        del log[:-2000]
     write()
     return {"ok": True}
 
@@ -1754,6 +1824,11 @@ def start(root, may_ask=True, config=None):
         STATE["asks"] = bool(may_ask)
         STATE["config"] = config
     read()
+    # a restart inside a download's wait: started now, not left stopped
+    try:
+        start_due()
+    except Exception:
+        pass
 
     import pd_beat
 
@@ -1761,6 +1836,10 @@ def start(root, may_ask=True, config=None):
         asked_at = 0.0
         while True:
             pd_beat.beat("search", "reading feeds", 1800)
+            try:
+                start_due()                # a wait its timer missed
+            except Exception:
+                pass
             try:
                 refresh()
             except Exception:

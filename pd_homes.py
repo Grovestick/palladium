@@ -41,6 +41,37 @@ def give(films, here, copy_whole, listed=()):
             if film.get("key") not in listed and here(pack, film) and not copy_whole(pack, film)]
 
 
+def wanted_fetch(wanted, copies_of, here, copy_whole):
+    """What the copy rules want and this server lacks, fetched from the copy server: the list
+    the copy fetches by, read the other way (owner, 2026-11-07: sync is the same both ways).
+    wanted is [(key, why)] in the list's order; copies_of(key) the pack copies of a title;
+    one copy fetched per title, the first the copy holds whole, none when one is here.
+    Returns [(pack, film, why)]."""
+    out, seen = [], set()
+    for key, why in wanted:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        copies = copies_of(key)
+        if not copies or any(here(p, f) for p, f in copies):
+            continue
+        for pack, film in copies:
+            if copy_whole(pack, film):
+                out.append((pack, film, why))
+                break
+    return out
+
+
+def watched_fetch(films, watched, here, copy_whole):
+    """What the viewing rule takes back: a film the copy server is sending somebody now and
+    this server lacks, fetched here too so it reads off both. Nothing is let go: that is Sync
+    back, a rule of its own over the same fetching (owner, 2026-11-07). watched is a set of
+    TMDB numbers; here and copy_whole as for decide."""
+    return [(pack, film) for pack, film in films
+            if int(film.get("tmdb") or 0) in watched
+            and not here(pack, film) and copy_whole(pack, film)]
+
+
 def decide(films, wanted, here, copy_whole, playing=(), always=()):
     """What to take back and what to let go, as (fetch, drop) lists of (pack, film).
 

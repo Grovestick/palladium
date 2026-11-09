@@ -1841,6 +1841,18 @@ def by_key(key):
     return pack, film
 
 
+def copies_of(key):
+    """Every pack copy of a key, as [(pack, film)]: a copy's own key gives that one, a title
+    id every pack that carries the title - the copy server may hold another than by_key picks."""
+    if not key:
+        return []
+    ix = _index()
+    hit = ix["keys"].get(key)
+    if hit:
+        return [hit]
+    return [(pack, film) for film, pack in ix["titles"].get(key) or []]
+
+
 def old_pack_key(key):
     """Whether a key is shaped like the keys packs gave their films before they carried their
     titles' ids: the one place that knows the shape, for one the packs no longer know."""
@@ -4591,6 +4603,9 @@ def read_moved(now=None):
             continue
         if any(d.get("hash") == h and d.get("state") == "downloading" for d in data["downloads"]):
             continue
+        # one this machine does not seed is not read here: nothing would use it
+        if not seeds_pack_here(h):
+            continue
         waiting = moved_waiting(h)
         if not waiting:
             continue
@@ -4746,6 +4761,10 @@ def placed_path(info_hash, index, name):
     return os.path.join(root, str(name).replace("/", os.sep))
 
 
+#: why the last place_and_recheck wrote nothing, for its caller's log
+PLACE_WHY = {"why": ""}
+
+
 def place_and_recheck(info_hash, index, name, reader, size=0, recheck=True, share=None):
     """Write a file copied from the other machine where its pack expects it, then look again.
 
@@ -4762,11 +4781,14 @@ def place_and_recheck(info_hash, index, name, reader, size=0, recheck=True, shar
     # qBittorrent found nothing. The sent name is the fallback for a pack this
     # machine does not have at all.
     onto = placed_path(info_hash, index, name)
+    PLACE_WHY["why"] = ""
     if not onto:
+        PLACE_WHY["why"] = "no place for it here"
         return ""
     try:
         os.makedirs(os.path.dirname(onto), exist_ok=True)
-    except OSError:
+    except OSError as e:
+        PLACE_WHY["why"] = str(e) or type(e).__name__
         return ""
     if (os.path.exists(onto) and size and os.path.getsize(onto) == int(size)
             and (share or on_disk_share)(onto) >= ON_DISK_FULL):
@@ -4781,9 +4803,10 @@ def place_and_recheck(info_hash, index, name, reader, size=0, recheck=True, shar
                 f.write(lump)
         # short of its length it is not the film: a 779-byte stub replaced a partial copy here
         if size and os.path.getsize(part) != int(size):
-            raise ValueError("came short")
+            raise ValueError("came short: %.1f of %.1f GB" % (os.path.getsize(part) / 1e9, int(size) / 1e9))
         os.replace(part, onto)
-    except Exception:
+    except Exception as e:
+        PLACE_WHY["why"] = str(e) or type(e).__name__
         try:
             os.remove(part)
         except OSError:
@@ -4794,6 +4817,13 @@ def place_and_recheck(info_hash, index, name, reader, size=0, recheck=True, shar
     # has none of it however whole the file on the disk is.
     if not recheck:
         return onto                        # switched on by the caller, with the pack stopped
+    read_in(info_hash, index)
+    return onto
+
+
+def read_in(info_hash, index):
+    """A pack file put in place from the other server, handed to the pack: switched on and the
+    pack looked at again, so it is seeded from here."""
     try:
         qb = QB(load()["config"])
         try:
@@ -4803,7 +4833,6 @@ def place_and_recheck(info_hash, index, name, reader, size=0, recheck=True, shar
         qb.recheck(info_hash)
     except Exception:
         pass                               # the file is there either way
-    return onto
 
 
 def arrived(key):
@@ -5086,17 +5115,73 @@ def yield_reads(watched, short, now=None):
             t = qb.info(pack["hash"]) or {}
         except Exception:
             continue
-        if str(t.get("state") or "").startswith("checking"):
+        # a pack this machine does not seed is not paused and read again here: it is
+        # stopped, and its read started over at 10:36 under a viewer (2026-11-08)
+        if str(t.get("state") or "").startswith("checking") and seeds_pack_here(pack["hash"]):
             checking[pack["hash"]] = os.path.splitdrive(str(t.get("save_path") or ""))[0].upper()
     stop, start, STATE["calmSince"] = read_turns(checking, {str(d).upper() for d in watched},
                                                  short, held, float(STATE.get("calmSince") or 0), now)
     for h in stop:
         qb.stop(h)
         held[h] = checking[h]
+    # read again from the start, not started: a read stopped part way keeps only what it had
+    # read, and started like that both K packs came back nearly empty and the guard switched
+    # every file off (2026-11-08)
     for h in start:
         held.pop(h, None)
-        qb.start(h)
+        if seeds_pack_here(h):
+            qb.recheck(h)
     return stop, start
+
+
+#: which machines seed the packs whose home is split: "copy", "main" or "both"
+SPLIT_SEED_WAYS = ("copy", "main", "both")
+
+
+def split_seed():
+    """(whether this machine seeds split packs, the split packs' hashes). The setting lives on
+    the main server; the copy server is told it, and the hashes, with every copy list. One
+    machine is enough to seed a pack (owner, 2026-11-08)."""
+    if _following():
+        told = STATE.get("splitSeedTold") or {}
+        way = told.get("way") if told.get("way") in SPLIT_SEED_WAYS else "both"
+        return way in ("copy", "both"), {str(h) for h in told.get("packs") or []}
+    way = "both"
+    try:
+        lib = STATE["lib"]() if STATE.get("lib") else None
+        said = str(((lib.config() if lib else {}) or {}).get("splitSeed") or "both")
+        way = said if said in SPLIT_SEED_WAYS else "both"
+    except Exception:
+        pass
+    return way in ("main", "both"), {str(h) for h, v in (load().get("home") or {}).items() if v == "split"}
+
+
+def seeds_pack_here(info_hash):
+    """Whether this machine seeds this pack: any pack but a split one the setting gives the other."""
+    here, split = split_seed()
+    return here or str(info_hash) not in split
+
+
+def split_rest(qb, pack, held, downloads):
+    """A split pack this machine does not seed: stopped, unless a film is coming into it. True
+    when the rule holds it, so the rest of the guard leaves it be. Let go again, it starts only
+    when every file on is whole - seeding, never fetching."""
+    h = str(pack["hash"])
+    resting = STATE.setdefault("splitResting", set())
+    stopped = str(held.get("state") or "").startswith(("stopped", "paused"))
+    if not seeds_pack_here(h):
+        if any(d.get("hash") == h and d.get("state") in ("downloading", "queued") for d in downloads):
+            return False
+        if not stopped:
+            _stop(qb, h)
+        resting.add(h)
+        return True
+    if h in resting:
+        resting.discard(h)
+        files = qb.files(h)
+        if stopped and all(float(f.get("progress") or 0) >= 1 for f in files if int(f.get("priority") or 0) > 0):
+            qb.start(h)
+    return False
 
 
 def _guard_packs():
@@ -5111,6 +5196,9 @@ def _guard_packs():
         try:
             held = qb.info(pack["hash"])
             if held is None:
+                continue
+            # a split pack the other machine seeds: stopped here, and nothing else about it
+            if split_rest(qb, pack, held, data["downloads"]):
                 continue
             only_asked(qb, pack["hash"])
             stopped = str(held.get("state") or "").startswith(("stopped", "paused"))

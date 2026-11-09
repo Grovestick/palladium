@@ -2705,7 +2705,10 @@ object Api {
 
 
     suspend fun onDeck(ctx: Context) = fromSome(ctx, 10_000L) { srv ->
-        listFrom("/local/library/onDeck", srv)
+        listFrom("/local/library/onDeck", srv).onEach { m ->
+            // a place for a title the other server holds: it opens there, as Recently added does
+            if (m.elsewhere.isNotEmpty() && !m.away) m.srv = Servers.holderOf(ctx, srv, standby)
+        }
     }.sortedByDescending { it.lastViewedAt }.take(40)
 
     suspend fun children(m: Media) =
@@ -4141,7 +4144,9 @@ object Api {
                       // the page it was started from
                       val key: String = "",
                       // what it is doing, in the server's words
-                      val words: String = "")
+                      val words: String = "",
+                      // inside its wait before it starts: the only time it may be cancelled
+                      val mayCancel: Boolean = false)
 
     suspend fun trackerTaking(srv: Server? = null): List<Taking> =
         withContext(Dispatchers.IO) {
@@ -4155,7 +4160,7 @@ object Api {
                            it.optDouble("mbit", 0.0), it.optInt("eta", -1),
                            it.optBoolean("done", false), it.optString("title"),
                            it.optInt("year", 0), it.optString("key"),
-                           it.optString("words", ""))
+                           it.optString("words", ""), it.optBoolean("mayCancel", false))
                 }
             }
         }.getOrDefault(emptyList())

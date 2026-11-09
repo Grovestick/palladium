@@ -15,15 +15,28 @@ RIPPER = "http://127.0.0.1:8797"
 REMUX_MBIT = 40
 
 
+#: until when a reading is not asked of the ripper again, after it did not answer. A closed
+#: port on Windows takes two seconds to refuse, and a server with no ripper spent them on
+#: every Now playing - the panel gives up at two and drew it as off (2026-11-07)
+AWAY = {"until": 0.0}
+AWAY_FOR = 60
+
+
 def _ask(path, body=None, patience=5):
-    """The ripper's answer, or None when it does not answer."""
+    """The ripper's answer, or None when it does not answer. A reading is not asked for
+    again for a minute after one went unanswered; a press - start, cancel - always is."""
     data = json.dumps(body).encode() if body is not None else None
+    if data is None and time.time() < AWAY["until"]:
+        return None
     req = urllib.request.Request(RIPPER + path, data=data, method="POST" if data else "GET",
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=patience) as answer:
-            return json.loads(answer.read() or b"{}")
+            said = json.loads(answer.read() or b"{}")
+        AWAY["until"] = 0.0
+        return said
     except Exception:
+        AWAY["until"] = time.time() + AWAY_FOR
         return None
 
 

@@ -144,6 +144,9 @@ data class Copy(
     val bitrate: Int,
     val partKey: String?,
     val fileName: String?,
+    /** the file's length in bytes, 0 when not said: the same name with another length is
+     *  another file, and the two are not read as one */
+    val size: Long = 0L,
     /** decibels this file wants to sit where everything else sits; nought leaves it */
     val gainDb: Float = 0f,
     /** how loud it was measured to be, in LUFS, or nothing while it is unmeasured */
@@ -217,6 +220,8 @@ data class Media(
     val audioChannels: Int = 2,
     val addedAt: Long = 0,
     val lastViewedAt: Long = 0,
+    // when it was put on the watchlist, for the order the watchlist opens in
+    val listedAt: Long = 0,
     val watched: Boolean = false,
     val watchedEpisodes: Int = 0,      // for a series or a season
     // a film's release date, or for a series the date of its newest episode
@@ -693,6 +698,7 @@ data class Media(
                     ?.toFloat(),
                 fileName = part?.optString("file")?.takeIf { it.isNotEmpty() }
                     ?.substringAfterLast(Char(92))?.substringAfterLast(Char(47)),
+                size = part?.optLong("size", 0L) ?: 0L,
                 audioChannels = media?.optInt("audioChannels")?.takeIf { it > 0 } ?: 2,
                 subtitleStreams = subs,
                 audioStreams = sounds,
@@ -791,6 +797,7 @@ data class Media(
                 audioChannels = first.audioChannels,
                 addedAt = o.optLong("addedAt"),
                 lastViewedAt = o.optLong("lastViewedAt"),
+                listedAt = o.optLong("listedAt"),
                 watched = o.optInt("viewCount") > 0,
                 watchedEpisodes = o.optInt("viewedLeafCount"),
                 // optString hands back the four letters "null" for a JSON null, which

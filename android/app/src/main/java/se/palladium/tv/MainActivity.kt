@@ -3269,7 +3269,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // the two shelves are what a mark changes, so they alone are refetched when
         // one is changed; a grid of films does not move because a series was marked
         (if (browse.tab == "watchlist")
-             "|" + MainActivity.marksTouched.value else "")
+             "|" + MainActivity.marksTouched.value else "") +
+        // and a download this viewer asked for coming in, on the two shelves that show it
+        (if (browse.tab == "home" || browse.tab == "watchlist")
+             "|" + Arrivals.landed.intValue else "")
 
     // which genres exist, for the tab in hand: asked once per tab
     // and again whenever a mark changes: the numbers are counted among what is
@@ -5677,7 +5680,8 @@ private fun collectionOrder(list: List<Media>, key: String, asc: Boolean): List<
             it.released.ifEmpty { (it.year ?: 0).toString().padStart(4, '0') + "-01-01" }
         }
     }
-    if (key == "lastViewedAt") return Route.byLastWatched(list, asc) { it.lastViewedAt }
+    if (key == "lastViewedAt") return Route.byLastWatched(list, asc) {
+        Route.watchlistAt(it.lastViewedAt, it.listedAt) }
     val sorted = list.sortedWith(by.thenBy { it.title.lowercase() })
     val out = if (asc) sorted else sorted.reversed()
     // One programme's seasons and episodes stay in their own order, where the programme
@@ -6891,18 +6895,17 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // a line saying so only sat there
                 if (one.done) return@forEach
                 val said = coming.firstOrNull { it.offerTracker }
-                Pill(if (said != null) "✕ Cancel  ·  " +
+                val line = if (said != null)
                          Route.offerLine(said.offerState, said.offerVersion, said.offerProgress,
                                          said.offerMbit, said.offerEta, said.offerPlace, said.offerWords)
-                     else "✕ Cancel " +
-                         (if (one.state == "queued") "queued"
+                     else (if (one.state == "queued") "queued"
                           else "$pct%") +
                          (if (one.mbit > 0)
                               String.format(java.util.Locale.US,
                                             "  ·  %.1f Mbit/s", one.mbit)
-                          else ""),
-                     small = true) {
-                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                          else "")
+                Pill(Route.takingButton(one.mayCancel, false, line), small = true) {
+                    if (one.mayCancel) (ctx as AppCompatActivity).lifecycleScope.launch {
                         if (Api.trackerCancel(one.hash, full.srv)) {
                             otherSaid = "Cancelled"
                             taking = taking.filter { it.hash != one.hash }
@@ -7396,12 +7399,12 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         Pill("Unpacking " + (going.progress * 100).toInt() + "%",
                              modifier = Modifier.focusRequester(actFocus)) { }
                     } else if (going != null) {
-                        Pill(if (cancelArmed) "Press again to cancel"
-                             else "\u2715 Cancel  \u00b7  " +
+                        Pill(Route.takingButton(going.mayCancel, cancelArmed,
                                  Route.takingLine(going.state, going.progress, going.mbit,
-                                                  going.words),
+                                                  going.words)),
                              modifier = Modifier.focusRequester(actFocus)) {
-                            if (!cancelArmed) cancelArmed = true
+                            if (!going.mayCancel) cancelArmed = false
+                            else if (!cancelArmed) cancelArmed = true
                             else (ctx as AppCompatActivity).lifecycleScope.launch {
                                 cancelArmed = false
                                 if (Api.trackerCancel(going.hash, full.srv)) {

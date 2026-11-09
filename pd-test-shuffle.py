@@ -513,30 +513,69 @@ on13 = r13["order"][r13["pos"]]
 who13 = h.viewer()
 
 
-def watched13(position, duration, ago):
+def watched13(position, duration, ago, key=None, casual=1):
+    key = key or on13
     con = m.local().lib.db()
-    con.execute("DELETE FROM progress WHERE who=? AND key=?", (who13, on13))
-    con.execute("INSERT INTO progress (who,key,position,duration,updated) VALUES (?,?,?,?,?)",
-                (who13, on13, position, duration, int(time.time()) - ago))
+    con.execute("DELETE FROM progress WHERE who=? AND key=?", (who13, key))
+    con.execute("DELETE FROM watchlog WHERE who=? AND key=?", (who13, key))
+    con.execute("INSERT INTO progress (who,key,position,duration,updated,casual) VALUES (?,?,?,?,?,?)",
+                (who13, key, position, duration, int(time.time()) - ago, casual))
     con.commit()
     con.close()
 
 
-# stopped two minutes from the end: inside Continue watching's three, still its place
-watched13(1230, 1350, 5)
+# the end is the library's watched-through line - the credits where the end finder found them
+import pd_localapi as _la13
+line13 = int(_la13.LocalAPI.finished_at(1350, on13))
+# stopped a minute before it: still its place
+watched13(line13 - 60, 1350, 5)
 said13 = h.shuffle_draw(cid, resume=True)
-check("13 stopped near the end, carrying on resumes that place",
-      said13.get("key") == on13 and int(said13.get("resumeAt") or 0) == 1230)
-# watched into its last minute: the next one, not an older place
+check("13 stopped before the end, carrying on resumes that place",
+      said13.get("key") == on13 and int(said13.get("resumeAt") or 0) == line13 - 60)
+# watched that far in ordinary watching, not in the shuffle: not the shuffle's place
+s13n = m.read_settings()
+(s13n["users"][owner] if owner != "me" else s13n)["shuffles"][cid]["at"] = {}
+m.write_settings(s13n, merge=False)
+watched13(line13 - 60, 1350, 5, casual=0)
+said13n = h.shuffle_draw(cid, resume=True)
+check("13 ordinary watching is not where the shuffle carries on",
+      said13n.get("key") == on13 and int(said13n.get("resumeAt") or 0) == 0,
+      str((said13n.get("key"), said13n.get("resumeAt"))))
+# watched past it: the next one, not an older place
 s13 = m.read_settings()
 (s13["users"][owner] if owner != "me" else s13)["shuffles"][cid]["at"] = {}
 m.write_settings(s13, merge=False)
-watched13(1320, 1350, 1)
+watched13(line13 + 10, 1350, 1)
 said13b = h.shuffle_draw(cid, resume=True)
 r13b = round_of(owner, cid)
-check("13 watched into its last minute, carrying on plays the next one",
+check("13 watched past the end, carrying on plays the next one",
       said13b.get("key") not in (None, on13)
       and r13b["order"].index(said13b.get("key")) > r13b["order"].index(on13))
+# the player's report: before the end it keeps the place, past it the title is done
+fresh_round(3)
+r13c = round_of(owner, cid)
+on13c = r13c["order"][r13c["pos"]]
+line13c = int(_la13.LocalAPI.finished_at(1285, on13c))
+watched13(line13c - 60, 1285, 5, on13c)
+h.shuffle_note(cid, on13c, line13c - 60, 1285)
+said13c = h.shuffle_draw(cid, resume=True)
+check("13 a report before the end keeps the place for carrying on",
+      said13c.get("key") == on13c and int(said13c.get("resumeAt") or 0) == line13c - 60,
+      str((said13c.get("key"), said13c.get("resumeAt"), on13c)))
+h.shuffle_note(cid, on13c, line13c + 10, 1285)
+check("13 a report past the end finishes the title for the round",
+      round_of(owner, cid).get("done") == on13c)
+# a title watched outside the shuffle - played to its end from its page, or marked
+# watched - leaves the round as it was
+fresh_round(3)
+r13o = round_of(owner, cid)
+on13o = r13o["order"][r13o["pos"]]
+h.shuffle_note(cid, on13o, 400, 1285)
+before13o = (r13o["pos"], round_of(owner, cid).get("done"), round_of(owner, cid).get("at"))
+h.title_finished(on13o)
+after13o = round_of(owner, cid)
+check("13 a title watched outside the shuffle leaves the round as it was",
+      (after13o["pos"], after13o.get("done"), after13o.get("at")) == before13o, str(after13o.get("done")))
 con13 = m.local().lib.db()
 con13.execute("DELETE FROM progress WHERE who=? AND key=?", (who13, on13))
 con13.commit()
