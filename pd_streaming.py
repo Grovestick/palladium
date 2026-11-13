@@ -752,12 +752,12 @@ def service_page(lib, kind, providers, region, page, genres=(), years=(0, 0),
     return got
 
 
-def film_row(one):
+def film_row(one, lib):
     """A catalogue film as a row of this list, whether held here or not."""
     when = str(one.get("release_date") or "")[:10]
     return {"title": one.get("title") or "", "key": key_for("tmdb:%s" % one.get("id")),
             "tmdb": one.get("id"), "votes": int(one.get("vote_count") or 0),
-            "genres": [GENRES.get(g) for g in (one.get("genre_ids") or []) if GENRES.get(g)],
+            "genres": genre_names(lib, one.get("genre_ids")),
             "poster": one.get("poster_path"), "backdrop": one.get("backdrop_path"),
             "overview": one.get("overview") or "", "rating": one.get("vote_average"),
             "released": when, "year": int(when[:4]) if when[:4].isdigit() else 0, "imdb": ""}
@@ -782,6 +782,14 @@ def _genres(lib):
     except Exception:
         pass
     return GENRES
+
+
+def genre_names(lib, ids):
+    """A film's categories by name, from TMDB's numbers. The names are read first where
+    they have not been yet: a search before the new films' first refresh gave every film
+    it found no category, and so no More like this (2026-11-11)."""
+    names = _genres(lib)
+    return [names.get(g) for g in (ids or []) if names.get(g)]
 
 
 def _plain(title):
@@ -902,8 +910,7 @@ def _looked_up(lib, one, was=None):
         return {"tmdb": found.get("id"),
                 "votes": int(found.get("vote_count") or 0),
                 "known": float(found.get("popularity") or 0),
-                "genres": [GENRES.get(g) for g in (found.get("genre_ids") or [])
-                           if GENRES.get(g)],
+                "genres": genre_names(lib, found.get("genre_ids")),
                 "poster": found.get("poster_path"),
                 "backdrop": found.get("backdrop_path"),
                 "overview": found.get("overview") or "",
@@ -960,8 +967,7 @@ def _from_the_catalogue(lib, months, want):
                 "key": key_for("tmdb:%s" % one.get("id")),
                 "tmdb": one.get("id"),
                 "votes": int(one.get("vote_count") or 0),
-                "genres": [GENRES.get(g) for g in (one.get("genre_ids") or [])
-                           if GENRES.get(g)],
+                "genres": genre_names(lib, one.get("genre_ids")),
                 "poster": one.get("poster_path"),
                 "backdrop": one.get("backdrop_path"),
                 "overview": one.get("overview") or "",
@@ -1298,19 +1304,54 @@ def learn_home(lib, most=200):
     return done
 
 
-def out_now(one):
+def cammed(name):
+    """Whether a release name says it was filmed in a cinema: a cam or a telesync."""
+    return bool(set(re.split(r"[^a-z0-9]+", str(name or "").lower())) & set(CAMMED))
+
+
+def release_kind(name):
+    """What a cinema release name says it is: "telesync", "telecine", "screener" or "cam";
+    "" for a real release."""
+    words = set(re.split(r"[^a-z0-9]+", str(name or "").lower()))
+    for kind, said in (("telesync", ("ts", "hdts", "telesync")), ("telecine", ("tc", "hdtc", "telecine")),
+                       ("screener", ("screener", "scr", "dvdscr")), ("cam", ("cam", "hdcam", "camrip"))):
+        if words & set(said):
+            return kind
+    return ""
+
+
+def cam_kind(one):
+    """The best of what the tracker has of a film filmed in a cinema: a telesync before a
+    cam, as the notification says it; "cam" when the names say nothing plainer."""
+    kinds = {release_kind(r.get("name")) for r in fetchable(one) or []}
+    for kind in ("screener", "telecine", "telesync", "cam"):
+        if kind in kinds:
+            return kind
+    return "cam"
+
+
+def cam_only(one):
+    """Whether everything the tracker has of a film was filmed in a cinema: shown with a
+    grey Download band, and on the shelves only for a viewer who asks for them."""
+    rows = fetchable(one)
+    return bool(rows) and all(cammed(r.get("name")) for r in rows)
+
+
+def out_now(one, cams=False):
     """Whether a film can be watched at home yet: held here already, or past its first
     digital or disc date, or the tracker carries a real release of it - not one filmed
-    in a cinema. A film not yet asked about is given the benefit of the doubt."""
+    in a cinema, unless this viewer shows those (`cams`). A film not yet asked about is
+    given the benefit of the doubt."""
     if one.get("here"):
+        return True
+    if cams and cam_only(one):
         return True
     today = time.strftime("%Y-%m-%d")
     home = str(one.get("home") or "")
     if home and home <= today:
         return True
     for r in fetchable(one):
-        words = set(re.split(r"[^a-z0-9]+", str(r.get("name") or "").lower()))
-        if not (words & set(CAMMED)):
+        if not cammed(r.get("name")):
             return True
     return not one.get("homeChecked")
 
@@ -1346,9 +1387,10 @@ def mark_held(lib, every=60.0):
     return changed
 
 
-def shown():
-    """The shelf: what is new and can actually be watched at home."""
-    return [one for one in read() if out_now(one)]
+def shown(cams=False):
+    """The shelf: what is new and can actually be watched at home - and with `cams`, what
+    can only be had filmed in a cinema."""
+    return [one for one in read() if out_now(one, cams)]
 
 
 def not_out(one):
@@ -1393,6 +1435,8 @@ def item(one):
         # list either way; this only decides whether the button asks somebody or
         # fetches it.
         "onTracker": bool(fetchable(one)) or boxed(one),
+        # and all of it filmed in a cinema: the Download band is grey
+        "cam": cam_only(one),
         # not asked of the tracker yet: neither Download nor Request is known
         "checking": unchecked(one),
         # Rotten Tomatoes: the critics' share and the audience's, percent
@@ -1589,7 +1633,7 @@ def by_name(lib, words, most=BY_NAME_MOST, patience=6):
             "key": key_for("tmdb:%s" % one.get("id")),
             "tmdb": one.get("id"),
             "votes": int(one.get("vote_count") or 0),
-            "genres": [GENRES.get(g) for g in (one.get("genre_ids") or []) if GENRES.get(g)],
+            "genres": genre_names(lib, one.get("genre_ids")),
             "poster": one.get("poster_path"),
             "backdrop": one.get("backdrop_path"),
             "overview": one.get("overview") or "",
@@ -1681,7 +1725,7 @@ def show_unchecked(title):
     than a Request that may be wrong. Never on a machine that asks nothing itself."""
     try:
         import pd_tracker
-        return bool(pd_tracker.state().get("asks")) and not pd_tracker.asked_within(
+        return pd_tracker.asks() and not pd_tracker.asked_within(
             title, 0, CHECKED_FOR)
     except Exception:
         return False
@@ -1690,7 +1734,7 @@ def show_unchecked(title):
 def ask_tracker_about_shows(titles):
     """The tracker asked, behind, about series it has not been asked about lately: what
     comes back joins its list, and the next look says Add or Request."""
-    todo = [t for t in titles if t and show_unchecked(t)]
+    todo = [t for t in titles if t and show_unchecked(t)]   # unchecked: only where it asks
     if not todo:
         return
     with LOCK:
@@ -1720,7 +1764,7 @@ def ask_tracker_slowly_about_shows(titles, gap=SHOW_GAP):
     and as a complete run - asked behind, one at a time, giving way to people. A series'
     page then answers from what is known at once rather than asking while it waits."""
     import pd_tracker
-    if not pd_tracker.state().get("asks"):
+    if not pd_tracker.asks():
         return False
     todo = [t for t in dict.fromkeys(titles or []) if t and show_unchecked(t)]
     if not todo:
@@ -1751,7 +1795,7 @@ def unchecked(one):
     machine that reads another's list and asks nothing itself."""
     try:
         import pd_tracker
-        if not pd_tracker.state().get("asks") or fetchable(one) or boxed(one):
+        if not pd_tracker.asks() or fetchable(one) or boxed(one):
             return False
         title, year = one.get("title") or "", int(one.get("year") or 0)
         return not (pd_tracker.asked_within(title, year, CHECKED_FOR)
@@ -1775,10 +1819,12 @@ _NAMING = set()
 NO_ANSWER_FOR = 60
 
 
-def by_name_soon(lib, words, shows=False):
+def by_name_soon(lib, words, shows=False, wait=0.0):
     """The catalogue's films (or with `shows` series) by these words if it has already
     answered, else None - and it is asked behind the search, whose next asking has
-    them. A search waited for the catalogue, or gave up on it after a few seconds."""
+    them. A search waited for the catalogue, or gave up on it after a few seconds.
+    wait: seconds to give a first asking, which ends the moment the catalogue answers -
+    a series by those words showed only on the second search (2026-11-13)."""
     low = " ".join(str(words or "").lower().split())
     if len(low) < (2 if shows else 3):
         return []
@@ -1798,6 +1844,12 @@ def by_name_soon(lib, words, shows=False):
             finally:
                 _NAMING.discard(key)
         threading.Thread(target=ask, name="palladium-by-name", daemon=True).start()
+    until = time.time() + wait
+    while time.time() < until:
+        time.sleep(0.05)
+        hit = FOUND_BY_NAME.get(key)
+        if hit and time.time() - hit[0] < 3600:
+            return hit[1]
     return None
 
 
@@ -1875,7 +1927,7 @@ def credit_rows(lib, credits, most=CREDITS_MOST, skip=None):
             continue
         out.append({"title": one.get("title") or "", "key": key_for("tmdb:%s" % one.get("id")),
                     "tmdb": one.get("id"), "votes": int(one.get("vote_count") or 0),
-                    "genres": [GENRES.get(g) for g in (one.get("genre_ids") or []) if GENRES.get(g)],
+                    "genres": genre_names(lib, one.get("genre_ids")),
                     "poster": one.get("poster_path"), "backdrop": one.get("backdrop_path"),
                     "overview": one.get("overview") or "", "rating": one.get("vote_average"),
                     "released": when, "year": int(when[:4]), "imdb": ""})
@@ -1950,8 +2002,8 @@ def ask_tracker_about(rows, lib=None, mine=False):
     about today - by name, then for the box sets of their collection and director. True
     while an answer is still coming, so the search is asked again."""
     import pd_tracker
-    if not pd_tracker.state().get("asks"):
-        return False                     # a machine that reads another's list asks nothing
+    if not pd_tracker.asks():
+        return False                     # the other server of a search, or a copy: asks nothing
     todo = [r for r in rows if not fetchable(r)
             and not pd_tracker.asked_within(r.get("title"), r.get("year") or 0, 6 * 3600)]
     if not todo:
@@ -1994,7 +2046,7 @@ def ask_tracker_slowly(rows, gap=SLOW_GAP):
     the background one at a time, giving way to people: the films' Popular page has a
     hundred Checking bands, and twelve a visit never got through them."""
     import pd_tracker
-    if not pd_tracker.state().get("asks"):
+    if not pd_tracker.asks():
         return False
     todo = [r for r in rows if not fetchable(r)
             and not pd_tracker.asked_within(r.get("title"), r.get("year") or 0, 6 * 3600)]
@@ -2036,7 +2088,7 @@ def ask_tracker_slowly(rows, gap=SLOW_GAP):
 
 
 #: how far a watchlisted film has come: nothing, something to fetch it from, here
-SOURCE_STEP = {"": 0, "fetch": 1, "here": 2}
+SOURCE_STEP = {"": 0, "cam": 1, "fetch": 2, "here": 3}
 
 
 def watch_changes(keys, had, source):
@@ -2058,15 +2110,24 @@ def watch_changes(keys, had, source):
 
 def source_of(key):
     """What a catalogue film on a watchlist can be had from now: "here" when the library
-    holds it, "fetch" when the tracker or a box set carries it, "" when nothing does."""
+    holds it, "fetch" when the tracker or a box set carries a real release, "cam" when all
+    the tracker has was filmed in a cinema, "" when nothing does."""
     one = one_of(key)
     if not one:
         return ""
     if one.get("here"):
         return "here"
-    if fetchable(one) or boxed(one):
+    if boxed(one) or (fetchable(one) and not cam_only(one)):
         return "fetch"
+    if fetchable(one):
+        return "cam"
     return ""
+
+
+def seen_source(how, cams):
+    """A source as one viewer counts it: a cam only for a viewer who shows those, so the
+    real release is the step that blinks for everybody else (owner, 2026-11-11)."""
+    return "" if how == "cam" and not cams else how
 
 
 def art_of(key, kind):

@@ -4,10 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,19 +32,18 @@ fun MarkControl(
     favorite: Boolean = false,
     inCollection: Boolean = false,
     onCollection: (() -> Unit)? = null,
+    /** chosen for offline viewing: the watchlist button green (owner, 2026-11-12) */
+    offline: Boolean = false,
 ) {
-    Row(
-        Modifier
-            .padding(end = 8.dp)
-            .clip(RoundedCornerShape(Skin.round(9.dp)))
-            .background(Skin.Panel2),
-    ) {
-        Half(mark = if (favorite) "♥" else if (listed) "★" else "☆", on = listed || favorite,
-             colour = Skin.Accent, onPress = onList,
+    // two buttons apart: joined into one ground they read as a single button until
+    // the remote reached one of them (owner, 2026-11-11)
+    Row(Modifier.padding(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Half(mark = if (favorite) "♥" else if (listed) "★" else "☆",
+             on = listed || favorite || offline,
+             colour = if (offline) Color(0xFF2E9E5B) else Skin.Accent, onPress = onList,
              // a favorite: the heart red, on the ground every chosen button has
              markColour = if (favorite) Color(0xFFFF4D5E) else null)
         if (onCollection != null) {
-            Box(Modifier.width(1.dp).background(Skin.Bg).padding(vertical = 2.dp)) {}
             Half(mark = "↻", on = inCollection, colour = Color(0xFF8AB4F8),
                  onPress = onCollection)
         }
@@ -58,7 +57,8 @@ private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit,
     var focused by remember { mutableStateOf(false) }
     Box(
         Modifier
-            .background(if (on) colour else Color.Transparent)
+            .clip(RoundedCornerShape(Skin.round(9.dp)))
+            .background(if (on) colour else Skin.Panel2)
             .border(if (focused) 2.dp else 0.dp,
                     if (focused) Color.White else Color.Transparent,
                     RoundedCornerShape(Skin.round(9.dp)))

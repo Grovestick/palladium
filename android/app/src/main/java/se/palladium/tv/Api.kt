@@ -657,6 +657,17 @@ object Api {
         }.getOrDefault("") == "1"
     }
 
+    /**
+     * The picture through a texture, for recording it: set with
+     * `adb shell setprop debug.palladium.texture 1` before the player opens. The TV draws
+     * film on a hardware layer no screen recording sees; a texture it does. Read per player.
+     */
+    fun recordable(): Boolean = runCatching {
+        Class.forName("android.os.SystemProperties")
+            .getMethod("get", String::class.java)
+            .invoke(null, "debug.palladium.texture") as String
+    }.getOrDefault("") == "1"
+
     fun homeHere(b: String): Boolean {
         if (!Servers.athome(b)) return true
         val host = Servers.hostOf(b).substringBefore(":")
@@ -749,8 +760,39 @@ object Api {
         // the server. Six, against a four-second read, so a poll that misses costs
         // ten seconds of numbers that stand still rather than a freeze.
         val reach = if (patience <= 5000) 6000 else 8000
-        return routed(srv) { b -> fetch(b, path, srv?.token ?: token, patience, reach) }
+        if (!Offline.keeps(path))
+            return routed(srv) { b -> fetch(b, path, srv?.token ?: token, patience, reach) }
+        // offline viewing on: each answer kept, and the last one given where no server answers
+        try {
+            val said = routed(srv) { b -> fetch(b, path, srv?.token ?: token, patience, reach) }
+            Offline.answered(srv, path, said)
+            return said
+        } catch (e: java.io.IOException) {
+            if (!gone(e) && !Reach.unreachableHere(e)) throw e
+            return Offline.answerKept(srv, path) ?: throw e
+        }
     }
+
+    /* ---------------- offline copies ---------------- */
+
+    fun offlineMake(srv: Server?, key: String, mi: Int, quality: String,
+                    can: JSONObject): JSONObject =
+        JSONObject(postTo(srv, "/offline/make", JSONObject().put("key", key).put("mi", mi)
+                          .put("quality", quality).put("can", can)))
+
+    fun offlineJobs(srv: Server?, ids: List<String>): List<JSONObject> {
+        val arr = JSONObject(get("/offline/jobs?ids=" + ids.joinToString(","), srv, 15000))
+            .optJSONArray("jobs") ?: JSONArray()
+        return (0 until arr.length()).map { arr.getJSONObject(it) }
+    }
+
+    /** The server's copy deleted: this device has it (taken), or does not want it. */
+    fun offlineLet(srv: Server?, id: String, taken: Boolean) {
+        postTo(srv, if (taken) "/offline/got" else "/offline/drop", JSONObject().put("id", id))
+    }
+
+    fun offlineFileUrl(srv: Server?, id: String): String =
+        addressOf(srv) + auth("/offline/file?id=" + id, srv?.token ?: token)
 
     private suspend fun json(path: String, srv: Server? = null,
                             patience: Int = 30000): JSONObject =
@@ -846,6 +888,7 @@ object Api {
                 it.askable = o.optBoolean("askable", false)
                 it.svtId = o.optString("svt", "")
                 it.onTracker = o.optBoolean("onTracker", false)
+                it.cam = o.optBoolean("cam", false)
                 it.checking = o.optBoolean("checking", false)
                 it.unplayable = o.optBoolean("unplayable", false)
                 it.asked = o.optBoolean("asked", false)
@@ -1687,7 +1730,9 @@ object Api {
                        // a series' pack added already: Route.packWord
                        val word: String = "",
                        // downloading it counts nothing against the account
-                       val freeleech: Boolean = false)
+                       val freeleech: Boolean = false,
+                       // which of the house's packs, shortly: Top 5K
+                       val packShort: String = "")
 
     /**
      * Every version of one film, the most carried first.
@@ -1721,7 +1766,8 @@ object Api {
                                      it.optBoolean("box", false),
                                      it.optBoolean("seasonPack", false),
                                      it.optString("packId", ""),
-                                     freeleech = it.optBoolean("freeleech", false))
+                                     freeleech = it.optBoolean("freeleech", false),
+                                     packShort = it.optString("packShort", ""))
                          }
                      })
         }.getOrDefault(Carrying())
@@ -1771,6 +1817,14 @@ object Api {
      * Asked of the library rather than of the internet: the answer is what can be
      * watched tonight, not what they have ever been in.
      */
+    /** One actor's facts as the catalogue has them: born, died, where, known for, and the
+     *  start of their biography. Null when nobody could be asked. */
+    suspend fun personInfo(person: Int, srv: Server?): JSONObject? = withContext(Dispatchers.IO) {
+        if (person <= 0) null
+        else runCatching { JSONObject(get("/local/library/personInfo?person=$person", srv)) }
+            .getOrNull()
+    }
+
     suspend fun withPerson(ctx: Context, person: Int, name: String): List<Media> =
         fromAll(ctx) { srv ->
             val q = if (person > 0) "person=" + person
@@ -2597,12 +2651,16 @@ object Api {
     /** The server's clock, and what this viewer asked for that has come in since. */
     /** Films on this viewer's watchlist that have got a source since they were last
      *  told: (title, "here" or "fetch"). The server says each once. */
-    suspend fun watchNews(): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+    data class WatchNews(val key: String, val title: String, val how: String, val kind: String)
+
+    /** The watchlist's news, each handed over once, with which kind of cinema release. */
+    suspend fun watchNewsAll(): List<WatchNews> = withContext(Dispatchers.IO) {
         runCatching {
             val arr = JSONObject(get("/watchlist/news")).optJSONArray("news") ?: JSONArray()
             (0 until arr.length()).map {
                 val r = arr.getJSONObject(it)
-                Pair(r.optString("title"), r.optString("how"))
+                WatchNews(r.optString("key"), r.optString("title"), r.optString("how"),
+                          r.optString("kind"))
             }
         }.getOrDefault(emptyList())
     }
@@ -2729,6 +2787,13 @@ object Api {
      * and took the whole app down with it. A title that is not there is an empty
      * screen; it is never a crash.
      */
+    /** A title's own page as its server has it, nothing asked of the other server: a
+     *  series' whole plot and who is in it. */
+    suspend fun ownPage(m: Media): Media? = runCatching {
+        items(json("/local/library/metadata/${m.ratingKey}", m.srv)
+            .getJSONObject("MediaContainer"), m.srv).firstOrNull()
+    }.getOrNull()
+
     suspend fun metadata(m: Media): Media? {
         val mine = try {
             items(json("/local/library/metadata/${m.ratingKey}", m.srv)
@@ -3048,8 +3113,8 @@ object Api {
     /** The catalogue was still being asked: the search is asked again in a moment. */
     @Volatile var searchFilling = false
 
-    suspend fun search(ctx: Context, term: String): List<Media> {
-        val q = URLEncoder.encode(term, "UTF-8")
+    suspend fun search(ctx: Context, term: String, person: Int = 0): List<Media> {
+        val q = URLEncoder.encode(term, "UTF-8") + (if (person > 0) "&person=$person" else "")
         // Newest first, over the whole answer: the hubs come back grouped by kind, and
         // which kind a hit is says nothing about which hit was wanted.
         // the closest title first, as the server ranks them; newest first within each
@@ -3058,7 +3123,9 @@ object Api {
         // - the web page, which waits, found more. A server still silent is asked
         // again, as a catalogue still filling in is.
         val (got, answered) = heardFrom(ctx, SEARCH_PATIENCE, SEARCH_GRACE, "search|$q") { srv ->
-            val said = JSONObject(get("/local/hubs/search?query=$q", srv, SEARCH_PATIENCE.toInt()))
+            // only the server the app is on asks the tracker; the other answers from its index
+            val said = JSONObject(get("/local/hubs/search?query=$q&tracker=" +
+                    Route.searchAsks(addressOf(srv), base), srv, SEARCH_PATIENCE.toInt()))
                 .getJSONObject("MediaContainer")
             if (said.optBoolean("askingTracker")) searchAsking = true
             if (said.optBoolean("fillingIn")) searchFilling = true
@@ -3093,9 +3160,9 @@ object Api {
      * A word that is nobody's film is often somebody's name. Only people with
      * something on the shelves - the same rule the person page reads by.
      */
-    suspend fun searchPeople(ctx: Context, term: String): List<Face> =
+    suspend fun searchPeople(ctx: Context, term: String, person: Int = 0): List<Face> =
         withContext(Dispatchers.IO) {
-        val q = URLEncoder.encode(term, "UTF-8")
+        val q = URLEncoder.encode(term, "UTF-8") + (if (person > 0) "&person=$person" else "")
         val got = eachServer(ctx) { srv ->
             val hubs = JSONObject(get("/local/hubs/search?query=$q", srv))
                 .getJSONObject("MediaContainer").optJSONArray("Hub")
@@ -3268,6 +3335,7 @@ object Api {
                     if (it.has("lufs")) it.optDouble("lufs", 0.0).toFloat() else null
                 }
             } catch (e: Exception) { gainSaid = null }
+            Offline.progressReached(key)
             // The server marks a subtitle verified as this very report arrives - the
             // episode has just passed the credits - and says so in the answer. True
             // means the panel on screen has a tick to turn.
@@ -3289,7 +3357,9 @@ object Api {
             if (!gone) return@withContext false
         }
         }
-        // every door shut: progress is not worth failing playback over
+        // every door shut: progress is not worth failing playback over - kept, with
+        // offline viewing on, and told once a server answers
+        Offline.keepProgress(host, tok, key, positionMs, durationMs)
         return@withContext false
     }
 
@@ -4300,6 +4370,56 @@ object Api {
         }.getOrDefault(want)
         if (ctx != null) prefs(ctx).edit().putString("startTab", got).apply()
         got
+    }
+
+    /** Whether this viewer's shelves stand films only had as a cam or a telesync. */
+    suspend fun camReleases(): String = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/settings")).optString("camReleases", "hide") }
+            .getOrDefault("hide").ifEmpty { "hide" }
+    }
+
+    /** Whether this viewer is told of their watchlist's news on screen: "on" or "off". */
+    suspend fun watchMessages(): String = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/settings")).optString("watchMessages", "on") }
+            .getOrDefault("on").ifEmpty { "on" }
+    }
+
+    suspend fun setWatchMessages(want: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("watchMessages", want)))
+                .optString("watchMessages", want)
+        }.getOrDefault(want)
+    }
+
+    /** Whether this viewer's app is sent the Watchlist's blinks; null when not answered. */
+    suspend fun notify(): String? = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/settings")).optString("notify", "off").ifEmpty { "off" } }
+            .getOrNull()
+    }
+
+    suspend fun setNotify(want: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("notify", want))).optString("notify", want)
+        }.getOrNull()
+    }
+
+    /** The blinks queued for this viewer's app, each handed over once. */
+    suspend fun notes(): List<WatchNews> = withContext(Dispatchers.IO) {
+        runCatching {
+            val arr = JSONObject(get("/notify")).optJSONArray("notes") ?: JSONArray()
+            (0 until arr.length()).map {
+                val r = arr.getJSONObject(it)
+                WatchNews(r.optString("key"), r.optString("title"), r.optString("how"),
+                          r.optString("kind"))
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun setCamReleases(want: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(post("/settings", JSONObject().put("camReleases", want)))
+                .optString("camReleases", want)
+        }.getOrDefault(want)
     }
 
     /** Whether this viewer's lists stand series nobody can get: "hide" or "show". */

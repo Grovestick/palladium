@@ -1,6 +1,7 @@
 package se.palladium.tv
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -1160,6 +1161,49 @@ class RouteTest {
         assertEquals("arm", Route.offerPress("queued", false))
         assertEquals("", Route.offerPress("", false))
         assertEquals("", Route.offerPress("done", true))
+        // one button for a film coming in: a pack's copy is its own Cancel, a tracker
+        // release only says how far it has got
+        // a series' page asks for who is in it, as a film's does; a season shares its series'
+        assertTrue(Route.seriesAsksCast("show"))
+        // a film only had as a cam or a telesync wears its Download band in grey
+        assertEquals(Route.CAM_GREY, Route.downloadBand(true))
+        // a search's names stand over its results, not over an actor's titles opened from it
+        assertTrue(Route.showsSearchNames(5, null))
+        assertFalse(Route.showsSearchNames(5, "An Actor"))
+        assertFalse(Route.showsSearchNames(0, null))
+        // an actor's face: the search for their name, silently that person, until words are typed
+        assertEquals(17, Route.personFilter("An Actor" to 17, "An Actor "))
+        assertEquals(0, Route.personFilter("An Actor" to 17, "An Act"))
+        assertEquals(0, Route.personFilter(null, "An Actor"))
+        // a television page's row fills what is left under it, at 2:3, within a shelf's size
+        assertEquals(105, Route.rowPosterWidth(540, 330, 124))
+        assertEquals(127, Route.rowPosterWidth(540, 297, 124))
+        assertEquals(155, Route.rowPosterWidth(540, 200, 124))
+        assertEquals(93, Route.rowPosterWidth(540, 0, 124))
+        assertEquals(60, Route.rowPosterWidth(540, 500, 124))
+        // a held direction: the lists step quickly while it repeats, and normally once let go
+        assertTrue(Route.isDirection(20) && Route.isDirection(19) && !Route.isDirection(23))
+        assertTrue(Route.heldDown(true, 3))
+        assertFalse(Route.heldDown(true, 0))
+        assertFalse(Route.heldDown(false, 5))
+        // an actor's facts under their name
+        assertEquals("Born 20 Jan 1966, Seattle", Route.personBorn("1966-01-20", "", "Seattle"))
+        assertEquals("Born 2 Mar 1930 · Died 9 Dec 2001", Route.personBorn("1930-03-02", "2001-12-09", ""))
+        assertEquals("", Route.personBorn("", "", ""))
+        // back from an actor's search goes to the title it was pressed on, while it is still theirs
+        assertTrue(Route.backToTitle(true, "An Actor" to 17, "An Actor"))
+        assertFalse(Route.backToTitle(true, "An Actor" to 17, "Other words"))
+        assertFalse(Route.backToTitle(false, "An Actor" to 17, "An Actor"))
+        assertTrue(Route.searchesFrom("films"))
+        assertFalse(Route.searchesFrom("watchlist"))
+        // a search: only the server the app is on asks the tracker
+        assertEquals("here", Route.searchAsks("http://10.0.0.2:8764/", "http://10.0.0.2:8764"))
+        assertEquals("elsewhere", Route.searchAsks("http://10.0.0.1:8765", "http://10.0.0.2:8764"))
+        assertFalse(Route.seriesAsksCast("season"))
+        assertTrue(Route.offerMayCancel(false))
+        assertFalse(Route.offerMayCancel(true))
+        assertEquals("✕ Cancel  ·  40%", Route.takingButton(Route.offerMayCancel(false), false, "40%"))
+        assertEquals("40%", Route.takingButton(Route.offerMayCancel(true), false, "40%"))
     }
 
     @Test
@@ -1358,6 +1402,7 @@ class RouteTest {
         assertEquals("On disk", Route.versionTag(false, true, true, false, false))
         assertEquals("On disk", Route.versionTag(false, true, false, false, false))
         assertEquals("Pack", Route.versionTag(false, false, true, false, false))
+        assertEquals("Top 5K", Route.versionTag(false, false, true, false, false, "Top 5K"))
         assertEquals("Season pack", Route.versionTag(false, false, false, true, true))
         assertEquals("Tracker", Route.versionTag(false, false, false, false, false))
     }
@@ -2017,18 +2062,46 @@ class RouteTest {
         assertTrue(Route.filesPlaybackFault(false, 0))
     }
     @Test
-    fun theWatchlistOpensLastWatchedFirstAndTheUnwatchedKeepTheirPlace() {
-        assertEquals("lastViewedAt" to false, Route.WATCHLIST_OPENS)
-        assertEquals("lastViewedAt", Route.WATCHLIST_ORDERS.first().first)
+    fun theMoreLikeThisRowWaitsOnlyForARealChangeOfPlace() {
+        assertEquals(Route.settleMark(120.2f, 96f), Route.settleMark(119.9f, 96.3f))
+        assertNotEquals(Route.settleMark(120f, 96f), Route.settleMark(140f, 96f))
+        assertNotEquals(Route.settleMark(120f, 96f), Route.settleMark(120f, 110f))
+        assertTrue(Route.SHELF_SETTLE_MS in 100L..400L)
+    }
+    @Test
+    fun aDecoderFailingOnTheStreamStartsAgainAsATranscode() {
+        assertTrue(Route.codecTrouble(androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED))
+        assertTrue(Route.codecTrouble(
+            androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED))
+        assertFalse(Route.codecTrouble(
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED))
+    }
+    @Test
+    fun anOfflineCopyPlaysWhenChosenInVersionsOrTheShelvesAreOffline() {
+        assertTrue(Route.playsHere(on = true, offlineView = false, chosenHere = true))
+        assertTrue(Route.playsHere(on = true, offlineView = true, chosenHere = false))
+        assertFalse(Route.playsHere(on = true, offlineView = false, chosenHere = false))
+        // offline switched off: never, chosen or not
+        assertFalse(Route.playsHere(on = false, offlineView = false, chosenHere = true))
+    }
+    @Test
+    fun theWatchlistOpensLastAddedFirstAndTheUnwatchedKeepTheirPlace() {
+        assertEquals("listedAt" to false, Route.WATCHLIST_OPENS)
+        assertEquals("listedAt" to "Added", Route.WATCHLIST_ORDERS.first())
+        assertEquals("lastViewedAt" to "Watched", Route.WATCHLIST_ORDERS[1])
+        assertEquals(1, Route.WATCHLIST_ORDERS.count { it.second == "Added" })
+        // put on the list, or with no date of its own, when it came into the library
+        assertEquals(90L, Route.watchlistListed(90L, 10L))
+        assertEquals(10L, Route.watchlistListed(0L, 10L))
         val list = listOf("a" to 0L, "b" to 50L, "c" to 0L, "d" to 90L)
         assertEquals(listOf("d", "b", "a", "c"),
                      Route.byLastWatched(list, false) { it.second }.map { it.first })
         assertEquals(listOf("a", "c", "b", "d"),
                      Route.byLastWatched(list, true) { it.second }.map { it.first })
-        // one never watched but just put on the list comes before one watched earlier
-        val marks = listOf(Triple("old", 50L, 10L), Triple("new", 0L, 90L), Triple("none", 0L, 0L))
-        assertEquals(listOf("new", "old", "none"),
-                     Route.byLastWatched(marks, false) { Route.watchlistAt(it.second, it.third) }
+        // added: the one put on the list last first, an undated one by its library date
+        val marks = listOf(Triple("old", 50L, 10L), Triple("new", 90L, 5L), Triple("none", 0L, 60L))
+        assertEquals(listOf("new", "none", "old"),
+                     marks.sortedByDescending { Route.watchlistListed(it.second, it.third) }
                          .map { it.first })
     }
     @Test
@@ -2078,5 +2151,13 @@ class RouteTest {
         assertEquals("\u2715 Cancel  \u00b7  Queued", Route.takingButton(true, false, "Queued"))
         assertEquals("Downloading 14%", Route.takingButton(false, false, "Downloading 14%"))
         assertEquals("Downloading 14%", Route.takingButton(false, true, "Downloading 14%"))
+    }
+    @Test
+    fun anOfflineCopyIsNeverOfferedAboveItsFile() {
+        assertEquals(listOf("720", "1080", "original"), Route.offlineQualities(2160))
+        assertEquals(listOf("720", "1080", "original"), Route.offlineQualities(800))
+        assertEquals(listOf("720", "original"), Route.offlineQualities(720))
+        assertEquals(listOf("original"), Route.offlineQualities(480))
+        assertEquals(listOf("720", "1080", "original"), Route.offlineQualities(null))
     }
 }

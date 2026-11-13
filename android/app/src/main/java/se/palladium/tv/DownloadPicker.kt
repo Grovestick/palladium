@@ -136,7 +136,7 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                         val under = listOfNotNull(
                             one.word.takeIf { it.isNotEmpty() },
                             "Recommended".takeIf { one.pick && !one.have },
-                            Route.versionTag(one.disk, one.have, one.pack, one.box, one.seasonPack),
+                            Route.versionTag(one.disk, one.have, one.pack, one.box, one.seasonPack, one.packShort),
                             "Freeleech".takeIf { one.freeleech },
                             "${one.seeds} seeding".takeIf { one.seeds >= 0 },
                             one.mbit.takeIf { it > 0 }?.let { "$it Mbit/s" },

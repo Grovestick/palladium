@@ -366,8 +366,11 @@ for who in people:
             FAILS.append("11 pool of %s/%s raised: %s" % (who[:6], c.get("id"), traceback.format_exc(limit=2)))
             continue
         looked += 1
+        # a pack offers an episode under the episode's own key now (one key per title):
+        # drawn, that key is fetched from the pack, so it is no bare row
         bare = [k for k in (str(k) for k in pool11)
-                if not k.startswith("o") and (k.startswith("e") or len(k) == 12) and k not in filed]
+                if not k.startswith("o") and (k.startswith("e") or len(k) == 12) and k not in filed
+                and not pd_torrents.only_in_pack(k)]
         check("11 nothing without a file in the hat of %s/%s" % (who[:6], c.get("id")), not bare, str(bare[:4]))
 # one made up: an episode on the largest shelf loses its file. No pack carries it: it
 # leaves the hat. A pack carries it: the pack's key stands in, at the same place.

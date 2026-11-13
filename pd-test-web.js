@@ -12,7 +12,11 @@
    Exit code 0 when every check held, 1 otherwise. Run by the build. */
 const fs = require("fs");
 const path = require("path");
-const { JSDOM } = require(path.join(__dirname, ".webtest", "node_modules", "jsdom"));
+// in the staging copy the source folder beside it has jsdom
+const jsdomAt = [path.join(__dirname, ".webtest", "node_modules", "jsdom"),
+                 path.join(__dirname, "..", "palladium", ".webtest", "node_modules", "jsdom")]
+  .find((p) => fs.existsSync(p));
+const { JSDOM } = require(jsdomAt);
 
 // another copy of the page script may be named, to see the checks fail on a broken one
 const SOURCE = fs.readFileSync(process.env.PD_APPJS || path.join(__dirname, "static", "app.js"), "utf8")
@@ -1317,7 +1321,9 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const d = w.document;
     check("43 the progress button shows", d.getElementById("offerget").style.display !== "none" &&
           /40%/.test(d.getElementById("offerget").textContent), d.getElementById("offerget").textContent);
-    check("43 no second Download beside it", d.getElementById("offertracker").style.display === "none");
+    check("43 one button on the page, no second Download or Cancel beside it",
+          !d.getElementById("offertracker") && !d.getElementById("offercancel")
+          && d.querySelectorAll(".actions button.btn").length === 1, d.querySelector(".actions").innerHTML.slice(0, 300));
     // the server's words: looking for seeders is not "Downloading 0%"
     w.viewOffer({ ratingKey: "oB", type: "movie", title: "F", year: 2023, offered: true,
                   offer: { size: 6e9, state: "downloading", progress: 0, file: "F.mkv",
@@ -1495,7 +1501,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     check("50b every download list on the page is asked for as of now",
           lists.length >= 5 && lists.every((l) => /fresh/.test(l.slice(0, 280))), lists.length);
     check("50b the film page says it is checking and draws the list again",
-          SOURCE.includes("note.textContent = CHECKING_TRACKER") && SOURCE.includes("const newer = await ask(true);"));
+          SOURCE.includes("(st.asking ? CHECKING_TRACKER") && SOURCE.includes("const newer = await ask(true);"));
   }
 
   // ---- 50c. the one Recently added list: a film held only by the other server
@@ -1630,7 +1636,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
 
   // ---- 53. a download just started says so, not Arriving, until its progress comes
   check("53 a started download is not said to be arriving",
-        !SOURCE.includes('"Downloading - arriving"') && /: "Starting the download\u2026";/.test(SOURCE), "");
+        !SOURCE.includes('"Downloading - arriving"') && /if \(st\.starting\) return \{ label: "Starting the download\u2026"/.test(SOURCE), "");
 
   // ---- 54. a Start slide plays only a film that is here; one not out yet says when
   {
@@ -1748,7 +1754,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     w.eval("main = document.querySelector('main')");
     w.viewOffer({ ratingKey: "rA", type: "movie", title: "New", year: 2026, askable: true, onTracker: true });
     await new Promise((r) => setTimeout(r, 400));
-    const g = w.document.getElementById("offertracker");
+    const g = w.document.getElementById("offerget");
     check("52 coming in: the button is its Cancel, the list drawn after it or not", g && /Cancel/.test(g.textContent), g && g.textContent);
     await new Promise((r) => setTimeout(r, 3400));
     check("52 finished: the film's own page opens", w._opened === "lib7", String(w._opened));
@@ -1829,7 +1835,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     w.eval("main = document.querySelector('main')");
     w.viewOffer({ ratingKey: "rA", type: "movie", title: "New", year: 2026, askable: true, onTracker: true });
     await new Promise((r) => setTimeout(r, 400));
-    const g = w.document.getElementById("offertracker");
+    const g = w.document.getElementById("offerget");
     if (g) { g.click(); g.click(); }
     await new Promise((r) => setTimeout(r, 100));
     check("53 started: the button says how far it has got, no Cancel, and pressing it cancels nothing",
@@ -1857,6 +1863,159 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     w.document.getElementById("season").value = "k2";
     await w.reloadWhenIn("k1", 3);
     check("50 another season open: it stops", drawn.length === 1 && again === 2);
+  }
+
+  // ---- 57. one download button: what it says and does, from the pack, the tracker and the versions
+  {
+    const vm = require("vm");
+    const ctx = { Math, Number, String, etaWords: (s) => s + " s" };
+    vm.runInNewContext(take("offerButton"), ctx);
+    const btn = (o, st, m, fetches) => ctx.offerButton(o, Object.assign({ rows: [] }, st), m || {}, !!fetches);
+    const pack = btn({ size: 6e9 }, { free: 100 }, {}, true);
+    const tracker = btn({}, { rows: [{ id: "9", size: 5 * 1073741824 }, { id: "", pack: true, size: 6e9 }], chosen: "9", free: 80 }, {}, true);
+    const packRow = btn({ size: 6e9 }, { rows: [{ id: "9", size: 5 * 1073741824 }, { id: "", pack: true, size: 6e9 }], chosen: "" }, {}, true);
+    check("57 one Download, for the pack or the version chosen in the list",
+          pack.act === "start" && /^⤓ Download  6\.0 GB  ·  100 GB free$/.test(pack.label)
+          && tracker.act === "start" && /5\.0 GB  ·  80 GB free/.test(tracker.label) && /6\.0 GB/.test(packRow.label),
+          pack.label + " / " + tracker.label + " / " + packRow.label);
+    const takeNew = btn({}, { take: { hash: "h", progress: 0, mayCancel: true } });
+    const takeArmed = btn({}, { take: { hash: "h", progress: 0, mayCancel: true }, armed: true });
+    const takeGoing = btn({}, { take: { hash: "h", progress: 0.5, mayCancel: false } });
+    check("57 a tracker release: its Cancel in the first seconds, then only how far it has got",
+          takeNew.act === "cancel-take" && /^✕ Cancel/.test(takeNew.label) && /Press again/.test(takeArmed.label)
+          && takeGoing.act === "none" && takeGoing.disabled && /50%/.test(takeGoing.label),
+          takeNew.label + " / " + takeGoing.label);
+    const packGoing = btn({ state: "downloading", progress: 0.4 }, {}, {}, true);
+    const trackerOffer = btn({ state: "downloading", progress: 0.4, tracker: true }, {}, {}, true);
+    check("57 a pack's copy coming in is cancelled from the same button; a tracker release coming in is not",
+          packGoing.act === "cancel-pack" && /40%/.test(packGoing.label) && trackerOffer.act === "none" && trackerOffer.disabled,
+          packGoing.label + " / " + trackerOffer.label);
+    check("57 finished, and still arriving once its row has gone",
+          btn({}, { take: { done: true } }).label === "Downloaded - arriving"
+          && btn({}, { landing: true }).label === "Downloaded - arriving"
+          && btn({ state: "done" }, {}, {}, true).act === "none");
+    check("57 nothing to fetch: Checking while the tracker is asked, then Request with how many asked",
+          btn({}, {}, { checking: true }).label === "Checking the tracker…"
+          && btn({}, {}, { asked: true, asks: 3 }).label === "Requested  ·  3"
+          && btn({}, {}, {}).act === "request");
+    check("57 refused, on disk, and come in as an episode",
+          btn({ refused: "too big" }, {}, {}, true).label === "Cannot download"
+          && btn({}, { rows: [{ id: "9", have: true, size: 1073741824 }], chosen: "9" }, {}, true).here
+          && btn({}, { arrived: { ratingKey: "e1" } }).act === "play");
+  }
+
+  // ---- 58. the one button fetches the version chosen beside it: a tracker release, or the pack's copy
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    const posted = [];
+    w.fetch = (u, o) => {
+      if (o && o.method === "POST" && /\/get$/.test(String(u))) posted.push([String(u), JSON.parse(o.body || "{}")]);
+      return Promise.resolve({ json: () => Promise.resolve(
+        String(u) === "/tracker/list" ? { free: 100, versions: [{ id: "9", name: "F.2023.1080p", size: 5e9, seeds: 5, pick: true }] }
+        : String(u) === "/tracker/active" ? { taking: [] }
+        : { ok: true, taken: true, state: "queued" }) });
+    };
+    w.eval(SOURCE);
+    w.moreLikeThis = () => Promise.resolve(null);
+    w.castRow = () => {};
+    w.api = () => new Promise(() => {});
+    w.toast = () => {};
+    w.drawDownloadBanner = () => {};
+    w.document.body.appendChild(w.document.createElement("main"));
+    w.eval("main = document.querySelector('main')");
+    w.viewOffer({ ratingKey: "oC", type: "movie", title: "F", year: 2023, offered: true,
+                  offer: { size: 6e9, state: "", file: "F.2023.WEB.mkv" } });
+    await new Promise((r) => setTimeout(r, 80));
+    const d = w.document;
+    const pick = d.getElementById("offerpick");
+    pick.value = "9";
+    pick.dataset.chosen = "1";
+    pick.onchange();
+    d.getElementById("offerget").click();
+    await new Promise((r) => setTimeout(r, 50));
+    w.viewOffer({ ratingKey: "oD", type: "movie", title: "F", year: 2023, offered: true,
+                  offer: { size: 6e9, state: "", file: "F.2023.WEB.mkv" } });
+    await new Promise((r) => setTimeout(r, 80));
+    const pick2 = d.getElementById("offerpick");
+    pick2.value = "";
+    pick2.dataset.chosen = "1";
+    pick2.onchange();
+    d.getElementById("offerget").click();
+    await new Promise((r) => setTimeout(r, 50));
+    check("58 the release chosen comes from the tracker, the pack's copy from the pack",
+          posted.length === 2 && posted[0][0] === "/tracker/get" && posted[0][1].id === "9"
+          && posted[1][0] === "/torrents/get" && posted[1][1].key === "oD", JSON.stringify(posted));
+  }
+
+  // ---- 59. a pack's copy in the list says which pack
+  {
+    const vm = require("vm");
+    const ctx = {};
+    vm.runInNewContext(take("versionTag"), ctx);
+    check("59 the pack's short name, or In a pack here when it has none",
+          ctx.versionTag({ pack: true, packShort: "Top 5K" }) === "Top 5K"
+          && ctx.versionTag({ pack: true }) === "In a pack here" && ctx.versionTag({ pack: true, have: true }) === "On disk");
+  }
+
+  // ---- 60. a film only had as a cam or a telesync wears a grey Download band
+  {
+    const html = fs.readFileSync(path.join(__dirname, "static", "index.html"), "utf8")
+      .replace(/<script[^>]*src=[^>]*><\/script>/g, "");
+    const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
+    const w = dom.window;
+    w.fetch = () => new Promise(() => {});
+    w.eval(SOURCE);
+    const cam = w.card({ ratingKey: "c1", type: "movie", title: "C", askable: true, onTracker: true, cam: true });
+    const real = w.card({ ratingKey: "r1", type: "movie", title: "R", askable: true, onTracker: true });
+    check("60 grey band for cam, the usual one otherwise",
+          !!cam.querySelector(".ribbon.cam") && /Download/.test(cam.querySelector(".ribbon").textContent)
+          && !real.querySelector(".ribbon.cam") && !!real.querySelector(".ribbon"));
+  }
+
+  // ---- 61. a series' page: the plot pressable, with Show more and who is in it
+  {
+    const at = SOURCE.indexOf("async function viewShow(");
+    const body = SOURCE.slice(at, SOURCE.indexOf("\n}\n", at));
+    check("61 Show more on a series as on a film", /<p class="summary tellme">/.test(body)
+          && /pressableText\(wrap, s\);/.test(body));
+  }
+
+  // ---- 62. Show more: the first actor large beside the words, the mouse changes who
+  {
+    const asked = [];
+    const w = page('<div class="sheet"><div class="cast"></div></div>',
+      ["actorCard", "personBorn", "esc"],
+      { img: (t) => "/pic" + t,
+        api: (path, q) => { asked.push(q.person);
+          return Promise.resolve({ born: "1966-01-20", place: "Seattle", bio: "An actor." }); } });
+    w.eval("var PERSON_INFO = new Map();");
+    const sheet = w.document.querySelector(".sheet");
+    const cast = sheet.querySelector(".cast");
+    ["One", "Two"].forEach((n) => { const b = w.document.createElement("button"); b.textContent = n; cast.appendChild(b); });
+    w.actorCard(sheet, { Role: [{ tag: "One", role: "Hero", id: 1, thumb: "/art/person/1" },
+                                { tag: "Two", role: "Villain", id: 2 }] });
+    await tick(); await tick();
+    const name = () => (sheet.querySelector(".actorname") || {}).textContent;
+    const order = [...sheet.children].map((e) => e.className);
+    const under = order.indexOf("actorabout") === order.indexOf("cast") + 1;
+    const first = under && name() === "One" && /as Hero/.test(sheet.textContent)
+      && /Born 20 Jan 1966, Seattle/.test(sheet.textContent) && sheet.classList.contains("withactor");
+    cast.querySelectorAll("button")[1].dispatchEvent(new w.Event("mouseenter"));
+    await tick(); await tick();
+    check("62 Show more opens on the first actor, large, with their facts; the mouse changes it",
+          first && name() === "Two" && /as Villain/.test(sheet.textContent)
+          && asked.join(",") === "1,2" && w.personBorn("", "2001-12-09", "") === "Died 9 Dec 2001");
+  }
+
+  // ---- 63. Show more with an actor: one height, and Close its own size
+  {
+    const css = require("fs").readFileSync(require("path").join(__dirname, "static", "style.css"), "utf8");
+    check("63 Show more has no scroll, its actor card one size, and Close its own size",
+          /\.sheet\.withactor\{[^}]*max-height:none;overflow:visible\}/.test(css) && /\.actorcard\{[^}]*height:430px/.test(css) && /\.sheetback\.attop\{align-items:flex-start/.test(css)
+          && /\.sheet\.withactor>\.sheetclose\{justify-self:start\}/.test(css));
   }
 
   console.log(FAILS.length ? "WEB FAILED: " + FAILS.length : "WEB PASSED");

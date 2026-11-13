@@ -95,6 +95,14 @@ GUEST_PREFIXES = (
     "/copies",          # which titles that machine holds, for the dot on a poster
     "/config",          # sanitised for a guest: nothing about how this is set up
     "/settings",        # how subtitles are drawn; readable, not writable
+    # a copy of a title for their own device to keep, asked for, followed, fetched and let
+    # go; and the Watchlist's blinks queued for their app. On the server's list of what a
+    # guest may write and not here, the door refused them before the handler saw whose
+    # key it was - a fifth time (2026-11-12)
+    "/offline/",
+    "/notify",
+    # and what the Start tab should suggest them more, or never again: refused the same way
+    "/start/feedback",
     "/watchlist",       # what they mean to watch: their own list, in their own corner
     "/favorites",       # and which of those they keep: the same shelf, the same corner
     # How many seconds of film a screen has left, which is the screen's own business

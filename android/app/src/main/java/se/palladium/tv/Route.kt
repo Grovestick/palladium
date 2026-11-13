@@ -28,6 +28,88 @@ object Route {
         else if (armed) "Press again to cancel"
         else "\u2715 Cancel  \u00b7  " + line
 
+    /** The person a search is silently narrowed to: theirs only while the box still holds
+     *  the name their face put there, 0 for any other words. */
+    fun personFilter(said: Pair<String, Int>?, query: String): Int =
+        if (said != null && said.first == query.trim()) said.second else 0
+
+    /** An actor's line under their name: "Born 20 Jan 1966, Seattle, Washington, USA",
+     *  with when they died where they have. Empty when the catalogue said nothing. */
+    fun personBorn(born: String, died: String, place: String): String {
+        fun day(iso: String): String {
+            val p = iso.split("-")
+            if (p.size != 3) return iso
+            val months = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+            val m = p[1].toIntOrNull() ?: return iso
+            if (m !in 1..12) return iso
+            return (p[2].toIntOrNull()?.toString() ?: p[2]) + " " + months[m - 1] + " " + p[0]
+        }
+        val parts = mutableListOf<String>()
+        if (born.isNotBlank()) parts.add("Born " + day(born) +
+                                         (if (place.isNotBlank()) ", " + place else ""))
+        else if (place.isNotBlank()) parts.add("From " + place)
+        if (died.isNotBlank()) parts.add("Died " + day(died))
+        return parts.joinToString(" · ")
+    }
+
+    /** The width of a television page's row of seasons or episodes, from where the row
+     *  starts: what is left of the screen under it, less the room below (ROW_BELOW_DP),
+     *  the gap over the name (5), one line of name (15), the poster's own padding (8) and
+     *  4 to spare, at a poster's 2:3 - up to a quarter more than a shelf's, never under
+     *  60. Before the row has been placed, three quarters of a shelf's. */
+    fun rowPosterWidth(screenDp: Int, rowTopDp: Int, most: Int): Int {
+        if (rowTopDp <= 0) return most * 3 / 4
+        val tall = screenDp - rowTopDp - ROW_BELOW_DP - 5 - 15 - 8 - 4
+        return (tall * 2 / 3).coerceIn(60, most * 5 / 4)
+    }
+
+    /** The room under a television page's row: one line of name and a little air - the
+     *  second line of a long name runs into it (owner, 2026-11-11). */
+    const val ROW_BELOW_DP = 20
+
+    /** How long one step takes while a direction key is held: under the remote's repeat. */
+    const val HELD_SLIDE_MS = 80
+
+    /** The four directions of the remote. */
+    fun isDirection(code: Int): Boolean = code == 19 || code == 20 || code == 21 || code == 22
+
+    /** Whether a direction is being held: down and repeating; a release ends it. */
+    fun heldDown(down: Boolean, repeats: Int): Boolean = down && repeats > 0
+
+    /** Whether back from a search returns to the title page an actor was pressed on: only
+     *  while that actor's search is still what the box holds. */
+    fun backToTitle(cameFromTitle: Boolean, person: Pair<String, Int>?, query: String): Boolean =
+        cameFromTitle && personFilter(person, query) > 0
+
+    /** The tabs a search answers from; an actor pressed anywhere else searches from Home. */
+    fun searchesFrom(tab: String): Boolean = tab in setOf("start", "home", "films", "tv")
+
+    /** Whether a search's row of names is drawn: only over the search's own results, never
+     *  over one person's titles or a Show more row opened from it. */
+    fun showsSearchNames(names: Int, moreRow: String?): Boolean = names > 0 && moreRow == null
+
+    /** Which server of a search asks the tracker: the one the app is on says "here" and
+     *  asks through its own indexer; the other says "elsewhere" and answers from its index. */
+    fun searchAsks(asked: String, on: String): String =
+        if (asked.trimEnd('/') == on.trimEnd('/')) "here" else "elsewhere"
+
+    /** The Download band's colour: grey for a film only had as a cam or a telesync so far
+     *  (owner, 2026-11-11), the accent otherwise. */
+    fun downloadBand(cam: Boolean): androidx.compose.ui.graphics.Color =
+        if (cam) CAM_GREY else Skin.Accent
+
+    /** The grey of a cam or telesync's Download band, as the web page's. */
+    val CAM_GREY = androidx.compose.ui.graphics.Color(0xFF7A7F87)
+
+    /** Whether a page asks for who is in it: a film and a series (owner, 2026-11-11), not a
+     *  season, which shares its series' cast. */
+    fun seriesAsksCast(type: String): Boolean = type == "show"
+
+    /** Whether a film coming in on its page can be cancelled from its one button: a pack's
+     *  copy can, a release taken from the tracker finishes and seeds. */
+    fun offerMayCancel(fromTracker: Boolean): Boolean = !fromTracker
+
     /** Which of the other machine's copies is the file playing here, by name; -1 for none. */
     fun sameCopy(names: List<String?>, playing: String?): Int =
         if (playing.isNullOrEmpty()) -1 else names.indexOfFirst { it == playing }
@@ -636,15 +718,37 @@ object Route {
     fun madeReachesHere(at: Float, on: Boolean, durationMs: Long, positionMs: Long): Boolean =
         !on || durationMs <= 0 || at * durationMs >= positionMs + MADE_LEAD_MS
 
-    /** Where a title stands in the watchlist's order: the later of last watched and put on
-     *  it, so one just added or downloaded comes first. */
-    fun watchlistAt(lastViewedAt: Long, listedAt: Long): Long = maxOf(lastViewedAt, listedAt)
+    /** How long the More like this row's place and size must hold still before it shows. */
+    const val SHELF_SETTLE_MS = 220L
 
-    /** The order the watchlist opens in, and the direction: last watched or added first. */
-    val WATCHLIST_OPENS = "lastViewedAt" to false
+    /** What places the More like this row, to the whole dp: a change starts its wait over,
+     *  a fraction of a pixel does not. */
+    fun settleMark(gap: Float, wide: Float): Long =
+        kotlin.math.round(gap).toLong() * 100_000L + kotlin.math.round(wide).toLong()
 
-    /** The watchlist's orders: last watched first, then the library's own. */
-    val WATCHLIST_ORDERS = listOf("lastViewedAt" to "Watched or added", "addedAt" to "Added",
+    /** A decoder fault the player starts again from as a plain transcode: the decoder
+     *  taken back or not given, or failing on a stream it said it could play (4K HDR10
+     *  on a television, 2026-11-12, which ended the film). */
+    fun codecTrouble(code: Int): Boolean = code in setOf(
+        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED,
+        androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED)
+
+    /** Whether a title plays from its copy on this device: offline on, and either the
+     *  shelves drawn as offline or the copy chosen in Versions. */
+    fun playsHere(on: Boolean, offlineView: Boolean, chosenHere: Boolean): Boolean =
+        on && (offlineView || chosenHere)
+
+    /** When a title was put on the watchlist; one with no date of its own by when it came
+     *  into the library. A download puts its title on the list. */
+    fun watchlistListed(listedAt: Long, addedAt: Long): Long = if (listedAt > 0) listedAt else addedAt
+
+    /** The order the watchlist opens in, and the direction: last put on it first. */
+    val WATCHLIST_OPENS = "listedAt" to false
+
+    /** The watchlist's orders: added to it first, then last watched, then the library's own. */
+    val WATCHLIST_ORDERS = listOf("listedAt" to "Added", "lastViewedAt" to "Watched",
                                   "originallyAvailableAt" to "Released", "titleSort" to "Name",
                                   "year" to "Year", "quality" to "Quality")
 
@@ -1252,9 +1356,9 @@ object Route {
     /** Where a version in the download list comes from; one this house holds says On disk,
      *  whether it is a file here, a pack's or the tracker's own upload. */
     fun versionTag(disk: Boolean, have: Boolean, pack: Boolean, box: Boolean,
-                   seasonPack: Boolean): String = when {
+                   seasonPack: Boolean, packShort: String = ""): String = when {
         disk || have -> "On disk"
-        pack -> "Pack"
+        pack -> packShort.ifEmpty { "Pack" }
         box -> if (seasonPack) "Season pack" else "Box set"
         else -> "Tracker"
     }
@@ -1554,5 +1658,14 @@ object Route {
             else -> Move.Stay
         }
         return Decision(move, looked)
+    }
+
+    /** The qualities an offline copy of a file of `height` lines may be asked in: none
+     *  above the file's own (owner, 2026-11-12). 1080 from 760 lines up, so a film shot
+     *  wide at 1920 by 800 counts; 720 from 500 up. As the server's offered(). */
+    fun offlineQualities(height: Int?): List<String> {
+        val h = height ?: 0
+        if (h <= 0) return listOf("720", "1080", "original")
+        return listOfNotNull("720".takeIf { h >= 500 }, "1080".takeIf { h >= 760 }, "original")
     }
 }

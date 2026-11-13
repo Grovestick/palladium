@@ -746,7 +746,9 @@ VIEWER_LOCAL = ("deckAside", "subsFor", "subsPick", "subsTried", "copyPick",
 #: channel has the same key on each and a player can move to the copy when the main
 #: server restarts
 LIVE = ("liveList", "liveMost", "liveGroups", "liveFolders", "liveYouTube", "liveWho")
-HOUSE_MIRRORED = ("libraryShows", "homeRowsDefault", "numbering") + CHOOSING + SHARED + LIVE
+HOUSE_MIRRORED = ("libraryShows", "homeRowsDefault", "numbering",
+                  # which version of a title plays for everybody, by file name
+                  "copyDefault") + CHOOSING + SHARED + LIVE
 
 
 #: the main server's subtitle choices, kept by title: which subtitle, that it fits, where
@@ -899,6 +901,29 @@ def _keys_and_paths(api):
     except Exception:
         pass
     return keys, paths
+
+
+#: how often the main server's tracker index is taken, and the newest row taken so far
+TRACKER_EVERY = 600
+TRACKER_AT = {"at": 0.0, "since": 0.0}
+
+
+def learn_the_tracker(one):
+    """The main server's tracker index into this one: what its searches found as well as
+    its feeds, so a search here offers the same series and films when it is off. Only the
+    rows newer than the last taken; the first time, all of them. How many changed."""
+    if time.time() - TRACKER_AT["at"] < TRACKER_EVERY:
+        return 0
+    TRACKER_AT["at"] = time.time()
+    said = tell(one, "/follow/tracker", {"since": TRACKER_AT["since"]}, 120)
+    rows = (said or {}).get("rows")
+    if not isinstance(rows, list):
+        return 0
+    import pd_tracker
+    took = pd_tracker.take_rows(rows)
+    TRACKER_AT["since"] = max([TRACKER_AT["since"]] + [float(r.get("at") or 0) for r in rows
+                                                        if isinstance(r, dict)])
+    return took
 
 
 def learn_the_viewers(one, settings_path, api=None):
@@ -1522,6 +1547,23 @@ def claim_folder(folder):
     return {"taken": taken, "skipped": skipped, "others": others}
 
 
+#: a .part file written to within this long is a copy still arriving
+PART_FRESH = 1800
+
+
+def written_here(known, mine):
+    """Whether a file in the cache folder is this machine's own: fetched (in the record),
+    a copy part way in (.part, the copier's own name for one), its own book of keys, or
+    a subtitle written beside a film it fetched - which listed every one of those as
+    somebody else's (24 files, 2026-11-13)."""
+    if known in mine or known.endswith((".part", ".part.want"))             or os.path.basename(known) == ".palladium-keys.json":
+        return True
+    for film in mine:
+        if film.lower().endswith(FILMS) and known.startswith(film.rsplit(".", 1)[0] + "."):
+            return True
+    return False
+
+
 def extras(folder):
     """Files in the cache folder this machine did not fetch, largest first.
 
@@ -1543,7 +1585,7 @@ def extras(folder):
                 known = os.path.relpath(path, folder).replace("\\", "/")
             except ValueError:
                 continue
-            if known in mine:
+            if written_here(known, mine):
                 continue
             try:
                 out.append({"name": known, "bytes": os.path.getsize(path)})
@@ -1694,7 +1736,15 @@ def clear_unwanted(folder, qualified, keeping, verified=True):
                 except Exception:
                     pass
             if name.endswith(".part"):
-                continue                   # arriving now, not left over
+                # arriving now, or wanted and carried on later. One left behind by a
+                # title off both lists stayed for good: 10.9 GB of them (2026-11-13)
+                final = path[:-len(".part")]
+                try:
+                    fresh = time.time() - os.path.getmtime(path) < PART_FRESH
+                except OSError:
+                    continue
+                if fresh or final in qualified or final in keeping:
+                    continue
             seen_now.add(path)
             ABSENT[path] = ABSENT.get(path, 0) + 1
             if ABSENT[path] < 2:
@@ -1703,11 +1753,13 @@ def clear_unwanted(folder, qualified, keeping, verified=True):
                 known = os.path.relpath(path, folder).replace("\\", "/")
             except ValueError:
                 continue
-            if known not in mine:
-                continue                   # not this machine's to delete
+            if known not in mine and not name.endswith(".part"):
+                continue                   # not this machine's to delete; a .part is its copy
             try:
                 size = os.path.getsize(path)
                 os.remove(path)
+                if name.endswith(".part") and os.path.exists(path + ".want"):
+                    os.remove(path + ".want")
             except OSError:
                 continue                   # open, or gone already: leave it
             log_line("deleted copy %s, %.1f GB: on neither of two lists in a row, %d names on this one"
@@ -1996,7 +2048,7 @@ def log_line(text):
 def copy_place(folder, name, size=None):
     """Where a copy lives: where a pack here keeps that file, or the copies folder."""
     import pd_torrents
-    return pd_torrents.pack_place(name, size) or os.path.join(folder, name)
+    return pd_torrents.pack_place(name, size, follower=True) or os.path.join(folder, name)
 
 
 def kept_path(folder, name, size=None, mark=""):
@@ -2043,7 +2095,7 @@ def copy_file(one, item, folder):
     # said by the item, and the pack's own fingerprint (sync both ways, 2026-11-07)
     placed = str(item.get("into") or "")
     mark_of = pack_mark if item.get("markKind") == "pack" else quick_mark
-    in_pack = (pd_torrents.pack_place(name, item.get("size"))
+    in_pack = (pd_torrents.pack_place(name, item.get("size"), follower=True)
                if item.get("side") is None and not placed else "")
     into = placed or in_pack or plain
     if placed:
@@ -3015,6 +3067,16 @@ def _round(one, lib, api, folder):
         pd_torrents.drop_own_copied(str(i.get("name") or "") for i in holding)
     except Exception:
         pass
+    # Where this machine's packs keep their files, known before anything is kept, swept or
+    # fetched. Not known read as "in no pack": a film a pack held whole was copied beside
+    # it again, in the first seconds after every restart (2026-11-12). The pass waits.
+    if wanted or holding:
+        import pd_torrents
+        unknown = pd_torrents.places_unknown()
+        if unknown:
+            with LOCK:
+                STATE["why"] = "waiting: " + unknown
+            return
     qualified = set()
     for item in holding:
         safe = copy_name(item)
@@ -3257,6 +3319,10 @@ def _round(one, lib, api, folder):
                            lambda path, body: tell(one, path, body, 30))
     except Exception as e:
         STATE["why"] = "board: %s: %s" % (type(e).__name__, str(e)[:120])
+    try:
+        learn_the_tracker(one)
+    except Exception as e:
+        STATE["why"] = "tracker: %s: %s" % (type(e).__name__, str(e)[:120])
     try:
         learn_the_viewers(one, ME.get("settings") or "", api)
     except Exception as e:

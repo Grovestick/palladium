@@ -70,6 +70,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -200,6 +201,10 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_DOWN)
             keyAt = android.os.SystemClock.uptimeMillis()
+        // a direction held: the lists move quickly and straight until it is let go
+        if (Route.isDirection(event.keyCode))
+            Slide.held = Route.heldDown(event.action == android.view.KeyEvent.ACTION_DOWN,
+                                        event.repeatCount)
         // Nothing on the screen to go back into: twice closes the app, from here
         // rather than from a handler inside the list that may not be there. This is
         // the one key that has to work when nothing else does.
@@ -290,6 +295,12 @@ class MainActivity : AppCompatActivity() {
         Opening.key = intent.getStringExtra("openKey") ?: ""
         Spoken.take(intent)
         Api.loadServer(this)
+        // titles kept on this device, and whether offline viewing is on at all
+        Offline.load(this)
+        // notifications for new sources and better versions, a setting of their own
+        Arrivals.app = applicationContext
+        Notes.load(this)
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { Notes.learn(this@MainActivity) } }
         // which servers answer, asked before anything is fetched and kept asking
         Reach.start(this)
         Api.learnDevice(this)                          // a television wants larger text
@@ -1299,6 +1310,8 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
     var films by remember { mutableStateOf(Api.FilmsShow()) }
     var tvPop by remember { mutableStateOf("always") }
     var tvAsk by remember { mutableStateOf("hide") }
+    var camShow by remember { mutableStateOf("hide") }
+    var messagesOn by remember { mutableStateOf("on") }
     var opensOn by remember { mutableStateOf("start") }
     var meters by remember { mutableStateOf(Api.Meters()) }
     // what this server takes us for, which is not the same as whose server it is:
@@ -1327,6 +1340,12 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
     var reportTab by remember { mutableStateOf("new") }
     var shown by remember { mutableStateOf("open") }     // open, or dealt with
     var writing by remember { mutableStateOf(false) }
+    // which tab of the page is open
+    var settingsTab by remember {
+        mutableStateOf(ctx.getSharedPreferences("palladium", 0)
+                           .getString("settingsTab", "playback")
+                           ?.takeIf { t -> SETTINGS_TABS.any { it.first == t } } ?: "playback")
+    }
 
     suspend fun reload() {
         looks = listOf("tv", "web", "phone").associateWith { Api.subtitleLook("", it) }
@@ -1337,6 +1356,8 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         films = Api.filmsShow()
         tvPop = Api.tvPopular()
         tvAsk = Api.tvRequest()
+        camShow = Api.camReleases()
+        messagesOn = Api.watchMessages()
         opensOn = Api.startTab(ctx)
         meters = Api.meters()
         guest = Api.amGuest()
@@ -1351,842 +1372,1013 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
         Triple("phone", "Phone", "Held at arm's length; larger text for its size."),
     )
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+    // the title and the tabs stand still; what is under them scrolls
+    Column(Modifier.fillMaxSize()
                .padding(horizontal = 24.dp, vertical = 20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Pill("Back") { onBack() }
             Text("Settings", color = Skin.Fg, fontSize = 22.sp,
                  fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 12.dp))
         }
-
-        // what the server is sending now, on a page of its own: the owner's, away
-        // from the house as much as in it. Asked by "not a guest" it stood there until
-        // the server answered and then went, because away the owner's key is a guest's.
-        if (owner && onMonitor != null) {
-            SettingsHeading("NOW PLAYING")
-            SettingsRow("Monitor", "Every stream going out, full screen") {
-                Pill("Monitor") { onMonitor() }
-            }
-            // the web's Log: who watched what, on both servers
-            onLog?.let { log ->
-                SettingsRow("Log", "What was watched, on both servers, with transfers and downloads") {
-                    Pill("Log") { log() }
+        // the sections under tabs (owner, 2026-11-12); the last one open is opened again,
+        // with the remote on it
+        val tabAt = remember { FocusRequester() }
+        LaunchedEffect(Unit) { runCatching { tabAt.requestFocus() } }
+        Row(Modifier.padding(top = 10.dp).horizontalScroll(rememberScrollState())) {
+            SETTINGS_TABS.forEach { (id, name) ->
+                Pill(name, active = settingsTab == id,
+                     modifier = if (settingsTab == id) Modifier.focusRequester(tabAt) else Modifier) {
+                    settingsTab = id
+                    ctx.getSharedPreferences("palladium", 0).edit()
+                        .putString("settingsTab", id).apply()
                 }
             }
         }
+        // each tab opens at its top
+        val down = rememberScrollState()
+        LaunchedEffect(settingsTab) { down.scrollTo(0) }
+        Column(Modifier.weight(1f).verticalScroll(down)) {
 
-        // both machines at a glance: the owner's, as the server answers nobody else
-        if (owner && onHealth != null) {
-            SettingsHeading("HEALTH")
-            SettingsRow("Health", "Both servers, stuck downloads, disks and the backup") {
-                Pill("Health") { onHealth() }
-            }
-        }
-
-        // what is new, errors and requests: a guest's as much as the owner's
-        onReports?.let { open ->
-            SettingsHeading("REPORTS")
-            SettingsRow("Reports", "What is new, errors, and requests") {
-                Pill("Reports") { open() }
-            }
-        }
-
-        SettingsHeading("SUBTITLES")
-        // Which language a subtitle is chosen in when a film has one. Everybody has
-        // their own, kept by the server, so it is the same answer on the television
-        // and in the browser - and a guest has it as much as the owner does.
-        var speaks by remember { mutableStateOf("") }
-        LaunchedEffect(Unit) { speaks = Api.subtitleLanguage() }
-        SettingsRow("Subtitle language",
-                    if (speaks == "off") "Off  ·  films start without subtitles"
-                    else (SubLanguages.firstOrNull { it.first == speaks }?.second
-                        ?: "English") + "  ·  chosen for you when a film has one") {
-            var open by remember { mutableStateOf(false) }
-            Pill("Change") { open = true }
-            if (open) {
-                AlertDialog(
-                    onDismissRequest = { open = false },
-                    containerColor = Skin.Panel,
-                    title = { Text("Subtitle language", color = Skin.Fg,
-                                   fontSize = 17.sp) },
-                    text = {
-                        Column(Modifier.verticalScroll(rememberScrollState())) {
-                            Text("The language a subtitle is picked in when a film " +
-                                 "has one. It is also the language offered first " +
-                                 "when you go looking for one.",
-                                 color = Skin.Dim, fontSize = 13.sp,
-                                 modifier = Modifier.padding(bottom = 10.dp))
-                            (listOf("off" to "Off") + SubLanguages).forEach { (code, name) ->
-                                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                                    Pill(name, active = code == speaks) {
-                                        speaks = code
-                                        Api.myLanguage = code
-                                        open = false
-                                        ctx.lifecycleScope.launch {
-                                            Api.setSubtitleLanguage(code)
-                                        }
-                                    }
-                                }
-                            }
+            if (settingsTab == "server") {
+                // what the server is sending now, on a page of its own: the owner's, away
+                // from the house as much as in it. Asked by "not a guest" it stood there until
+                // the server answered and then went, because away the owner's key is a guest's.
+                if (owner && onMonitor != null) {
+                    SettingsHeading("NOW PLAYING")
+                    SettingsRow("Monitor", "Every stream going out, full screen") {
+                        Pill("Monitor") { onMonitor() }
+                    }
+                    // the web's Log: who watched what, on both servers
+                    onLog?.let { log ->
+                        SettingsRow("Log", "What was watched, on both servers, with transfers and downloads") {
+                            Pill("Log") { log() }
                         }
-                    },
-                    confirmButton = { Pill("Close") { open = false } })
-            }
-        }
+                    }
+                }
 
-        // And what to read when the film carries nothing in the first language.
-        // Without one, whatever the film does carry is used, which is how it behaved
-        // before there was a second choice.
-        var alsoSpeaks by remember { mutableStateOf("") }
-        LaunchedEffect(Unit) { alsoSpeaks = Api.subtitleLanguage2() }
-        SettingsRow("Second choice",
-                    when {
-                        alsoSpeaks == "off" -> "Off  ·  no subtitle when the first language is missing"
-                        alsoSpeaks.isEmpty() -> "Any  ·  whatever the film has when the first is missing"
-                        else -> (SubLanguages.firstOrNull { it.first == alsoSpeaks }?.second
-                                     ?: alsoSpeaks) +
-                                "  ·  read when the film has nothing in the first"
-                    }) {
-            var open by remember { mutableStateOf(false) }
-            Pill("Change") { open = true }
-            if (open) {
-                AlertDialog(
-                    onDismissRequest = { open = false },
-                    containerColor = Skin.Panel,
-                    title = { Text("Second choice", color = Skin.Fg, fontSize = 17.sp) },
-                    text = {
-                        Column(Modifier.verticalScroll(rememberScrollState())) {
-                            Text("Read when the film carries no subtitle in the first " +
-                                 "language. Off starts it without one; Any uses " +
-                                 "whatever the film has.",
-                                 color = Skin.Dim, fontSize = 13.sp,
-                                 modifier = Modifier.padding(bottom = 10.dp))
-                            listOf("off" to "Off", "" to "Any").forEach { (code, name) ->
-                                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                                    Pill(name, active = alsoSpeaks == code) {
-                                        alsoSpeaks = code
-                                        Api.myLanguage2 = code
-                                        open = false
-                                        ctx.lifecycleScope.launch {
-                                            Api.setSubtitleLanguage2(code)
-                                        }
-                                    }
-                                }
-                            }
-                            SubLanguages.filter { it.first.isNotEmpty() }
-                                .forEach { (code, name) ->
-                                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                                        Pill(name, active = code == alsoSpeaks) {
-                                            alsoSpeaks = code
-                                            Api.myLanguage2 = code
-                                            open = false
-                                            ctx.lifecycleScope.launch {
-                                                Api.setSubtitleLanguage2(code)
+                // both machines at a glance: the owner's, as the server answers nobody else
+                if (owner && onHealth != null) {
+                    SettingsHeading("HEALTH")
+                    SettingsRow("Health", "Both servers, stuck downloads, disks and the backup") {
+                        Pill("Health") { onHealth() }
+                    }
+                }
+
+                // what is new, errors and requests: a guest's as much as the owner's
+                onReports?.let { open ->
+                    SettingsHeading("REPORTS")
+                    SettingsRow("Reports", "What is new, errors, and requests") {
+                        Pill("Reports") { open() }
+                    }
+                }
+            }
+
+            if (settingsTab == "playback") {
+                SettingsHeading("SUBTITLES")
+                // Which language a subtitle is chosen in when a film has one. Everybody has
+                // their own, kept by the server, so it is the same answer on the television
+                // and in the browser - and a guest has it as much as the owner does.
+                var speaks by remember { mutableStateOf("") }
+                LaunchedEffect(Unit) { speaks = Api.subtitleLanguage() }
+                SettingsRow("Subtitle language",
+                            if (speaks == "off") "Off  ·  films start without subtitles"
+                            else (SubLanguages.firstOrNull { it.first == speaks }?.second
+                                ?: "English") + "  ·  chosen for you when a film has one") {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("Change") { open = true }
+                    if (open) {
+                        AlertDialog(
+                            onDismissRequest = { open = false },
+                            containerColor = Skin.Panel,
+                            title = { Text("Subtitle language", color = Skin.Fg,
+                                           fontSize = 17.sp) },
+                            text = {
+                                Column(Modifier.verticalScroll(rememberScrollState())) {
+                                    Text("The language a subtitle is picked in when a film " +
+                                         "has one. It is also the language offered first " +
+                                         "when you go looking for one.",
+                                         color = Skin.Dim, fontSize = 13.sp,
+                                         modifier = Modifier.padding(bottom = 10.dp))
+                                    (listOf("off" to "Off") + SubLanguages).forEach { (code, name) ->
+                                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                            Pill(name, active = code == speaks) {
+                                                speaks = code
+                                                Api.myLanguage = code
+                                                open = false
+                                                ctx.lifecycleScope.launch {
+                                                    Api.setSubtitleLanguage(code)
+                                                }
                                             }
                                         }
                                     }
                                 }
-                        }
-                    },
-                    confirmButton = { Pill("Close") { open = false } })
-            }
-        }
-
-        screens.forEach { (id, title, blurb) ->
-            val l = looks[id]
-            SettingsRow(
-                title + (if (id == Api.device) "  (this device)" else ""),
-                l?.let {
-                    "%d%%  \u00b7  %s  \u00b7  %s".format(
-                        (it.size * 100).toInt(),
-                        it.colour.replaceFirstChar { c -> c.uppercase() },
-                        SUB_BACKS.firstOrNull { b -> b.first == it.background }?.second ?: "")
-                } ?: blurb,
-                accent = id == Api.device,
-            ) { Pill("Change") { editing = id } }
-        }
-
-        // A colour of one's own. The server picks what somebody meets on their first
-        // evening; after that it belongs to the viewer, and it follows them from the
-        // television to the phone because the server is keeping it.
-        SettingsHeading("APPEARANCE")
-        var swatches by remember { mutableStateOf<List<Api.Accent>>(emptyList()) }
-        var onNow by remember { mutableStateOf("") }
-        var chosen by remember { mutableStateOf("") }
-        LaunchedEffect(Unit) {
-            val (list, now, mine) = Api.accents()
-            swatches = list; onNow = now; chosen = mine
-        }
-        SettingsRow(
-            "Colour",
-            (swatches.firstOrNull { it.code.equals(onNow, true) }?.name ?: "Accent") +
-                (if (chosen.isEmpty()) "  ·  the server's" else "  ·  yours"),
-            accent = true,
-        ) {
-            var open by remember { mutableStateOf(false) }
-            Pill("Change") { open = true }
-            if (open) {
-                AccentPanel(
-                    swatches = swatches, on = onNow, mine = chosen,
-                    onPick = { code ->
-                        open = false
-                        (ctx as AppCompatActivity).lifecycleScope.launch {
-                            val said = Api.setAccent(code)
-                            if (said.isNotEmpty()) {
-                                Skin.paint(said)
-                                onNow = said
-                                chosen = code
-                            }
-                        }
-                    },
-                    onClose = { open = false })
-            }
-        }
-
-        // Where the artwork stands. The server keeps an answer for each kind of screen
-        // and this sets the one it is asked from, so the phone and the television are
-        // free to differ - a poster across a room is not a poster at arm's length.
-        var ground by remember { mutableStateOf(Skin.Backdrop) }
-        val grounds = listOf("on" to "Always", "poster" to "Title page only",
-                             "off" to "Off")
-        SettingsRow("Background poster",
-                    grounds.firstOrNull { it.first == ground }?.second ?: "Always",
-                    extra = ({
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            grounds.forEach { (id, label) ->
-                                Pill(label, active = id == ground, small = true,
-                                     narrow = true) {
-                                    ground = id
-                                    Skin.Backdrop = id      // the page behind answers now
-                                    ctx.lifecycleScope.launch { Api.setBackdrop(id) }
-                                }
-                            }
-                        }
-                    }))
-
-        SettingsHeading("FILMS")
-        // Play, then download, then ask. Each kind is shown or hidden on its own:
-        // what is here plays, what a pack carries can be fetched, and the rest can
-        // only be asked for.
-        listOf(
-            Triple("disk", "On disk", "Films this house holds a file for. These play."),
-            Triple("download", "Download",
-                   "Films a pack or the tracker carries. Downloading one is a button."),
-            Triple("request", "Missing",
-                   "New on streaming, nowhere in the house and not on the tracker. " +
-                   "All anybody can do is ask."),
-            Triple("upcoming", "Upcoming",
-                   "Films not out yet, with their date."))
-            .forEach { (name, label, note) ->
-                val on = when (name) {
-                    "disk" -> films.disk
-                    "download" -> films.download
-                    "upcoming" -> films.upcoming
-                    else -> films.request
-                }
-                SettingsRow(label, note) {
-                    Pill(if (on) "Show" else "Hide", active = on) {
-                        films = when (name) {
-                            "disk" -> films.copy(disk = !on)
-                            "download" -> films.copy(download = !on)
-                            "upcoming" -> films.copy(upcoming = !on)
-                            else -> films.copy(request = !on)
-                        }
-                        ctx.lifecycleScope.launch { films = Api.setFilmsShow(films) }
+                            },
+                            confirmButton = { Pill("Close") { open = false } })
                     }
                 }
-            }
 
-        // whether the TV tab stands the popular programmes not held, or only under Popular
-        SettingsChoices("Popular shows", if (tvPop == "always")
-            "The TV tab shows the popular programmes you do not have yet, each with Add."
-            else "The TV tab shows your own programmes; the popular ones are under Popular.") {
-            listOf("always" to "Always", "popular" to "Only under Popular").forEach { (want, word) ->
-                Pill(word, active = tvPop == want, small = true, narrow = true) {
-                    tvPop = want
-                    ctx.lifecycleScope.launch { tvPop = Api.setTvPopular(want) }
-                }
-            }
-        }
-        // which tab the app and the page open on
-        SettingsChoices("Opens on", if (opensOn == "start")
-            "The app and the page open on Start: this week's pick, and something chosen for your mood."
-            else "The app and the page open on Home, with its shelves.") {
-            listOf("home" to "Home", "start" to "Start").forEach { (want, word) ->
-                Pill(word, active = opensOn == want, small = true, narrow = true) {
-                    opensOn = want
-                    ctx.lifecycleScope.launch { opensOn = Api.setStartTab(want, ctx) }
-                }
-            }
-        }
-        // and the series nobody can download or stream: hidden as it comes
-        SettingsChoices("Series nobody has", if (tvAsk == "hide")
-            "Series that no pack, no tracker release and no streaming service carries are left out."
-            else "Series that nothing carries are shown with Request.") {
-            listOf("hide" to "Hide", "show" to "Show").forEach { (want, word) ->
-                Pill(word, active = tvAsk == want, small = true, narrow = true) {
-                    tvAsk = want
-                    ctx.lifecycleScope.launch { tvAsk = Api.setTvRequest(want) }
-                }
-            }
-        }
-
-        // Which scores a new film has to have satisfied. Both to begin with; a film
-        // passes every meter that is on and has a number, and one out this week
-        // often has neither yet, which does not hold it back.
-        listOf(
-            Triple("audience", "Popcornmeter",
-                   "What the people who watched it thought. Hide keeps back " +
-                   "anything under sixty per cent - unless the other score vouches " +
-                   "for it, since either one is enough."),
-            Triple("critics", "Tomatometer",
-                   "What the reviewers thought, by the same bar."))
-            .forEach { (name, label, note) ->
-                val on = if (name == "audience") meters.audience else meters.critics
-                SettingsRow(label, note) {
-                    // the films rows' button: one, saying what it does to the film,
-                    // lit while the low-scored ones are shown
-                    Pill(if (on) "Hide" else "Show", active = !on) {
-                        meters = if (name == "audience") meters.copy(audience = !on)
-                                 else meters.copy(critics = !on)
-                        ctx.lifecycleScope.launch { meters = Api.setMeters(meters) }
-                    }
-                }
-            }
-
-        // Typing on a television: the app's own keyboard walked with the remote, or the
-        // system's, which Google TV hands to a phone. This device's own choice.
-        if (onTv()) {
-            Typing.load(ctx)
-            SettingsChoices("Keyboard", if (Typing.phone.value)
-                "Text boxes type on your phone, through the Google TV app's remote."
-                else "Text boxes open a keyboard on the screen, walked with the remote.") {
-                listOf(false to "On screen", true to "Phone").forEach { (want, word) ->
-                    Pill(word, active = Typing.phone.value == want, small = true, narrow = true) {
-                        Typing.set(ctx, want)
-                    }
-                }
-            }
-        }
-
-        // Who may download, how big, the tracker and which release is recommended are
-        // the server's own settings, set in its Settings page in the browser: here they
-        // were shown to everybody and refused for anybody but the owner at home.
-
-        SettingsHeading("SERVERS")
-        SettingsRow(Servers.inUse(ctx)?.name ?: "None yet",
-                    Servers.all(ctx).size.toString() + " known  \u00b7  " +
-                    (Servers.inUse(ctx)?.base ?: "")) {
-            Pill("Manage") { onServers() }
-        }
-        // Inviting somebody is done once and rarely, and it was a pill on the bar
-        // above the shelves - beside the tabs, in the way, on every screen. It is a
-        // setting about the server, and it lives with the rest of them.
-        onPeople?.let { go ->
-            SettingsRow("People", "Who may watch from away, and the links they use") {
-                Pill("Invitations") { go() }
-            }
-        }
-
-        // More than one server, and what to do with what they hold: one shelf, one
-        // server at a time, or a shelf per group. The main server's two machines are one
-        // library seen twice; a friend's is somebody else's evening.
-        // What this screen wears. The server holds the palettes, so the list is
-        // whatever it offers and nothing here knows a colour.
-        var looks by remember { mutableStateOf<List<Triple<String, String, String>>>(
-            emptyList()) }
-        var wearing by remember { mutableStateOf("") }
-        var putOn by remember { mutableStateOf("") }
-        var putOnWhy by remember { mutableStateOf("") }
-        LaunchedEffect(Unit) {
-            runCatching {
-                val said = Api.skins()
-                val arr = said.optJSONArray("skins")
-                val out = ArrayList<Triple<String, String, String>>()
-                for (i in 0 until (arr?.length() ?: 0)) {
-                    val one = arr!!.getJSONObject(i)
-                    out.add(Triple(one.optString("id"), one.optString("name"),
-                                   one.optString("why")))
-                }
-                looks = out
-                wearing = said.optString("chosen")
-                putOn = said.optString("imposed")
-                putOnWhy = said.optString("why")
-            }
-        }
-        if (looks.isNotEmpty()) {
-            // The pills say which one is on, so naming it again on the line above was
-            // the same word twice and a taller box for it.
-            SettingsRow("Theme",
-                        if (putOn.isNotEmpty())
-                            "wearing " +
-                            (looks.firstOrNull { it.first == putOn }?.second ?: putOn) +
-                            " for now"
-                        else "",
-                        extra = ({
-                            if (putOn.isNotEmpty()) {
-                                Text("This machine put that on itself - " + putOnWhy +
-                                     ". What is chosen here comes back when that " +
-                                     "passes.",
-                                     color = Skin.Dim, fontSize = 12.sp,
-                                     modifier = Modifier.padding(bottom = 8.dp))
-                            }
-                            // five of them are wider than a phone held upright: they
-                            // wrap, and the tighter pill keeps the wrap to two lines
-                            // instead of running the box down the page
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                looks.forEach { (id, label, _) ->
-                                    Pill(label, active = id == wearing, small = true,
-                                         narrow = true) {
-                                        wearing = id
-                                        ctx.lifecycleScope.launch { Api.wearSkin(id) }
-                                    }
-                                }
-                            }
-                        }))
-        }
-        var howShelves by remember { mutableStateOf(Servers.shelves(ctx)) }
-        var servers by remember { mutableStateOf(Servers.all(ctx)) }
-        if (servers.size > 1) {
-            val ways = listOf(
-                "together" to "Together on one shelf",
-                "one" to "One server at a time",
-                "groups" to "A shelf for each group")
-            SettingsRow("Libraries",
-                        (ways.firstOrNull { it.first == howShelves }?.second
-                            ?: "Together on one shelf") +
-                            "  ·  " + servers.size + " servers") {
-                var open by remember { mutableStateOf(false) }
-                Pill("Change") { open = true }
-                if (open) {
-                    AlertDialog(
-                        onDismissRequest = { open = false },
-                        containerColor = Skin.Panel,
-                        title = { Text("Libraries", color = Skin.Fg, fontSize = 17.sp) },
-                        text = {
-                            Column {
-                                Text("What the shelves hold when more than one " +
-                                     "server is known.",
-                                     color = Skin.Dim, fontSize = 13.sp,
-                                     modifier = Modifier.padding(bottom = 10.dp))
-                                ways.forEach { (code, name) ->
-                                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                                        Pill(name, active = code == howShelves) {
-                                            howShelves = code
-                                            Servers.setShelves(ctx, code)
-                                            open = false
+                // And what to read when the film carries nothing in the first language.
+                // Without one, whatever the film does carry is used, which is how it behaved
+                // before there was a second choice.
+                var alsoSpeaks by remember { mutableStateOf("") }
+                LaunchedEffect(Unit) { alsoSpeaks = Api.subtitleLanguage2() }
+                SettingsRow("Second choice",
+                            when {
+                                alsoSpeaks == "off" -> "Off  ·  no subtitle when the first language is missing"
+                                alsoSpeaks.isEmpty() -> "Any  ·  whatever the film has when the first is missing"
+                                else -> (SubLanguages.firstOrNull { it.first == alsoSpeaks }?.second
+                                             ?: alsoSpeaks) +
+                                        "  ·  read when the film has nothing in the first"
+                            }) {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("Change") { open = true }
+                    if (open) {
+                        AlertDialog(
+                            onDismissRequest = { open = false },
+                            containerColor = Skin.Panel,
+                            title = { Text("Second choice", color = Skin.Fg, fontSize = 17.sp) },
+                            text = {
+                                Column(Modifier.verticalScroll(rememberScrollState())) {
+                                    Text("Read when the film carries no subtitle in the first " +
+                                         "language. Off starts it without one; Any uses " +
+                                         "whatever the film has.",
+                                         color = Skin.Dim, fontSize = 13.sp,
+                                         modifier = Modifier.padding(bottom = 10.dp))
+                                    listOf("off" to "Off", "" to "Any").forEach { (code, name) ->
+                                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                            Pill(name, active = alsoSpeaks == code) {
+                                                alsoSpeaks = code
+                                                Api.myLanguage2 = code
+                                                open = false
+                                                ctx.lifecycleScope.launch {
+                                                    Api.setSubtitleLanguage2(code)
+                                                }
+                                            }
                                         }
                                     }
+                                    SubLanguages.filter { it.first.isNotEmpty() }
+                                        .forEach { (code, name) ->
+                                            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                                Pill(name, active = code == alsoSpeaks) {
+                                                    alsoSpeaks = code
+                                                    Api.myLanguage2 = code
+                                                    open = false
+                                                    ctx.lifecycleScope.launch {
+                                                        Api.setSubtitleLanguage2(code)
+                                                    }
+                                                }
+                                            }
+                                        }
                                 }
-                            }
-                        },
-                        confirmButton = { Pill("Close") { open = false } })
+                            },
+                            confirmButton = { Pill("Close") { open = false } })
+                    }
                 }
-            }
-            if (howShelves == "groups") {
-                servers.forEach { srv ->
+
+                screens.forEach { (id, title, blurb) ->
+                    val l = looks[id]
                     SettingsRow(
-                        srv.name.ifEmpty { Servers.hostOf(srv.base) },
-                        (if (srv.group.isEmpty()) "No group" else srv.group) +
-                            (if (srv.copyOf.isNotEmpty()) "  ·  cache backup"
-                             else ""),
-                    ) {
+                        title + (if (id == Api.device) "  (this device)" else ""),
+                        l?.let {
+                            "%d%%  \u00b7  %s  \u00b7  %s".format(
+                                (it.size * 100).toInt(),
+                                it.colour.replaceFirstChar { c -> c.uppercase() },
+                                SUB_BACKS.firstOrNull { b -> b.first == it.background }?.second ?: "")
+                        } ?: blurb,
+                        accent = id == Api.device,
+                    ) { Pill("Change") { editing = id } }
+                }
+            }
+
+            if (settingsTab == "look") {
+                // A colour of one's own. The server picks what somebody meets on their first
+                // evening; after that it belongs to the viewer, and it follows them from the
+                // television to the phone because the server is keeping it.
+                SettingsHeading("APPEARANCE")
+                var swatches by remember { mutableStateOf<List<Api.Accent>>(emptyList()) }
+                var onNow by remember { mutableStateOf("") }
+                var chosen by remember { mutableStateOf("") }
+                LaunchedEffect(Unit) {
+                    val (list, now, mine) = Api.accents()
+                    swatches = list; onNow = now; chosen = mine
+                }
+                SettingsRow(
+                    "Colour",
+                    (swatches.firstOrNull { it.code.equals(onNow, true) }?.name ?: "Accent") +
+                        (if (chosen.isEmpty()) "  ·  the server's" else "  ·  yours"),
+                    accent = true,
+                ) {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("Change") { open = true }
+                    if (open) {
+                        AccentPanel(
+                            swatches = swatches, on = onNow, mine = chosen,
+                            onPick = { code ->
+                                open = false
+                                (ctx as AppCompatActivity).lifecycleScope.launch {
+                                    val said = Api.setAccent(code)
+                                    if (said.isNotEmpty()) {
+                                        Skin.paint(said)
+                                        onNow = said
+                                        chosen = code
+                                    }
+                                }
+                            },
+                            onClose = { open = false })
+                    }
+                }
+
+                // Where the artwork stands. The server keeps an answer for each kind of screen
+                // and this sets the one it is asked from, so the phone and the television are
+                // free to differ - a poster across a room is not a poster at arm's length.
+                var ground by remember { mutableStateOf(Skin.Backdrop) }
+                val grounds = listOf("on" to "Always", "poster" to "Title page only",
+                                     "off" to "Off")
+                SettingsRow("Background poster",
+                            grounds.firstOrNull { it.first == ground }?.second ?: "Always",
+                            extra = ({
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    grounds.forEach { (id, label) ->
+                                        Pill(label, active = id == ground, small = true,
+                                             narrow = true) {
+                                            ground = id
+                                            Skin.Backdrop = id      // the page behind answers now
+                                            ctx.lifecycleScope.launch { Api.setBackdrop(id) }
+                                        }
+                                    }
+                                }
+                            }))
+
+                SettingsHeading("FILMS")
+                // Play, then download, then ask. Each kind is shown or hidden on its own:
+                // what is here plays, what a pack carries can be fetched, and the rest can
+                // only be asked for.
+                listOf(
+                    Triple("disk", "On disk", "Films this house holds a file for. These play."),
+                    Triple("download", "Download",
+                           "Films a pack or the tracker carries. Downloading one is a button."),
+                    Triple("request", "Missing",
+                           "New on streaming, nowhere in the house and not on the tracker. " +
+                           "All anybody can do is ask."),
+                    Triple("upcoming", "Upcoming",
+                           "Films not out yet, with their date."))
+                    .forEach { (name, label, note) ->
+                        val on = when (name) {
+                            "disk" -> films.disk
+                            "download" -> films.download
+                            "upcoming" -> films.upcoming
+                            else -> films.request
+                        }
+                        SettingsRow(label, note) {
+                            Pill(if (on) "Show" else "Hide", active = on) {
+                                films = when (name) {
+                                    "disk" -> films.copy(disk = !on)
+                                    "download" -> films.copy(download = !on)
+                                    "upcoming" -> films.copy(upcoming = !on)
+                                    else -> films.copy(request = !on)
+                                }
+                                ctx.lifecycleScope.launch { films = Api.setFilmsShow(films) }
+                            }
+                        }
+                    }
+
+                // whether the TV tab stands the popular programmes not held, or only under Popular
+                SettingsChoices("Popular shows", if (tvPop == "always")
+                    "The TV tab shows the popular programmes you do not have yet, each with Add."
+                    else "The TV tab shows your own programmes; the popular ones are under Popular.") {
+                    listOf("always" to "Always", "popular" to "Only under Popular").forEach { (want, word) ->
+                        Pill(word, active = tvPop == want, small = true, narrow = true) {
+                            tvPop = want
+                            ctx.lifecycleScope.launch { tvPop = Api.setTvPopular(want) }
+                        }
+                    }
+                }
+                // which tab the app and the page open on
+                SettingsChoices("Opens on", if (opensOn == "start")
+                    "The app and the page open on Start: this week's pick, and something chosen for your mood."
+                    else "The app and the page open on Home, with its shelves.") {
+                    listOf("home" to "Home", "start" to "Start").forEach { (want, word) ->
+                        Pill(word, active = opensOn == want, small = true, narrow = true) {
+                            opensOn = want
+                            ctx.lifecycleScope.launch { opensOn = Api.setStartTab(want, ctx) }
+                        }
+                    }
+                }
+                // and the series nobody can download or stream: hidden as it comes
+                SettingsChoices("Series nobody has", if (tvAsk == "hide")
+                    "Series that no pack, no tracker release and no streaming service carries are left out."
+                    else "Series that nothing carries are shown with Request.") {
+                    listOf("hide" to "Hide", "show" to "Show").forEach { (want, word) ->
+                        Pill(word, active = tvAsk == want, small = true, narrow = true) {
+                            tvAsk = want
+                            ctx.lifecycleScope.launch { tvAsk = Api.setTvRequest(want) }
+                        }
+                    }
+                }
+                // and new films only had so far as a cam or a telesync: hidden as it comes
+                SettingsChoices("Cam and telesync", if (camShow == "hide")
+                    "New films that are only out filmed in a cinema stay off the shelves until a real release is."
+                    else "New films that are only out filmed in a cinema are on the shelves, with a grey Download band.") {
+                    listOf("hide" to "Hide", "show" to "Show").forEach { (want, word) ->
+                        Pill(word, active = camShow == want, small = true, narrow = true) {
+                            camShow = want
+                            ctx.lifecycleScope.launch { camShow = Api.setCamReleases(want) }
+                        }
+                    }
+                }
+                // and whether the watchlist's news is said on screen: on as it comes
+                SettingsChoices("Watchlist messages", if (messagesOn == "on")
+                    "A film on your watchlist that can be downloaded, or has come in, is said on screen."
+                    else "Nothing is said on screen; the Watchlist still blinks when something on it has news.") {
+                    listOf("on" to "On", "off" to "Off").forEach { (want, word) ->
+                        Pill(word, active = messagesOn == want, small = true, narrow = true) {
+                            messagesOn = want
+                            ctx.lifecycleScope.launch { messagesOn = Api.setWatchMessages(want) }
+                        }
+                    }
+                }
+
+                // Which scores a new film has to have satisfied. Both to begin with; a film
+                // passes every meter that is on and has a number, and one out this week
+                // often has neither yet, which does not hold it back.
+                listOf(
+                    Triple("audience", "Popcornmeter",
+                           "What the people who watched it thought. Hide keeps back " +
+                           "anything under sixty per cent - unless the other score vouches " +
+                           "for it, since either one is enough."),
+                    Triple("critics", "Tomatometer",
+                           "What the reviewers thought, by the same bar."))
+                    .forEach { (name, label, note) ->
+                        val on = if (name == "audience") meters.audience else meters.critics
+                        SettingsRow(label, note) {
+                            // the films rows' button: one, saying what it does to the film,
+                            // lit while the low-scored ones are shown
+                            Pill(if (on) "Hide" else "Show", active = !on) {
+                                meters = if (name == "audience") meters.copy(audience = !on)
+                                         else meters.copy(critics = !on)
+                                ctx.lifecycleScope.launch { meters = Api.setMeters(meters) }
+                            }
+                        }
+                    }
+
+                // Typing on a television: the app's own keyboard walked with the remote, or the
+                // system's, which Google TV hands to a phone. This device's own choice.
+                if (onTv()) {
+                    Typing.load(ctx)
+                    SettingsChoices("Keyboard", if (Typing.phone.value)
+                        "Text boxes type on your phone, through the Google TV app's remote."
+                        else "Text boxes open a keyboard on the screen, walked with the remote.") {
+                        listOf(false to "On screen", true to "Phone").forEach { (want, word) ->
+                            Pill(word, active = Typing.phone.value == want, small = true, narrow = true) {
+                                Typing.set(ctx, want)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (settingsTab == "server") {
+                // Who may download, how big, the tracker and which release is recommended are
+                // the server's own settings, set in its Settings page in the browser: here they
+                // were shown to everybody and refused for anybody but the owner at home.
+
+                SettingsHeading("SERVERS")
+                SettingsRow(Servers.inUse(ctx)?.name ?: "None yet",
+                            Servers.all(ctx).size.toString() + " known  \u00b7  " +
+                            (Servers.inUse(ctx)?.base ?: "")) {
+                    Pill("Manage") { onServers() }
+                }
+                // Inviting somebody is done once and rarely, and it was a pill on the bar
+                // above the shelves - beside the tabs, in the way, on every screen. It is a
+                // setting about the server, and it lives with the rest of them.
+                onPeople?.let { go ->
+                    SettingsRow("People", "Who may watch from away, and the links they use") {
+                        Pill("Invitations") { go() }
+                    }
+                }
+
+                // More than one server, and what to do with what they hold: one shelf, one
+                // server at a time, or a shelf per group. The main server's two machines are one
+                // library seen twice; a friend's is somebody else's evening.
+                // What this screen wears. The server holds the palettes, so the list is
+                // whatever it offers and nothing here knows a colour.
+                var looks by remember { mutableStateOf<List<Triple<String, String, String>>>(
+                    emptyList()) }
+                var wearing by remember { mutableStateOf("") }
+                var putOn by remember { mutableStateOf("") }
+                var putOnWhy by remember { mutableStateOf("") }
+                LaunchedEffect(Unit) {
+                    runCatching {
+                        val said = Api.skins()
+                        val arr = said.optJSONArray("skins")
+                        val out = ArrayList<Triple<String, String, String>>()
+                        for (i in 0 until (arr?.length() ?: 0)) {
+                            val one = arr!!.getJSONObject(i)
+                            out.add(Triple(one.optString("id"), one.optString("name"),
+                                           one.optString("why")))
+                        }
+                        looks = out
+                        wearing = said.optString("chosen")
+                        putOn = said.optString("imposed")
+                        putOnWhy = said.optString("why")
+                    }
+                }
+                if (looks.isNotEmpty()) {
+                    // The pills say which one is on, so naming it again on the line above was
+                    // the same word twice and a taller box for it.
+                    SettingsRow("Theme",
+                                if (putOn.isNotEmpty())
+                                    "wearing " +
+                                    (looks.firstOrNull { it.first == putOn }?.second ?: putOn) +
+                                    " for now"
+                                else "",
+                                extra = ({
+                                    if (putOn.isNotEmpty()) {
+                                        Text("This machine put that on itself - " + putOnWhy +
+                                             ". What is chosen here comes back when that " +
+                                             "passes.",
+                                             color = Skin.Dim, fontSize = 12.sp,
+                                             modifier = Modifier.padding(bottom = 8.dp))
+                                    }
+                                    // five of them are wider than a phone held upright: they
+                                    // wrap, and the tighter pill keeps the wrap to two lines
+                                    // instead of running the box down the page
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        looks.forEach { (id, label, _) ->
+                                            Pill(label, active = id == wearing, small = true,
+                                                 narrow = true) {
+                                                wearing = id
+                                                ctx.lifecycleScope.launch { Api.wearSkin(id) }
+                                            }
+                                        }
+                                    }
+                                }))
+                }
+                var howShelves by remember { mutableStateOf(Servers.shelves(ctx)) }
+                var servers by remember { mutableStateOf(Servers.all(ctx)) }
+                if (servers.size > 1) {
+                    val ways = listOf(
+                        "together" to "Together on one shelf",
+                        "one" to "One server at a time",
+                        "groups" to "A shelf for each group")
+                    SettingsRow("Libraries",
+                                (ways.firstOrNull { it.first == howShelves }?.second
+                                    ?: "Together on one shelf") +
+                                    "  ·  " + servers.size + " servers") {
                         var open by remember { mutableStateOf(false) }
-                        var naming by remember { mutableStateOf(false) }
-                        var typed by remember { mutableStateOf("") }
-                        Box {
-                            Pill(if (srv.group.isEmpty()) "Group" else srv.group) {
-                                open = true
-                            }
-                            DropdownMenu(expanded = open,
-                                         onDismissRequest = { open = false },
-                                         modifier = Modifier.background(Skin.Panel)) {
-                                DropdownMenuItem(
-                                    text = { Text("No group", fontSize = 14.sp,
-                                                  color = if (srv.group.isEmpty())
-                                                              Skin.Accent else Skin.Fg) },
-                                    onClick = {
-                                        Servers.setGroup(ctx, srv, "")
-                                        servers = Servers.all(ctx); open = false
-                                    })
-                                // the groups already named, so the second server
-                                // joins the first without anybody typing twice
-                                Servers.groups(ctx).forEach { name ->
-                                    DropdownMenuItem(
-                                        text = { Text(name, fontSize = 14.sp,
-                                                      color = if (name == srv.group)
-                                                                  Skin.Accent
-                                                              else Skin.Fg) },
-                                        onClick = {
-                                            Servers.setGroup(ctx, srv, name)
-                                            servers = Servers.all(ctx); open = false
-                                        })
-                                }
-                                DropdownMenuItem(
-                                    text = { Text("New group…", fontSize = 14.sp,
-                                                  color = Skin.Dim) },
-                                    onClick = { open = false; naming = true })
-                            }
-                        }
-                        if (naming) {
+                        Pill("Change") { open = true }
+                        if (open) {
                             AlertDialog(
-                                onDismissRequest = { naming = false },
+                                onDismissRequest = { open = false },
                                 containerColor = Skin.Panel,
-                                title = { Text("New group", color = Skin.Fg,
-                                               fontSize = 17.sp) },
+                                title = { Text("Libraries", color = Skin.Fg, fontSize = 17.sp) },
                                 text = {
-                                    TextBox(typed, "Home", Modifier.fillMaxWidth()) {
-                                        typed = it
-                                    }
-                                },
-                                confirmButton = {
-                                    Pill("Save") {
-                                        if (typed.isNotBlank()) {
-                                            Servers.setGroup(ctx, srv, typed.trim())
-                                            servers = Servers.all(ctx)
+                                    Column {
+                                        Text("What the shelves hold when more than one " +
+                                             "server is known.",
+                                             color = Skin.Dim, fontSize = 13.sp,
+                                             modifier = Modifier.padding(bottom = 10.dp))
+                                        ways.forEach { (code, name) ->
+                                            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                                Pill(name, active = code == howShelves) {
+                                                    howShelves = code
+                                                    Servers.setShelves(ctx, code)
+                                                    open = false
+                                                }
+                                            }
                                         }
-                                        typed = ""; naming = false
                                     }
                                 },
-                                dismissButton = { Pill("No") { naming = false } })
+                                confirmButton = { Pill("Close") { open = false } })
+                        }
+                    }
+                    if (howShelves == "groups") {
+                        servers.forEach { srv ->
+                            SettingsRow(
+                                srv.name.ifEmpty { Servers.hostOf(srv.base) },
+                                (if (srv.group.isEmpty()) "No group" else srv.group) +
+                                    (if (srv.copyOf.isNotEmpty()) "  ·  cache backup"
+                                     else ""),
+                            ) {
+                                var open by remember { mutableStateOf(false) }
+                                var naming by remember { mutableStateOf(false) }
+                                var typed by remember { mutableStateOf("") }
+                                Box {
+                                    Pill(if (srv.group.isEmpty()) "Group" else srv.group) {
+                                        open = true
+                                    }
+                                    DropdownMenu(expanded = open,
+                                                 onDismissRequest = { open = false },
+                                                 modifier = Modifier.background(Skin.Panel)) {
+                                        DropdownMenuItem(
+                                            text = { Text("No group", fontSize = 14.sp,
+                                                          color = if (srv.group.isEmpty())
+                                                                      Skin.Accent else Skin.Fg) },
+                                            onClick = {
+                                                Servers.setGroup(ctx, srv, "")
+                                                servers = Servers.all(ctx); open = false
+                                            })
+                                        // the groups already named, so the second server
+                                        // joins the first without anybody typing twice
+                                        Servers.groups(ctx).forEach { name ->
+                                            DropdownMenuItem(
+                                                text = { Text(name, fontSize = 14.sp,
+                                                              color = if (name == srv.group)
+                                                                          Skin.Accent
+                                                                      else Skin.Fg) },
+                                                onClick = {
+                                                    Servers.setGroup(ctx, srv, name)
+                                                    servers = Servers.all(ctx); open = false
+                                                })
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text("New group…", fontSize = 14.sp,
+                                                          color = Skin.Dim) },
+                                            onClick = { open = false; naming = true })
+                                    }
+                                }
+                                if (naming) {
+                                    AlertDialog(
+                                        onDismissRequest = { naming = false },
+                                        containerColor = Skin.Panel,
+                                        title = { Text("New group", color = Skin.Fg,
+                                                       fontSize = 17.sp) },
+                                        text = {
+                                            TextBox(typed, "Home", Modifier.fillMaxWidth()) {
+                                                typed = it
+                                            }
+                                        },
+                                        confirmButton = {
+                                            Pill("Save") {
+                                                if (typed.isNotBlank()) {
+                                                    Servers.setGroup(ctx, srv, typed.trim())
+                                                    servers = Servers.all(ctx)
+                                                }
+                                                typed = ""; naming = false
+                                            }
+                                        },
+                                        dismissButton = { Pill("No") { naming = false } })
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        SettingsHeading("PLAYBACK")
+            if (settingsTab == "playback") {
+                SettingsHeading("PLAYBACK")
 
-        // One viewer's own ceiling, kept by the server so it is the same answer on
-        // every screen they use. Not the server's limit, which applies over the top
-        // of it, and not the player's gear, which overrules it for one film.
-        var want by remember { mutableStateOf(Api.OwnQuality(0, 0)) }
-        LaunchedEffect(Unit) { want = Api.myQuality() }
-        val sizeName = QUALITY_SIZES.firstOrNull { it.first == want.height }?.second
-            ?: "Original"
-        val rateName = QUALITY_RATES.firstOrNull { it.first == want.mbit }?.second
-            ?: "No limit"
-        SettingsRow("Your maximum quality",
-                    sizeName + "  ·  " + rateName +
-                        "  ·  yours alone, on every screen") {
-            var open by remember { mutableStateOf(false) }
-            Pill("Change") { open = true }
-            if (open) {
-                QualityPanel(
-                    height = want.height, mbit = want.mbit, cap = "",
-                    plainSound = false,
-                    heading = "Your maximum quality",
-                    note = "The most that will be sent to you, on any screen you " +
-                        "watch on. Anything smaller arrives as it is. The server has " +
-                        "a limit of its own for everybody, and the lower of the two " +
-                        "wins.",
-                    withSound = false,
-                    onPick = { h, m ->
-                        open = false
-                        want = Api.OwnQuality(h, m)
-                        ctx.lifecycleScope.launch { want = Api.setMyQuality(h, m) }
-                    },
-                    onSound = { },
-                    onClose = { open = false })
+                // One viewer's own ceiling, kept by the server so it is the same answer on
+                // every screen they use. Not the server's limit, which applies over the top
+                // of it, and not the player's gear, which overrules it for one film.
+                var want by remember { mutableStateOf(Api.OwnQuality(0, 0)) }
+                LaunchedEffect(Unit) { want = Api.myQuality() }
+                val sizeName = QUALITY_SIZES.firstOrNull { it.first == want.height }?.second
+                    ?: "Original"
+                val rateName = QUALITY_RATES.firstOrNull { it.first == want.mbit }?.second
+                    ?: "No limit"
+                SettingsRow("Your maximum quality",
+                            sizeName + "  ·  " + rateName +
+                                "  ·  yours alone, on every screen") {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("Change") { open = true }
+                    if (open) {
+                        QualityPanel(
+                            height = want.height, mbit = want.mbit, cap = "",
+                            plainSound = false,
+                            heading = "Your maximum quality",
+                            note = "The most that will be sent to you, on any screen you " +
+                                "watch on. Anything smaller arrives as it is. The server has " +
+                                "a limit of its own for everybody, and the lower of the two " +
+                                "wins.",
+                            withSound = false,
+                            onPick = { h, m ->
+                                open = false
+                                want = Api.OwnQuality(h, m)
+                                ctx.lifecycleScope.launch { want = Api.setMyQuality(h, m) }
+                            },
+                            onSound = { },
+                            onClose = { open = false })
+                    }
+                }
+
+                // the next-episode setting applies to everybody on the server, so it is the
+                // owner's to change; a guest is not shown a switch that would be refused
+                if (Servers.current(ctx)?.mine != false) {
+
+                // The server's own ceilings, for everybody. Shown here only when this app is
+                // talking to its own server - from anywhere else they are refused, and a
+                // control that cannot work is worse than none.
+                var caps by remember { mutableStateOf(Api.Ceilings(0, 0, 0, 0)) }
+                var editing by remember { mutableStateOf("") }
+                LaunchedEffect(Unit) { caps = Api.serverQuality() }
+                val said = { h: Int, m: Int ->
+                    if (h == 0 && m == 0) "no limit"
+                    else listOfNotNull(if (h > 0) h.toString() + "p" else null,
+                                       if (m > 0) m.toString() + " Mbit" else null)
+                        .joinToString(", ")
+                }
+                SettingsRow("The server's limits — everybody",
+                            "In the house: " + said(caps.homeHeight, caps.homeMbit) +
+                                "  ·  From outside: " +
+                                said(caps.awayHeight, caps.awayMbit),
+                            extra = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Set", color = Skin.Dim, fontSize = 12.sp,
+                                         modifier = Modifier.padding(end = 8.dp))
+                                    Pill("In the house") { editing = "home" }
+                                    Pill("From outside") { editing = "away" }
+                                }
+                            }) { }
+                if (editing.isNotEmpty()) {
+                    val home = editing == "home"
+                    QualityPanel(
+                        height = if (home) caps.homeHeight else caps.awayHeight,
+                        mbit = if (home) caps.homeMbit else caps.awayMbit,
+                        cap = "", plainSound = false, withSound = false,
+                        heading = if (home) "Everyone, on this network"
+                                  else "Everyone, from outside",
+                        note = if (home)
+                            "The most this server will send to anything in the house, itself " +
+                                "included. There is rarely a reason to cap it."
+                        else
+                            "The most this server will send to anybody reaching it from " +
+                                "elsewhere, guests included. Bounded by what this line can " +
+                                "upload, not by what they can download.",
+                        onPick = { h, m ->
+                            val where = editing
+                            editing = ""
+                            ctx.lifecycleScope.launch { caps = Api.setServerQuality(where, h, m) }
+                        },
+                        onSound = { },
+                        onClose = { editing = "" })
+                }
+
+                var wait by remember { mutableStateOf(5) }
+                LaunchedEffect(Unit) { wait = Api.nextDelay() }
+                SettingsRow("Next episode",
+                            if (!rollOn) "Waits to be asked"
+                            else if (wait == 0) "Starts as the credits end"
+                            else "Starts itself after " + wait +
+                                (if (wait == 1) " second" else " seconds"),
+                            // how long it waits belongs with the switch that turns it on,
+                            // not in a row of its own underneath
+                            extra = if (!rollOn) null else ({
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("After", color = Skin.Dim, fontSize = 12.sp,
+                                         modifier = Modifier.padding(end = 8.dp))
+                                    (0..5).forEach { n ->
+                                        Pill(if (n == 0) "At once" else n.toString() + "s",
+                                             active = wait == n) {
+                                            wait = n
+                                            ctx.lifecycleScope.launch {
+                                                wait = Api.setNextDelay(n)
+                                            }
+                                        }
+                                    }
+                                }
+                            })) {
+                    Pill(if (rollOn) "On" else "Off", active = rollOn) {
+                        rollOn = !rollOn
+                        ctx.lifecycleScope.launch { rollOn = Api.setAutoNext(rollOn) }
+                    }
+                }
+                }
             }
-        }
 
-        // the next-episode setting applies to everybody on the server, so it is the
-        // owner's to change; a guest is not shown a switch that would be refused
-        if (Servers.current(ctx)?.mine != false) {
+            if (settingsTab == "notifications") {
+                SettingsHeading("NOTIFICATIONS")
+                // off unless turned on (owner, 2026-11-12)
+                LaunchedEffect(Unit) { runCatching { Notes.learn(ctx) } }
+                SettingsRow("Watchlist notifications",
+                            if (Notes.on.value) "On  ·  each time the Watchlist blinks, on this phone or tablet"
+                            else "Off  ·  the Watchlist blinks, nothing is said outside the app",
+                            extra = {
+                                Row {
+                                    Pill("Off", active = !Notes.on.value) {
+                                        ctx.lifecycleScope.launch { Notes.setOn(ctx, false) }
+                                    }
+                                    Pill("On", active = Notes.on.value) {
+                                        ctx.lifecycleScope.launch { Notes.setOn(ctx, true) }
+                                        if (android.os.Build.VERSION.SDK_INT >= 33) runCatching {
+                                            ctx.requestPermissions(
+                                                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 72)
+                                        }
+                                    }
+                                }
+                            })
+            }
 
-        // The server's own ceilings, for everybody. Shown here only when this app is
-        // talking to its own server - from anywhere else they are refused, and a
-        // control that cannot work is worse than none.
-        var caps by remember { mutableStateOf(Api.Ceilings(0, 0, 0, 0)) }
-        var editing by remember { mutableStateOf("") }
-        LaunchedEffect(Unit) { caps = Api.serverQuality() }
-        val said = { h: Int, m: Int ->
-            if (h == 0 && m == 0) "no limit"
-            else listOfNotNull(if (h > 0) h.toString() + "p" else null,
-                               if (m > 0) m.toString() + " Mbit" else null)
-                .joinToString(", ")
-        }
-        SettingsRow("The server's limits — everybody",
-                    "In the house: " + said(caps.homeHeight, caps.homeMbit) +
-                        "  ·  From outside: " +
-                        said(caps.awayHeight, caps.awayMbit),
-                    extra = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Set", color = Skin.Dim, fontSize = 12.sp,
-                                 modifier = Modifier.padding(end = 8.dp))
-                            Pill("In the house") { editing = "home" }
-                            Pill("From outside") { editing = "away" }
+            if (settingsTab == "offline") {
+                SettingsHeading("OFFLINE")
+                // off unless turned on; on, titles can be kept on this device (owner, 2026-11-12)
+                SettingsRow("Offline viewing",
+                            if (Offline.on.value) "On  ·  titles can be kept on this device, and the shelves keep their last answers"
+                            else "Off  ·  nothing is kept on this device",
+                            extra = {
+                                Row {
+                                    Pill("Off", active = !Offline.on.value) { Offline.setOn(ctx, false) }
+                                    Pill("On", active = Offline.on.value) {
+                                        Offline.setOn(ctx, true)
+                                        // the line in the notifications while copies come in
+                                        if (android.os.Build.VERSION.SDK_INT >= 33) runCatching {
+                                            ctx.requestPermissions(
+                                                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 71)
+                                        }
+                                    }
+                                }
+                            })
+                if (Offline.on.value) {
+                    var place by remember { mutableStateOf(Offline.place(ctx)) }
+                    val places = remember { Offline.places(ctx) }
+                    SettingsRow("Saved on", place.label + "  ·  " + Offline.gb(place.free) + " free",
+                                extra = {
+                                    Row {
+                                        places.forEach { p ->
+                                            Pill(p.label, active = p.dir == place.dir) {
+                                                Offline.setPlace(ctx, p)
+                                                place = p
+                                            }
+                                        }
+                                    }
+                                })
+                    var whole by remember { mutableStateOf(false) }
+            SettingsRow("Watchlist offline",
+                        "Every film and episode on the watchlist, with the size before it starts") {
+                Pill("Choose") { whole = true }
+            }
+            if (whole) WatchlistOffline { whole = false }
+            SettingsRow("Offline sync",
+                        when (Offline.sync.value) {
+                            "on" -> "On  ·  copies come to this device over any network"
+                            "off" -> "Off  ·  nothing comes to this device; copies wait on the server"
+                            else -> "Wi-Fi only  ·  copies come over Wi-Fi, and wait off it"
+                        },
+                        extra = {
+                            Row {
+                                listOf("on" to "On", "wifi" to "Wi-Fi only", "off" to "Off").forEach { (id, name) ->
+                                    Pill(name, active = Offline.sync.value == id) {
+                                        Offline.setSync(ctx, id)
+                                    }
+                                }
+                            }
+                        })
+            SettingsRow("Offline filter",
+                        when (Offline.filter.value) {
+                            "only" -> "Only offline  ·  Home, Films, TV, Watchlist and Collections show the titles chosen, kept or coming in"
+                            "mix" -> "Mixed  ·  everything, kept titles in colour and the rest grey"
+                            else -> "Off  ·  every tab as usual"
+                        },
+                        extra = {
+                            Row {
+                                listOf("" to "Off", "only" to "Only offline", "mix" to "Mixed").forEach { (id, name) ->
+                                    Pill(name, active = Offline.filter.value == id) {
+                                        Offline.setFilter(ctx, id)
+                                    }
+                                }
+                            }
+                        })
+                    val kept = Offline.copies.values.sortedBy { it.title }
+                    if (kept.isNotEmpty()) {
+                        SettingsRow("Kept on this device", Offline.total(kept, Offline.place(ctx)),
+                                    extra = {
+                                        Column {
+                                            kept.forEach { c ->
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(c.title + "  ·  " + Offline.words(c), color = Skin.Dim,
+                                                         fontSize = 12.sp, maxLines = 1,
+                                                         overflow = TextOverflow.Ellipsis,
+                                                         modifier = Modifier.weight(1f))
+                                                    var sure by remember(c.key) { mutableStateOf(false) }
+                                                    Pill("Remove", small = true) { sure = true }
+                                                    if (sure) OfflineConfirm(c, null,
+                                                        onYes = { sure = false; Offline.drop(ctx, c.key) },
+                                                        onNo = { sure = false })
+                                                }
+                                            }
+                                        }
+                                    })
+                    }
+                }
+            }
+
+            if (settingsTab == "app") {
+                SettingsHeading("UPDATES")
+                // which app this viewer is offered: each version as it is built, or the one
+                // let out at eight once nothing is wrong with it (owner, 2026-11-05)
+                var channel by remember { mutableStateOf("") }
+                LaunchedEffect(Unit) { channel = Api.appChannel() }
+                if (channel.isNotEmpty()) {
+                    SettingsRow("App updates",
+                                if (channel == "latest") "Each new version as soon as it is built"
+                                else "The day's version, at eight in the morning, once nothing is wrong with it") {
+                        Pill("Latest", active = channel == "latest") {
+                            channel = "latest"
+                            ctx.lifecycleScope.launch { channel = Api.setAppChannel("latest").ifEmpty { channel } }
                         }
-                    }) { }
-        if (editing.isNotEmpty()) {
-            val home = editing == "home"
-            QualityPanel(
-                height = if (home) caps.homeHeight else caps.awayHeight,
-                mbit = if (home) caps.homeMbit else caps.awayMbit,
-                cap = "", plainSound = false, withSound = false,
-                heading = if (home) "Everyone, on this network"
-                          else "Everyone, from outside",
-                note = if (home)
-                    "The most this server will send to anything in the house, itself " +
-                        "included. There is rarely a reason to cap it."
-                else
-                    "The most this server will send to anybody reaching it from " +
-                        "elsewhere, guests included. Bounded by what this line can " +
-                        "upload, not by what they can download.",
-                onPick = { h, m ->
-                    val where = editing
-                    editing = ""
-                    ctx.lifecycleScope.launch { caps = Api.setServerQuality(where, h, m) }
-                },
-                onSound = { },
-                onClose = { editing = "" })
-        }
-
-        var wait by remember { mutableStateOf(5) }
-        LaunchedEffect(Unit) { wait = Api.nextDelay() }
-        SettingsRow("Next episode",
-                    if (!rollOn) "Waits to be asked"
-                    else if (wait == 0) "Starts as the credits end"
-                    else "Starts itself after " + wait +
-                        (if (wait == 1) " second" else " seconds"),
-                    // how long it waits belongs with the switch that turns it on,
-                    // not in a row of its own underneath
-                    extra = if (!rollOn) null else ({
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("After", color = Skin.Dim, fontSize = 12.sp,
-                                 modifier = Modifier.padding(end = 8.dp))
-                            (0..5).forEach { n ->
-                                Pill(if (n == 0) "At once" else n.toString() + "s",
-                                     active = wait == n) {
-                                    wait = n
+                        Pill("Daily", active = channel == "daily") {
+                            channel = "daily"
+                            ctx.lifecycleScope.launch { channel = Api.setAppChannel("daily").ifEmpty { channel } }
+                        }
+                    }
+                }
+                // The server, from the same house as the server. A screen away from home is
+                // told what is running and nothing else: it cannot see what happens next, and
+                // the machine it would be restarting is not in front of anybody.
+                server?.let { build ->
+                    // by name. "The server" and "the other server" name nothing on a
+                    // screen that has two of them on it, and which one is being updated is
+                    // exactly what somebody pressing Update needs to be sure of.
+                    SettingsRow(Servers.inUse(ctx)?.name?.takeIf { it.isNotBlank() }
+                                    ?: Servers.hostOf(Api.base),
+                                "Version " + build.have +
+                                (if (build.newer) "  \u00b7  " + build.latest + " is out"
+                                 else "  \u00b7  up to date") +
+                                (serverSaid?.let { "  \u00b7  " + it } ?: "")) {
+                        if (build.newer && build.lan) {
+                            // The press stands the server down and installs: it answers in a
+                            // second and is gone for ten. The button has to say so while that
+                            // happens, or the press reads as having done nothing.
+                            Pill(if (updating) "Updating…" else "Update",
+                                 primary = true, dim = updating) {
+                                if (!updating) {
+                                    updating = true
+                                    serverSaid = "asking the server"
                                     ctx.lifecycleScope.launch {
-                                        wait = Api.setNextDelay(n)
-                                    }
-                                }
-                            }
-                        }
-                    })) {
-            Pill(if (rollOn) "On" else "Off", active = rollOn) {
-                rollOn = !rollOn
-                ctx.lifecycleScope.launch { rollOn = Api.setAutoNext(rollOn) }
-            }
-        }
-        }
-
-        SettingsHeading("UPDATES")
-        // which app this viewer is offered: each version as it is built, or the one
-        // let out at eight once nothing is wrong with it (owner, 2026-11-05)
-        var channel by remember { mutableStateOf("") }
-        LaunchedEffect(Unit) { channel = Api.appChannel() }
-        if (channel.isNotEmpty()) {
-            SettingsRow("App updates",
-                        if (channel == "latest") "Each new version as soon as it is built"
-                        else "The day's version, at eight in the morning, once nothing is wrong with it") {
-                Pill("Latest", active = channel == "latest") {
-                    channel = "latest"
-                    ctx.lifecycleScope.launch { channel = Api.setAppChannel("latest").ifEmpty { channel } }
-                }
-                Pill("Daily", active = channel == "daily") {
-                    channel = "daily"
-                    ctx.lifecycleScope.launch { channel = Api.setAppChannel("daily").ifEmpty { channel } }
-                }
-            }
-        }
-        // The server, from the same house as the server. A screen away from home is
-        // told what is running and nothing else: it cannot see what happens next, and
-        // the machine it would be restarting is not in front of anybody.
-        server?.let { build ->
-            // by name. "The server" and "the other server" name nothing on a
-            // screen that has two of them on it, and which one is being updated is
-            // exactly what somebody pressing Update needs to be sure of.
-            SettingsRow(Servers.inUse(ctx)?.name?.takeIf { it.isNotBlank() }
-                            ?: Servers.hostOf(Api.base),
-                        "Version " + build.have +
-                        (if (build.newer) "  \u00b7  " + build.latest + " is out"
-                         else "  \u00b7  up to date") +
-                        (serverSaid?.let { "  \u00b7  " + it } ?: "")) {
-                if (build.newer && build.lan) {
-                    // The press stands the server down and installs: it answers in a
-                    // second and is gone for ten. The button has to say so while that
-                    // happens, or the press reads as having done nothing.
-                    Pill(if (updating) "Updating…" else "Update",
-                         primary = true, dim = updating) {
-                        if (!updating) {
-                            updating = true
-                            serverSaid = "asking the server"
-                            ctx.lifecycleScope.launch {
-                                val why = Api.updateServer()
-                                serverSaid = why ?: ("installing " + build.latest + " and restarting" +
-                                                     " - it will come back on its own")
-                                if (why != null) updating = false
-                                else {
-                                    // wait for it to answer again, then say what it is
-                                    repeat(30) {
-                                        kotlinx.coroutines.delay(2_000)
-                                        val now = Api.serverBuild()
-                                        if (now != null && now.have != build.have) {
-                                            server = now
-                                            serverSaid = "now " + now.have
+                                        val why = Api.updateServer()
+                                        serverSaid = why ?: ("installing " + build.latest + " and restarting" +
+                                                             " - it will come back on its own")
+                                        if (why != null) updating = false
+                                        else {
+                                            // wait for it to answer again, then say what it is
+                                            repeat(30) {
+                                                kotlinx.coroutines.delay(2_000)
+                                                val now = Api.serverBuild()
+                                                if (now != null && now.have != build.have) {
+                                                    server = now
+                                                    serverSaid = "now " + now.have
+                                                    updating = false
+                                                    return@launch
+                                                }
+                                            }
                                             updating = false
-                                            return@launch
                                         }
                                     }
-                                    updating = false
                                 }
                             }
                         }
-                    }
-                }
-                Pill("Check") {
-                    ctx.lifecycleScope.launch {
-                        serverSaid = "asking the site"
-                        server = Api.serverBuild(fresh = true)
-                        serverSaid = null
-                    }
-                }
-            }
-        }
-        // The machine that keeps copies, replaced from here rather than by switching
-        // the whole app over to it and back again. It is a server, and it goes stale
-        // exactly like this one.
-        // The other machine, whichever way round the two are standing. This asked
-        // the server for the machine that keeps copies of it - and a copy keeps no
-        // copies of its own, so with the app on the copy there was no second row and
-        // the house itself could not be updated from here at all.
-        val elsewhere = remember(Api.base) {
-            Servers.all(ctx).firstOrNull {
-                it.base.isNotEmpty() &&
-                    !Servers.sameMachine(it, Server("", Api.base.trimEnd('/'), ""))
-            }
-        }
-        // A machine this app knows that is not the one it is standing on, first of
-        // all. What the server says about its copy is remembered against each server
-        // and can be stale - on the cache it pointed at the cache itself, so the second
-        // row named the machine already in the first and the other one appeared
-        // nowhere at all.
-        // The server itself answers this, both ways round: it names the machine that
-        // copies from it, and the machine it copies from. On the main server the first is
-        // filled and on the copy the second, so between them there is always an
-        // answer - which is why this no longer depends on what the app happens to
-        // have written down about either machine.
-        val here = Server("", Api.base.trimEnd('/'), "")
-        val copyAt = listOf(Api.standby, Api.standbyOut, Api.houseWhere)
-            .firstOrNull {
-                it.isNotEmpty() && !Servers.sameMachine(Server("", it, ""), here)
-            }
-            ?: elsewhere?.base.orEmpty()
-        val copyCalled = (if (copyAt == Api.houseWhere) Api.houseName else Api.standbyName)
-            .ifBlank { elsewhere?.name.orEmpty() }
-            .ifBlank { Servers.hostOf(copyAt) }
-        // and its own key, not this server's: a key belongs to the machine that
-        // issued it, and asking one machine with another's is refused
-        val copyKey = elsewhere?.token?.takeIf { it.isNotEmpty() } ?: Api.token
-        if (copyAt.isNotEmpty()) {
-            LaunchedEffect(copyAt) {
-                if (copyBuild == null) copyBuild = Api.serverBuildAt(copyAt, copyKey)
-            }
-            SettingsRow(copyCalled,
-                        copyBuild?.let { b ->
-                            "Version " + b.have +
-                            (if (b.newer) "  ·  " + b.latest + " is out"
-                             else "  ·  up to date") +
-                            (copySaid?.let { "  ·  " + it } ?: "")
-                        } ?: (Servers.hostOf(copyAt) + "  ·  asking…")) {
-                val b = copyBuild
-                if (b != null && b.newer && b.lan) {
-                    Pill(if (copyBusy) "Updating…" else "Update",
-                         primary = true, dim = copyBusy) {
-                        if (!copyBusy) {
-                            copyBusy = true
-                            copySaid = "asking that machine"
+                        Pill("Check") {
                             ctx.lifecycleScope.launch {
-                                val why = Api.updateServerAt(copyAt, copyKey)
-                                copySaid = why ?: ("installing " + b.latest + " and restarting" +
-                                                   " - it will come back on its own")
-                                if (why != null) copyBusy = false
-                                else {
-                                    kotlinx.coroutines.delay(20_000)
-                                    copyBuild = Api.serverBuildAt(copyAt, copyKey)
-                                    copySaid = copyBuild?.let { "now " + it.have }
-                                    copyBusy = false
-                                }
+                                serverSaid = "asking the site"
+                                server = Api.serverBuild(fresh = true)
+                                serverSaid = null
                             }
                         }
                     }
                 }
-                Pill("Check") {
-                    ctx.lifecycleScope.launch {
-                        copySaid = "asking the site"
-                        copyBuild = Api.serverBuildAt(copyAt, Api.token, fresh = true)
-                        copySaid = null
+                // The machine that keeps copies, replaced from here rather than by switching
+                // the whole app over to it and back again. It is a server, and it goes stale
+                // exactly like this one.
+                // The other machine, whichever way round the two are standing. This asked
+                // the server for the machine that keeps copies of it - and a copy keeps no
+                // copies of its own, so with the app on the copy there was no second row and
+                // the house itself could not be updated from here at all.
+                val elsewhere = remember(Api.base) {
+                    Servers.all(ctx).firstOrNull {
+                        it.base.isNotEmpty() &&
+                            !Servers.sameMachine(it, Server("", Api.base.trimEnd('/'), ""))
                     }
                 }
-            }
-        }
-        // the Play build: Play updates it, so its version and the credits its
-        // catalogue data asks for, in place of the update check
-        if (BuildConfig.PLAY) {
-            SettingsRow("This app", "Version " + BuildConfig.VERSION_NAME, extra = {
-                Text(Route.PLAY_CREDITS, color = Skin.Dim, fontSize = 11.5.sp,
-                     lineHeight = 15.sp)
-            })
-        } else {
-        SettingsRow("This app",
-                    "Version " + BuildConfig.VERSION_NAME +
-                    (if (skipped > 0) "  \u00b7  skipping " + skipped else "") +
-                    (found?.let { "  \u00b7  " + it } ?: "")) {
-            // Once a version has been found the same button installs it: learning
-            // that one exists and then having to go and find it is two steps where
-            // one will do.
-            Pill(if (checking) "\u2026" else if (waiting != null) "Update" else "Check",
-                 primary = waiting != null) {
-                if (!checking) {
-                    checking = true
-                    ctx.lifecycleScope.launch {
-                        val ready = waiting
-                        if (ready != null) {
-                            val held = Updates.waiting(ctx, ready)
-                            val apk = held ?: Updates.download(ctx, ready) { p ->
-                                found = "downloading " + p + "%"
-                            }
-                            checking = false
-                            if (apk == null) {
-                                found = "could not download it"
-                            } else {
-                                found = "installing " + ready.versionName
-                                if (!Updates.installFile(ctx, apk)) {
-                                    found = "no installer on this device"
+                // A machine this app knows that is not the one it is standing on, first of
+                // all. What the server says about its copy is remembered against each server
+                // and can be stale - on the cache it pointed at the cache itself, so the second
+                // row named the machine already in the first and the other one appeared
+                // nowhere at all.
+                // The server itself answers this, both ways round: it names the machine that
+                // copies from it, and the machine it copies from. On the main server the first is
+                // filled and on the copy the second, so between them there is always an
+                // answer - which is why this no longer depends on what the app happens to
+                // have written down about either machine.
+                val here = Server("", Api.base.trimEnd('/'), "")
+                val copyAt = listOf(Api.standby, Api.standbyOut, Api.houseWhere)
+                    .firstOrNull {
+                        it.isNotEmpty() && !Servers.sameMachine(Server("", it, ""), here)
+                    }
+                    ?: elsewhere?.base.orEmpty()
+                val copyCalled = (if (copyAt == Api.houseWhere) Api.houseName else Api.standbyName)
+                    .ifBlank { elsewhere?.name.orEmpty() }
+                    .ifBlank { Servers.hostOf(copyAt) }
+                // and its own key, not this server's: a key belongs to the machine that
+                // issued it, and asking one machine with another's is refused
+                val copyKey = elsewhere?.token?.takeIf { it.isNotEmpty() } ?: Api.token
+                if (copyAt.isNotEmpty()) {
+                    LaunchedEffect(copyAt) {
+                        if (copyBuild == null) copyBuild = Api.serverBuildAt(copyAt, copyKey)
+                    }
+                    SettingsRow(copyCalled,
+                                copyBuild?.let { b ->
+                                    "Version " + b.have +
+                                    (if (b.newer) "  ·  " + b.latest + " is out"
+                                     else "  ·  up to date") +
+                                    (copySaid?.let { "  ·  " + it } ?: "")
+                                } ?: (Servers.hostOf(copyAt) + "  ·  asking…")) {
+                        val b = copyBuild
+                        if (b != null && b.newer && b.lan) {
+                            Pill(if (copyBusy) "Updating…" else "Update",
+                                 primary = true, dim = copyBusy) {
+                                if (!copyBusy) {
+                                    copyBusy = true
+                                    copySaid = "asking that machine"
+                                    ctx.lifecycleScope.launch {
+                                        val why = Api.updateServerAt(copyAt, copyKey)
+                                        copySaid = why ?: ("installing " + b.latest + " and restarting" +
+                                                           " - it will come back on its own")
+                                        if (why != null) copyBusy = false
+                                        else {
+                                            kotlinx.coroutines.delay(20_000)
+                                            copyBuild = Api.serverBuildAt(copyAt, copyKey)
+                                            copySaid = copyBuild?.let { "now " + it.have }
+                                            copyBusy = false
+                                        }
+                                    }
                                 }
                             }
-                        } else {
-                            val u = Updates.check(ignoreSkip = true, ctx = ctx)
-                            checking = false
-                            waiting = u
-                            found = if (u != null) named(u) + " ready to install"
-                                    else if (Updates.answered) "up to date"
-                                    else "no server answered - try again"
+                        }
+                        Pill("Check") {
+                            ctx.lifecycleScope.launch {
+                                copySaid = "asking the site"
+                                copyBuild = Api.serverBuildAt(copyAt, Api.token, fresh = true)
+                                copySaid = null
+                            }
                         }
                     }
                 }
-            }
-            // Skipping is about a version that is waiting: with nothing to skip the
-            // button asks a question about nothing. It stays while a skip is in force,
-            // because that is the only way back from one.
-            if (waiting != null || skipped > 0)
-            Pill(if (skipped > 0) "Unskip" else "Skip", active = skipped > 0) {
-                skipped = if (skipped > 0) {
-                    Updates.setSkipped(ctx, 0); Updates.skip = 0; 0
+                // the Play build: Play updates it, so its version and the credits its
+                // catalogue data asks for, in place of the update check
+                if (BuildConfig.PLAY) {
+                    SettingsRow("This app", "Version " + BuildConfig.VERSION_NAME, extra = {
+                        Text(Route.PLAY_CREDITS, color = Skin.Dim, fontSize = 11.5.sp,
+                             lineHeight = 15.sp)
+                    })
                 } else {
-                    val next = BuildConfig.VERSION_CODE + 1
-                    Updates.setSkipped(ctx, next); Updates.skip = next; next
+                SettingsRow("This app",
+                            "Version " + BuildConfig.VERSION_NAME +
+                            (if (skipped > 0) "  \u00b7  skipping " + skipped else "") +
+                            (found?.let { "  \u00b7  " + it } ?: "")) {
+                    // Once a version has been found the same button installs it: learning
+                    // that one exists and then having to go and find it is two steps where
+                    // one will do.
+                    Pill(if (checking) "\u2026" else if (waiting != null) "Update" else "Check",
+                         primary = waiting != null) {
+                        if (!checking) {
+                            checking = true
+                            ctx.lifecycleScope.launch {
+                                val ready = waiting
+                                if (ready != null) {
+                                    val held = Updates.waiting(ctx, ready)
+                                    val apk = held ?: Updates.download(ctx, ready) { p ->
+                                        found = "downloading " + p + "%"
+                                    }
+                                    checking = false
+                                    if (apk == null) {
+                                        found = "could not download it"
+                                    } else {
+                                        found = "installing " + ready.versionName
+                                        if (!Updates.installFile(ctx, apk)) {
+                                            found = "no installer on this device"
+                                        }
+                                    }
+                                } else {
+                                    val u = Updates.check(ignoreSkip = true, ctx = ctx)
+                                    checking = false
+                                    waiting = u
+                                    found = if (u != null) named(u) + " ready to install"
+                                            else if (Updates.answered) "up to date"
+                                            else "no server answered - try again"
+                                }
+                            }
+                        }
+                    }
+                    // Skipping is about a version that is waiting: with nothing to skip the
+                    // button asks a question about nothing. It stays while a skip is in force,
+                    // because that is the only way back from one.
+                    if (waiting != null || skipped > 0)
+                    Pill(if (skipped > 0) "Unskip" else "Skip", active = skipped > 0) {
+                        skipped = if (skipped > 0) {
+                            Updates.setSkipped(ctx, 0); Updates.skip = 0; 0
+                        } else {
+                            val next = BuildConfig.VERSION_CODE + 1
+                            Updates.setSkipped(ctx, next); Updates.skip = next; next
+                        }
+                    }
+                }
                 }
             }
+
+            Spacer(Modifier.height(24.dp))
         }
-        }
-        Spacer(Modifier.height(24.dp))
     }
 
     if (writing) {
@@ -2202,6 +2394,11 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
                            onClose = { editing = null })
     }
 }
+
+/** The tabs of Settings, in the order they stand: id and name. */
+private val SETTINGS_TABS = listOf(
+    "playback" to "Playback", "look" to "Look", "notifications" to "Notifications",
+    "offline" to "Offline", "server" to "Server", "app" to "App")
 
 /** A section heading: small, quiet, and not a headline. */
 @Composable
@@ -2896,6 +3093,12 @@ private class Browse {
     var personFrom by mutableStateOf<Media?>(null)
     /** The name on the shelf when it is one person's titles, null for any other. */
     var personRow by mutableStateOf<String?>(null)
+    /** An actor's face pressed: their name, searched for, and their number, which narrows
+     *  that search to them without a word. Null once anything is typed. */
+    var searchPerson by mutableStateOf<Pair<String, Int>?>(null)
+    /** Where that actor was pressed - the title's page, and the tab under it: back from
+     *  their search goes there. */
+    var searchFrom by mutableStateOf<Pair<Media, String>?>(null)
 
     /** Leave a row opened whole, putting back the filters and the order it borrowed.
      *  This row sets its own in fields the tabs read as well, so a category picked
@@ -3258,10 +3461,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // what the held lists correspond to; coming back from a title matches, and the
     // fetch is skipped rather than throwing the scroll position away
     val want = browse.tab + "|" + order + "|" + browse.diskOnly + "|" +
+        (if (Offline.filter.value == "only" && Offline.on.value) "offline:" + Offline.copies.size + "|" else "") +
         browse.genre + "|" + browse.decade + "|" + browse.service + "|" +
         browse.serviceSortKey + browse.serviceSortAsc + "|" +
         (if (browse.tab == "tv") browse.tvCountry + "|" else "") +
                browse.query.trim() + "|" + browse.searchAgain + "|" +
+        Route.personFilter(browse.searchPerson, browse.query) + "|" +
         (browse.collectionOn?.ratingKey ?: "") +
         // and again when the library moves to another machine, home included: the
         // page stayed drawn from the cache after the main server was back
@@ -3458,13 +3663,14 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // through everything, since Home is not a section of the library.
                 // one letter is a title too: V
                 query.trim().isNotEmpty() -> {
-                    val found = Api.search(ctx, query.trim())
+                    val person = Route.personFilter(browse.searchPerson, query)
+                    val found = Api.search(ctx, query.trim(), person)
                     // everything the words found, as the web page shows it, the tab's
                     // own kind first: from the TV tab a search for a film found nothing
                     browse.grid = Route.tabFirst(found.map { it.type }, tab).map { found[it] }
                     // and the names the words spell, above the titles
                     browse.people = runCatching {
-                        Api.searchPeople(ctx, query.trim())
+                        Api.searchPeople(ctx, query.trim(), person)
                     }.getOrDefault(emptyList())
                     browse.more = false
                 }
@@ -3549,6 +3755,20 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         browse.notice = short.joinToString(", ") +
                             " could not be read - no machine answered"
                     }
+                }
+                tab in setOf("films", "tv") && Offline.filter.value == "only" && Offline.on.value -> {
+                    // only the titles chosen for offline viewing: films, or the series
+                    // an episode kept is in (owner, 2026-11-12)
+                    browse.grid = Offline.copies.values
+                        .mapNotNull { c ->
+                            val k = if (tab == "films") c.key.takeIf { c.show.isEmpty() }
+                                    else c.show.ifEmpty { null }
+                            k?.let { it to Offline.serverOf(c) }
+                        }
+                        .distinctBy { it.first }
+                        .mapNotNull { (k, srv) -> runCatching { Api.item(k, srv) }.getOrNull() }
+                        .sortedBy { it.titleSort.ifEmpty { it.title }.lowercase() }
+                    browse.more = false
                 }
                 tab == "watchlist" -> {
                     // marked for later, newest mark first: the order it was thought of
@@ -3866,6 +4086,18 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         if (!moved) inContent = false
     }
 
+    // An actor pressed on a title's page: back from their search goes to that page, on
+    // the tab it was read from. Declared after the handlers above, so it is asked first.
+    BackHandler(enabled = Route.backToTitle(browse.searchFrom != null, browse.searchPerson,
+                                            browse.query)) {
+        val (title, tab) = browse.searchFrom ?: return@BackHandler
+        browse.searchFrom = null
+        browse.searchPerson = null
+        browse.query = ""
+        browse.tab = tab
+        Api.openWanted.value = title
+    }
+
     // A list opens with the cursor on the row of buttons over it, on the tab it is
     // showing. It opened with the focus nowhere in particular, and the first press of
     // any direction went hunting rather than moving.
@@ -4070,7 +4302,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                        browse.collSortKey, browse.collSortAsc,
                        onSort = { key ->
                            browse.collSortKey = key
-                           browse.collSortAsc = key !in setOf("addedAt", "quality", "lastViewedAt")
+                           browse.collSortAsc = key !in setOf("addedAt", "listedAt", "quality", "lastViewedAt")
                        },
                        onFlip = { browse.collSortAsc = !browse.collSortAsc },
                        extra = Route.WATCHLIST_ORDERS)
@@ -4085,6 +4317,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                    FilterControls(browse.query, {
                                       if (browse.moreRow != null && it != browse.query)
                                           browse.leaveMoreRow()
+                                      // words typed: an ordinary search again
+                                      if (it != browse.query) {
+                                          browse.searchPerson = null
+                                          browse.searchFrom = null
+                                      }
                                       browse.query = it
                                   },
                                   onTyping = { browse.typing = it })
@@ -4672,7 +4909,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 // rows by position, so a shelf arriving or leaving handed one row's
                 // state to another - and a card that had the focus was released twice
                 // while the list was being measured, which took the app down.
-                itemsIndexed(browse.rows, key = { _, row -> row.first },
+                itemsIndexed(browse.rows.map { (t, l) -> t to Offline.narrow(l) }
+                                 .filter { it.second.isNotEmpty() }, key = { _, row -> row.first },
                              contentType = { _, row -> row.first }) {
                         shelf, (title, list) ->
                     val topShelf = shelf == 0
@@ -4811,7 +5049,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
                     val along = remember(room) {
                         object : androidx.compose.foundation.gestures.BringIntoViewSpec {
-                            override val scrollAnimationSpec = Slide.along
+                            override val scrollAnimationSpec get() = Slide.now(Slide.along)
                             override fun calculateScrollDistance(offset: Float, size: Float,
                                                                  containerSize: Float) =
                                 Route.calmAlong(offset, size, containerSize, room)
@@ -5127,7 +5365,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
                 val steady = remember {
                     object : androidx.compose.foundation.gestures.BringIntoViewSpec {
-                        override val scrollAnimationSpec = Slide.down
+                        override val scrollAnimationSpec get() = Slide.now(Slide.down)
                         override fun calculateScrollDistance(
                             offset: Float, size: Float, containerSize: Float
                         ): Float {
@@ -5210,10 +5448,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             collectionOrder(browse.grid, browse.collSortKey,
                                             browse.collSortAsc)
                         else -> browse.grid
-                    }
+                    }.let { Offline.narrow(it) }
                     // The names the words spell, above the titles that carry them.
                     // A word that is nobody's film is often somebody's name.
-                    if (browse.people.isNotEmpty()) {
+                    // Not on one person's titles or a Show more row: the search's names
+                    // stood above an actor pressed from a title's cast.
+                    if (Route.showsSearchNames(browse.people.size, browse.moreRow)) {
                         item(span = {
                                  androidx.compose.foundation.lazy.grid
                                      .GridItemSpan(maxLineSpan)
@@ -5669,6 +5909,7 @@ internal fun goToTitle(ctx: android.content.Context, one: Media, onOpen: (Media)
 private fun collectionOrder(list: List<Media>, key: String, asc: Boolean): List<Media> {
     val by = when (key) {
         "addedAt" -> compareBy<Media> { it.addedAt }
+        "listedAt" -> compareBy { Route.watchlistListed(it.listedAt, it.addedAt) }
         "lastViewedAt" -> compareBy { it.lastViewedAt }
         "titleSort" -> compareBy { it.titleSort.ifEmpty { it.title }.lowercase() }
         "year" -> compareBy { it.year ?: 0 }
@@ -5680,8 +5921,7 @@ private fun collectionOrder(list: List<Media>, key: String, asc: Boolean): List<
             it.released.ifEmpty { (it.year ?: 0).toString().padStart(4, '0') + "-01-01" }
         }
     }
-    if (key == "lastViewedAt") return Route.byLastWatched(list, asc) {
-        Route.watchlistAt(it.lastViewedAt, it.listedAt) }
+    if (key == "lastViewedAt") return Route.byLastWatched(list, asc) { it.lastViewedAt }
     val sorted = list.sortedWith(by.thenBy { it.title.lowercase() })
     val out = if (asc) sorted else sorted.reversed()
     // One programme's seasons and episodes stay in their own order, where the programme
@@ -6003,6 +6243,43 @@ private fun RowScope.DecadeControl(
                         onDecade(next.joinToString(","))
                     })
             }
+        }
+    }
+}
+
+/** One of the cast, large: their headshot, their name, who they play, and their facts -
+ *  born, where, known for, the start of their biography - asked once per person. */
+@Composable
+private fun CastCard(who: Media.Player, face: String?, srv: Server?) {
+    var info by remember(who.id) { mutableStateOf<org.json.JSONObject?>(null) }
+    LaunchedEffect(who.id) { info = Api.personInfo(who.id, srv) }
+    // sized to stand within the panel on a television's screen: taller, and the panel
+    // scrolled up and down as the remote moved
+    Column(Modifier.padding(start = 20.dp).width(180.dp)) {
+        Box(Modifier.width(180.dp).height(240.dp)
+                .clip(RoundedCornerShape(Skin.round(12.dp)))
+                .background(Color(0x1AFFFFFF)),
+            contentAlignment = Alignment.Center) {
+            if (face != null) Art(face, who.name, Modifier.fillMaxSize(), mark = 0)
+            else Text(who.name.take(1).uppercase(), color = Skin.Dim, fontSize = 48.sp,
+                      fontWeight = FontWeight.Bold)
+        }
+        Text(who.name, color = Skin.Fg, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
+             modifier = Modifier.padding(top = 10.dp))
+        if (who.role.isNotBlank())
+            Text("as " + who.role, color = Skin.Dim, fontSize = 14.sp,
+                 modifier = Modifier.padding(top = 2.dp))
+        info?.let { i ->
+            val born = Route.personBorn(i.optString("born"), i.optString("died"),
+                                        i.optString("place"))
+            if (born.isNotEmpty())
+                Text(born, color = Skin.Dim, fontSize = 12.5.sp, lineHeight = 17.sp,
+                     modifier = Modifier.padding(top = 8.dp))
+            val bio = i.optString("bio")
+            if (bio.isNotEmpty())
+                Text(bio, color = Skin.Fg.copy(alpha = 0.8f), fontSize = 12.5.sp,
+                     lineHeight = 17.sp, maxLines = 5, overflow = TextOverflow.Ellipsis,
+                     modifier = Modifier.padding(top = 6.dp))
         }
     }
 }
@@ -6359,38 +6636,15 @@ private fun goToShelf(ctx: Context, browse: Browse,
 private fun openPerson(ctx: Context, browse: Browse,
                        stack: androidx.compose.runtime.snapshots.SnapshotStateList<Media>,
                        who: Media.Player) {
-    (ctx as AppCompatActivity).lifecycleScope.launch {
-        val theirs = runCatching {
-            Api.withPerson(ctx, who.id, who.name)
-        }.getOrDefault(emptyList())
-        if (theirs.isEmpty()) {
-            android.widget.Toast.makeText(
-                ctx, "Nothing here with " + who.name + " in it",
-                android.widget.Toast.LENGTH_SHORT).show()
-            return@launch
-        }
-        browse.moreWas = Filters(browse.genre, browse.decade, browse.genres,
-                                 browse.decades, browse.collSortKey, browse.collSortAsc)
-        browse.grid = theirs
-        browse.moreAll = theirs
-        browse.genres = theirs.flatMap { it.genres }
-            .groupingBy { it }.eachCount().toList()
-            .sortedBy { it.first.lowercase() }
-        browse.decades = theirs.mapNotNull { one ->
-            (one.year ?: 0).takeIf { it > 0 }?.let { (it / 10 * 10).toString() }
-        }.groupingBy { it }.eachCount().toList().sortedByDescending { it.first }
-        browse.genre = ""; browse.decade = ""
-        browse.collSortKey = "originallyAvailableAt"
-        browse.collSortAsc = false
-        browse.moreRow = who.name
-        browse.personRow = who.name
-        browse.focusKey = theirs.first().ratingKey
-        // the page being read, to come back to. The shelf needs the title's page off
-        // the stack to be seen at all, so back had nothing left to return to and
-        // landed on the front page.
-        browse.personFrom = stack.lastOrNull()
-        stack.clear()
-    }
+    // the ordinary search for their name, the name in the box so the search reads as
+    // what it is, and silently only that person, by their number
+    if (who.name.isBlank()) return
+    if (browse.moreRow != null) browse.leaveMoreRow()
+    browse.searchPerson = who.name.trim() to who.id
+    browse.searchFrom = stack.lastOrNull()?.let { it to browse.tab }
+    stack.clear()
+    if (!Route.searchesFrom(browse.tab)) browse.tab = "home"
+    browse.query = who.name.trim()
 }
 
 /** What is left of the row once the sort and the genre have gone up among the tabs. */
@@ -6576,9 +6830,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     // film sits at the foot of it. The film's own words have to leave room for that,
     // so on a television everything above the shelf comes down a size - which is the
     // difference between a row of posters and a strip of their tops.
-    // A series has no shelf under it - its page is a list of its own episodes - so
-    // there is nothing there to make room for.
-    val roomForShelf = !portrait && !cramped && !m.isFolder
+    // A series or a season has its row of episodes there instead, which needs the same
+    // room: at the larger size its posters were cut off at the bottom of the screen.
+    val roomForShelf = !portrait && !cramped
     //: a television's page: the marks on the Play row
     val tvPage = onTv()
     // By the object, not by equals(): Media is a data class, and the cast, the studios
@@ -6662,7 +6916,13 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     // after watching another twenty minutes it should not still say 7:19
     val cameBack = MainActivity.returned.value
     LaunchedEffect(m.ratingKey, cameBack) {
-        if (m.isFolder) children = runCatching { Api.children(m) }.getOrDefault(emptyList())
+        if (m.isFolder) {
+            children = runCatching { Api.children(m) }.getOrDefault(emptyList())
+            // a series' own page as well: its whole plot and who is in it, for Show more as
+            // a film has (owner, 2026-11-11)
+            if (Route.seriesAsksCast(m.type))
+                Api.ownPage(m)?.takeIf { it.ratingKey == m.ratingKey }?.let { full = it }
+        }
         else runCatching { Api.metadata(m) }.getOrNull()?.let {
             full = it
             // The one chosen last time; failing that a file beside the video, which
@@ -6775,6 +7035,23 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // a show or a season has no codecs and nothing to transcode; saying
                 // "Transcoded" on a folder was simply wrong
                 if (full.subtitle.isNotEmpty()) Chip(full.subtitle)
+                // up a level, and this season's packs: beside what the season is rather
+                // than over its episodes (owner, 2026-11-11)
+                if (full.type == "season") {
+                    val show = full.parentKey?.takeIf { it.isNotEmpty() }
+                        ?: full.grandparentKey?.takeIf { it.isNotEmpty() }
+                    if (show != null)
+                        Pill("↑ Go to show", small = true, narrow = true,
+                             modifier = Modifier.align(Alignment.CenterVertically)) {
+                            (ctx as AppCompatActivity).lifecycleScope.launch {
+                                Api.item(show, full.srv)?.let { onOpen(it) }
+                            }
+                        }
+                    // the tracker's packs of this season, added as a link
+                    if (!BuildConfig.PLAY)
+                        Pill("+ Add pack", small = true, narrow = true,
+                             modifier = Modifier.align(Alignment.CenterVertically)) { addingPack = true }
+                }
             } else {
                 full.height?.let { Chip(if (it >= 1700) "4K" else "${it}p") }
                 full.videoCodec?.let { Chip(it.uppercase()) }
@@ -6958,14 +7235,26 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         ((making?.at ?: 0f) * 100).toInt() + "%, not yet enough to start"
                 chosen == null -> "Subtitles: off"
                 bitmap.any { it.index == chosen.index } ->
-                    "Subtitles: " + short(chosen.shown().ifEmpty { "image" }) +
+                    "Subtitles: " + short(chosen.brief().ifEmpty { "image" }) +
                         (if (cramped) "" else " (burned in)")
                 // shown() leads with the language, which is the thing worth knowing
                 // before pressing play: "Forced" alone never said German
-                else -> "Subtitles: " + short(chosen.shown().ifEmpty { "track" })
+                else -> "Subtitles: " + short(chosen.brief().ifEmpty { "track" })
             }
             FlowRow(Modifier.padding(top = if (cramped) 4.dp else 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              // Two files of the same film carry different subtitles and are out by
+              // different amounts, so which one is playing has to be settled here.
+              // every film and episode: what is here to choose from, and the box for
+              // another - an episode's other releases are on the tracker as a film's are.
+              // First on the row: the subtitles belong to the version (owner, 2026-11-11).
+              if (full.copies.size > 1 ||
+                  ((full.type == "movie" || full.type == "episode") &&
+                   !full.offered && !full.askable && !full.upcoming)) {
+                  val copy = full.copies.firstOrNull { it.mi == full.mi }
+                  Pill("Version: " + (copy?.brief() ?: (full.mi + 1).toString()) +
+                       Route.copiesSaid(full.copies.size)) { versions = true }
+              }
               // the pill says what is on; the panel behind it is the browser's, which
               // is the one arrangement that fits a list of long release names
               Pill(label, modifier = Modifier.focusRequester(subsFocus)) { open = true }
@@ -6982,17 +7271,6 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
               // ground as the watchlist and shuffle marks beside it: two letters on
               // a dark page look like a caption, not something to press.
               Pill("Aa", filled = true) { styling = true }
-              // Two files of the same film carry different subtitles and are out by
-              // different amounts, so which one is playing has to be settled here.
-              // every film and episode: what is here to choose from, and the box for
-              // another - an episode's other releases are on the tracker as a film's are
-              if (full.copies.size > 1 ||
-                  ((full.type == "movie" || full.type == "episode") &&
-                   !full.offered && !full.askable && !full.upcoming)) {
-                  val copy = full.copies.firstOrNull { it.mi == full.mi }
-                  Pill("Version: " + (copy?.brief() ?: (full.mi + 1).toString()) +
-                       Route.copiesSaid(full.copies.size)) { versions = true }
-              }
               // a remux chosen: a 1080p rip of it made beside it, and how far it has got
               full.copies.firstOrNull { it.mi == full.mi }?.let { copy ->
                   if (full.type == "movie") RipPill(full.ratingKey, copy)
@@ -7012,12 +7290,17 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     val marks: @Composable () -> Unit = {
         // each button a popup: Add or Remove as it stands, and Go to
         val favorite = m.ratingKey in Api.favKeys.value
+        // chosen for offline viewing, kept or coming in: set from the watchlist button
+        val offline = Offline.on.value && Offline.copies.containsKey(full.ratingKey)
+        var keeping by remember(full.ratingKey) { mutableStateOf(false) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             MarkControl(
                 listed = listed, favorite = favorite, inCollection = inCollection,
                 onList = { listing = true },
-                onCollection = { picking = true })
+                onCollection = { picking = true },
+                offline = offline)
         }
+        if (keeping) OfflinePanel(full) { keeping = false }
         if (listing) {
             WatchlistPicker(listed, favorite, onClose = { listing = false },
                 onList = { on ->
@@ -7039,7 +7322,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         Api.favorite(full, on)
                     }
                 },
-                onGoTo = { onGoTo("watchlist") })
+                onGoTo = { onGoTo("watchlist") },
+                offline = if (Offline.keepable(full)) offlineLabel(full) else null,
+                offlineOn = offline,
+                onOffline = { listing = false; keeping = true })
         }
         if (picking) {
             ShelfPicker(full, emptyList(), onClose = { picking = false },
@@ -7205,18 +7491,18 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         Spacer(Modifier.width(10.dp))
                     }
                     if (press.isNotEmpty()) {
-                        // coming in: how far and how fast on the first button, read live
-                        // every 3 s; stopping it is its own button beside it
-                        Pill(Route.offerLine(showing, live.offerVersion, live.offerProgress,
-                                             live.offerMbit, live.offerEta, live.offerPlace,
-                                             live.offerWords),
+                        // coming in: one button, as on the web (owner, 2026-11-09) - how far
+                        // and how fast, read live every 3 s, and its Cancel: once to ask,
+                        // again to stop. A release from the tracker finishes and seeds.
+                        val mayCancel = Route.offerMayCancel(live.offerTracker)
+                        Pill(Route.takingButton(mayCancel, armed,
+                                 Route.offerLine(showing, live.offerVersion, live.offerProgress,
+                                                 live.offerMbit, live.offerEta, live.offerPlace,
+                                                 live.offerWords)),
+                             active = armed,
                              modifier = Modifier.focusRequester(actFocus)) {
-                            Api.queueOpen.value = true
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Pill(if (armed) "Press again to cancel" else "✕ Cancel",
-                             active = armed) {
-                            if (!armed) armed = true
+                            if (!mayCancel) Api.queueOpen.value = true
+                            else if (!armed) armed = true
                             else {
                                 armed = false
                                 (ctx as AppCompatActivity).lifecycleScope.launch {
@@ -7451,11 +7737,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         if (!askedAlready) (ctx as AppCompatActivity).lifecycleScope.launch {
                             val (ok, listed) = Api.askFor(full)
                             askedAlready = ok
-                            said = when {
-                                !ok -> "Could not ask for that just now"
-                                listed -> "Asked for, and on your watchlist."
-                                else -> "Requested. It closes by itself once it can be downloaded."
-                            }
+                            // the button saying Requested is the answer: a line under it
+                            // only when the asking failed (owner, 2026-11-11)
+                            said = if (!ok) "Could not ask for that just now" else ""
                             if (ok) Toast.makeText(
                                 ctx,
                                 if (listed) "Added to your watchlist"
@@ -7533,8 +7817,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
         if (!reading) return@LaunchedEffect
         val had = full.cast.size
         var again = ""
-        if (had == 0 && !full.isFolder) {
-            val asked = runCatching { Api.metadata(full) }
+        if (had == 0 && (!full.isFolder || Route.seriesAsksCast(full.type))) {
+            val asked = runCatching {
+                if (full.isFolder) Api.ownPage(full) else Api.metadata(full) }
             again = asked.exceptionOrNull()?.javaClass?.simpleName
                 ?: asked.getOrNull()?.cast?.size?.toString() ?: "nothing"
             asked.getOrNull()?.takeIf { it.cast.isNotEmpty() }?.let { full = it }
@@ -7543,6 +7828,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     if (reading) {
         AlertDialog(
             onDismissRequest = { reading = false },
+            // wide enough for the actor's card beside the words
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            modifier = Modifier.fillMaxWidth(if (full.cast.isNotEmpty() && tvPage) 0.86f else 0.92f),
             containerColor = Skin.Panel,
             title = { Text(full.title, color = Skin.Fg, fontSize = 18.sp) },
             text = {
@@ -7554,8 +7842,22 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 val readAt = remember { FocusRequester() }
                 val readScope = rememberCoroutineScope()
                 var textEnd by remember { mutableStateOf(0f) }
-                LaunchedEffect(Unit) { runCatching { readAt.requestFocus() } }
-                Column(Modifier.verticalScroll(readScroll)) {
+                // on a television the first of the cast, their picture beside: up reads the
+                // words (owner, 2026-11-11); elsewhere, and with nobody listed, the words
+                val firstCast = remember { FocusRequester() }
+                LaunchedEffect(Unit) {
+                    runCatching {
+                        if (tvPage && full.cast.isNotEmpty()) firstCast.requestFocus()
+                        else readAt.requestFocus()
+                    }
+                }
+                // the one the remote is on, large on the right with their facts: the web
+                // says who they play on a mouse-over, a television had nothing (owner,
+                // 2026-11-11). The first of them until one is chosen.
+                var castOn by remember(full.ratingKey, full.cast.size) {
+                    mutableStateOf(full.cast.firstOrNull()) }
+                Row {
+                Column(Modifier.weight(1f).verticalScroll(readScroll)) {
                     Column(Modifier.focusRequester(readAt).focusable()
                         .onSizeChanged { textEnd = it.height.toFloat() }
                         .onPreviewKeyEvent { e ->
@@ -7610,6 +7912,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                 // a row of faces is a cast
                                 var onIt by remember(who.id) { mutableStateOf(false) }
                                 val ring = onIt && focusShows()
+                                if (onIt) castOn = who
                                 Row(verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(Skin.round(999.dp)))
@@ -7619,6 +7922,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                         .border(if (ring) 2.dp else 0.dp,
                                                 if (ring) Color.White else Color.Transparent,
                                                 RoundedCornerShape(Skin.round(999.dp)))
+                                        .then(if (who === full.cast.first())
+                                                  Modifier.focusRequester(firstCast) else Modifier)
                                         .onFocusChanged { onIt = it.isFocused || it.hasFocus }
                                         .focusable()
                                         .clickable {
@@ -7650,6 +7955,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                             }
                         }
                     }
+                }
+                // a television only: a phone has no room beside the words, and no remote
+                // to say which of them is chosen
+                if (tvPage) castOn?.let { CastCard(it, Api.faceUrl(it, full.srv, 300), full.srv) }
                 }
             },
             confirmButton = { Pill("Close") { reading = false } })
@@ -7686,8 +7995,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                  lineHeight = if (cramped) 18.sp else if (roomForShelf) 17.sp else 21.sp,
                  // Three lines on a television. The rest of the plot is worth less
                  // than seeing what else is like it, which is what the room went to.
+                 // two over a television's row of seasons or episodes: three made the
+                 // page taller than the screen, and moving down scrolled it
                  maxLines = if (portrait) 8 else if (cramped) 3
-                            else if (roomForShelf) 3 else 6,
+                            else if (roomForShelf) (if (full.isFolder) 2 else 3) else 6,
                  overflow = TextOverflow.Ellipsis,
                  // close under the facts it belongs to, rather than adrift below them
                  modifier = Modifier.padding(top = if (cramped) 6.dp else 6.dp))
@@ -7696,7 +8007,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             // with a cast, even where the plot happened to fit.
             if (full.summary.length > 180 || full.cast.isNotEmpty() || full.studios.isNotEmpty()) {
                 Pill("Show more", small = true, narrow = true,
-                     modifier = Modifier.padding(top = 4.dp)) { reading = true }
+                     modifier = Modifier.padding(top = if (roomForShelf && full.isFolder) 0.dp
+                                                       else 4.dp)) { reading = true }
             }
         }
     }
@@ -7835,8 +8147,15 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     } else if (versions) {
         VersionPanel(
             media = full,
+            here = Offline.copies[full.ratingKey]?.takeIf { Offline.on.value },
+            hereChosen = Offline.playHere[full.ratingKey] == true,
+            onHere = {
+                versions = false
+                Offline.setPlayHere(ctx, full.ratingKey, true)
+            },
             onPick = { which ->
                 versions = false
+                Offline.setPlayHere(ctx, full.ratingKey, false)
                 // another file, another set of tracks: what was chosen on the last one
                 // is a number that means something else here
                 val was = full
@@ -7947,9 +8266,18 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                          // less air at the top and bottom where a shelf has to fit
                          // under everything else: the last line of names sat in it
                          vertical = if (portrait) 18.dp else if (cramped) 8.dp
+                                    // a series or season on a television: set below
+                                    else if (roomForShelf && full.isFolder) 0.dp
                                     else if (roomForShelf) 12.dp else 22.dp)
+                // ... the side's margin above, and below one line of name: a name's first
+                // line is measured, its second runs into that room (owner, 2026-11-11)
+                .then(if (roomForShelf && full.isFolder)
+                          Modifier.padding(top = 28.dp, bottom = Route.ROW_BELOW_DP.dp)
+                      else Modifier)
         ) {
-            Row { Pill("Back") { onBack() } }
+            // on a phone held upright its own row; on a television and a phone on its side
+            // left of the poster, in its row, where it costs no height
+            if (portrait) Row { Pill("Back") { onBack() } }
             if (portrait) {
                 val saga = rememberSaga(full)
                 Box(Modifier.padding(top = 14.dp).width(120.dp).height(180.dp)
@@ -7964,6 +8292,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 when_(); buttons(); marksAndSubs(); facts(); blurb()
             } else {
                 Row(Modifier.padding(top = if (cramped || roomForShelf) 4.dp else 12.dp)) {
+                    // none on a television: the remote's Back is the way out of every page
+                    if (!tvPage)
+                        Pill("Back", small = true, narrow = true,
+                             modifier = Modifier.padding(end = if (cramped) 10.dp else 14.dp)) { onBack() }
                     val saga = rememberSaga(full)
                     val posterW = if (cramped) 110.dp else if (roomForShelf) 150.dp else 180.dp
                     Column {
@@ -7997,7 +8329,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 }
             }
             if (children.isNotEmpty()) {
-                FlowRow(Modifier.padding(top = 10.dp),
+                // close under the poster on a television: 10 points made the page a few
+                // pixels taller than the screen, and reaching an episode scrolled it
+                FlowRow(Modifier.padding(top = if (roomForShelf) 2.dp else 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionTitle(
                         if (!full.isFolder) "Extras"
@@ -8013,21 +8347,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         Pill("Mark all watched") { marking = true }
                         Pill("Mark all unwatched") { marking = false }
                     }
-                    // Up a level. A season is arrived at from an episode now, so the
-                    // programme it belongs to is a page that was never opened - and
-                    // Back goes where you came from, which is the film or the shelf,
-                    // not the other seasons.
-                    if (full.type == "season") {
-                        val show = full.parentKey?.takeIf { it.isNotEmpty() }
-                            ?: full.grandparentKey?.takeIf { it.isNotEmpty() }
-                        if (show != null) Pill("↑ Go to show") {
-                            (ctx as AppCompatActivity).lifecycleScope.launch {
-                                Api.item(show, full.srv)?.let { onOpen(it) }
-                            }
-                        }
-                        // the tracker's packs of this season, added as a link
-                        if (!BuildConfig.PLAY) Pill("+ Add pack") { addingPack = true }
-                    }
+                    // Go to show and Add pack stand by the season's facts, above
                 }
                 if (addingPack) {
                     SeasonPacks(full, onAdded = {
@@ -8137,9 +8457,24 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         standing = null
                     }
                 }
+                // On a television the posters fill what is left of the screen under
+                // everything above them: the margin below, one line of name, and the rest
+                // is the row. A fixed size left a hand's width empty under a season and
+                // overran the screen under a series (owner, 2026-11-11).
+                val dens = androidx.compose.ui.platform.LocalDensity.current.density
+                val screenDp = LocalConfiguration.current.screenHeightDp
+                var rowTopDp by remember(full.ratingKey) { mutableStateOf(0) }
+                val rowPoster = if (roomForShelf)
+                    Route.rowPosterWidth(screenDp, rowTopDp, shelfPoster()) else shelfPoster()
                 LazyRow(
                     state = episodes,
-                    modifier = Modifier.focusGroup()
+                    modifier = Modifier
+                        .onGloballyPositioned {
+                            // where it starts on the page, not where a scroll has put it:
+                            // measured scrolled, it grew, and the page scrolled further
+                            rowTopDp = ((it.positionInRoot().y + scroll.value) / dens).toInt()
+                        }
+                        .focusGroup()
                         .focusProperties {
                             // At the last season or episode there is nothing to the
                             // right, and the search leaves the row - upwards, onto
@@ -8157,9 +8492,13 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         val say = when {
                             // its own name where it has one - a series made of a pack
                             // names its seasons after their folders
+                            // named like the programme itself - a pack's folder - it
+                            // says which season, as every other does
                             c.type == "season" ->
                                 (if (c.index != null && (c.title.isEmpty() ||
-                                     c.title == "Season " + c.index)) "Season " + c.index
+                                     c.title == "Season " + c.index ||
+                                     c.title.equals(full.title, ignoreCase = true)))
+                                     "Season " + c.index
                                  else c.title) +
                                     (if (c.upcoming) "  ·  " + c.airs else "")
                             // an extra has a name, not a number
@@ -8173,7 +8512,12 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         }
                         // an episode still to come has no page and nothing to play -
                         // unless the tracker has it, early or late: then its releases
-                        Poster(c, width = shelfPoster(), instead = say,
+                        Poster(c, width = rowPoster,
+                               instead = say,
+                               captionLines = if (c.type == "season") 1 else 2,
+                               // the page's bottom margin is measured for one line of name;
+                               // a second runs into it (owner, 2026-11-11)
+                               spill = roomForShelf,
                                modifier = if (c.ratingKey == standing)
                                               Modifier.focusRequester(standOn)
                                           else Modifier) {
@@ -8189,7 +8533,10 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                         }
                     }
                 }
-                Spacer(Modifier.height(16.dp))
+                // none under a television's series or season row: the page's bottom
+                // margin is the room under it, and this made the page 22 px taller than
+                // the screen, so it scrolled as the remote moved
+                if (!(roomForShelf && full.isFolder)) Spacer(Modifier.height(16.dp))
             }
             // More like this: films carrying the same genres as this one. A programme
             // is left out - its page is a list of its own episodes already.
@@ -8246,7 +8593,18 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     // was still filling in, lower than it settles, and the row stayed small
                     wordsEnd = shelfFrom / dpx
                 })
-                Column(Modifier.onGloballyPositioned { shelfTall = it.size.height.toFloat() }) {
+                // On a television the row's place and size are measured after its first
+                // frame, and it slid and dropped into them: kept out of sight until what
+                // places it has held still a moment, it appears where it stays
+                var placed by remember(m.ratingKey) { mutableStateOf(!tvPage) }
+                LaunchedEffect(m.ratingKey, Route.settleMark(footGap, likeWide.toFloat())) {
+                    if (!tvPage) return@LaunchedEffect
+                    placed = false
+                    kotlinx.coroutines.delay(Route.SHELF_SETTLE_MS)
+                    placed = shelfFrom > 0f && shelfTall > 0f
+                }
+                Column(Modifier.onGloballyPositioned { shelfTall = it.size.height.toFloat() }
+                           .alpha(if (placed) 1f else 0f)) {
                 FlowRow(Modifier.fillMaxWidth()
                             .padding(start = 7.dp, end = 14.dp, bottom = 2.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -8474,7 +8832,11 @@ fun playIntent(ctx: Context, m: Media, at: Long, subIndex: Int? = null,
     // and downmix, and some of them answer 5.1 by playing nothing at all. Said
     // outright when somebody has chosen in the player, worked out otherwise.
     val ears = ears0
-    val (url, direct) = Api.playbackUrl(
+    // kept on this device and no server to play from, or the test on: the copy here
+    val kept = Offline.playable(m)
+    val (url, direct) = if (kept != null)
+        android.net.Uri.fromFile(java.io.File(kept.file)).toString() to true
+    else Api.playbackUrl(
         m, positionSec, burn, audioIndex, height, mbit,
         audio = if (ears) "aac" else "passthrough", channels = if (ears) 2 else 0)
     val (castUrl, castDirect) = Api.castUrl(m, positionSec, picture)
@@ -8510,7 +8872,15 @@ fun playIntent(ctx: Context, m: Media, at: Long, subIndex: Int? = null,
         // a change of soundtrack, of quality, of coding - and it was never written,
         // so each of those quietly turned the subtitles off.
         subIndex?.let { putExtra("subIndex", it) }
-        if (drawable && picture != null) {
+        if (kept != null) {
+            // every subtitle the copy holds is inside it, found by its place among them
+            subIndex?.let { idx ->
+                kept.subs.indexOf(idx).takeIf { it >= 0 }?.let { at ->
+                    putExtra("nativeSub", idx)
+                    putExtra("nativeSubAt", at)
+                }
+            }
+        } else if (drawable && picture != null) {
             // which track the device is to draw, and where it sits among the text
             // tracks of the file - the player counts them in the order the container
             // holds them, which is the order the library lists them in
@@ -8533,7 +8903,7 @@ fun playIntent(ctx: Context, m: Media, at: Long, subIndex: Int? = null,
             m.videoCodec?.uppercase(),
             m.audioLine().takeIf { it.isNotEmpty() },
         ).joinToString("  \u00b7  "))
-        if (textSub != null) {
+        if (textSub != null && kept == null) {
             // a direct-played file keeps the original timeline, an encode starts at zero
             putExtra("subsUrl", Api.subsUrl(m, textSub, if (direct) 0 else positionSec))
             // and its name, so the player can say which subtitle is on rather than

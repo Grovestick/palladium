@@ -1,5 +1,476 @@
 [
   {
+    "version": "0.20.21",
+    "when": "2026-11-13",
+    "title": "Screen gate and first search",
+    "items": [
+      "Subtitles: a film playing has its own gate, which copies, downloads and scans never hold",
+      "Search: the first search waits a moment for the catalogue's series"
+    ]
+  },
+  {
+    "version": "0.20.20",
+    "when": "2026-11-13",
+    "title": "Search spelt-out titles",
+    "items": [
+      "Search: a title with marks between its letters ranks as the word it spells, first under that word"
+    ]
+  },
+  {
+    "version": "0.20.19",
+    "when": "2026-11-13",
+    "title": "Panel log rows",
+    "items": [
+      "Download log: the panel asks for its newest finished rows only"
+    ]
+  },
+  {
+    "version": "0.20.18",
+    "when": "2026-11-13",
+    "title": "Subtitles for a playing film",
+    "items": [
+      "Subtitles: a playing film's track is read even while a copy or download runs, and a stretch read earlier is shown at once"
+    ]
+  },
+  {
+    "version": "0.20.17",
+    "when": "2026-11-13",
+    "title": "One qBittorrent session, Empty files stay out, More like this in place, Cache folder",
+    "items": [
+      "qBittorrent: the server keeps one session instead of opening one per call, which pushed other logins out",
+      "Library: a cancelled download's empty file is passed by when new too, instead of going in and out every scan",
+      "App: on a television the More like this row appears in its place instead of sliding into it",
+      "Backup server: its own part copies, subtitles and keys file are its own; a part copy left by a title off both lists is cleared",
+      "Settings: Copies is now Backup server"
+    ]
+  },
+  {
+    "version": "0.20.16",
+    "when": "2026-11-13",
+    "title": "Tracker session renews itself, Pack remove, Transcode log, Offline copy in Versions, Decoder failure falls back, Drop once seeded, Cache list log, Offline total",
+    "items": [
+      "Tracker: when the indexer's own re-login fails, its settings are saved again so it signs in clean",
+      "Packs: a film another pack here carries too no longer keeps a pack from being removed",
+      "Log: a transcode that ended early says when the encoder was ahead, waiting on the player",
+      "App: with offline on, a title's Versions list its offline copy; chosen there, it plays from this device",
+      "App: a decoder failing partway through a stream starts again as a transcode instead of ending playback",
+      "Packs: films the owner takes out before the pack is seeded to 1.5 wait, and go once it is",
+      "Log: the cache list's gains and losses between asks, each with its reason",
+      "App: Kept on this device says the gigabytes here, what is coming and the room left"
+    ]
+  },
+  {
+    "version": "0.20.15",
+    "when": "2026-11-13",
+    "title": "Watchlist opens on Added",
+    "items": [
+      "Watchlist: Added is the first and default order, by when a title was put on the list",
+      "Watchlist: Watched or added is now Watched, last watched only"
+    ]
+  },
+  {
+    "version": "0.20.14",
+    "when": "2026-11-13",
+    "title": "Cache answers at once",
+    "items": [
+      "The cache machine answers watchlist news and the Watchlist blink at once while the main server sleeps: it waited four seconds on the main server for each one."
+    ]
+  },
+  {
+    "version": "0.20.13",
+    "when": "2026-11-12",
+    "title": "Whole watchlist on the cache, Pack films on the cache",
+    "items": [
+      "The cache keeps a whole watchlist: cut at forty titles, the title at the cut was deleted each time one was marked above it and copied back later; its size cap is the only limit.",
+      "A film downloaded whole on the cache machine no longer keeps its Download ribbon on the main server: the cache read the pack's key as no film it held."
+    ]
+  },
+  {
+    "version": "0.20.12",
+    "when": "2026-11-12",
+    "title": "Take films out of a pack",
+    "items": [
+      "The owner can take films out of a pack once it is seeded to 1.5: switched off, marked so nothing asks for them again, and deleted; never a file another torrent seeds."
+    ]
+  },
+  {
+    "version": "0.20.11",
+    "when": "2026-11-12",
+    "title": "DTS and versions",
+    "items": [
+      "DTS sound no longer makes a film a full encode: the picture goes through as it is and only the sound is converted.",
+      "The owner can choose which version of a title plays for everybody who has not chosen one; kept by file name on both servers."
+    ]
+  },
+  {
+    "version": "0.20.10",
+    "when": "2026-11-12",
+    "title": "DTS picture setting",
+    "items": [
+      "An owner setting to pass a DTS film's picture through beside the converted sound, for testing; encoded as before unless set."
+    ]
+  },
+  {
+    "version": "0.20.9",
+    "when": "2026-11-12",
+    "title": "Cache copies after a restart",
+    "items": [
+      "The cache machine waits while it cannot tell where its packs keep their files: read as in no pack, it copied films its packs already held whole, after every restart."
+    ]
+  },
+  {
+    "version": "0.20.8",
+    "when": "2026-11-12",
+    "title": "Offline confirm and watchlist",
+    "items": [
+      "Removing or replacing an offline copy asks first, naming the title, quality and size.",
+      "Settings, Offline: Watchlist offline makes every film and episode on the watchlist offline, with how many and the most it can come to before it starts."
+    ]
+  },
+  {
+    "version": "0.20.7",
+    "when": "2026-11-12",
+    "title": "Offline on the watchlist button, HDR stays 10-bit",
+    "items": [
+      "Offline is chosen from the watchlist button's menu, not a button of its own; the watchlist button turns green for a title chosen for offline viewing.",
+      "A 10-bit HDR film encoded to HEVC stays 10-bit: in 8 bits the sky came out in bands on the television."
+    ]
+  },
+  {
+    "version": "0.20.6",
+    "when": "2026-11-12",
+    "title": "Offline pause",
+    "items": [
+      "The offline notification names the quality: title, 720p, how far.",
+      "Pause stops the download until Resume, in the notification or on the title's Offline button; paused, the notification can be swept away."
+    ]
+  },
+  {
+    "version": "0.20.5",
+    "when": "2026-11-12",
+    "title": "Offline qualities",
+    "items": [
+      "An offline copy is offered only in qualities up to the file's own: no 1080p for a 720p file; the server refuses one above it."
+    ]
+  },
+  {
+    "version": "0.20.4",
+    "when": "2026-11-12",
+    "title": "Offline test removed",
+    "items": [
+      "Offline test is gone from Settings: the Offline filter's Mixed does the same."
+    ]
+  },
+  {
+    "version": "0.20.3",
+    "when": "2026-11-12",
+    "title": "Offline from away",
+    "items": [
+      "Offline copies and watchlist notifications work with an invitation key from away: the door refused them before the server's own check.",
+      "A guest's Start feedback reaches the server; it was refused at the same door."
+    ]
+  },
+  {
+    "version": "0.20.2",
+    "when": "2026-11-12",
+    "title": "Settings tabs, Offline filter in Settings",
+    "items": [
+      "Settings in the app stands under tabs: Playback, Look, Notifications, Offline, Server, App; the last one open opens again, with the remote on it.",
+      "The Settings tabs stay at the top while the page under them scrolls.",
+      "The Offline filter is a setting in the Offline tab: Off, Only offline or Mixed, on Home, Films, TV, Watchlist and Collections.",
+      "Offline sync: On, Wi-Fi only or Off; Wi-Fi only stops a copy coming in off Wi-Fi and goes on where it stopped."
+    ]
+  },
+  {
+    "version": "0.20.1",
+    "when": "2026-11-12",
+    "title": "Offline notification, Offline filter, Offline pause, Notifications, Offline HEVC",
+    "items": [
+      "The offline notification names the title coming in, how far it has got, and how many more wait.",
+      "Films and TV have an Offline filter with offline viewing on: only the titles chosen to be kept on the device.",
+      "The offline notification has Pause: fetching stops and goes on by itself an hour later, or at once with Resume.",
+      "The Offline filter has two settings: only offline titles, kept or coming in, or everything with kept titles in colour and the rest grey.",
+      "Watchlist notifications: a setting of each viewer's, off unless turned on; each Watchlist blink is sent to the app as a notification.",
+      "A cinema release is said as the name with cam or telesync after it, a real release by its name alone, one come in as here.",
+      "The phone or tablet looks every fifteen minutes with the app closed; a press opens the title. A television never posts them.",
+      "Every offline copy is HEVC; Original makes a picture in another codec HEVC at its own size.",
+      "The offline quality choice says the most a copy can be; copies come out near half of it."
+    ]
+  },
+  {
+    "version": "0.20.0",
+    "when": "2026-11-12",
+    "title": "Offline viewing",
+    "items": [
+      "Offline viewing: a setting, off unless turned on; on, a film or an episode can be kept on the device in 720p, 1080p or original quality.",
+      "The server makes the copy in the background on the graphics card, sized for what the device decodes: HEVC, HDR10 kept where the screen shows it, mapped to SDR where it does not.",
+      "The device fetches the copy to internal storage or an SD card, chosen in Settings, and resumes a cut-off download; the server deletes its copy once the device has it.",
+      "With no server answering, the shelves show their last answers: kept titles in colour and playing from the device, the rest grey.",
+      "Offline test in Settings shows the same with the server still answering.",
+      "Where playing got to with no server answering is sent once one answers."
+    ]
+  },
+  {
+    "version": "0.19.497",
+    "when": "2026-11-12",
+    "title": "Download watch",
+    "items": [
+      "Downloads: Palladium reads qBittorrent's warnings and stalls, tries a recheck or restart once, waits while the disk is behind, and starts qBittorrent if it is not running"
+    ]
+  },
+  {
+    "version": "0.19.496",
+    "when": "2026-11-12",
+    "title": "Encode log",
+    "items": [
+      "Every encode writes one log line: what the player asked, the viewer's and server's ceilings, the file's rate, what was chosen and the ffmpeg settings"
+    ]
+  },
+  {
+    "version": "0.19.495",
+    "when": "2026-11-12",
+    "title": "Download gate",
+    "items": [
+      "A file rechecked or with qBittorrent's sum gone wrong is no longer offered as a version before it is whole"
+    ]
+  },
+  {
+    "version": "0.19.494",
+    "when": "2026-11-12",
+    "title": "One line of room under the row",
+    "items": [
+      "A television's series and season pages leave one line of room under their row; a second line of a name runs into it, and the posters fill the rest"
+    ]
+  },
+  {
+    "version": "0.19.493",
+    "when": "2026-11-11",
+    "title": "Show more without a scroll on the web, Actor text under the names, No gap under the series row",
+    "items": [
+      "On the web, Show more grows to what it holds instead of scrolling; the actor card keeps one size",
+      "On the web, the actor's facts and whole biography stand under the row of names, Close below them; the portrait stays on the right",
+      "A television's series and season pages no longer have a gap under their row, which made them scroll"
+    ]
+  },
+  {
+    "version": "0.19.492",
+    "when": "2026-11-11",
+    "title": "Row measured from the page",
+    "items": [
+      "A television's series page measures its row from the page, not from where a scroll put it, so it no longer grows past the screen"
+    ]
+  },
+  {
+    "version": "0.19.491",
+    "when": "2026-11-11",
+    "title": "Right subtitles for renumbered episodes, Show more holds still on the web",
+    "items": [
+      "A subtitle found by a release's own episode number is kept only when it names this episode",
+      "When no subtitle fits a title being watched, one is written from its sound",
+      "On the web, Show more with an actor keeps one height, so it no longer jumps; Close is its own size again"
+    ]
+  },
+  {
+    "version": "0.19.490",
+    "when": "2026-11-11",
+    "title": "Actor portrait on the web",
+    "items": [
+      "Show more on the web opens with the first actor large beside the words; the mouse changes who"
+    ]
+  },
+  {
+    "version": "0.19.489",
+    "when": "2026-11-11",
+    "title": "Row fills the page",
+    "items": [
+      "A television's series and season pages size their row of posters to fill the screen under it"
+    ]
+  },
+  {
+    "version": "0.19.488",
+    "when": "2026-11-11",
+    "title": "Even margins on series pages, Names spill into the margin",
+    "items": [
+      "A television's series and season pages have the same margin top, bottom and sides",
+      "On a television's series page the row is measured for one line of name; a second runs into the margin under it"
+    ]
+  },
+  {
+    "version": "0.19.487",
+    "when": "2026-11-11",
+    "title": "Series page holds still",
+    "items": [
+      "A series or season page on a television no longer scrolls when the focus reaches Show more"
+    ]
+  },
+  {
+    "version": "0.19.486",
+    "when": "2026-11-11",
+    "title": "Actor card fits the TV",
+    "items": [
+      "On a television the actor card in Show more fits the panel, so it no longer scrolls; on a phone there is no large portrait"
+    ]
+  },
+  {
+    "version": "0.19.485",
+    "when": "2026-11-11",
+    "title": "Request without the extra line",
+    "items": [
+      "After Request, the button saying Requested is the answer; the line under it is gone, in the app and on the web"
+    ]
+  },
+  {
+    "version": "0.19.484",
+    "when": "2026-11-11",
+    "title": "Actor card and tidier pages",
+    "items": [
+      "Show more: the actor the remote is on, large on the right, with who they play and their facts",
+      "Watchlist and collection are two separate buttons; Version comes first on its row; the subtitle button says the language",
+      "A season's Go to show and Add pack stand beside its episode count"
+    ]
+  },
+  {
+    "version": "0.19.483",
+    "when": "2026-11-11",
+    "title": "Series page fits, seasons named",
+    "items": [
+      "A television's series page fits on the screen and does not scroll when moving down to its seasons",
+      "A season named like its programme is labelled Season and its number"
+    ]
+  },
+  {
+    "version": "0.19.482",
+    "when": "2026-11-11",
+    "title": "Cast card and no Back on TV",
+    "items": [
+      "The actor the remote is on in Show more is shown large, with who they play",
+      "No Back button on a television's pages: the remote's Back does it"
+    ]
+  },
+  {
+    "version": "0.19.481",
+    "when": "2026-11-11",
+    "title": "Back left of the poster",
+    "items": [
+      "On a television the page's Back sits left of the poster, and a series page no longer moves when the focus reaches its episodes"
+    ]
+  },
+  {
+    "version": "0.19.480",
+    "when": "2026-11-11",
+    "title": "Series page fits the screen",
+    "items": [
+      "A series or season page on a television fits its row of episodes on one screen; Back sits beside the title"
+    ]
+  },
+  {
+    "version": "0.19.479",
+    "when": "2026-11-11",
+    "title": "Actors per episode",
+    "items": [
+      "An episode's page lists who is in that episode, its guests included"
+    ]
+  },
+  {
+    "version": "0.19.478",
+    "when": "2026-11-11",
+    "title": "Right stills on every file",
+    "items": [
+      "The pictures over the timeline are kept by the file's own id: a file given an old number showed another series' stills"
+    ]
+  },
+  {
+    "version": "0.19.477",
+    "when": "2026-11-11",
+    "title": "Episode row holds still",
+    "items": [
+      "Scrolling a row of episodes no longer moves the posters when an episode's name wraps to two lines"
+    ]
+  },
+  {
+    "version": "0.19.476",
+    "when": "2026-11-11",
+    "title": "Watchlist blinks by quality, Notifications handler, One set of watchlist messages",
+    "items": [
+      "A watchlisted film blinks the Watchlist when a release this viewer sees arrives: a cam only for those who show cams, then again for the real release",
+      "A film that came in no longer goes first on Continue watching",
+      "The screen notice, watchlist messages and Watchlist blinks gathered in one handler",
+      "Watchlist messages and blinks are kept by the main server; a copy finishing is no longer news",
+      "A setting turns watchlist messages on or off, in the app and on the web"
+    ]
+  },
+  {
+    "version": "0.19.475",
+    "when": "2026-11-11",
+    "title": "Categories on searched films",
+    "items": [
+      "A film found by a search right after a restart has its categories and More like this"
+    ]
+  },
+  {
+    "version": "0.19.474",
+    "when": "2026-11-11",
+    "title": "Cast on episode pages",
+    "items": [
+      "An episode's page has Show more with its series' actors, as films and series have"
+    ]
+  },
+  {
+    "version": "0.19.473",
+    "when": "2026-11-11",
+    "title": "Search handler, Exact match always shown",
+    "items": [
+      "Search and its hidden rules gathered in one handler",
+      "Back from an actor's search returns to the title it was pressed on",
+      "A search whose words are a title shows it even when the upcoming or Request filter would hide it"
+    ]
+  },
+  {
+    "version": "0.19.472",
+    "when": "2026-11-11",
+    "title": "Actor search",
+    "items": [
+      "Pressing an actor runs the ordinary search for their name, shown in the search box, narrowed to that one person"
+    ]
+  },
+  {
+    "version": "0.19.471",
+    "when": "2026-11-11",
+    "title": "Search asks from the server you are on, Actor page without the search's names",
+    "items": [
+      "Only the server the app or web page is on asks the tracker in a search; the other answers from its index",
+      "An actor pressed from a title's cast no longer shows the search's row of actor names above their titles"
+    ]
+  },
+  {
+    "version": "0.19.470",
+    "when": "2026-11-11",
+    "title": "Cam setting, series cast, search on the copy",
+    "items": [
+      "Settings: Cam and telesync - new films only out filmed in a cinema can be shown on the shelves, with a grey Download band; hidden by default",
+      "A series' page has Show more with the whole plot and who is in it, as a film's",
+      "The copy takes the main server's tracker index, so a search there offers the same series and films when the main server is off",
+      "Download lists name the pack on the web as well: Top 1K, Top 5K"
+    ]
+  },
+  {
+    "version": "0.19.469",
+    "when": "2026-11-09",
+    "title": "Pack names in download lists",
+    "items": [
+      "A pack's copy in a download list says which pack - Top 1K, Top 5K - instead of In a pack here"
+    ]
+  },
+  {
+    "version": "0.19.468",
+    "when": "2026-11-09",
+    "title": "One download button",
+    "items": [
+      "Web: a film's page has one download button - Download from the pack or the tracker, its progress, its Cancel and arriving - instead of two",
+      "App: a pack film coming in has one button that is its own Cancel, instead of a progress button and a Cancel beside it"
+    ]
+  },
+  {
     "version": "0.19.467",
     "when": "2026-11-09",
     "title": "Shuffle ignores outside watching",

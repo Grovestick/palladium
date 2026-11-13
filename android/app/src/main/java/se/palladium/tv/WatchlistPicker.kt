@@ -14,7 +14,11 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun WatchlistPicker(listed: Boolean, favorite: Boolean, onClose: () -> Unit,
                     onList: (Boolean) -> Unit, onFavorite: (Boolean) -> Unit,
-                    onGoTo: () -> Unit) {
+                    onGoTo: () -> Unit,
+                    /* what the Offline button says, with offline viewing on and a title
+                       that can be kept; null leaves it out */
+                    offline: String? = null, offlineOn: Boolean = false,
+                    onOffline: () -> Unit = {}) {
     val on = listed || favorite
     AlertDialog(
         onDismissRequest = onClose,
@@ -27,6 +31,10 @@ fun WatchlistPicker(listed: Boolean, favorite: Boolean, onClose: () -> Unit,
                     Pill(if (on) "Remove from watchlist" else "Add to watchlist",
                          primary = !on) { onList(!on) }
                     Pill(if (favorite) "Not a favorite" else "\u2665 Favorite") { onFavorite(!favorite) }
+                }
+                // kept on this device: its quality, how far, or let go - in its own panel
+                offline?.let { said ->
+                    Pill(said, active = offlineOn) { onOffline() }
                 }
             }
         },

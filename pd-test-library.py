@@ -2391,7 +2391,89 @@ if _g260 and _old260 and _tok260:
     _srv260 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
     check("260 opening the Watchlist clears what blinks, and a guest may say so",
           'GUEST_MAY_POST = ("/applog", "/log", "/trace", "/feedback", "/watchlist/seen",' in _srv260
-          and 'mine["watchBlink"] = []' in _srv260)
+          and 'mine["watchBlink"] = []' in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_notify.py"), encoding="utf-8").read()
+          and "if pd_notify.seen(self.viewer_settings(stored)):" in _srv260)
+
+# ---- an episode's own page: its series' cast, for Show more
+_con261 = api.lib.db()
+try:
+    _r261 = _con261.execute(
+        "SELECT e.id, e.item_id FROM episode e WHERE EXISTS (SELECT 1 FROM credit c "
+        "WHERE c.item_id = e.item_id) LIMIT 1").fetchone()
+    if _r261:
+        _ep261 = api.metadata_for(_con261, str(_r261["id"]), brief=False) or {}
+        _br261 = api.metadata_for(_con261, str(_r261["id"]), brief=True) or {}
+        check("261 an episode's page carries its series' cast, a card does not",
+              len(_ep261.get("Role") or []) > 0 and "Role" not in _br261,
+              "%d roles" % len(_ep261.get("Role") or []))
+    else:
+        check("261 a series with a cast to test with", False)
+finally:
+    _con261.close()
+
+# ---- a watchlisted film: blinks at each quality step the viewer sees; never on Continue watching
+import pd_streaming as _ps262
+_s262 = m.read_settings() or {}
+_toks262 = [t for t, u in (_s262.get("users") or {}).items() if isinstance(u, dict)][:2]
+check("262 two guests to try it on", len(_toks262) == 2)
+if len(_toks262) == 2:
+    _cam262, _good262 = _toks262
+    for _t262, _say262 in ((_cam262, "show"), (_good262, "hide")):
+        _u262 = _s262["users"][_t262]
+        _u262["camReleases"] = _say262
+        _u262["watchlist"] = ["rtwatch262"] + [k for k in _u262.get("watchlist") or [] if str(k).startswith("rt") is False]
+        _u262["watchSources"] = {"rtwatch262": ""}
+        _u262["deckArrivals"] = [{"key": "x", "at": int(time.time())}]
+        for _k262 in ("watchBlink", "watchNews", "watchFetched"):
+            _u262.pop(_k262, None)
+    m.write_settings(_s262, merge=False)
+    _was262 = (_ps262.source_of, _ps262.one_of, _ps262.ask_tracker_slowly)
+    _now262 = {"how": "cam"}
+    _ps262.source_of = lambda k: _now262["how"] if k == "rtwatch262" else _was262[0](k)
+    _ps262.one_of = lambda k: {"title": "A Watched Film", "released": "2001-01-01"} if k == "rtwatch262" else _was262[1](k)
+    _ps262.ask_tracker_slowly = lambda rows: None
+    _blinks262 = {_cam262: 0, _good262: 0}
+    try:
+        for _step262 in ("cam", "cam", "fetch"):
+            _now262["how"] = _step262
+            m.watch_news_pass()
+            _st262 = m.read_settings() or {}
+            for _t262 in _toks262:
+                _me262 = _st262["users"][_t262]
+                if "rtwatch262" in (_me262.get("watchBlink") or []):
+                    _blinks262[_t262] += 1
+                    _me262["watchBlink"] = []       # opened the Watchlist
+            m.write_settings(_st262, merge=False)
+        _end262 = m.read_settings() or {}
+    finally:
+        _ps262.source_of, _ps262.one_of, _ps262.ask_tracker_slowly = _was262
+    check("262 shows cams: two blinks, the cam and the real release",
+          _blinks262[_cam262] == 2, "%d blinks" % _blinks262[_cam262])
+    check("262 hides cams: one blink, when the real release comes", _blinks262[_good262] == 1, "%d blinks" % _blinks262[_good262])
+    check("262 nothing goes to Continue watching any more",
+          all("deckArrivals" not in _end262["users"][t] for t in _toks262))
+
+# ---- subtitles: none fits a watched title, one is written from its sound; once
+import pd_ai_subs as _ai263
+_was263 = (_ai263.ready, _ai263.ask, _ai263.beside)
+_asked263 = []
+_ai263.ready = lambda: True
+_ai263.ask = lambda video, language, **k: _asked263.append((video, language, k.get("key")))
+_ai263.beside = lambda video, language: os.path.join(root, "no-such-file.srt")
+try:
+    _h263 = m.Handler.__new__(m.Handler)
+    _one263 = _h263.write_from_sound("X:/a film.mkv", "en", "k1")
+    _ai263.beside = lambda video, language: os.path.abspath(__file__)      # one is there
+    _two263 = _h263.write_from_sound("X:/a film.mkv", "en", "k1")
+finally:
+    _ai263.ready, _ai263.ask, _ai263.beside = _was263
+_src263 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+check("263 no subtitle fits a watched title: one is written from its sound, never twice",
+      _one263 and not _two263 and _asked263 == [("X:/a film.mkv", "en", "k1")]
+      and "if fetch and not login_failed:" in _src263
+      and "self.write_from_sound(video, language, key)" in _src263)
+check("263 an answer asked by the release's own number is kept only when it names this episode",
+      "if not r.get(\"shifted\") or about_this_episode(r)]" in _src263)
 
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):

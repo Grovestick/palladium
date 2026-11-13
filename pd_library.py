@@ -736,6 +736,13 @@ def ffprobe_beside(ffmpeg):
 SAMPLES = 16
 
 
+def walk_past(path, empty, known, hollow=None):
+    """Whether a scan passes a file by as no film: empty, found so before or new - the
+    space a cancelled download left. Only the known ones were passed by: a new one was
+    indexed, the next scan took it out, the one after put it back (15 files, 2026-11-13)."""
+    return (path in empty or path not in known) and (hollow or hollow_file)(path)
+
+
 def hollow_file(path, look=65536):
     """Whether that file is an empty space with a name on it.
 
@@ -1444,6 +1451,7 @@ class Library:
         con = self.db()
         try:
             empty = {r["path"] for r in con.execute("SELECT path FROM file WHERE hollow=1")}
+            known = {r["path"] for r in con.execute("SELECT path FROM file")}
         finally:
             con.close()
         for path, st in self.walk([f for f, _ in folders]):
@@ -1455,8 +1463,8 @@ class Library:
                     continue                # not here yet: it comes in when it is whole
             except Exception:
                 pass
-            if path in empty and hollow_file(path):
-                continue                    # still empty: out of the library
+            if walk_past(path, empty, known):
+                continue                    # empty: out of the library, and not back in
             found.append((self.kind_for(path, folders) or "mixed", path, st))
         self.scan_state.update(total=len(found), phase="indexing")
         con = self.db()
@@ -2117,6 +2125,92 @@ class Library:
             return [dict(r) for r in con.execute(
                 "SELECT person, name, role, profile FROM credit WHERE item_id=? "
                 "AND name <> '' ORDER BY ord", (item_id,)).fetchall()]
+        finally:
+            con.close()
+
+    #: an actor's facts are read again after this long
+    PERSON_KEPT = 30 * 86400
+
+    def person_info(self, person):
+        """One actor's facts, as the catalogue has them: born, died, where, what they are
+        known for and the start of their biography. Kept on disk a month; {} when the
+        catalogue cannot be asked."""
+        import json as _json
+        person = int(person or 0)
+        if person <= 0:
+            return {}
+        kept = os.path.join(self.root, "cache", "people", "%d.json" % person)
+        try:
+            if time.time() - os.path.getmtime(kept) < self.PERSON_KEPT:
+                with open(kept, encoding="utf-8") as f:
+                    return _json.load(f)
+        except (OSError, ValueError):
+            pass
+        if not (self.config().get("tmdb_key") or "").strip():
+            return {}
+        try:
+            said = self.tmdb("/person/%d" % person) or {}
+        except Exception:
+            return {}
+        bio = " ".join(str(said.get("biography") or "").split())
+        out = {"name": str(said.get("name") or ""),
+               "born": str(said.get("birthday") or ""),
+               "died": str(said.get("deathday") or ""),
+               "place": str(said.get("place_of_birth") or ""),
+               "known": str(said.get("known_for_department") or ""),
+               "bio": bio[:900]}
+        try:
+            os.makedirs(os.path.dirname(kept), exist_ok=True)
+            with open(kept, "w", encoding="utf-8") as f:
+                _json.dump(out, f)
+        except OSError:
+            pass
+        return out
+
+    #: how many of an episode's people are kept: its regulars and its guests together
+    EPISODE_CAST_KEPT = 20
+
+    def episode_credits(self, episode_id, fetch=True):
+        """Who is in one episode - the regulars and that episode's guests, as the catalogue
+        lists them for it - fetched the first time and kept under the episode's own id, in
+        the same table as a film's cast. Nobody listed is kept as a single empty row, so it
+        is not asked again; an answer that failed is not kept, and is asked next time."""
+        con = self.db()
+        try:
+            rows = con.execute(
+                "SELECT person, name, role, profile FROM credit WHERE item_id=? "
+                "ORDER BY ord", (episode_id,)).fetchall()
+            if rows or not fetch:
+                return [dict(r) for r in rows if r["name"]]
+            ep = con.execute(
+                "SELECT e.season, e.number, i.tmdb_id FROM episode e JOIN item i "
+                "ON i.id = e.item_id WHERE e.id=?", (episode_id,)).fetchone()
+            if not ep or not ep["tmdb_id"] or not ep["season"] or not ep["number"]:
+                return []
+            if not (self.config().get("tmdb_key") or "").strip():
+                return []
+            try:
+                said = self.tmdb("/tv/%d/season/%d/episode/%d/credits"
+                                 % (int(ep["tmdb_id"]), int(ep["season"]), int(ep["number"])))
+            except Exception:
+                return []
+            people, seen = [], set()
+            for p in list(said.get("cast") or []) + list(said.get("guest_stars") or []):
+                if (p.get("name") or "").strip() and p.get("id") not in seen:
+                    seen.add(p.get("id"))
+                    people.append(p)
+            people = people[:self.EPISODE_CAST_KEPT]
+            con.execute("DELETE FROM credit WHERE item_id=?", (episode_id,))
+            con.executemany(
+                "INSERT INTO credit (item_id, ord, person, name, role, profile) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(episode_id, n, int(p.get("id") or 0), str(p.get("name") or ""),
+                  str(p.get("character") or ""), str(p.get("profile_path") or ""))
+                 for n, p in enumerate(people)] or [(episode_id, 0, 0, "", "", "")])
+            con.commit()
+            return [dict(r) for r in con.execute(
+                "SELECT person, name, role, profile FROM credit WHERE item_id=? "
+                "AND name <> '' ORDER BY ord", (episode_id,)).fetchall()]
         finally:
             con.close()
 

@@ -52,7 +52,8 @@ def version_tag(row):
     if row.get("disk") or row.get("have"):
         return "On disk"
     if row.get("pack"):
-        return "In a pack here"
+        # which pack, shortly: Top 5K
+        return row.get("packShort") or "In a pack here"
     if row.get("box"):
         return "Season pack" if row.get("seasonPack") else "Box set"
     return "Tracker"

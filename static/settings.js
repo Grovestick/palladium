@@ -46,7 +46,7 @@
   const PAGES = {
     playback: [["quality", "Quality"], ["playing", "Playing"], ["receiver", "Receiver"]],
     machines: [["server", "This server"], ["reach", "Reach"], ["addins", "Add-ins"],
-               ["copies", "Copies"]],
+               ["copies", "Backup server"]],
     workers: [["runs", "Automatic runs"], ["disks", "Disks"]],
   };
   //: which of its tab's pages a section is on, by its title; not named: the first page
@@ -7905,6 +7905,50 @@
       ? "Series that no pack, no tracker release and no streaming service carries are left out."
       : "Series that nothing carries are shown with Request, beside those you can add or stream.";
     box.appendChild(n2);
+    // and films only had so far as a cam or a telesync: hidden as it comes
+    const cams = data.camReleases === "show" ? "show" : "hide";
+    const row3 = document.createElement("div");
+    row3.className = "addrow subrow";
+    row3.innerHTML = "<span class='sublabel'>Cam and telesync</span>";
+    [["hide", "Hide"], ["show", "Show"]].forEach(([val, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (cams === val ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/settings", { camReleases: val });
+        render();
+      };
+      row3.appendChild(b);
+    });
+    box.appendChild(row3);
+    const n3 = document.createElement("div");
+    n3.className = "note";
+    n3.textContent = cams === "hide"
+      ? "New films that are only out filmed in a cinema stay off the shelves until a real release is."
+      : "New films that are only out filmed in a cinema are on the shelves, with a grey Download band.";
+    box.appendChild(n3);
+    // and whether the watchlist's news is said on screen: on as it comes
+    const told = data.watchMessages === "off" ? "off" : "on";
+    const row4 = document.createElement("div");
+    row4.className = "addrow subrow";
+    row4.innerHTML = "<span class='sublabel'>Watchlist messages</span>";
+    [["on", "On"], ["off", "Off"]].forEach(([val, text]) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost kind" + (told === val ? " on" : "");
+      b.textContent = text;
+      b.onclick = async () => {
+        await post("/settings", { watchMessages: val });
+        render();
+      };
+      row4.appendChild(b);
+    });
+    box.appendChild(row4);
+    const n4 = document.createElement("div");
+    n4.className = "note";
+    n4.textContent = told === "on"
+      ? "A film on your watchlist that can be downloaded, or has come in, is said on screen."
+      : "Nothing is said on screen; the Watchlist still blinks when something on it has news.";
+    box.appendChild(n4);
     main.appendChild(box);
   }
 

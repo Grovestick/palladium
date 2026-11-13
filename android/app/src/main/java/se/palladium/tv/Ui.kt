@@ -67,13 +67,24 @@ object Slide {
     val along: androidx.compose.animation.core.AnimationSpec<Float> =
         androidx.compose.animation.core.spring(stiffness = Route.slideStiffness(Route.START_SLIDE_ALONG_MS))
 
+    /** A direction key held down: its repeats come faster than a slide settles, and each
+     *  one restarted it - a long list crawled and lurched (owner, 2026-11-11). Set from
+     *  the activity's keys; while it is on every step is a quick straight move. */
+    @Volatile var held = false
+    private val quick: androidx.compose.animation.core.AnimationSpec<Float> =
+        androidx.compose.animation.core.tween(Route.HELD_SLIDE_MS,
+                                              easing = androidx.compose.animation.core.LinearEasing)
+
+    /** [spring] for a press, the quick move while a key is held. */
+    fun now(spring: androidx.compose.animation.core.AnimationSpec<Float>) = if (held) quick else spring
+
     /** [base]'s places - on a television Compose's own, the focus at a fixed point of
      *  the screen - reached on [spring]. Scrolling as little as possible instead moved
      *  Home's rows to other places and left posters cut at the edges. */
     fun keeping(base: androidx.compose.foundation.gestures.BringIntoViewSpec,
                 spring: androidx.compose.animation.core.AnimationSpec<Float>) =
         object : androidx.compose.foundation.gestures.BringIntoViewSpec {
-            override val scrollAnimationSpec = spring
+            override val scrollAnimationSpec get() = now(spring)
             override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) =
                 base.calculateScrollDistance(offset, size, containerSize)
         }
@@ -83,6 +94,8 @@ object Slide {
  *  the shelves or the picture - and not again on the other. */
 object Arrivals {
     private var since = 0L
+    /** the app, for the notifications posted from what is read here */
+    @Volatile var app: android.content.Context? = null
     private val said = HashSet<String>()
 
     /** What has come in since the last look, each said once. The first look only reads
@@ -92,8 +105,10 @@ object Arrivals {
         runCatching { WatchBlink.look() }
         // a watchlist's film that has got a source - said on opening the app as well,
         // where it happened while nobody was looking: the server keeps it until then
-        val watched = Api.watchNews().filter { it.first.isNotEmpty() }
-            .map { (title, how) -> Route.watchNewsSaid(title, how) }
+        val news = Api.watchNewsAll().filter { it.title.isNotEmpty() }
+        // and the blinks queued for this app, as notifications where they are on
+        app?.let { ctx -> runCatching { Notes.check(ctx) } }
+        val watched = news.map { Route.watchNewsSaid(it.title, it.how) }
         val got = Api.downloadsReady(since) ?: return watched
         val first = since == 0L
         since = maxOf(since, got.first - 120)
@@ -258,6 +273,18 @@ object Skin {
  */
 private var loader: coil.ImageLoader? = null
 
+/** Built again on the next poster: offline viewing changes how pictures are kept. */
+fun forgetImageLoader() { loader = null }
+
+/** A picture from the library's server kept under its path, not its address: the
+ *  address changes between home and away, and offline the kept one is what there is. */
+fun artKey(url: String): String? {
+    if (!Offline.on.value) return null
+    val base = Api.base.trimEnd('/')
+    if (base.isEmpty() || !url.startsWith(base)) return null
+    return "main" + url.removePrefix(base).replace(Regex("[?&](t|again)=[^&]*"), "")
+}
+
 @Composable
 private fun imageLoader(): coil.ImageLoader {
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -272,6 +299,8 @@ private fun imageLoader(): coil.ImageLoader {
                 .build()
         }
         .crossfade(false)                 // two dropped frames per poster, on this box
+        // with offline viewing on, a kept picture is shown without asking the server again
+        .respectCacheHeaders(!Offline.on.value)
         // a name the network will not resolve falls back on its last known address
         .okHttpClient {
             okhttp3.OkHttpClient.Builder().dns(KnownHosts)
@@ -400,7 +429,9 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
         ground: androidx.compose.ui.graphics.Brush? = Skin.Empty,
         /* how much of the picture shows: painted faint, not faded as a layer - a faded
            layer is the whole screen drawn twice, once aside and once blended back */
-        alpha: Float = 1f) {
+        alpha: Float = 1f,
+        /* without colour: offline, a title not kept on this device */
+        grey: Boolean = false) {
     // the grey under the picture only until the picture is there: under a poster that
     // has loaded it is a layer more for the television's graphics to fill each frame
     var shown by remember(url) { mutableStateOf(false) }
@@ -427,9 +458,17 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
                         else url + (if (url.contains("?")) "&" else "?") + "again=" + tries
             // Crop fills a poster-shaped slot; Fit is for the backdrop, where cropping
             // a tall poster into a squarish box pushes its head and feet off the screen
-            AsyncImage(model = asked, contentDescription = title, imageLoader = imageLoader(),
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            val kept = artKey(url)
+            val model: Any = if (kept == null) asked else
+                coil.request.ImageRequest.Builder(ctx).data(asked)
+                    .diskCacheKey(kept).memoryCacheKey(kept).build()
+            AsyncImage(model = model, contentDescription = title, imageLoader = imageLoader(),
                        contentScale = scale, modifier = Modifier.fillMaxSize(), alpha = alpha,
-                       colorFilter = tint?.let { androidx.compose.ui.graphics.ColorFilter.tint(it) },
+                       colorFilter = tint?.let { androidx.compose.ui.graphics.ColorFilter.tint(it) }
+                           ?: if (grey) androidx.compose.ui.graphics.ColorFilter.colorMatrix(
+                               androidx.compose.ui.graphics.ColorMatrix().apply { setToSaturation(0f) })
+                           else null,
                        // a picture Fit leaves room beside keeps its ground: that is
                        // where the grey shows
                        onSuccess = { if (scale != ContentScale.Fit) shown = true },
@@ -486,6 +525,12 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
            onPicture: String? = null,
            /** left out of the collection's shuffle: 1 part of it, 2 all of it - red */
            shuffleOff: Int = 0,
+           /** the lines held under the picture: two for a row of episodes, whose names
+            *  wrap; one for a row of seasons */
+           captionLines: Int = 2,
+           /** the row is measured for one line, and a second spills into the room under it
+            *  rather than making the row taller: a series page sized to its screen */
+           spill: Boolean = false,
            onClick: () -> Unit) {
     // Tied to the film, because a lazy grid reuses these.
     //
@@ -637,7 +682,9 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 m.title,
                 Modifier.fillMaxSize().then(if (m.upcoming || m.away) Modifier.alpha(
                     if (m.fetchable) 0.75f else 0.38f) else Modifier),
-                mark = width / 3)
+                mark = width / 3,
+                // offline viewing: colour for what is kept on this device, grey for the rest
+                grey = Offline.view() && !Offline.has(m))
             if (shuffleOff == 2)
                 Box(Modifier.fillMaxSize().background(Color(0x5CD64A40)))
             // A band across the corner for anything that is not here and cannot be
@@ -692,7 +739,9 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // on SVT Play: it streams from there, which beats asking or downloading
             else if (Route.streamBand(m.askable, m.addable, m.svtId))
                 CornerBand("STREAM", bandW, Color(0xFF1E9E6A))
-            else if (m.askable && m.onTracker) CornerBand("DOWNLOAD", bandW)
+            // grey where all there is was filmed in a cinema: a cam or a telesync
+            else if (m.askable && m.onTracker) CornerBand("DOWNLOAD", bandW,
+                                                          Route.downloadBand(m.cam))
             // not asked of the tracker yet: neither word is known
             else if (m.askable && m.checking && !m.asked) CornerBand("CHECKING", bandW, Skin.Dim)
             else if (m.askable) CornerBand(if (m.asked) "ASKED" else "REQUEST", bandW,
@@ -842,9 +891,19 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                  fontSize = if (width < 110) 11.sp else 12.5.sp,
                  // the theme's 24sp line left a blank line's gap inside a wrapped name
                  lineHeight = if (width < 110) 13.sp else 15.sp,
-                 fontWeight = FontWeight.Medium, maxLines = 2,
+                 // two lines held whether used or not: a name that wrapped made its
+                 // row taller as it scrolled in, and every poster in it moved
+                 fontWeight = FontWeight.Medium,
+                 minLines = if (spill) 1 else captionLines, maxLines = captionLines,
                  overflow = TextOverflow.Ellipsis,
-                 modifier = Modifier.padding(top = 5.dp))
+                 modifier = if (spill)
+                     // one line of height in the layout; a second is drawn below it,
+                     // over the page's bottom margin, and moves nothing
+                     Modifier.padding(top = 5.dp)
+                         .height(with(androidx.compose.ui.platform.LocalDensity.current) {
+                             (if (width < 110) 13.sp else 15.sp).toDp() })
+                         .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                 else Modifier.padding(top = 5.dp))
         }
     }
 }

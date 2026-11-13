@@ -19,6 +19,12 @@
     <!-- the app updates itself: it downloads the APK and asks the system to install
          it, which is a permission of its own on Android 8 and later -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- offline copies coming in with the app in the background, and the line saying so -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- the fifteen-minute look for notifications, kept across a restart of the device -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- a TV has no touchscreen; without this the Play Store and the launcher
          would treat the app as phone-only -->
@@ -91,5 +97,9 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|uiMode"
             android:theme="@style/Theme.Palladium.Player" />
+        <service android:name=".NotesJob" android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <service android:name=".OfflineService" android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

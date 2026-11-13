@@ -97,6 +97,15 @@ data class SubTrack(
                              own).joinToString("  \u00b7  ")
             .ifEmpty { label.ifEmpty { "Track" } }
     }
+
+    /** For the button on a title's page: the language, and forced or SDH where it is one -
+     *  the release's name is in the panel behind it (owner, 2026-11-11). */
+    fun brief(): String {
+        val name = languageName(language)
+        if (name.isEmpty()) return shown(release = false)
+        val kind = listOfNotNull(if (forced) "forced" else null, if (sdh) "SDH" else null)
+        return (listOf(name) + kind).joinToString("  \u00b7  ")
+    }
 }
 
 /** "eng" as English, and the dozen others a release actually carries. */
@@ -364,6 +373,8 @@ data class Media(
     var svtId: String = ""
     /** Something on the tracker to fetch for it, so asking can be skipped. */
     var onTracker: Boolean = false
+    // and all the tracker has of it was filmed in a cinema: its Download band is grey
+    var cam: Boolean = false
     //: not asked of the tracker yet: neither Download nor Request is known
     var checking: Boolean = false
     /** A place written on this machine for something it holds no file for. */

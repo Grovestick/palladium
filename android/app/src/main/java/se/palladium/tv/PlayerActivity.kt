@@ -738,7 +738,9 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val steppable = intent.getBooleanExtra("casual", false) ||
             intent.getStringExtra("key").orEmpty().startsWith("e") ||
             queueAhead().isNotEmpty() || queueBehind().isNotEmpty()
-        val player = PlayerView(this).also {
+        val player = (if (Api.recordable())
+                          layoutInflater.inflate(R.layout.player_texture, null) as PlayerView
+                      else PlayerView(this)).also {
             it.keepScreenOn = true
             it.setShowSubtitleButton(true)      // turn them off again without leaving
             // an episode has the ones either side of it, and something put on
@@ -3406,13 +3408,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 // has not released yet, which fails at once - hence seven attempts in
                 // a minute. Let go of this player, wait a moment, and come back as a
                 // transcode, which is the format most likely to find a free decoder.
-                val codecTrouble = !onCastNow() && error.errorCode in setOf(
-                    androidx.media3.common.PlaybackException
-                        .ERROR_CODE_DECODING_RESOURCES_RECLAIMED,
-                    androidx.media3.common.PlaybackException
-                        .ERROR_CODE_DECODER_INIT_FAILED,
-                    androidx.media3.common.PlaybackException
-                        .ERROR_CODE_DECODER_QUERY_FAILED)
+                val codecTrouble = !onCastNow() && Route.codecTrouble(error.errorCode)
                 if (codecTrouble && retried < 2) {
                     retried++
                     val at = whereItIs() / 1000

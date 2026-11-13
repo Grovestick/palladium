@@ -264,6 +264,28 @@ def jackett_cookie():
     return ""
 
 
+def jackett_resave(where):
+    """Save the indexer's TorrentLeech settings again, as its Okay button does: the old
+    cookies are dropped and it signs in afresh. Its own re-login kept them and found no
+    login form (Jackett 0.24.3053, 2026-11-12). Needs an indexer without an admin password."""
+    import http.cookiejar
+    base = str(where or "").rstrip("/")
+    if not base:
+        return False
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    url = base + "/api/v2.0/indexers/torrentleech/config"
+    try:
+        opener.open(base + "/UI/Dashboard", timeout=15).read()
+        with opener.open(url, timeout=15) as got:
+            body = got.read()
+        ask = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with opener.open(ask, timeout=120) as said:
+            return 200 <= said.status < 300
+    except Exception:
+        return False
+
+
 def given_cookie():
     """The session the owner last handed over: the way in where there is no indexer."""
     try:
@@ -344,6 +366,11 @@ def keep_warm():
         fresh = jackett_cookie()
         if fresh and fresh not in tried:
             body = page(fresh)
+            if body is None:
+                return False
+        # its re-login failed on the stale cookies: its settings saved again sign in clean
+        if signed_out(body) and jackett_resave(jackett()[0]):
+            body = page(jackett_cookie())
             if body is None:
                 return False
     gone = signed_out(body)
@@ -443,6 +470,23 @@ def quietly(work):
         finally:
             _HOW.background = was
     return run
+
+
+def asked_as(said):
+    """What the asking screen says of this server for one search: "here", the server it is
+    on, asks the tracker through its own indexer; "elsewhere", the other server, answers
+    from its index. Anything else - the web page's own server, an older app - this
+    machine's rule: the main server asks, a copy does not."""
+    _HOW.said = said if said in ("here", "elsewhere") else ""
+
+
+def asks():
+    """Whether this request may ask the tracker: as the screen said, else the machine's rule."""
+    said = getattr(_HOW, "said", "")
+    if said:
+        return said == "here"
+    with LOCK:
+        return bool(STATE.get("asks"))
 
 
 def room(kind):
@@ -647,6 +691,38 @@ def refresh(force=False):
     if fresh:
         write()
     return fresh
+
+
+def rows_since(since, most=KEEP):
+    """The index's rows added after `since`, newest first: what the copy takes, so both
+    machines know every release this one found - its searches as well as the feeds. The
+    copy reads the feeds only, and a series nobody uploaded this week was nowhere on it."""
+    read()
+    with LOCK:
+        got = [dict(r) for r in STATE["rows"].values() if float(r.get("at") or 0) > since]
+    got.sort(key=lambda r: -float(r.get("at") or 0))
+    return got[:most]
+
+
+def take_rows(rows):
+    """The main server's rows into this index: the new ones added, a known one's seeders
+    brought up to date. How many changed."""
+    read()
+    changed = 0
+    with LOCK:
+        for r in rows or []:
+            if not isinstance(r, dict) or not r.get("id"):
+                continue
+            had = STATE["rows"].get(str(r["id"]))
+            if had is None:
+                STATE["rows"][str(r["id"])] = dict(r)
+                changed += 1
+            elif r.get("seeds") is not None and r.get("seeds") != had.get("seeds"):
+                had["seeds"] = r.get("seeds")
+                changed += 1
+    if changed:
+        write()
+    return changed
 
 
 def read():

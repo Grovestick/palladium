@@ -18,6 +18,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, ".typecheck", "node_modules", "pyright", "index.js")
+if not os.path.exists(TOOL):
+    # run in the staging copy: the source folder beside it has the tool
+    TOOL = os.path.join(os.path.dirname(HERE), "palladium", ".typecheck", "node_modules", "pyright", "index.js")
 
 
 def main():

@@ -2402,10 +2402,16 @@ def drop_show_pack(name, info_hash):
     _put_choice(name, choice)
 
 
-def carries_others(pack, plain):
+def carries_others(pack, plain, packs=()):
     """Whether a pack holds anything but this programme's episodes: one pack for many titles
-    is not one programme's to take away."""
-    return any(f.get("kind") != "episode" or _plain(f.get("name") or f.get("title")) != plain
+    is not one programme's to take away. A title another of `packs` carries as well does
+    not hold it: a documentary in both a 720p and a 1080p pack kept the 720p one."""
+    def which(f):
+        return str(f.get("tmdb") or "") or _plain(f.get("name") or f.get("title"))
+    elsewhere = {which(f) for p in packs if p.get("hash") != pack.get("hash")
+                 for f in p.get("films") or []}
+    return any((f.get("kind") != "episode" or _plain(f.get("name") or f.get("title")) != plain)
+               and which(f) not in elsewhere
                for f in pack.get("films") or [])
 
 
@@ -2424,7 +2430,7 @@ def unlink_pack(name, info_hash):
         return {"ok": True, "kept": "an episode is still downloading from it - it stays linked"}
     if info_hash in others:
         return {"ok": True, "kept": "another series uses it - it stays linked"}
-    if any(p.get("hash") == info_hash and carries_others(p, plain) for p in data["packs"]):
+    if any(p.get("hash") == info_hash and carries_others(p, plain, data["packs"]) for p in data["packs"]):
         return {"ok": True, "kept": "it carries other titles too - it stays linked"}
     remove_pack(info_hash)
     return {"ok": True}
@@ -2834,15 +2840,18 @@ def _read_unfinished_now():
         for t in rows:
             h = str(t.get("hash") or "")
             live.add(h)
-            # never took in a byte: added over files already here to seed them, and
-            # waiting for or in its check. Those files are whole; it is not writing them.
-            # Nor while it is being checked: a recheck reads the files, and their progress
-            # climbing from nought took every film of a pack out of the library
-            fetched = (int(t.get("downloaded") or 0) > 0
-                       and not str(t.get("state") or "").startswith("checking"))
+            state = str(t.get("state") or "")
             mark = (round(float(t.get("progress") or 0), 4), int(t.get("amount_left") or 0),
-                    int(t.get("size") or 0), str(t.get("state") or "")[:4])
+                    int(t.get("size") or 0), state[:4])
             was = FILE_LISTS.get(h)
+            # being checked: its files' progress climbs from nought as they are read, which
+            # took every film of a pack out of the library. The list read before the check
+            # stands until it is over; a 43% file read as whole while it was rechecked
+            checking = state.startswith("checking")
+            before = was is not None and was[0][3] != "chec"
+            # never took in a byte: added over files already here to seed them. Those files
+            # are whole; it is not writing them. In a check seen first, nothing is held back
+            fetched = int(t.get("downloaded") or 0) > 0 and (not checking or before)
             # finished, with a file still short of whole in the list kept: read again.
             # qBittorrent says the torrent is done a moment before its file is, and the
             # torrent then never changes - the film read as unfinished for good, and a
@@ -2850,7 +2859,11 @@ def _read_unfinished_now():
             short = was is not None and mark[0] >= 1 and any(
                 float(f.get("progress") or 0) < 1 and int(f.get("priority") or 0) > 0
                 for f in was[1])
-            if was is None or was[0] != mark or short:
+            # qBittorrent's own sum gone wrong - more done than it holds, or done while still
+            # downloading: the totals stop moving while the file does, so its list is read
+            # every time (a remux at 43% offered as a version, 2026-11-12)
+            odd = mark[1] < 0 or (mark[0] >= 1 and state.endswith("DL"))
+            if not (checking and before) and (was is None or was[0] != mark or short or odd):
                 FILE_LISTS[h] = (mark, qb.files(h))
             root = str(t.get("save_path") or "")
             for n, f in enumerate(FILE_LISTS[h][1]):
@@ -2989,6 +3002,12 @@ def art_of(key, kind):
 
 # ---------------------------------------------------------------- qBittorrent
 
+#: qBittorrent's session cookie by address, shared by every QB: 5.3 opens a session for
+#: each request without one, trusted address or not, and keeps 15 - the panel's login was
+#: pushed out within seconds by this server's own calls
+QB_COOKIES = {}
+
+
 class QB:
     """qBittorrent's Web API. A request from an address it trusts needs no login."""
 
@@ -2996,7 +3015,13 @@ class QB:
         self.base = (cfg.get("url") or "http://127.0.0.1:8080").rstrip("/")
         self.user = cfg.get("user") or ""
         self.password = cfg.get("password") or ""
-        self.cookie = ""
+        self.cookie = QB_COOKIES.get(self.base, "")
+
+    def keep_cookie(self, said):
+        """The session a Set-Cookie answer opened, kept for every call after it."""
+        cookie = str(said or "").split(";", 1)[0].strip()
+        if "=" in cookie:
+            self.cookie = QB_COOKIES[self.base] = cookie
 
     def _call(self, path, fields=None, upload=None, timeout=30, again=True):
         headers = {"Referer": self.base, "Origin": self.base}
@@ -3022,11 +3047,21 @@ class QB:
                                      method="POST" if data is not None else "GET")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as answer:
-                return answer.read()
+                got = answer.read()
+                self.keep_cookie(answer.headers.get("Set-Cookie"))
+            QB_SILENT.update(since=0.0, count=0, why="")
+            return got
         except urllib.error.HTTPError as e:
             if e.code in (401, 403) and again and self.user:
                 self.login()
                 return self._call(path, fields, upload, timeout, again=False)
+            raise
+        except OSError as e:
+            # no answer at all - refused, timed out: the watch finds out why
+            if not QB_SILENT["since"]:
+                QB_SILENT["since"] = time.time()
+            QB_SILENT["count"] += 1
+            QB_SILENT["why"] = str(getattr(e, "reason", e))[:120]
             raise
 
     def login(self):
@@ -3042,7 +3077,7 @@ class QB:
         # builds sent SID= and "Ok.". The cookie is what says the login took.
         if "=" not in cookie:
             raise RuntimeError("qBittorrent refused the login")
-        self.cookie = cookie
+        self.keep_cookie(cookie)
 
     def version(self):
         return self._call("/api/v2/app/version", timeout=6).decode("utf-8", "replace").strip()
@@ -4116,15 +4151,52 @@ def _pack_places():
     return places
 
 
-def pack_place(name, size=None):
+def pack_short(name):
+    """A pack's name as a list says it: a film pack by how many it holds - Top 1K, Top 5K -
+    and any other by the title before its season, year or quality."""
+    name = str(name or "")
+    m = re.match(r"(?i)top[ ._-]+(\d+)[ ._-]+movies", name)
+    if m:
+        n = int(m.group(1))
+        return "Top %dK" % (n // 1000) if n >= 1000 and n % 1000 == 0 else "Top %d" % n
+    words = []
+    for w in re.split(r"[ ._]+", re.sub(r"[\[(].*$", "", name)):
+        if not w or w == "-" or re.match(r"(?i)^(s\d+|season|\d{4}|\d{3,4}p|complete)", w):
+            break
+        words.append(w)
+    return " ".join(words)[:24].strip() or "Pack"
+
+
+class PlacesUnknown(Exception):
+    """Where this machine's packs keep their files cannot be said now."""
+
+
+def places_unknown():
+    """Why where this copy server's packs keep their files cannot be said now, or "".
+    Not known read as "in no pack" before, and a film a pack here held whole was copied
+    beside it again - 13 files, 24.7 GB, each in the first seconds after the server
+    restarted (2026-11-12): the copier waits on this instead."""
+    if not STATE["root"] or not STATE["lib"]:
+        return "the torrents are not read yet"
+    try:
+        _pack_places()
+    except Exception as e:
+        return "qBittorrent has not said where its packs keep their files: %s" % str(e)[:80]
+    return ""
+
+
+def pack_place(name, size=None, follower=False):
     """Where a pack on this copy server keeps the file of this name and size, or "": the one
-    place a copy of it belongs, seeded and played as one file and never cleared for room."""
-    if not _following():
+    place a copy of it belongs, seeded and played as one file and never cleared for room.
+    follower: asked by the copier, which runs only on a server that follows a house - so
+    it is not asked again, and a settings read that failed is not "follows nobody".
+    Raises PlacesUnknown when the packs cannot be read: that is not "in no pack"."""
+    if not follower and not _following():
         return ""
     try:
         row = _pack_places().get(os.path.basename(str(name or "")).lower())
-    except Exception:
-        return ""
+    except Exception as e:
+        raise PlacesUnknown(str(e)[:120])
     return row["path"] if row and (not size or row["size"] == int(size)) else ""
 
 
@@ -4288,6 +4360,140 @@ def let_go(info_hash, index, same_on_copy, allowed=(), remove=os.remove):
             pass
         return {"ok": False, "why": "could not remove it: %s" % e, "path": path}
     return {"ok": True, "why": "", "path": path, "mark": mark, "size": film["size"]}
+
+
+#: the ratio a pack is seeded to before the owner may take films out of it
+SEEDED_ENOUGH = 1.5
+
+
+def drop_films(info_hash, indexes, remove=os.remove):
+    """Films the owner takes out of a pack here: each switched off, its download marked off
+    so no rule asks for it again, and its file deleted - only once the pack is seeded to
+    SEEDED_ENOUGH, and never a file another torrent seeds. [{index, ok, why, path}]."""
+    data = load()
+    pack = next((p for p in data["packs"] if p.get("hash") == info_hash), None)
+    if not pack:
+        return [{"index": i, "ok": False, "why": "no such pack here"} for i in indexes]
+    try:
+        qb = QB(data["config"])
+        t = qb.info(info_hash)
+        files = {int(f.get("index", n)): f for n, f in enumerate(qb.files(info_hash))}
+        others = [o for o in qb.all_info() if o.get("hash") != info_hash]
+    except Exception as e:
+        return [{"index": i, "ok": False, "why": "qBittorrent did not answer: %s" % e} for i in indexes]
+    if t is None:
+        return [{"index": i, "ok": False, "why": "not in qBittorrent here"} for i in indexes]
+    ratio = float(t.get("ratio") or 0)
+    if ratio < SEEDED_ENOUGH:
+        return [{"index": i, "ok": False, "why": "seeded to %.2f, not %.1f yet" % (ratio, SEEDED_ENOUGH)}
+                for i in indexes]
+    save_path = str(t.get("save_path") or "")
+    films = {int(f.get("index", -1)): f for f in pack.get("films") or []}
+    out = []
+    for i in [int(x) for x in indexes]:
+        f = files.get(i)
+        if f is None:
+            out.append({"index": i, "ok": False, "why": "no such file in the pack"})
+            continue
+        name = str(f.get("name") or "")
+        path = os.path.join(save_path, name.replace("/", os.sep))
+        # one file can be seeded by two torrents: taken out of one, it is still the other's
+        shared = ""
+        for o in others:
+            base = os.path.normcase(os.path.normpath(str(o.get("save_path") or ""))) + os.sep
+            if not os.path.normcase(path).startswith(base):
+                continue
+            try:
+                if any(os.path.normcase(os.path.join(str(o.get("save_path") or ""),
+                                                     str(g.get("name") or "").replace("/", os.sep)))
+                       == os.path.normcase(path) for g in qb.files(o["hash"])):
+                    shared = str(o.get("name") or o.get("hash") or "another torrent")
+            except Exception:
+                shared = "a torrent that did not answer"
+            if shared:
+                break
+        if shared:
+            out.append({"index": i, "ok": False, "why": "another torrent seeds it: %s" % shared,
+                        "path": path})
+            continue
+        if os.path.exists(path):
+            why = safe_to_remove(path, save_path, name, films.get(i) or {"size": f.get("size")},
+                                 [save_path])
+            if why:
+                out.append({"index": i, "ok": False, "why": why, "path": path})
+                continue
+        try:
+            qb.priority(info_hash, [i], 0)
+        except Exception as e:
+            out.append({"index": i, "ok": False, "why": "could not switch it off: %s" % e})
+            continue
+        with LOCK:
+            for d in data["downloads"]:
+                if d.get("hash") == info_hash and int(d.get("index", -1)) == i:
+                    d["off"] = True
+            save()
+        STATE["owned"] = None
+        try:
+            if os.path.exists(path):
+                remove(path)
+        except OSError as e:
+            out.append({"index": i, "ok": False, "why": "switched off, not deleted: %s" % e,
+                        "path": path})
+            continue
+        out.append({"index": i, "ok": True, "why": "", "path": path})
+    return out
+
+
+def _drop_waits(why):
+    """Whether a film drop_films did not take out can be tried again later: the pack not
+    seeded enough yet, or qBittorrent not answering. Anything else is for good."""
+    return str(why).startswith(("seeded to", "qBittorrent did not answer"))
+
+
+def drop_when_seeded(info_hash, indexes):
+    """Films the owner takes out of a pack now or, not seeded to SEEDED_ENOUGH yet, once it
+    is: what waits is kept in config["dropWhenSeeded"] and tried every DROPS_EVERY."""
+    got = drop_films(info_hash, indexes)
+    later = [r["index"] for r in got if not r["ok"] and _drop_waits(r["why"])]
+    data = load()
+    with LOCK:
+        due = data["config"].setdefault("dropWhenSeeded", {})
+        if later:
+            due[info_hash] = sorted(set(int(i) for i in due.get(info_hash) or []) | set(later))
+        save()
+    return got
+
+
+#: how often the films waiting for their pack's ratio are tried
+DROPS_EVERY = 3600
+DROPS = {"at": 0.0}
+
+
+def _drops_due(now=None):
+    """The films waiting in config["dropWhenSeeded"], taken out once their pack is seeded
+    enough; what can never go is let go of. Each deletion is logged. How many went."""
+    now = time.time() if now is None else now
+    if now - DROPS["at"] < DROPS_EVERY:
+        return 0
+    DROPS["at"] = now
+    went = 0
+    for info_hash, indexes in list((load()["config"].get("dropWhenSeeded") or {}).items()):
+        got = drop_films(info_hash, [int(i) for i in indexes])
+        left = [r["index"] for r in got if not r["ok"] and _drop_waits(r["why"])]
+        for r in got:
+            if r["ok"]:
+                went += 1
+                pd_log.raw("%s seeded enough: %s taken out of its pack and deleted%s"
+                           % (time.strftime("%Y-%m-%d %H:%M:%S"), r.get("path"), chr(10)))
+        data = load()
+        with LOCK:
+            due = data["config"].setdefault("dropWhenSeeded", {})
+            if left:
+                due[info_hash] = left
+            else:
+                due.pop(info_hash, None)
+            save()
+    return went
 
 
 def kept_whole(info_hash):
@@ -5566,6 +5772,315 @@ def mend_halted(info_hash="", force=False):
             "hashes": mended}
 
 
+# ---- the download watch: what qBittorrent says went wrong, what it does not say, and
+# what to do when it does not answer (owner, 2026-11-12: a 4K remux sat at "100%" with
+# 43% of it on the disk, qBittorrent's log saying "Unexpected data detected" a thousand
+# times and nothing in Palladium reading it)
+
+#: the torrents watched, by hash: what came in last and when, the fault seen, what was
+#: tried for it and when, and whether it has been said that it needs looking at
+WATCH = {}
+#: when the watch last ran, the last of qBittorrent's log read, what it last said about
+#: qBittorrent itself, and when it last started it
+WATCHED = {"at": 0.0, "log": -1, "silent": "", "started": 0.0, "heard": {}, "exe": ""}
+#: qBittorrent's answers failing in a row: since when, how many, and the last reason
+QB_SILENT = {"since": 0.0, "count": 0, "why": ""}
+WATCH_EVERY = 60
+#: its sum wrong this long before it is read again: a moment wrong is the client's own
+#: bookkeeping catching up
+SUM_FOR = 120
+#: nothing in this long, with seeders connected
+STILL_FOR = 900
+#: a check that has not moved this long
+CHECK_FOR = 1800
+#: qBittorrent not answering this long: looked into; this long and running: said
+SILENT_FOR = 180
+HUNG_FOR = 600
+#: a thing tried once is not tried again for this long: said instead
+TRY_AGAIN_AFTER = 6 * 3600
+#: qBittorrent's disk jobs waiting this long on average: the disk is behind, and a
+#: recheck or a restart now throws away pieces that have come in but are not written
+DISK_BEHIND_MS = 1500
+WATCH_WORDS = {
+    "sum": "qBittorrent counts more of it done than is on the disk",
+    "still": "nothing has come in for a quarter of an hour though seeders are there",
+    "check": "qBittorrent's check of its files has not moved for half an hour",
+    "file": "qBittorrent could not read or write its file",
+}
+WATCH_DONE = {
+    "sum": "reading its files again",
+    "still": "asked the tracker again and restarted it",
+    "check": "restarted the check",
+    "file": "reading its files again",
+}
+#: what qBittorrent's log says, and the fault it is
+QB_SAID = (("Unexpected data detected", "sum"), ("File error", "file"),
+           ("file error", "file"), ("I/O error", "file"))
+
+
+def _watch_note(text):
+    """One line of the watch in the debug log."""
+    try:
+        pd_log.raw("%s download watch: %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)),
+                   os.path.join(STATE["root"] or ".", "debug.log"))
+    except OSError:
+        pass
+
+
+def torrent_fault(t, rec, now):
+    """What is wrong with one torrent now, by what qBittorrent says of it and what it
+    has done since the last look: "sum", "still", "check", "file" or "". `rec` is its
+    record in WATCH and is kept up to date here."""
+    state = str(t.get("state") or "")
+    progress = float(t.get("progress") or 0)
+    got = [int(t.get("completed") or 0), round(progress, 4)]
+    if rec.get("got") != got:
+        rec["got"], rec["moved"] = got, now
+    rec.setdefault("moved", now)
+    said = rec.get("said") or ""
+    # stopped by somebody, or halted, which mend_halted reads again
+    if state.startswith(("stopped", "paused")) or state in HALTED:
+        rec.pop("odd", None)
+        return ""
+    if said == "file":
+        return "file"
+    if state.startswith("checking"):
+        return "check" if now - rec["moved"] >= CHECK_FOR else ""
+    if state.endswith("UP"):
+        rec.pop("odd", None)
+        return ""
+    odd = int(t.get("amount_left") or 0) < 0 or (progress >= 1 and state.endswith("DL"))
+    if odd or said == "sum":
+        rec.setdefault("odd", now)
+        if said == "sum" or now - rec["odd"] >= SUM_FOR:
+            return "sum"
+        return ""
+    rec.pop("odd", None)
+    if (state in ("downloading", "stalledDL", "forcedDL") and progress < 1
+            and int(t.get("num_seeds") or 0) > 0 and now - rec["moved"] >= STILL_FOR):
+        return "still"
+    return ""
+
+
+def watch_why(info_hash):
+    """What a download's line says while the watch is dealing with its torrent, or ""."""
+    rec = WATCH.get(info_hash) or {}
+    fault = rec.get("fault") or ""
+    if not fault:
+        return ""
+    if rec.get("told") == fault:
+        return WATCH_WORDS[fault] + " - still so after it was tried once; it needs looking at"
+    if rec.get("wait"):
+        return WATCH_WORDS[fault] + " - waiting: " + rec["wait"]
+    if (rec.get("tried") or {}).get(fault):
+        return WATCH_WORDS[fault] + " - " + WATCH_DONE[fault]
+    return ""
+
+
+def _disk_behind(qb):
+    """Why the disk is the matter, or "": qBittorrent's disk jobs waiting too long."""
+    try:
+        s = (json.loads(qb._call("/api/v2/sync/maindata", timeout=60) or b"{}")
+             .get("server_state") or {})
+    except Exception:
+        return ""
+    ms = int(s.get("average_time_queue") or 0)
+    if ms < DISK_BEHIND_MS:
+        return ""
+    return ("qBittorrent's disk is behind, %.0f s a job with %d waiting"
+            % (ms / 1000.0, int(s.get("queued_io_jobs") or 0)))
+
+
+def _drive_wrong(t):
+    """Why the torrent's drive cannot take it, or "": not there, or full."""
+    where = str(t.get("save_path") or "")
+    if not where:
+        return ""
+    if not os.path.isdir(where):
+        return "its folder %s is not there" % where
+    try:
+        free = shutil.disk_usage(where).free
+    except OSError as e:
+        return "its drive cannot be read: %s" % str(e)[:80]
+    if free < min(int(t.get("amount_left") or 0), 1 << 30) + (256 << 20):
+        return "its drive is full"
+    return ""
+
+
+def _qb_said(qb, names):
+    """What qBittorrent's log has warned of since the last look: [(hash, fault)]. The
+    first look only notes where the log is: what it said before is not news."""
+    last = int(WATCHED.get("log", -1))
+    rows = json.loads(qb._call("/api/v2/log/main?normal=false&info=false&warning=true"
+                               "&critical=true&last_known_id=%d" % last, timeout=20) or b"[]")
+    if rows:
+        WATCHED["log"] = max(int(r.get("id", last)) for r in rows)
+    if last < 0:
+        return []
+    found, heard, now = set(), WATCHED["heard"], time.time()
+    for text in {str(r.get("message") or "") for r in rows}:
+        kind = next((k for word, k in QB_SAID if word in text), "")
+        torrent = next((h for n, h in names.items() if n and n in text), "")
+        if kind and torrent:
+            found.add((torrent, kind))
+        elif now - heard.get(text, 0) > 3600 and len(heard) < 500:
+            # a warning of no known kind: in the log once an hour, so it is seen
+            heard[text] = now
+            _watch_note("qBittorrent warned: " + text[:200])
+    return sorted(found)
+
+
+def _qb_process():
+    """qBittorrent's program file when it is running here, "" when it is not."""
+    import subprocess
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              "(Get-Process qbittorrent -ErrorAction SilentlyContinue | "
+                              "Select-Object -First 1).Path"],
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        return "?"
+    return (out.stdout or "").strip()
+
+
+def _watch_silent(qb, now):
+    """qBittorrent has not answered: found out why. Not running: started, from where it
+    ran last or where it is installed. Running and silent past HUNG_FOR: said, and the
+    disk queue is the first thing to look at - it answered in minutes, not seconds, while
+    its disk was 5 s a job behind (2026-11-12)."""
+    since = QB_SILENT["since"]
+    if not since or now - since < SILENT_FOR:
+        return
+    if urllib.parse.urlparse(qb.base).hostname not in ("127.0.0.1", "localhost"):
+        return                                # another machine's: not this one's to start
+    path = _qb_process()
+    if path == "?":
+        return
+    if path:
+        WATCHED["exe"] = path
+        if now - since >= HUNG_FOR and not WATCHED["silent"].startswith("running"):
+            WATCHED["silent"] = "running, not answering"
+            _watch_note("qBittorrent is running but has not answered for %d min (%s)"
+                        % ((now - since) // 60, QB_SILENT["why"]))
+        return
+    if WATCHED["started"] and now - WATCHED["started"] < HUNG_FOR:
+        return
+    exe = next((p for p in (WATCHED["exe"], r"C:\Program Files\qBittorrent\qbittorrent.exe",
+                            r"C:\Program Files (x86)\qBittorrent\qbittorrent.exe")
+                if p and os.path.exists(p)), "")
+    WATCHED["started"] = now
+    if not exe:
+        WATCHED["silent"] = "not running"
+        _watch_note("qBittorrent is not running, and its program was not found to start it")
+        return
+    import subprocess
+    try:
+        subprocess.Popen([exe], close_fds=True,
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        WATCHED["silent"] = "started"
+        _watch_note("qBittorrent was not running: started it")
+    except OSError as e:
+        WATCHED["silent"] = "not running"
+        _watch_note("qBittorrent is not running and would not start: %s" % str(e)[:120])
+
+
+def _watch_act(qb, info_hash, fault):
+    """The one thing tried for a fault."""
+    if fault in ("sum", "file"):
+        qb.recheck(info_hash)
+        qb.start(info_hash)
+        return
+    if fault == "still":
+        qb._call("/api/v2/torrents/reannounce", fields={"hashes": info_hash})
+    qb.stop(info_hash)
+    qb.start(info_hash)
+
+
+def watch_downloads(now=None):
+    """Every minute: each torrent's fault, from what qBittorrent says of it in its list
+    and its log, and what it has done since the last look. Each fault is tried once - a
+    recheck, a restart - and said in the log; still there afterwards, it is said that it
+    needs looking at rather than tried again. Nothing is tried while qBittorrent's disk
+    is behind: a recheck then throws away what has come in and is not yet written. When
+    qBittorrent does not answer, why is found out. How many torrents were acted on."""
+    now = time.time() if now is None else now
+    if STATE.get("held") or (WATCHED["at"] and now - WATCHED["at"] < WATCH_EVERY):
+        return 0
+    WATCHED["at"] = now
+    qb = QB(load()["config"])
+    try:
+        rows = qb.all_info()
+    except Exception:
+        _watch_silent(qb, now)
+        return 0
+    if WATCHED["silent"]:
+        _watch_note("qBittorrent answers again (it was %s)" % WATCHED["silent"])
+        WATCHED["silent"] = ""
+    names = {str(t.get("name") or ""): str(t.get("hash") or "") for t in rows}
+    try:
+        for info_hash, kind in _qb_said(qb, names):
+            WATCH.setdefault(info_hash, {})["said"] = kind
+    except Exception:
+        pass
+    seen = [(t, WATCH.setdefault(str(t.get("hash") or ""), {})) for t in rows]
+    seen = [(t, rec, torrent_fault(t, rec, now)) for t, rec in seen]
+    # qBittorrent checks one torrent at a time: one standing still while another's check
+    # moves is waiting its turn, not stuck
+    reading = any(str(t.get("state") or "").startswith("checking") and now - rec["moved"] < CHECK_FOR
+                  for t, rec, _ in seen)
+    behind, acted, live = None, 0, set()
+    for t, rec, fault in seen:
+        info_hash = str(t.get("hash") or "")
+        name = str(t.get("name") or info_hash)[:70]
+        live.add(info_hash)
+        if fault == "check" and reading:
+            fault = ""
+        if not fault:
+            if rec.pop("fault", None):
+                _watch_note("%s: right again" % name)
+            rec.pop("wait", None)
+            if str(t.get("state") or "").endswith("UP"):
+                rec.pop("tried", None)            # finished: what was tried is history
+                rec.pop("told", None)
+            continue
+        if rec.get("fault") != fault:
+            rec["fault"] = fault
+            _watch_note("%s: %s" % (name, WATCH_WORDS[fault]))
+        tried = rec.setdefault("tried", {})
+        if fault in tried and now - tried[fault] < TRY_AGAIN_AFTER:
+            if rec.get("told") != fault:
+                rec["told"] = fault
+                _watch_note("%s: still so after %s; it needs looking at"
+                            % (name, WATCH_DONE[fault]))
+            continue
+        wait = _drive_wrong(t) if fault == "file" else ""
+        if not wait:
+            if behind is None:
+                behind = _disk_behind(qb)
+            wait = behind
+        if wait:
+            if rec.get("wait") != wait:
+                _watch_note("%s: waiting - %s" % (name, wait))
+            rec["wait"] = wait
+            continue
+        rec.pop("wait", None)
+        try:
+            _watch_act(qb, info_hash, fault)
+        except Exception as e:
+            _watch_note("%s: %s failed - %s" % (name, WATCH_DONE[fault], str(e)[:120]))
+            continue
+        tried[fault] = now
+        rec["moved"] = now
+        for k in ("said", "odd", "told"):
+            rec.pop(k, None)
+        _watch_note("%s: %s" % (name, WATCH_DONE[fault]))
+        acted += 1
+    for info_hash in [h for h in WATCH if h not in live]:
+        WATCH.pop(info_hash, None)
+    return acted
+
+
 def _whole_here(qb_file, save_path, size):
     """A pack's file verified on the disk: qBittorrent holds every piece of it, and the
     file is there at its full length. What "downloaded" means, whatever is written down."""
@@ -5676,8 +6191,14 @@ def _follow_downloads():
             # not moved for a minute is waiting its turn, and said so
             if state.startswith("checking"):
                 state = check_state(info_hash, float(said.get("progress") or 0), time.time())
+            watched = watch_why(info_hash)
             for d in [x for x in active if x["hash"] == info_hash]:
-                if d.pop("stuck", None):
+                if watched:
+                    # the watch is dealing with it: what it found and what it did
+                    if d.get("why") != watched:
+                        d["stuck"], d["why"] = "watch", watched
+                        changed = True
+                elif d.pop("stuck", None):
                     d["why"] = ""
                     changed = True
                 if d.get("qb") != state:
@@ -5899,11 +6420,14 @@ def _work():
         # a pack qBittorrent has stopped on is read again, once - a drive that
         # went away and came back leaves every torrent that touched it halted
         _step("mend_halted", mend_halted)
+        # what qBittorrent says went wrong, what it does not say, and its silence
+        _step("watch_downloads", watch_downloads)
         _step("keep_at_once", keep_at_once)
         _step("keep_merge", keep_merge)
         _step("_start_next", _start_next)
         _step("_guard_packs", _guard_packs)
         _step("_clear_unlinked", _clear_unlinked)
+        _step("_drops_due", _drops_due)
         _step("_follow_downloads", _follow_downloads)
         _step("_name_arrivals", _name_arrivals)
         _step("_chase_arrivals", _chase_arrivals)

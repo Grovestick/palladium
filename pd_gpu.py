@@ -98,6 +98,30 @@ def rate_args(enc, mbit, ceiling):
     return ["-q:v", "55"]                        # VideoToolbox counts the other way
 
 
+def recipe_words(cmd):
+    """An encode as ffmpeg was told it, short, for the log: the picture's codec, size
+    and rate, and the sound's codec, channels and rate."""
+    cmd = [str(c) for c in cmd]
+
+    def after(flag):
+        return cmd[cmd.index(flag) + 1] if flag in cmd[:-1] else ""
+    pic = [after("-c:v") or "?"]
+    if after("-vf") not in ("", "null"):
+        pic.append(after("-vf"))
+    elif "-filter_complex" in cmd:
+        pic.append("subtitles burned in")
+    for flag in ("-rc", "-cq", "-crf", "-global_quality", "-qp_i", "-q:v", "-b:v",
+                 "-maxrate", "-bufsize"):
+        if after(flag):
+            pic.append("%s %s" % (flag.lstrip("-"), after(flag)))
+    sound = [after("-c:a") or "?"]
+    if after("-ac"):
+        sound.append(after("-ac") + "ch")
+    if after("-b:a"):
+        sound.append(after("-b:a"))
+    return "picture %s; sound %s" % (" ".join(pic), " ".join(sound))
+
+
 def _encodes(exe, codec):
     """Can this build, on this machine, actually encode with that codec?
 
@@ -335,6 +359,41 @@ def cuda_overlay():
     return _CUDA_OVERLAY
 
 
+#: path -> whether its picture is more than 8 bits, asked of ffprobe once per file
+DEEP = {}
+
+
+def deep_picture(path):
+    """Whether a file's picture is 10 or 12 bits: what ffprobe says of its first video
+    stream, kept per path. False when it cannot be read."""
+    path = str(path or "")
+    if not path or not FFMPEG:
+        return False
+    if path in DEEP:
+        return DEEP[path]
+    probe = os.path.join(os.path.dirname(FFMPEG), "ffprobe" + (".exe" if os.name == "nt" else ""))
+    if not os.path.exists(probe):
+        probe = shutil.which("ffprobe") or probe
+    try:
+        said = subprocess.run([probe, "-v", "error", "-select_streams", "v:0",
+                               "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", path],
+                              capture_output=True, text=True, timeout=20,
+                              creationflags=NO_WINDOW).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    DEEP[path] = "10" in said or "12" in said
+    return DEEP[path]
+
+
+def waited_on_player(made, ran):
+    """The words for a transcode log line when the encoder had written more picture than
+    the time it ran: under 1x then means the player stopped reading (paused, buffered
+    full), not a slow encoder. "" otherwise."""
+    if made > 0 and made >= ran:
+        return " (%.0fs of picture in %.0fs: waiting on the player)" % (made, ran)
+    return ""
+
+
 class Stream:
     """One running ffmpeg, piping fragmented MP4 to one HTTP response."""
 
@@ -342,6 +401,8 @@ class Stream:
     # value, so getattr(st, "folder", None) still tells the two apart
     folder: str
     touched: float
+    # set once its line is in the log: how it was chosen and what ffmpeg was told
+    said: bool
     recipe: str
     src: dict
     height: int
@@ -394,6 +455,19 @@ class Stream:
             return []
         import re as _re
         return [float(x) for x in _re.findall(r"speed=\s*([0-9.]+)x", said)][-many:]
+
+    def made(self):
+        """Seconds of picture the encoder has written: ffmpeg's last time=. 0 when unknown."""
+        try:
+            self.log.flush()
+            with open(self.log.name, "rb") as f:
+                f.seek(max(0, os.path.getsize(self.log.name) - 4000))
+                said = f.read().decode("utf-8", "replace")
+        except Exception:
+            return 0.0
+        import re as _re
+        got = _re.findall(r"time=\s*(\d+):(\d+):([0-9.]+)", said)
+        return int(got[-1][0]) * 3600 + int(got[-1][1]) * 60 + float(got[-1][2]) if got else 0.0
 
     def stop(self):
         try:
@@ -512,9 +586,15 @@ class Engine:
                 fits = int(round(tall * 1920.0 / wide)) // 2 * 2
                 height = min(height or fits, fits)
         smaller = bool(height and src.get("height") and src["height"] > height)
+        # A 10-bit picture made HEVC stays 10-bit. Taken down to 8 it kept its HDR
+        # tags, and HDR in 8 bits bands in every gradient: a 4K remux's sky came out in
+        # steps on the television (2026-11-12). Only on the card, which makes Main10.
+        ten = (hevc and HW_OK and not copy_video and burn_index is None
+               and (ENCODER or {}).get("name") == "nvenc" and deep_picture(src.get("file")))
         if (ENCODER or {}).get("scale"):
-            scale = "%s=%sformat=yuv420p" % (
-                ENCODER["scale"], ("-2:%d:" % height) if smaller else "")
+            scale = "%s=%sformat=%s" % (
+                ENCODER["scale"], ("-2:%d:" % height) if smaller else "",
+                "p010le" if ten else "yuv420p")
         else:
             scale = ("scale=-2:%d,format=yuv420p" % height) if smaller else "format=yuv420p"
         # errors only, and its speed every five seconds: a stream that stops with a
@@ -581,7 +661,8 @@ class Engine:
             # the overlay filter has already sized the picture
             cmd += ["-c:v", codec] + list(ENCODER["preset"]) + rate + tag
         elif HW_OK:
-            cmd += ["-vf", scale, "-c:v", codec] + list(ENCODER["preset"]) + rate + tag
+            cmd += (["-vf", scale, "-c:v", codec] + list(ENCODER["preset"]) + rate + tag
+                    + (["-profile:v", "main10"] if ten else []))
         else:                                       # same output, just slower
             vf = "scale=-2:%d" % height if height and (src.get("height") or 0) > height else "null"
             cmd += ["-vf", vf, "-c:v", "libx264", "-preset", "veryfast"] + rate
@@ -735,12 +816,12 @@ class Engine:
         folder = os.path.join(self.root, sid)
         os.makedirs(folder, exist_ok=True)
         log = open(os.path.join(self.root, sid + ".log"), "wb")
+        cmd = self.hls_command(src, folder, offset, height, burn_index, sub_look,
+                               audio_index, mbit=mbit)
         proc = subprocess.Popen(
-            self.hls_command(src, folder, offset, height, burn_index, sub_look,
-                             audio_index, mbit=mbit),
-            creationflags=NO_WINDOW, stdout=subprocess.DEVNULL, stderr=log, bufsize=0)
+            cmd, creationflags=NO_WINDOW, stdout=subprocess.DEVNULL, stderr=log, bufsize=0)
         info = {
-            "id": sid, "folder": folder, "hls": True,
+            "id": sid, "folder": folder, "hls": True, "recipe": recipe_words(cmd),
             "engine": ENGINE_NAME, "hw": HW_OK, "burn": burn_index,
             "source": "%s %sx%s" % (src.get("videoCodec"), src.get("width"),
                                     src.get("height")),
@@ -993,9 +1074,9 @@ class Engine:
             raise FileNotFoundError(src["file"])
         sid = "gpu%d" % int(time.time() * 1000)
         log = open(os.path.join(self.root, sid + ".log"), "wb")
-        proc = subprocess.Popen(self.command(src, offset, height, burn_index, audio_mode,
-                                             sub_look, audio_index, mbit, channels,
-                                             hevc, dts, copy_video, gain_db),
+        cmd = self.command(src, offset, height, burn_index, audio_mode, sub_look,
+                           audio_index, mbit, channels, hevc, dts, copy_video, gain_db)
+        proc = subprocess.Popen(cmd,
                                 creationflags=NO_WINDOW,
                                 stdout=subprocess.PIPE, stderr=log, bufsize=0)
         info = {
@@ -1012,6 +1093,7 @@ class Engine:
             "offset": offset,
             "duration": src["duration"],
             "title": src.get("title"),
+            "recipe": recipe_words(cmd),
         }
         st = Stream(proc, info, log)
         with self.lock:

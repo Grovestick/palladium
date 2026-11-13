@@ -39,6 +39,11 @@ fun VersionPanel(
     onOther: (() -> Unit)? = null,
     /** a series: the packs added to it, (name, facts) - pressed, removed */
     inUse: List<Pair<String, String>>? = null,
+    /** the copy kept on this device, with offline on; null where there is none */
+    here: Offline.Copy? = null,
+    /** whether it is the one that plays */
+    hereChosen: Boolean = false,
+    onHere: () -> Unit = {},
 ) {
     AlertDialog(
         onDismissRequest = onClose,
@@ -80,8 +85,38 @@ fun VersionPanel(
                         }
                     }
                 }
+                here?.let { c ->
+                    val ready = c.state == "ready"
+                    var onIt by remember { mutableStateOf(false) }
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(Skin.round(8.dp)))
+                            .background(if (hereChosen) Skin.Panel2 else Color.Transparent)
+                            .border(if (onIt) 2.dp else 1.dp,
+                                    if (onIt) Color.White else Skin.Line,
+                                    RoundedCornerShape(Skin.round(8.dp)))
+                            .onFocusChanged { onIt = it.isFocused }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null) { if (ready) onHere() }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Offline copy  ·  " + Offline.qualityName(c.quality),
+                                 color = Skin.Fg, fontSize = 13.5.sp)
+                            Text(Offline.words(c), color = Skin.Dim, fontSize = 12.sp,
+                                 modifier = Modifier.padding(top = 3.dp))
+                        }
+                        if (hereChosen && ready) {
+                            Text("✓", color = Skin.Accent, fontSize = 15.sp,
+                                 modifier = Modifier.padding(start = 10.dp))
+                        }
+                    }
+                }
+                val keptPlays = hereChosen && here?.state == "ready"
                 if (inUse == null) media.copies.forEachIndexed { at, copy ->
-                    val here = copy.mi == media.mi
+                    val here = copy.mi == media.mi && !keptPlays
                     var onIt by remember { mutableStateOf(false) }
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 4.dp)

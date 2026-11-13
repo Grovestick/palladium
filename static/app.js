@@ -1903,7 +1903,8 @@ function card(it, onDeck, coll) {
       // something on the tracker for it: the band says what pressing it will do,
       // and asking is not what it does any more
       ? (it.onTracker
-         ? '<div class="ribbon"><span>Download</span></div>'
+         // grey where all there is was filmed in a cinema: a cam or a telesync
+         ? '<div class="ribbon' + (it.cam ? " cam" : "") + '"><span>Download</span></div>'
          // not asked of the tracker yet: neither word is known
          : it.checking && !it.asked
          ? '<div class="ribbon checking"><span>Checking…</span></div>'
@@ -3439,7 +3440,7 @@ const SORT_KEYS = { added: "addedAt", name: "titleSort", year: "year",
    first, A first, oldest first - and pressing the one already chosen reverses it. */
 const SORT_DEFAULT_DIR = { added: "desc", name: "asc", year: "asc",
                            released: "desc", quality: "desc", popular: "desc",
-                           list: "desc", viewed: "desc" };
+                           list: "desc", viewed: "desc", listed: "desc" };
 // the shelves open on what came out last: "what is new in the world", which is a
 // better first question than "what did this server notice last"
 // Each shelf keeps its own order. Films open on what came out last; programmes
@@ -3449,8 +3450,8 @@ const SORT_DEFAULT_DIR = { added: "desc", name: "asc", year: "asc",
 const SORT_BY_TAB = { movies: { key: "popular", dir: "desc" },
                       shows: { key: "popular", dir: "desc" } };
 let sortState = SORT_BY_TAB.movies;
-// the watchlist keeps its own order: last watched first, as the app opens it
-const WATCH_SORT = { key: "viewed", dir: "desc" };
+// the watchlist keeps its own order: last put on it first, as the app opens it
+const WATCH_SORT = { key: "listed", dir: "desc" };
 
 /* The one order every list of titles is put in - the shelves, the watchlist, a
    collection - so that choosing Year on Films means the same thing everywhere. */
@@ -3466,6 +3467,9 @@ function sortLike(list, state) {
     }
     if (on.key === "added") return dir * ((a.addedAt || 0) - (b.addedAt || 0));
     if (on.key === "viewed") return dir * ((a.lastViewedAt || 0) - (b.lastViewedAt || 0));
+    // put on the watchlist; one with no date of its own by when it came into the library
+    if (on.key === "listed")
+      return dir * ((a.listedAt || a.addedAt || 0) - (b.listedAt || b.addedAt || 0));
     if (on.key === "popular") return dir * ((a.popularity || 0) - (b.popularity || 0));
     // a kept list's own order: listRank counts down from its first
     if (on.key === "list") return dir * ((a.listRank || 0) - (b.listRank || 0));
@@ -3503,8 +3507,11 @@ function sortBar(rerender, state, dirs, extra) {
   // one control for the three orders; the arrow beside it turns the order round
   const sel = document.createElement("select");
   sel.className = "sortpick";
+  // an order the caller names itself replaces the shelves' one of the same name
+  const own = new Set((extra || []).map(([, label]) => label));
   (extra || []).concat([["added", "Added"], ["released", "Released"], ["name", "Name"],
-   ["year", "Year"], ["quality", "Quality"]]).forEach(([key, label]) => {
+   ["year", "Year"], ["quality", "Quality"]].filter(([, label]) => !own.has(label)))
+   .forEach(([key, label]) => {
     sel.add(new Option(label, key));
   });
   sel.value = on.key;
@@ -4313,7 +4320,7 @@ async function viewWatchlist() {
           setPref("collSortDir", collSortState.dir);
           viewWatchlist();
         }, collSortState, COLL_FIRST_DIR)
-      : sortBar(() => viewWatchlist(), WATCH_SORT, null, [["viewed", "Last watched"]]));
+      : sortBar(() => viewWatchlist(), WATCH_SORT, null, [["listed", "Added"], ["viewed", "Watched"]]));
     listFilterBars(list).forEach((b) => h.appendChild(b));
   }
   h.appendChild(count);
@@ -5827,7 +5834,10 @@ async function viewSearch(q, again = 0) {
   // one hub per kind, gathered from every server that answers
   const hubs = {};
   await fromAll(async (srv) => {
-    const c = await api("/hubs/search", { query: q, limit: 40 }, srv);
+    // only the server this page is on asks the tracker; the others answer from their index
+    const c = await api("/hubs/search", { query: q, limit: 40,
+      tracker: (srv || null) === (CTX || null) ? "here" : "elsewhere",
+      person: SEARCH_PERSON.q === q && SEARCH_PERSON.id ? SEARCH_PERSON.id : undefined }, srv);
     if (c.askingTracker) asking = true;
     if (c.fillingIn) filling = true;
     const all = [];
@@ -6981,7 +6991,7 @@ async function viewOffer(m) {
     // Download where there is something to fetch - from a pack, or from the tracker
     // - and Request only where asking is genuinely all anybody can do.
     (fetches || m.onTracker
-      ? '<div class="ribbon"><span>Download</span></div>'
+      ? '<div class="ribbon' + (m.cam && !fetches ? " cam" : "") + '"><span>Download</span></div>'
       // the tracker not answered yet: neither Download nor Request is known
       : m.checking ? '<div class="ribbon"><span>Checking</span></div>'
       : '<div class="ribbon' + (m.asked ? " asked" : "") + '"><span>' +
@@ -7010,18 +7020,11 @@ async function viewOffer(m) {
     (m.svt ? '<button class="btn" id="svtplay">▶ Play from SVT Play</button>' : "") +
     // a copy of a film here already: that one plays while this one comes in
     (o.heldKey ? '<button class="btn" id="offerheld">▶ Play</button>' : "") +
+    // One button for all of it - Download from a pack or from the tracker, its progress,
+    // its Cancel, arriving, Request - and one handler behind it (owner, 2026-11-09). The
+    // list beside it chooses which version Download fetches.
     '<button class="btn" id="offerget"></button>' +
-    // The same button as the one above it, for the other place a film comes from:
-    // the word, the arrow and the size beside it, in the same spot. It read as a
-    // lesser thing tucked behind a dropdown, and fetching from the tracker is the
-    // same act as fetching from a pack.
-    // Drawn every time, and filled in from the tracker's own answer below. It used
-    // to depend on a flag carried along with the film, and a second drawing of this
-    // page that arrived without the flag took the control away again - which on
-    // screen is a button that appears for half a second and vanishes.
-    '<button class="btn" id="offertracker" style="display:none">⤓ Download</button>' +
     '<select id="offerpick" class="pick" style="display:none"></select>' +
-    '<button class="btn ghost" id="offercancel" style="display:none">Cancel download</button>' +
     '<span class="note" id="offersaid"></span></div>' +
     '<p class="summary tellme">' + esc(m.summary) + "</p>" +
     // who is in it, the same row a film on the shelf has: a new release was a title
@@ -7033,7 +7036,7 @@ async function viewOffer(m) {
       : m.onTracker
       ? "Not in the library, but the tracker has it: Download fetches it."
       : "Not in the library, and nothing to download yet. Requesting puts it on your "
-        + "watchlist, and the request closes by itself once it can be downloaded.")
+        + "watchlist.")
     + "</div></div>";
   // on the watchlist or in a collection before it is here, as a film here can be
   const marks = wrap.querySelector(".actions");
@@ -7053,469 +7056,361 @@ async function viewOffer(m) {
   };
   // a stream's page is its Play button and its plot: who is in it is under Show more
   if (m.svt) wrap.querySelector(".cast").remove();
-  const grab = document.getElementById("offertracker");
-  const pick = document.getElementById("offerpick");
-  if (pick && grab) {
-    // Every version of it the tracker is carrying, the most carried first. The name
-    // is the whole point: it says what the file actually is - the cut, the source,
-    // and how big an evening it will be.
-    //
-    // Asked of the tracker itself rather than read off the film: the film is handed
-    // about between drawings of this page and the answer here is the same either way.
-    (async () => {
-      const ask = async (fresh) => {
-        try {
-          return await (await fetch("/tracker/list", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title: m.title, year: m.year, key: m.ratingKey,
-                                   fresh: !!fresh }) })).json();
-        } catch (e) { return { versions: [] }; }
-      };
-      let said = await ask();
-      // the tracker still being asked about it: asked again every few seconds for a
-      // minute, and the ribbon says what came of it. The page said Request for a film
-      // the tracker carried, because the answer came after it opened.
-      const ribbon = wrap.querySelector(".poster .ribbon span");
-      // Checking for as long as the server has not asked the tracker - five seconds
-      // apart for a minute, then thirty - and Request only once it has found nothing:
-      // giving up after a minute said Request for a film nobody had looked for yet
-      for (let n = 0; !(said.versions || []).length && m.checking && !fetches; n++) {
-        await new Promise((r) => setTimeout(r, n < CHECK_TRIES ? CHECK_EVERY_MS : 30000));
-        if (!SCREEN || SCREEN.kind !== "offer" || SCREEN.key !== String(m.ratingKey)) return;
-        try {
-          const now = items(await api("/library/metadata/" + m.ratingKey))[0];
-          if (now) m.checking = !!now.checking;
-        } catch (e) { /* asked again next time round */ }
-        said = await ask();
-      }
-      if (ribbon && !fetches) {
-        ribbon.textContent = (said.versions || []).length ? "Download"
-          : m.checking ? "Checking" : (m.asked ? "Requested" : "Request");
-      }
-      if (!fetches && !(said.versions || []).length && b) b._redraw && b._redraw();
-      // the pack's own copy is a version like any other: it belongs in the same list,
-      // with its size, so choosing is one act rather than two different buttons
-      const rowsOf = (answer) => {
-        const out = (answer.versions || []).slice();
-        if (fetches && o.size && !out.some((v) => v.pack)) {
-          out.unshift({ id: "", name: (o.file || m.title || "").split(/[\/]/).pop(),
-                        size: o.size, seeds: null, kind: "from a pack here",
-                        pack: true, why: o.refused || "" });
-        }
-        return out;
-      };
-      let rows = rowsOf(said);
-      if (!rows.length) return;           // nothing to fetch: leave the asking alone
-      const fill = () => {
-      const was = pick.value;
-      pick.innerHTML = "";
-      rows.forEach((v) => {
-        const o = document.createElement("option");
-        o.value = v.id;
-        // the figures first, seeders leading as the list is sorted, then the name
-        o.textContent = [
-          versionTag(v),
-          v.seeds == null ? "" : v.seeds + " seeding",
-          v.mbit ? v.mbit + " Mbit/s" : "",
-          v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
-        ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
-            v.pick && !v.have ? "recommended" : "",
-          v.why || "",
-        ].filter(Boolean).map((x) => "   ·   " + x).join("");
-        // the one to take unless somebody wants otherwise: the preferred resolution,
-        // most carried, so it arrives quickly and fits on the drive
-        // the one already on the disk, so nobody fetches what they have - unless
-        // it is also the one that would be recommended, which is worth knowing
-        // plainly: there is nothing better to go and get
-        // on disk is said before anything else about it: orange, recommended or not
-        if (v.pack) o.style.color = "#7fb4ff";
-        if (v.pick) o.style.color = "#5fd08a";
-        if (v.have) o.style.color = "#e0b341";
-        // One that cannot be fetched says so in the list rather than after it is
-        // chosen: too big for what this viewer may take, or too big for the drive.
-        // Red and unselectable, so the choice is between the ones that would work.
-        if (v.why) {
-          o.style.color = "#ff6b6b";
-          o.disabled = true;
-        }
-        pick.appendChild(o);
-      });
-      // the recommended one is offered, and failing that the first that could be
-      // fetched at all
-      const canDo = rows.find((v) => v.pick) || rows.find((v) => !v.why);
-      if (pick.dataset.chosen && rows.some((v) => String(v.id) === was)) pick.value = was;
-      else if (canDo) pick.value = canDo.id;
-      tint(pick);
-      // what the button says: the word, the size of the version chosen and what is
-      // left on the drive - the same line the pack's own button shows
-      // the room left comes with the tracker's own answer: a film that is only on
-      // the tracker has no pack offer to read it from, so the button said nothing
-      const free = said.free != null ? said.free : o.free;
-      const label = () => {
-        if (grab.dataset.hash) return;      // coming in: the button is its Cancel
-        const one = rows.find((v) => String(v.id) === String(pick.value)) || rows[0];
-        // The version chosen is one this house already holds: green, and nothing to
-        // press - fetching it again would write the same file twice. Another version
-        // in the list is still one choice away.
-        const here = !!(one && one.have);
-        grab.classList.toggle("here", here);
-        grab.disabled = here || !!(one && one.why);
-        grab.textContent = here
-          ? "On disk" +
-            (one.size ? "  " + (one.size / 1073741824).toFixed(1) + " GB" : "")
-          : (one && one.why ? "Cannot download · " + one.why
-             : "⤓ Download" +
-               (one && one.size
-                ? "  " + (one.size / 1073741824).toFixed(1) + " GB" : "")) +
-            (free != null ? "  ·  " + free + " GB free" : "");
-      };
-      label();
-      grab._label = label;
-      pick.onchange = () => { pick.dataset.chosen = "1"; label(); };
-      };
-      fill();
-      // a release of it coming in, whichever was picked: the progress button stays
-      if (["queued", "downloading", "done"].includes(o.state)) return;
-      pick.style.display = "";
-      grab.style.display = "";
-      // and the asking steps aside: fetching it is the better answer to the same
-      // question, and two buttons for it is one too many
-      if (b) b.style.display = "none";
-      // the search behind that list: said while it runs, and the list drawn again with it
-      const note = document.getElementById("offersaid");
-      if (note && !note.textContent) note.textContent = CHECKING_TRACKER;
-      const newer = await ask(true);
-      if (!SCREEN || SCREEN.kind !== "offer" || SCREEN.key !== String(m.ratingKey)) return;
-      if (note && note.textContent === CHECKING_TRACKER) note.textContent = "";
-      if (grab.dataset.hash || grab.dataset.pressed) return;
-      const fresher = rowsOf(newer);
-      if (fresher.length) {
-        said = newer;
-        rows = fresher;
-        fill();
-      }
-    })();
+  const b = wrap.querySelector("#offerget");
+  const pick = wrap.querySelector("#offerpick");
+  const said = wrap.querySelector("#offersaid");
+  const pct = wrap.querySelector("#offerpct");
+  const ribbon = wrap.querySelector(".poster .ribbon span");
+  const here = () => document.body.contains(wrap) && SCREEN && SCREEN.kind === "offer" &&
+    SCREEN.key === String(m.ratingKey);
+  // everything the button is drawn from: the tracker's take of this film, the versions
+  // to choose from, a press under way, and what was last said under it
+  const st = { take: null, rows: [], free: o.free, chosen: "", armed: false, starting: false,
+               landing: false, asking: false, arrived: null, note: "", metaAt: 0, startedAt: 0 };
+  if (o.refused) st.note = o.refused;
+  else if (o.free != null && !o.state && o.size / 1e9 > o.free) {
+    st.note = "Not enough room on the download drive for this film";
   }
-  // A release taken from the tracker for this page, queued or coming in: the Download
-  // button is its cancel - once to ask, again to stop - as in the app.
-  let takeArmed = false;
-  // Finished: the film's own page once the library has it, with Play on it. Read as
-  // gone, the button went back to Download on a film that was already here.
-  const landed = async () => {
-    if (!document.body.contains(wrap)) return;
-    let now = null;
-    try { now = items(await api("/library/metadata/" + m.ratingKey))[0]; } catch (e) { now = null; }
-    if (now && !now.offered && !now.askable && now.ratingKey) return viewMovie(String(now.ratingKey));
-    setTimeout(landed, 5000);
+  const paint = () => {
+    const now = offerButton(o, st, m, fetches);
+    b.textContent = now.label;
+    b.disabled = now.disabled;
+    b.dataset.act = now.act;
+    b.classList.toggle("here", !!now.here);
+    pick.style.display = (now.act === "start" || now.here || now.why) && st.rows.length ? "" : "none";
+    // across the poster too, for a pack's copy coming in: which, how far, how long
+    const packComing = !now.take && (o.state === "queued" || o.state === "downloading");
+    pct.style.display = packComing ? "" : "none";
+    if (packComing) {
+      pct.textContent = (o.version ? o.version + " · " : "") +
+        (o.state === "queued" ? "Queued" : Math.round((o.progress || 0) * 100) + "%") +
+        (o.eta != null && o.eta >= 0 ? " \u00b7 " + etaShort(o.eta) : "");
+    }
+    said.textContent = st.note || (st.asking ? CHECKING_TRACKER : "") ||
+      (o.who && packComing ? "Asked for by " + o.who : "");
   };
-  const followTake = async () => {
-    if (!grab || !document.body.contains(wrap)) return;
+  paint();
+  // A release taken from the tracker for this film, and the film itself: read while
+  // anything is coming in, until it is here or the page is left
+  const flat = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const ours = (r) => (r.key ? r.key === String(m.ratingKey)
+    : flat(r.title) && flat(r.title) === flat(m.title) &&
+      (!r.year || !m.year || Number(r.year) === Number(m.year)));
+  let ticking = false;
+  const tick = async () => {
+    if (!here()) { ticking = false; return; }
     let rows = [];
     try {
       rows = ((await (await fetch("/tracker/active", { method: "POST",
         headers: { "Content-Type": "application/json" }, body: "{}" })).json()).taking) || [];
     } catch (e) { rows = []; }
-    const flat = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const ours = (r) => (r.key ? r.key === String(m.ratingKey)
-      : flat(r.title) && flat(r.title) === flat(m.title) &&
-        (!r.year || !m.year || Number(r.year) === Number(m.year)));
     const one = rows.find((r) => !r.done && ours(r));
-    const came = !one && rows.find((r) => r.done && (r.hash === grab.dataset.hash || ours(r)));
-    if (came) {
-      delete grab.dataset.hash;
-      takeArmed = false;
-      grab.style.display = "";
-      grab.disabled = true;
-      grab.textContent = "Downloaded - arriving";
-      landed();
-    } else if (one) {
-      grab.dataset.hash = one.hash;
-      grab.style.display = "";
-      const how = one.words ? one.words
-        : (/^queued/.test(one.state) || (/^stalledDL/.test(one.state) && !one.progress)
-            ? "Queued" : "Downloading " + Math.round((one.progress || 0) * 100) + "%") +
-          (one.mbit > 0 ? "  \u00b7  " + one.mbit.toFixed(1) + " Mbit/s" : "");
-      // a cancel only in the seconds before it starts: started, it finishes and seeds
-      grab.disabled = !one.mayCancel;
-      if (!one.mayCancel) takeArmed = false;
-      grab.textContent = !one.mayCancel ? how
-        : takeArmed ? "Press again to cancel" : "\u2715 Cancel  \u00b7  " + how;
-      setTimeout(followTake, one.mayCancel ? 1000 : 3000);
-    } else if (grab.dataset.hash) {
-      // finished or gone: Download again, as the list says
-      delete grab.dataset.hash;
-      takeArmed = false;
-      if (grab._label) grab._label();
-      grab.disabled = false;
+    const came = !one && rows.find((r) => r.done && (ours(r) || (st.take && r.hash === st.take.hash)));
+    st.take = one || came || null;
+    if (st.take) st.starting = false;
+    // finished: arriving until the library has it, even once the row has gone
+    if (came) st.landing = true;
+    if (st.take && !st.take.mayCancel) st.armed = false;
+    paint();
+    const coming = () => !!st.take || st.starting || st.landing ||
+      ["queued", "downloading", "unpacking", "done"].includes(o.state);
+    // the film itself, for a pack's copy coming in and for anything finished: a release
+    // still coming in from the tracker says how far it has got in its own row
+    const looks = st.landing || st.starting ||
+      ["queued", "downloading", "unpacking", "done"].includes(o.state);
+    if (looks && Date.now() - st.metaAt >= 3000) {
+      st.metaAt = Date.now();
+      let now = null;
+      try { now = items(await api("/library/metadata/" + m.ratingKey))[0]; } catch (e) { now = null; }
+      if (!here()) { ticking = false; return; }
+      // Come in: a film opens its own page in place of this one; an episode's button
+      // turns into Play where it stands
+      if (now && !now.offered && !now.askable && now.ratingKey) {
+        ticking = false;
+        if (now.type !== "episode") return viewMovie(String(now.ratingKey));
+        st.arrived = now;
+        st.note = "Here now";
+        return paint();
+      }
+      const off = (now && now.offer) || null;
+      if (off) {
+        Object.assign(o, { state: off.state, progress: off.progress, mbit: off.mbit, eta: off.eta,
+                           words: off.words, place: off.place || 0 });
+        if (o.state) st.starting = false;
+        paint();
+      }
     }
+    if (st.starting && Date.now() - st.startedAt > 60000) {
+      st.starting = false;
+      st.note = "Nothing has started yet - look in the download list";
+      paint();
+    }
+    if (!coming()) { ticking = false; return; }
+    setTimeout(tick, st.take && st.take.mayCancel && !st.take.done ? 1000 : 3000);
   };
-  if (grab) {
-    followTake();
-    grab.onclick = async () => {
-      // coming in: this press is about stopping it
-      if (grab.dataset.hash) {
-        if (!takeArmed) {
-          takeArmed = true;
-          grab.textContent = "Press again to cancel";
-          setTimeout(() => { takeArmed = false; }, 4000);
-          return;
-        }
-        takeArmed = false;
-        grab.disabled = true;
-        let c = {};
-        try {
-          c = await (await fetch("/tracker/cancel", { method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ hash: grab.dataset.hash }) })).json();
-        } catch (e) { c = { ok: false, why: "The server did not answer" }; }
-        const said = document.getElementById("offersaid");
-        if (c.ok === false) {
-          grab.disabled = false;
-          said.textContent = c.why || "Could not cancel it";
-          return;
-        }
-        delete grab.dataset.hash;
-        said.textContent = "Cancelled";
-        toast("Cancelled " + m.title);
-        if (grab._label) grab._label();
-        grab.disabled = false;
-        return;
-      }
-      grab.disabled = true;
-      grab.dataset.pressed = "1";
-      const said = document.getElementById("offersaid");
-      // nobody chose: the tracker is asked again and the best as of now is taken
-      if (pick && pick.style.display !== "none" && !pick.dataset.chosen) {
-        said.textContent = CHECKING_TRACKER;
-        await takeBestNow(pick, m);
-      }
-      said.textContent = "Starting the download…";
-      let r;
+  const watch = () => { if (!ticking) { ticking = true; tick(); } };
+  watch();
+  // Every version of it the tracker is carrying, the most carried first, with the
+  // pack's own copy among them: the list beside the button. The name is the whole
+  // point: it says what the file actually is - the cut, the source, and how big an
+  // evening it will be.
+  //
+  // Asked of the tracker itself rather than read off the film: the film is handed about
+  // between drawings of this page and the answer here is the same either way.
+  if (!o.refused) (async () => {
+    const ask = async (fresh) => {
       try {
-        // an empty id is the pack's own copy, which is fetched the other way
-        r = (pick && pick.value)
-          ? await (await fetch("/tracker/get", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ id: pick.value, title: m.title,
-                                     year: m.year, key: m.ratingKey }) })).json()
-          : await (await fetch("/torrents/get", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ key: m.ratingKey }) })).json();
-        if (r && r.ok && !r.taken) r = { taken: true, name: m.title };
-      } catch (e) {
-        r = { error: "The server did not answer" };
-      }
-      if (r.taken) {
-        const waiting = r.state === "queued";
-        grab.textContent = waiting
-          ? "Queued" + (r.place ? "  \u00b7  " + r.place + " ahead" : "")
-          // not "arriving": that is a download finished, and the progress follows
-          : "Starting the download…";
-        said.textContent = waiting ? "It starts when the ones before it are done" : "";
-        toast((waiting ? "Queued " : "Downloading ") + m.title);
-        // and from now on the button is its cancel
-        setTimeout(followTake, 1500);
-        // a pack release comes in as this film's offer: its progress on the pack button
-        if (fetches) setTimeout(async () => {
-          await follow();
-          if (["queued", "downloading", "done"].includes(o.state)) {
-            grab.style.display = "none";
-            pick.style.display = "none";
-            b.style.display = "";
-          }
-        }, 1500);
-      } else {
-        grab.disabled = false;
-        said.textContent = r.error || "Could not download that one";
-      }
+        return await (await fetch("/tracker/list", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: m.title, year: m.year, key: m.ratingKey,
+                                 fresh: !!fresh }) })).json();
+      } catch (e) { return { versions: [] }; }
     };
-  }
+    let answer = await ask();
+    // Checking for as long as the server has not asked the tracker - five seconds apart
+    // for a minute, then thirty - and Request only once it has found nothing: giving up
+    // after a minute said Request for a film nobody had looked for yet
+    for (let n = 0; !(answer.versions || []).length && m.checking && !fetches; n++) {
+      await new Promise((r) => setTimeout(r, n < CHECK_TRIES ? CHECK_EVERY_MS : 30000));
+      if (!here()) return;
+      try {
+        const now = items(await api("/library/metadata/" + m.ratingKey))[0];
+        if (now) m.checking = !!now.checking;
+      } catch (e) { /* asked again next time round */ }
+      answer = await ask();
+    }
+    if (!here()) return;
+    if (ribbon && !fetches) {
+      ribbon.textContent = (answer.versions || []).length ? "Download"
+        : m.checking ? "Checking" : (m.asked ? "Requested" : "Request");
+    }
+    // the pack's own copy is a version like any other: in the same list, with its size
+    const rowsOf = (got) => {
+      const out = (got.versions || []).slice();
+      if (fetches && o.size && !out.some((v) => v.pack)) {
+        out.unshift({ id: "", name: (o.file || m.title || "").split(/[\/]/).pop(),
+                      size: o.size, seeds: null, kind: "from a pack here",
+                      pack: true, why: o.refused || "" });
+      }
+      return out;
+    };
+    const fill = (rows, got) => {
+      const was = pick.value;
+      pick.innerHTML = "";
+      rows.forEach((v) => {
+        const opt = document.createElement("option");
+        opt.value = v.id;
+        // the figures first, seeders leading as the list is sorted, then the name
+        opt.textContent = [
+          versionTag(v),
+          v.seeds == null ? "" : v.seeds + " seeding",
+          v.mbit ? v.mbit + " Mbit/s" : "",
+          v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
+        ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
+          v.pick && !v.have ? "recommended" : "",
+          v.why || "",
+        ].filter(Boolean).map((x) => "   ·   " + x).join("");
+        // the pack's blue, recommended green, on disk orange - said before anything else
+        if (v.pack) opt.style.color = "#7fb4ff";
+        if (v.pick) opt.style.color = "#5fd08a";
+        if (v.have) opt.style.color = "#e0b341";
+        // one that cannot be fetched says so in the list, red and not to be chosen
+        if (v.why) {
+          opt.style.color = "#ff6b6b";
+          opt.disabled = true;
+        }
+        pick.appendChild(opt);
+      });
+      // the recommended one, failing that the first that could be fetched at all
+      const canDo = rows.find((v) => v.pick) || rows.find((v) => !v.why);
+      if (pick.dataset.chosen && rows.some((v) => String(v.id) === was)) pick.value = was;
+      else if (canDo) pick.value = canDo.id;
+      tint(pick);
+      st.rows = rows;
+      st.chosen = pick.value;
+      if (got.free != null) st.free = got.free;
+      paint();
+    };
+    let rows = rowsOf(answer);
+    if (!fetches && !rows.length) return paint();   // nothing to fetch: Request stands
+    if (rows.length) fill(rows, answer);
+    pick.onchange = () => { pick.dataset.chosen = "1"; st.chosen = pick.value; tint(pick); paint(); };
+    // the search behind that list: said while it runs, and the list drawn again with it
+    st.asking = true;
+    paint();
+    const newer = await ask(true);
+    st.asking = false;
+    if (!here()) return;
+    const fresher = rowsOf(newer);
+    if (fresher.length && !st.take && !st.starting && !o.state) fill(fresher, newer);
+    paint();
+  })();
   // a film on offer is still a film: what else is like it goes under it too
   moreLikeThis(m).then((box) => {
     if (!box) return;
     main.appendChild(box);
     if (box._fit) box._fit();       // once it is on the page, and not before
   });
-  // one poster for a film its pack carries more than once: the release is chosen here,
-  // and Download fetches the one chosen
-  // the pack's other releases of this film are in the menu of where to fetch it from,
-  // with the tracker's: no second list of them
-  const b = wrap.querySelector("#offerget");
-  const said = wrap.querySelector("#offersaid");
-  const pct = wrap.querySelector("#offerpct");
-  const stop = wrap.querySelector("#offercancel");
-  // Cancel asked once: the next press stops it
-  let packArmed = false;
-  // words: what the server says it is doing - looking for seeders, checking, adding it
-  const draw = (state, progress, why, mbit, eta, words) => {
-    const coming = state === "queued" || state === "downloading";
-    // across the poster too: how far, and how long is left
-    pct.style.display = coming ? "" : "none";
-    // which version is coming in, then how far: a percentage and Cancel alone said
-    // nothing about what was being fetched
-    pct.textContent = (o.version ? o.version + " · " : "") +
-      (state === "queued" ? "Queued" : Math.round((progress || 0) * 100) + "%") +
-      (eta != null && eta >= 0 ? " \u00b7 " + etaShort(eta) : "");
-    // the button itself stops it, as in the app: no second one beside it
-    stop.style.display = "none";
-    o.state = state;
-    b.disabled = state === "done" || (coming && !!o.tracker) ||
-      (!fetches && !coming && !!m.checking && !m.asked);         // nothing to press while it is asked
-    b.textContent = coming && !o.tracker && packArmed ? "Press again to cancel"
-      : coming && !o.tracker && words ? "✕ Cancel  ·  " + words
-      : (coming || state === "done") && words ? words
-      : coming && !o.tracker ?"\u2715 Cancel  \u00b7  " + (state === "queued"
-          ? "Queued" + (o.place ? " \u00b7 " + o.place + " ahead" : "")
-          : (o.version ? o.version + " · " : "") + Math.round((progress || 0) * 100) + "%" +
-            (mbit > 0 ? "  \u00b7  " + mbit.toFixed(1) + " Mbit/s" : ""))
-      : state === "downloading"
-      ? "Downloading " + (o.version ? o.version + " · " : "") +
-        Math.round((progress || 0) * 100) + "%" +
-        (mbit > 0 ? "  \u00b7  " + mbit.toFixed(1) + " Mbit/s" : "") +
-        (eta != null && eta >= 0 ? "  \u00b7  " + etaWords(eta) : "")
-      : state === "queued" ? "Queued" + (o.place ? " \u00b7 " + o.place + " ahead" : "")
-      : state === "done" ? "Downloaded - arriving"
-      // every download button says how big the thing is, and a version is chosen
-      // from the list below before anything starts
-      : fetches ? "⤓ Download" +
-          (o.size ? "  " + (o.size / 1e9).toFixed(1) + " GB" : "")
-      // the tracker not asked yet: Request is only for what it was asked about and lacks
-      : m.checking && !m.asked ? "Checking the tracker…"
-      : (m.asked ? "Requested" : "Request")
-        // and how many are waiting on it. One asking is the person reading this and
-        // needs no saying; several is the thing worth knowing before deciding what
-        // comes into the house.
-        + (Math.max(Number(m.asks || 0), m.asked ? 1 : 0) > 0
-             ? "  \u00b7  " + Math.max(Number(m.asks || 0), m.asked ? 1 : 0)
-             : "");
-    said.textContent = why || (o.who && coming ? "Asked for by " + o.who : "");
-  };
-  draw(o.state, o.progress, o.free != null && !o.state && o.size / 1e9 > o.free
-    ? "Not enough room on the download drive for this film" : "");
-  // drawn again once the tracker has answered: Checking becomes Request
-  b._redraw = () => draw(o.state, o.progress, "", o.mbit, o.eta, o.words);
-  if (o.refused) {
-    b.disabled = true;
-    b.textContent = "Cannot download";
-    said.textContent = o.refused;
-    return;
-  }
-  // while it comes in: read again every few seconds, until it is done or the page is left
-  const follow = async () => {
-    if (!document.body.contains(wrap)) return;
-    let now = null;
+  const post = async (url, body) => (await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) })).json();
+  // Download: the version chosen in the list - a release from the tracker, or the pack's
+  // own copy, which has no id - or the best as of now when nobody chose
+  const start = async () => {
+    st.note = "";
+    st.starting = true;
+    st.startedAt = Date.now();
+    paint();
+    if (st.rows.length && !pick.dataset.chosen) {
+      st.asking = true;
+      paint();
+      await takeBestNow(pick, m);
+      st.asking = false;
+      st.chosen = pick.value;
+    }
+    const id = st.rows.length ? pick.value : "";
+    let r;
     try {
-      now = items(await api("/library/metadata/" + m.ratingKey))[0];
+      r = id ? await post("/tracker/get", { id: id, title: m.title, year: m.year, key: m.ratingKey })
+             : await post("/torrents/get", { key: m.ratingKey });
     } catch (e) {
-      now = null;
+      r = { error: "The server did not answer" };
     }
-    // Come in: a film opens its own page in place of the offer. An episode turns the
-    // button into Play where it stands, so nobody sits waiting on a page that has
-    // already got what it was waiting for.
-    // a new release being fetched is still a title to ask for until it has arrived
-    if (now && !now.offered && !now.askable && now.ratingKey) {
-      if (now.type !== "episode") {
-        viewMovie(String(now.ratingKey));
-        return;
+    if (r && (r.taken || r.ok)) {
+      if (!id) {
+        // one film off the pack: its own progress from here
+        o.state = r.state || "queued";
+        o.progress = r.progress || 0;
+        st.starting = false;
+      } else if (r.state === "queued") {
+        st.note = "It starts when the ones before it are done";
       }
-      pct.style.display = "none";
-      stop.style.display = "none";
-      said.textContent = "Here now";
-      b.disabled = false;
-      b.textContent = "▶ Play";
-      b.onclick = () => play(now, 0, {});
-      return;
+      toast((r.state === "queued" ? "Queued " : "Downloading ") + m.title);
+      drawDownloadBanner();
+      paint();
+      watch();
+    } else {
+      st.starting = false;
+      st.note = (r && (r.error || r.why)) || "Could not download that one";
+      paint();
     }
-    const off = (now && now.offer) || null;
-    if (off) {
-      o.place = off.place || 0;
-      draw(off.state, off.progress, "", off.mbit, off.eta, off.words);
-      if (off.state !== "queued" && off.state !== "downloading" && off.state !== "done") return;
-    }
-    setTimeout(follow, 5000);
   };
-  if (o.state === "queued" || o.state === "downloading" || o.state === "done") {
-    draw(o.state, o.progress, "", o.mbit, o.eta, o.words);
-    setTimeout(follow, 5000);
-  }
-  stop.onclick = async () => {
-    stop.disabled = true;
-    let r = {};
+  const cancel = async (act) => {
+    b.disabled = true;
+    let r;
     try {
-      r = await (await fetch("/torrents/cancel", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: m.ratingKey }) })).json();
+      r = act === "cancel-take" ? await post("/tracker/cancel", { hash: st.take.hash })
+                                : await post("/torrents/cancel", { key: m.ratingKey });
     } catch (e) {
       r = { ok: false, why: "The server did not answer" };
     }
-    stop.disabled = false;
-    if (r.ok) {
-      draw("cancelled", 0, "Download cancelled");
+    if (r.ok === false || (act === "cancel-pack" && !r.ok)) {
+      st.note = r.why || "Could not cancel it";
+    } else {
+      if (act === "cancel-take") st.take = null;
+      else o.state = "cancelled";
+      st.note = "Download cancelled";
       toast("Cancelled " + m.title);
       drawDownloadBanner();
-    } else {
-      said.textContent = r.why || "Could not cancel it";
     }
+    paint();
   };
-  b.onclick = async () => {
-    // coming in from the pack: the press is about stopping it, once to ask
-    if ((o.state === "queued" || o.state === "downloading") && !o.tracker) {
-      if (!packArmed) {
-        packArmed = true;
-        b.textContent = "Press again to cancel";
-        setTimeout(() => { packArmed = false; }, 4000);
-        return;
-      }
-      packArmed = false;
-      return stop.onclick();
-    }
+  const request = async () => {
     b.disabled = true;
-    let r = {};
-    // one film off the pack, and the page follows it in from here
-    if (fetches) {
-      try {
-        r = await (await fetch("/torrents/get", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: m.ratingKey }) })).json();
-      } catch (e) {
-        r = { ok: false, why: "The server did not answer" };
-      }
-      if (r.ok) {
-        o.state = r.state || "queued";
-        draw(o.state, r.progress || 0, "");
-        toast("Downloading " + m.title);
-        drawDownloadBanner();
-        setTimeout(follow, 2000);
-      } else {
-        b.disabled = false;
-        said.textContent = r.why || "Could not start that download";
-      }
-      return;
-    }
+    let r;
     try {
-      r = await (await fetch("/requests", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: m.ratingKey, title: m.title, year: m.year,
-                               where: m.where || "" }) })).json();
+      r = await post("/requests", { key: m.ratingKey, title: m.title, year: m.year,
+                                    where: m.where || "" });
     } catch (e) {
       r = { error: "The server did not answer" };
     }
     if (r.asked || r.already) {
       m.asked = true;
       m.asks = Number((r.request && r.request.asks) || m.asks || 1);
-      b.textContent = "Requested  \u00b7  " + m.asks;
-      said.textContent = r.watchlisted
-        ? "Asked for, and on your watchlist."
-        : "Requested. It closes by itself once it can be downloaded.";
-      // where it can be looked for afterwards: asking is the end of what a viewer
-      // can do about a film, so it goes on their own list rather than nowhere
-      toast(r.watchlisted ? "Added to your watchlist"
-                          : "Already on your watchlist");
+      // the button saying Requested is the answer: no line under it (owner, 2026-11-11)
+      st.note = "";
+      // where it can be looked for afterwards: asking is the end of what a viewer can
+      // do about a film, so it goes on their own list rather than nowhere
+      toast(r.watchlisted ? "Added to your watchlist" : "Already on your watchlist");
     } else {
-      b.disabled = false;
-      said.textContent = r.error || "Could not ask for that just now";
+      st.note = r.error || "Could not ask for that just now";
     }
+    paint();
   };
+  // the one handler: what the press does is what the button says
+  b.onclick = () => {
+    const act = b.dataset.act;
+    if (act === "cancel-take" || act === "cancel-pack") {
+      // once to ask, again to stop
+      if (!st.armed) {
+        st.armed = true;
+        paint();
+        setTimeout(() => { st.armed = false; paint(); }, 4000);
+        return;
+      }
+      st.armed = false;
+      return cancel(act);
+    }
+    if (act === "start") return start();
+    if (act === "request") return request();
+    if (act === "play" && st.arrived) return play(st.arrived, 0, {});
+  };
+}
+
+
+/* What a film page's one download button says and does: from the pack's offer of it (o),
+   the tracker's take of it and the versions to choose from (st), and the film (m). act is
+   what a press does - cancel-take, cancel-pack, start, request, play - or none. */
+function offerButton(o, st, m, fetches) {
+  const pc = (p) => Math.round((p || 0) * 100) + "%";
+  const speed = (x) => (x > 0 ? "  \u00b7  " + x.toFixed(1) + " Mbit/s" : "");
+  const take = st.take;
+  if (st.arrived) return { label: "\u25b6 Play", disabled: false, act: "play" };
+  if (o.refused) return { label: "Cannot download", disabled: true, act: "none" };
+  if (take && !take.done) {
+    const how = take.words ? take.words
+      : (/^queued/.test(take.state || "") || (/^stalledDL/.test(take.state || "") && !take.progress)
+          ? "Queued" : "Downloading " + pc(take.progress)) + speed(take.mbit);
+    // a cancel only in the seconds before it starts: started, it finishes and seeds
+    if (!take.mayCancel) return { label: how, disabled: true, act: "none", take: true };
+    return { label: st.armed ? "Press again to cancel" : "\u2715 Cancel  \u00b7  " + how,
+             disabled: false, act: "cancel-take", take: true };
+  }
+  if ((take && take.done) || st.landing || o.state === "done") {
+    return { label: "Downloaded - arriving", disabled: true, act: "none", take: !!take };
+  }
+  if (o.state === "unpacking") return { label: "Unpacking " + pc(o.progress), disabled: true, act: "none" };
+  if (o.state === "queued" || o.state === "downloading") {
+    const line = o.words ? o.words : o.state === "queued"
+      ? "Queued" + (o.place ? " \u00b7 " + o.place + " ahead" : "")
+      : (o.version ? o.version + " · " : "") + pc(o.progress) + speed(o.mbit);
+    // a release from the tracker coming in as this film's offer: it finishes and seeds
+    if (o.tracker) {
+      return { label: o.words || o.state === "queued" ? line : "Downloading " + line +
+               (o.eta != null && o.eta >= 0 ? "  \u00b7  " + etaWords(o.eta) : ""),
+               disabled: true, act: "none" };
+    }
+    return { label: st.armed ? "Press again to cancel" : "\u2715 Cancel  \u00b7  " + line,
+             disabled: false, act: "cancel-pack" };
+  }
+  if (st.starting) return { label: "Starting the download…", disabled: true, act: "none" };
+  const rows = st.rows || [];
+  if (rows.length || fetches) {
+    const one = rows.find((v) => String(v.id) === String(st.chosen)) || rows[0] || null;
+    const size = one ? one.size : o.size;
+    const gb = size ? "  " + (one && !one.pack ? (size / 1073741824).toFixed(1) : (size / 1e9).toFixed(1)) + " GB" : "";
+    const free = st.free != null ? "  ·  " + st.free + " GB free" : "";
+    // the version chosen is already on the disk: nothing to press
+    if (one && one.have) return { label: "On disk" + gb, disabled: true, act: "none", here: true };
+    if (one && one.why) return { label: "Cannot download · " + one.why + free, disabled: true, act: "none", why: true };
+    return { label: "\u2913 Download" + gb + free, disabled: false, act: "start" };
+  }
+  // the tracker not asked yet: Request is only for what it was asked about and lacks
+  if (m.checking && !m.asked) return { label: "Checking the tracker…", disabled: true, act: "none" };
+  // and how many are waiting on it: one is the person reading this and goes unsaid
+  const asks = Math.max(Number(m.asks || 0), m.asked ? 1 : 0);
+  return { label: (m.asked ? "Requested" : "Request") + (asks > 0 ? "  \u00b7  " + asks : ""),
+           disabled: false, act: "request" };
 }
 
 /* Something downloading: a line beside the tabs, on every page, saying what, how far and
@@ -7630,6 +7525,7 @@ function tellMe(title, text, m) {
   }
   // and who is in it, each name a way into everything else they are in
   castRow(back.querySelector(".cast"), m || {});
+  actorCard(back.querySelector(".sheet"), m || {});
   // A step in the history of its own, so the mouse's back button closes it. Closed any
   // other way, the step is taken back first, and then whatever was pressed is done.
   history.pushState({ sheet: 1 }, "");
@@ -7718,9 +7614,85 @@ function castRow(box, m) {
     said.textContent = r.tag;
     b.appendChild(said);
     b.title = r.role ? r.tag + " as " + r.role : r.tag;
-    b.onclick = () => viewPerson(r);
+    b.onclick = () => searchPerson(r);
     box.appendChild(b);
   });
+}
+
+/* Beside Show more's words, the one of the cast the mouse is on, large: their portrait,
+   who they play, when and where they were born and the start of their biography. The first
+   of them until the mouse or the keys reach another (owner, 2026-11-11). A narrow window
+   has no room beside the words and goes without. */
+const PERSON_INFO = new Map();
+function actorCard(sheet, m) {
+  const list = (m.Role || []).filter((r) => (r.tag || "").trim());
+  if (!list.length || !sheet) return;
+  sheet.classList.add("withactor");
+  // held at the top of the window: the words about them grow and shrink with each name,
+  // and a box centred on the screen moved with them
+  if (sheet.parentElement) sheet.parentElement.classList.add("attop");
+  const card = document.createElement("aside");
+  card.className = "actorcard";
+  sheet.appendChild(card);
+  // who they are, under the row of names and over Close: the whole of it, not cut off
+  const about = document.createElement("div");
+  about.className = "actorabout";
+  const castBox = sheet.querySelector(".cast");
+  if (castBox) castBox.after(about); else sheet.appendChild(about);
+  let shown = null;
+  const show = (r) => {
+    if (!r || shown === r) return;
+    shown = r;
+    card.innerHTML = "";
+    const pic = document.createElement(r.thumb ? "img" : "div");
+    pic.className = "actorpic";
+    if (r.thumb) { pic.src = img(r.thumb, 300, 450); pic.alt = ""; }
+    else pic.textContent = String(r.tag).trim().slice(0, 1).toUpperCase();
+    const name = document.createElement("div");
+    name.className = "actorname";
+    name.textContent = r.tag;
+    card.append(pic, name);
+    if (r.role) {
+      const role = document.createElement("div");
+      role.className = "actorrole";
+      role.textContent = "as " + r.role;
+      card.appendChild(role);
+    }
+    about.innerHTML = "";
+    const fill = (i) => {
+      if (shown !== r || !i) return;
+      const born = personBorn(i.born, i.died, i.place);
+      about.innerHTML = (born || i.bio ? '<div class="actorwho">' + esc(r.tag) + "</div>" : "") +
+        (born ? '<div class="actorborn">' + esc(born) + "</div>" : "") +
+        (i.bio ? '<div class="actorbio">' + esc(i.bio) + "</div>" : "");
+    };
+    if (!r.id) return;
+    if (PERSON_INFO.has(r.id)) { fill(PERSON_INFO.get(r.id)); return; }
+    api("/library/personInfo", { person: r.id }).then((i) => {
+      PERSON_INFO.set(r.id, i || {});
+      fill(i);
+    }).catch(() => {});
+  };
+  show(list[0]);
+  sheet.querySelectorAll(".cast button").forEach((b, n) => {
+    b.addEventListener("mouseenter", () => show(list[n]));
+    b.addEventListener("focus", () => show(list[n]));
+  });
+}
+
+/* "Born 20 Jan 1966, Seattle", with when they died where they have: as the app says it. */
+function personBorn(born, died, place) {
+  const day = (iso) => {
+    const p = String(iso || "").split("-");
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const mo = Number(p[1]);
+    return p.length === 3 && mo >= 1 && mo <= 12 ? Number(p[2]) + " " + months[mo - 1] + " " + p[0] : String(iso);
+  };
+  const out = [];
+  if (born) out.push("Born " + day(born) + (place ? ", " + place : ""));
+  else if (place) out.push("From " + place);
+  if (died) out.push("Died " + day(died));
+  return out.join(" · ");
 }
 
 /* The people a search found, drawn like the cast row under a film: a face and a
@@ -7750,7 +7722,7 @@ function peopleRow(list) {
     said.textContent = name;
     b.appendChild(said);
     if (who.held) b.title = name + " - " + who.held + (who.held === 1 ? " film" : " films");
-    b.onclick = () => viewPerson(who);
+    b.onclick = () => searchPerson(who);
     box.appendChild(b);
   });
   return box;
@@ -7765,6 +7737,22 @@ function initial(name) {
 }
 
 /** Everything this house holds with one person in it. */
+/* An actor's face pressed: the ordinary search for their name, the name in the box so the
+   search reads as what it is, and silently only that person - by their number. */
+let SEARCH_PERSON = { q: "", id: 0 };
+function searchPerson(who) {
+  const name = String(who.tag || "").trim();
+  if (!name) return;
+  const go = () => {
+    SEARCH_PERSON = { q: name, id: who.id || 0 };
+    $("#search").value = name;
+    return viewSearch(name);
+  };
+  $("#back").classList.add("on");
+  pushView(go);
+  go();
+}
+
 async function viewPerson(who) {
   sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
   pageMoved();
@@ -8291,7 +8279,7 @@ async function linkedSeasonPacks(box, show, number, list, seasonKey) {
 // pack or as the tracker's own upload
 function versionTag(v) {
   if (v.tag) return v.tag;
-  return v.disk || v.have ? "On disk" : v.pack ? "In a pack here"
+  return v.disk || v.have ? "On disk" : v.pack ? (v.packShort || "In a pack here")
     : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker";
 }
 
@@ -8728,12 +8716,15 @@ async function viewShow(key, wantSeason, wantEpisode) {
     '<div class="sub">' + [s.year].filter(Boolean).map(esc).join(" &middot; ") + "</div>" +
     badgesRow([(s.childCount || seasons.length) + " seasons",
                s.leafCount ? s.leafCount + " episodes" : ""], s) +
-    '<p class="summary">' + esc(s.summary) + "</p>" +
+    // the plot pressable, with Show more: the whole text, the rating and who is in it,
+    // as a film's page has it
+    '<p class="summary tellme">' + esc(s.summary) + "</p>" +
     '<div class="actions"><span id="showmark"></span>' +
     '<select id="season"></select>' +
     '<span id="seasonbar"></span></div>' +
     '<div class="eplist" id="eplist"></div></div>';
   main.appendChild(wrap);
+  pressableText(wrap, s);
   showNow = s;
   // the whole programme, which is what somebody usually means by "later"
   const mark = $("#showmark");
@@ -11323,6 +11314,7 @@ document.querySelectorAll(".tab").forEach((t) => {
 let searchTimer;
 $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
+  SEARCH_PERSON = { q: "", id: 0 };          // words typed: an ordinary search
   const q = e.target.value.trim();
   // The cross in the box, or the last letter deleted: put back what was on screen
   // before the search. The box fires this with an empty value either way.
