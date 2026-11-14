@@ -1830,6 +1830,8 @@ function card(it, onDeck, coll) {
   // a live channel, or a group of them: a round card
   if (it.live || it.liveGroup) el.classList.add("live");
   el.dataset.key = String(it.ratingKey || "");
+  // come in since the Watchlist was last opened: its poster blinks there, as the tab did
+  if (WATCH_FRESH.has(el.dataset.key)) el.classList.add("fresh");
   const srv = srvOf(it);
   const isEp = it.type === "episode";
   // always the official vertical cover: an episode shows its season's poster where
@@ -4233,10 +4235,15 @@ async function saveCollection(body) {
 
 /* Something on this viewer's watchlist has come in since they last opened it - a film or
    a game they downloaded: the Watchlist tab blinks until it is opened. */
+//: on the Watchlist, the titles that made its tab blink: their posters blink in turn until
+//: the Watchlist is left, so it is plain which ones came in (owner, 2026-11-14)
+let WATCH_FRESH = new Set();
+let WATCH_KEYS = [];
 async function watchBlink() {
   let keys = [];
   try { keys = ((await (await fetch("/watchlist/blink")).json()).keys) || []; }
   catch (e) { keys = []; }
+  WATCH_KEYS = keys.map(String);
   const tab = document.querySelector('.tab[data-view="watchlist"]');
   if (tab) tab.classList.toggle("blink", keys.length > 0 && !tab.classList.contains("active"));
 }
@@ -4249,6 +4256,8 @@ async function viewWatchlist() {
   // the tab had asked is cleared too; the server writes only when there was something
   const blinking = document.querySelector('.tab.blink[data-view="watchlist"]');
   if (blinking) blinking.classList.remove("blink");
+  WATCH_FRESH = new Set(WATCH_KEYS);
+  WATCH_KEYS = [];
   fetch("/watchlist/seen", { method: "POST", headers: { "Content-Type": "application/json" },
                             body: "{}" }).catch(() => {});
   onResize = null;
@@ -5370,9 +5379,9 @@ function collectionForm(shelf) {
   const shown = document.createElement("div");
   shown.className = "note ruleeg";
   shown.innerHTML =
-    "<i>star wars</i> &mdash; both words, so only those films<br>" +
-    "<i>alien | predator</i> &mdash; either rule will do<br>" +
-    "<i>star trek | star wars</i> &mdash; two rules, each of two words<br>" +
+    "<i>night train</i> &mdash; both words, so only those films<br>" +
+    "<i>comet | harbour</i> &mdash; either rule will do<br>" +
+    "<i>night bus | night train</i> &mdash; two rules, each of two words<br>" +
     "excluding <i>resurrection</i> &mdash; that one is left out<br>" +
     "season <i>s3e34-s6e2</i> &mdash; only that stretch of a programme<br>" +
     "season excluding <i>s2</i> &mdash; the rest of it, without that season";
@@ -9179,6 +9188,8 @@ window.openKey = async function (key) {
 
 function go(view, keep) {
   tabBelow = "";
+  // the Watchlist left: nothing blinks there any more
+  if (view !== "watchlist") WATCH_FRESH = new Set();
   // another tab ends an edit: a form left open drew its shelf under the next one opened
   endCollectionEdit();
   sectionSeq++;   // a screen still loading draws nothing now, and its rows stop
@@ -13116,7 +13127,7 @@ if ($("#pl-audio")) {
 const QUALITY_SIZES = [[0, "Original"], [1080, "1080p"], [720, "720p"]];
 //: and how much line to use. 1080p looks like the file at eight or more; 720p is
 //: comfortable at four, and two is the figure that survives a bad hotel.
-const QUALITY_RATES = [[0, "Original"], [20, "20"], [12, "12"],
+const QUALITY_RATES = [[0, "Original"], [40, "40"], [20, "20"], [12, "12"],
                        [8, "8"], [5, "5"], [4, "4"], [2, "2"]];
 
 /**

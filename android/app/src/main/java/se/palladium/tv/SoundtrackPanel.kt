@@ -54,21 +54,22 @@ fun SoundtrackPanel(
             usePlatformDefaultWidth = false),
         modifier = Modifier.fillMaxWidth(0.8f),
         containerColor = Skin.Panel,
+        // sized as the Quality menu beside it, on both screens (owner, 2026-11-14)
         title = { Text("Soundtrack", color = Skin.Fg,
-                       fontSize = if (Api.device == "tv") 22.sp else 18.sp) },
+                       fontSize = if (Api.device == "tv") 18.sp else 17.sp) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (tracks.isEmpty()) {
                     Text("Nothing is known about this film's sound.",
                          color = Skin.Dim,
-                         fontSize = if (Api.device == "tv") 17.sp else 14.sp)
+                         fontSize = 14.sp)
                 }
                 if (tracks.size == 1) {
                     // it still opens: "which soundtrack am I hearing" is a fair
                     // question when the answer is "the only one there is"
                     Text("This film has one soundtrack.",
                          color = Skin.Dim,
-                         fontSize = if (Api.device == "tv") 16.sp else 13.sp,
+                         fontSize = 14.sp,
                          modifier = Modifier.padding(bottom = 10.dp))
                 }
                 tracks.forEach { t ->
@@ -87,7 +88,7 @@ private fun SoundRow(track: AudioTrack, on: Boolean, onPick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 3.dp)
+            .padding(vertical = if (Api.device == "tv") 1.dp else 2.dp)
             .clip(RoundedCornerShape(Skin.round(8.dp)))
             .background(if (on) Color(0x224A90F0) else Skin.Panel2)
             .border(if (focused) 2.dp else 0.dp,
@@ -96,17 +97,17 @@ private fun SoundRow(track: AudioTrack, on: Boolean, onPick: () -> Unit) {
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onPick)
-            .padding(horizontal = if (Api.device == "tv") 20.dp else 14.dp,
-                     vertical = if (Api.device == "tv") 16.dp else 11.dp),
+            .padding(horizontal = if (Api.device == "tv") 16.dp else 12.dp,
+                     vertical = if (Api.device == "tv") 5.dp else 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(track.label, color = if (on) Skin.Accent else Skin.Fg,
-             fontSize = if (Api.device == "tv") 19.sp else 15.sp,
+             fontSize = if (Api.device == "tv") 15.sp else 13.5.sp,
              modifier = Modifier.weight(1f))
         if (on) {
             Spacer(Modifier.width(10.dp))
             Text("playing", color = Skin.Accent,
-                 fontSize = if (Api.device == "tv") 15.sp else 12.sp)
+                 fontSize = if (Api.device == "tv") 13.sp else 11.sp)
         }
     }
 }

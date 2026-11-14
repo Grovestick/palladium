@@ -658,6 +658,50 @@ object Api {
     }
 
     /**
+     * How long a film the line stepped down waits before trying to climb back, in
+     * milliseconds: Route.LINE_UP_AFTER, or for testing `adb shell setprop
+     * debug.palladium.lineup SECONDS` before the player opens. Read per player.
+     */
+    fun lineUpAfter(): Long = runCatching {
+        (Class.forName("android.os.SystemProperties")
+            .getMethod("get", String::class.java)
+            .invoke(null, "debug.palladium.lineup") as String).toLong() * 1000
+    }.getOrNull()?.takeIf { it > 0 } ?: Route.LINE_UP_AFTER
+
+    /**
+     * What this line can bring right now, in Mbit/s: a burst of the film's own file read
+     * as fast as it comes for a few seconds, on top of whatever is already arriving. A film
+     * stepped down to a small rate only ever receives that rate, so the line's room can
+     * only be seen by asking for more. 0 when it could not be measured.
+     */
+    suspend fun lineMbit(m: Media, seconds: Double = 3.0, most: Long = 24L shl 20): Double =
+        withContext(Dispatchers.IO) {
+            val part = m.partKey ?: return@withContext 0.0
+            val tok = m.srv?.token ?: token
+            runCatching {
+                val conn = Net.open(addressOf(m.srv) + "/local" + auth(part, tok), 4000, 8000, tok)
+                conn.setRequestProperty("Range", "bytes=0-" + (most - 1))
+                val began = System.nanoTime()
+                var got = 0L
+                try {
+                    conn.inputStream.use { inp ->
+                        val buf = ByteArray(64 shl 10)
+                        while (got < most) {
+                            val n = inp.read(buf)
+                            if (n < 0) break
+                            got += n
+                            if ((System.nanoTime() - began) / 1e9 >= seconds) break
+                        }
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+                val secs = (System.nanoTime() - began) / 1e9
+                if (secs > 0.3 && got > (1L shl 20)) got * 8 / 1e6 / secs else 0.0
+            }.getOrDefault(0.0)
+        }
+
+    /**
      * The picture through a texture, for recording it: set with
      * `adb shell setprop debug.palladium.texture 1` before the player opens. The TV draws
      * film on a hardware layer no screen recording sees; a texture it does. Read per player.
@@ -2665,11 +2709,12 @@ object Api {
         }.getOrDefault(emptyList())
     }
 
-    /** How many titles on this viewer's watchlist have come in since they last opened it. */
-    suspend fun watchBlink(): Int = withContext(Dispatchers.IO) {
+    /** The titles on this viewer's watchlist that have come in since they last opened it. */
+    suspend fun watchBlink(): Set<String> = withContext(Dispatchers.IO) {
         runCatching {
-            JSONObject(get("/watchlist/blink")).optJSONArray("keys")?.length() ?: 0
-        }.getOrDefault(0)
+            val arr = JSONObject(get("/watchlist/blink")).optJSONArray("keys") ?: JSONArray()
+            (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }.toSet()
+        }.getOrDefault(emptySet())
     }
 
     /** A rip of a remux into a 1080p x264 copy beside it, made on the main server. */
@@ -3515,7 +3560,11 @@ object Api {
             (if (!playable) "codecs=" + m.videoCodec + "/" + m.audioCodec + " " else "") +
             (if (!hasPart) "no part " else "") +
             "(mi=" + m.mi + ")")
-        val extra = (if (takesHevc()) "&hevc=1" else "") +
+        // the file itself, so a reorder of the versions cannot hand a reopened stream
+        // another one, with other tracks (2026-11-14)
+        val part = m.partKey?.let { Regex("/parts/(\\d+)").find(it)?.groupValues?.get(1) }
+        val extra = (if (part != null) "&part=" + part else "") +
+                    (if (takesHevc()) "&hevc=1" else "") +
                     (if (dtsOk == true) "&dts=1" else "") +
                     (if (burnIndex != null) "&burn=" + burnIndex else "") +
                     (if (audioIndex != null) "&atrack=" + audioIndex else "") +
@@ -3542,16 +3591,20 @@ object Api {
         // beside it
         val moved = if (shift == 0f) ""
                     else "&shift=" + String.format(java.util.Locale.US, "%.2f", shift)
+        // and its file, as the stream names it: a track number means nothing in another
+        val part = m.partKey?.let { Regex("/parts/(\\d+)").find(it)?.groupValues?.get(1) }
         return b + auth("/gpu/subs?src=local&key=" + m.ratingKey +
                 "&index=" + streamIndex + "&offset=" + offsetSec +
-                "&mi=" + m.mi + moved, t)
+                "&mi=" + m.mi + (if (part != null) "&part=" + part else "") + moved, t)
     }
 
     /** Where an encoded stream will start, in film seconds, and whether its picture
      *  goes through as it is; null when the server cannot say. Blocking: asked off the
      *  main thread, with a short patience. */
-    fun encodeStart(streamUrl: String): Pair<Double, Boolean>? = try {
-        val conn = Net.open(streamUrl.replace("/gpu/stream?", "/gpu/begins?"), 1500, 1500)
+    fun encodeStart(streamUrl: String, patient: Boolean = false): Pair<Double, Boolean>? = try {
+        // patient: asked again after the stream has opened, when nobody waits on it
+        val conn = Net.open(streamUrl.replace("/gpu/stream?", "/gpu/begins?"),
+                            if (patient) 8000 else 1500, if (patient) 20000 else 1500)
         try {
             val o = JSONObject(conn.inputStream.bufferedReader().readText())
             Pair(o.optDouble("at", -1.0), o.optBoolean("copy", false))

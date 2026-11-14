@@ -219,23 +219,44 @@ def file_double(path, season=None):
     return (a, b) if b == a + 1 else None
 
 
-def doubles_map(episodes):
+def doubles_map(episodes, files=None):
     """A release's numbers -> the catalogue's, for a season where the release counts each
     double episode as two and the catalogue as one: walking the catalogue's episodes in
     order, one far longer than the rest takes two numbers, any other one. A sitcom's
-    fourth season: the release's E03E04 is the catalogue's E02, its E09 the E05."""
+    fourth season: the release's E03E04 is the catalogue's E02, its E09 the E05.
+
+    files, {release number: (named as a double, seconds)}, is what the release itself
+    says, and it is asked before the length: a long episode the release holds as one
+    file under one number - not "E25E26", and as long as the catalogue's episode - took
+    one number there. Counted as two by its length alone, a 37-minute farewell put every
+    later title one place behind its file (2026-11-14)."""
     eps = sorted((e for e in episodes or [] if e.get("episode_number")),
                  key=lambda e: int(e["episode_number"]))
     times = sorted(int(e.get("runtime") or 0) for e in eps if e.get("runtime"))
     if not eps or not times:
         return {}
     usual = times[len(times) // 2]
+    files = files or {}
     out, at = {}, 1
     for e in eps:
-        span = 2 if usual and int(e.get("runtime") or 0) >= usual * 1.6 else 1
+        runtime = int(e.get("runtime") or 0)
+        span = 2 if usual and runtime >= usual * 1.6 else 1
+        held = files.get(at)
+        if span == 2 and held and not held[0] and held[1] >= runtime * 60 * 0.75:
+            span = 1                      # the whole of it in one file, under one number
         for k in range(span):
             out[at + k] = int(e["episode_number"])
         at += span
+    return out
+
+
+def release_files(rows, season):
+    """What a season's files say, for doubles_map: {first number: (a double, seconds)}."""
+    out = {}
+    for r in rows:
+        n = file_episode(r["path"], season)
+        if n:
+            out[n] = (bool(file_double(r["path"], season)), float(r["duration"] or 0))
     return out
 
 
@@ -318,6 +339,23 @@ def same_title(said, want):
         return True
     import difflib
     return difflib.SequenceMatcher(None, a, b).ratio() > 0.88
+
+
+def episode_year(path):
+    """The year a release puts between a series' name and its episode marker, or None:
+    "ONE.PIECE.2023.S01E01" is the 2023 series, not the 1999 one that shares its name.
+    Thrown away, the popular one of the two was matched (2026-11-14)."""
+    base = os.path.basename(path)
+    for pat in EPISODE_PATTERNS:
+        m = pat.search(base)
+        if not m:
+            continue
+        before = re.search(r"(?:^|[ ._\-(\[])((?:19|20)\d\d)[)\]]?[ ._\-]*$", base[:m.start()])
+        # a name before it: "1923.S01E01" is a series called 1923, not one from that year
+        if not before or not re.search(r"[A-Za-z]", base[:before.start(1)]):
+            return None
+        return int(before.group(1))
+    return None
 
 
 def parse_episode(path):
@@ -545,8 +583,12 @@ def arrived_at(ctime, mtime, now):
     return int(max(ctime, min(mtime, now)))
 
 
-def title_key(kind, title, year):
+def title_key(kind, title, year, apart=0):
     """The key for a film or a programme, from what it is rather than when it arrived.
+
+    `apart` is the catalogue entry of a file set apart from another title of the same
+    name and year: a second film called the same in the same year would otherwise share
+    the first one's key, and its length and versions with it.
 
     Both machines scan the same films and flatten the same titles, so both arrive at
     the same key without asking each other. That is the whole point of it: a copy can
@@ -556,6 +598,8 @@ def title_key(kind, title, year):
     import hashlib
     plain = flatten_title(title)
     seed = "%s|%s|%s" % (kind, plain, int(year or 0))
+    if apart:
+        seed += "|tmdb:%d" % int(apart)
     whole = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     # never starting with an e. An episode is told from a title by that letter in
     # three dozen places, and twelve hex digits begin with one once in sixteen - so a
@@ -1681,7 +1725,7 @@ class Library:
         return None
 
     def _index_file(self, con, kind, path, st, reset_probe=True, moved_from=None,
-                    known=False):
+                    known=False, afresh=False):
         """What a file is comes from the list its folder is in.
 
         A series folder yields episodes, taking the season from the folder when the
@@ -1700,6 +1744,8 @@ class Library:
         music = is_music_video(path)
         parsed = None if music else             (told[0], told[1], told[2]) if told else parse_episode(path)
         show_year = None
+        if parsed and not told and not music:
+            show_year = episode_year(path)          # a year in the name tells same-named series apart
         if parsed is None and not music:
             parsed = episode_from_folders(path)       # equally unambiguous
         if parsed is None and not music:
@@ -1739,8 +1785,12 @@ class Library:
             if not title:
                 return
             had = con.execute("SELECT item_id FROM file WHERE path=?", (path,)).fetchone()
-            item_id = self._upsert_item(con, "movie", title, year,
-                                        stay=had["item_id"] if had else None)
+            apart = 0 if music else self.apart_of(path)
+            # afresh: filed by its name alone, not kept where it was - a file taken back
+            # from being set apart would otherwise stay under the title made for it
+            item_id = (self._apart_item(con, title, year, apart) if apart else
+                       self._upsert_item(con, "movie", title, year,
+                                         stay=had["item_id"] if had and not afresh else None))
             if music:
                 # never looked up on the catalogue; its cover beside it is its poster
                 cover = music_cover(path)
@@ -1823,6 +1873,8 @@ class Library:
         music = is_music_video(path)
         parsed = None if music else (told[0], told[1], told[2]) if told else parse_episode(path)
         show_year = None
+        if parsed and not told and not music:
+            show_year = episode_year(path)          # a year in the name tells same-named series apart
         if parsed is None and not music:
             parsed = episode_from_folders(path)
         if parsed is None and not music:
@@ -1843,7 +1895,104 @@ class Library:
                        else parse_movie(path))
         if not title:
             return ""
+        apart = 0 if music else self.apart_of(path)
+        if apart:
+            return title_key("movie", title, year, apart)
         return self.item_key_would_be(con, "movie", title, year)
+
+    #: the library config's "apart" list as last read: (config's mtime, {name: tmdb id})
+    _apart_read = (None, {})
+
+    def apart_list(self):
+        """Files set apart from a same-named title: lower-case file name -> TMDB id.
+        Read again only when the config file changes - this is asked once a file."""
+        try:
+            at = os.path.getmtime(self.cfgpath)
+        except OSError:
+            return {}
+        if self._apart_read[0] != at:
+            raw = (self.config() or {}).get("apart") or {}
+            plain = {}
+            for name, tmdb in (raw.items() if isinstance(raw, dict) else []):
+                try:
+                    plain[str(name).lower()] = int(tmdb)
+                except (TypeError, ValueError):
+                    pass
+            self._apart_read = (at, plain)
+        return self._apart_read[1]
+
+    def apart_of(self, path):
+        """The TMDB id this file was set apart as, or 0."""
+        return self.apart_list().get(os.path.basename(str(path or "")).lower(), 0)
+
+    def apart_ids(self, con):
+        """The items made for files set apart: nothing else is filed under them."""
+        tmdbs = sorted(set(self.apart_list().values()))
+        if not tmdbs:
+            return set()
+        return {str(r["id"]) for r in con.execute(
+            "SELECT id FROM item WHERE type='movie' AND tmdb_id IN (%s)"
+            % ",".join("?" * len(tmdbs)), tmdbs)}
+
+    def _apart_item(self, con, title, year, tmdb):
+        """The item of a file set apart: its own key, and the catalogue entry it was
+        named as, so identification takes that entry rather than the popular one."""
+        mine = title_key("movie", title, year, tmdb)
+        sort = re.sub(r"^(the|a|an)\s+", "", (title or "").lower()).strip()
+        con.execute("INSERT OR IGNORE INTO item "
+                    "(id, type, title, sort_title, year, added, identified, tmdb_id) "
+                    "VALUES (?,?,?,?,?,0,0,?)", (mine, "movie", title, sort, year, int(tmdb)))
+        return mine
+
+    def set_apart(self, name, tmdb):
+        """Set a file apart as this TMDB entry (0 takes it back). By file name only:
+        both machines hold the file under the same name, whatever the folder."""
+        name = os.path.basename(str(name or "")).lower()
+        if not name:
+            return False
+        cfg = self.config()
+        apart = dict(cfg.get("apart") or {})
+        if tmdb:
+            apart[name] = int(tmdb)
+        else:
+            apart.pop(name, None)
+        cfg["apart"] = apart
+        self.save_config(cfg)
+        self._apart_read = (None, {})
+        return True
+
+    def refile(self, name):
+        """File every copy of this name again - set apart, or back with its title -
+        and match a title made for it to its entry. (key before, key after) a file."""
+        name = os.path.basename(str(name or "")).lower()
+        cfg = self.config()
+        folders = ([(f, "movie") for f in cfg.get("movies", [])] +
+                   [(f, "show") for f in cfg.get("tv", [])] +
+                   [(f, "mixed") for f in cfg.get("mixed", [])])
+        con = self.db()
+        moved = []
+        try:
+            for row in con.execute("SELECT id, path, item_id, size, mtime FROM file").fetchall():
+                if os.path.basename(row["path"]).lower() != name:
+                    continue
+                st = types.SimpleNamespace(st_size=row["size"], st_mtime=row["mtime"])
+                kind = self.kind_for(row["path"], folders) or "mixed"
+                self._index_file(con, kind, row["path"], st, reset_probe=False,
+                                 moved_from=row["item_id"], known=True, afresh=True)
+                now = con.execute("SELECT item_id FROM file WHERE id=?", (row["id"],)).fetchone()
+                moved.append((str(row["item_id"]), str(now["item_id"]) if now else ""))
+            con.execute("DELETE FROM item WHERE id NOT IN (SELECT DISTINCT item_id FROM file)")
+            for _, key in moved:
+                item = con.execute("SELECT * FROM item WHERE id=?", (key,)).fetchone()
+                if item and not item["identified"] and item["tmdb_id"]:
+                    try:
+                        self.apply_match(con, item, "movie", int(item["tmdb_id"]))
+                    except Exception:
+                        pass                    # identification picks it up later
+            con.commit()
+        finally:
+            con.close()
+        return moved
 
     def _match_item(self, con, kind, title, year, stay=None):
         """The item already here that a file of this title joins, or None."""
@@ -1852,13 +2001,17 @@ class Library:
         # year met on it and became one film. A name that only differs by it is a
         # new item; if it is the same film, the merge by TMDB id folds it back.
         art = self._article(title)
-        same = lambda other: self._article(other["title"]) == art
+        # and never a title made for a file set apart: that one is another film
+        apart = self.apart_ids(con) if kind == "movie" else set()
+        same = lambda other: (self._article(other["title"]) == art
+                              and str(other["id"]) not in apart)
         # a file already filed under a title of that name stays: TMDB's title may add
         # or drop the article the filename has, and that was settled when it was filed
         if stay:
             held = con.execute("SELECT id, sort_title FROM item WHERE id=? AND type=? AND "
                                "(year IS ? OR year=?)", (stay, kind, year, year)).fetchone()
-            if held and flatten_title(held["sort_title"] or "") == flatten_title(sort):
+            if (held and flatten_title(held["sort_title"] or "") == flatten_title(sort)
+                    and str(held["id"]) not in apart):
                 return held["id"]
         # A filename for an episode carries no year and the catalogue's row does:
         # "its.always.sunny.s18e05" against a programme filed under 2005. Matched on
@@ -1897,6 +2050,15 @@ class Library:
         # its own, with no air date and nothing in Recently released. With no year to
         # go on, the title is enough; the identified row wins, so the episodes land
         # where the posters and the air dates already are.
+        # A year on an episode's file and the catalogue's year for the series can be a year
+        # apart - a series first shown in the December before its release year - so a
+        # series of that name and year, give or take one, is the one.
+        if plain and year is not None and kind == "show":
+            for other in con.execute(
+                    "SELECT id, title, sort_title, year FROM item WHERE type=? AND year BETWEEN ? AND ?",
+                    (kind, int(year) - 1, int(year) + 1)):
+                if flatten_title(other["sort_title"] or "") == plain and same(other):
+                    return other["id"]
         if plain and year is None:
             best = None
             for other in con.execute(
@@ -2402,6 +2564,11 @@ class Library:
 
     def _identify(self, con, row):
         kind = "movie" if row["type"] == "movie" else "tv"
+        # a file set apart came with its entry named: a search would find the popular
+        # film of that name, the one it was set apart from
+        if kind == "movie" and row["tmdb_id"]:
+            self.apply_match(con, row, kind, int(row["tmdb_id"]))
+            return
         q = {"query": row["title"]}
         if row["year"] and kind == "movie":
             q["year"] = row["year"]
@@ -2713,11 +2880,11 @@ class Library:
                 eps = self.tmdb("/tv/%s/season/%s" % (said["tmdb_id"], season)).get("episodes") or []
             except Exception:
                 eps = []
-        to = doubles_map(eps) or {}
         named = {int(e["episode_number"]): e for e in eps if e.get("episode_number")}
-        rows = con.execute("""SELECT f.id fid, f.path, e.id eid, e.number FROM file f
+        rows = con.execute("""SELECT f.id fid, f.path, f.duration, e.id eid, e.number FROM file f
                               JOIN episode e ON e.id=f.episode_id
                               WHERE e.item_id=? AND e.season=?""", (item_id, season)).fetchall()
+        to = doubles_map(eps, release_files(rows, season)) or {}
         by_number = {r["number"]: r["id"] for r in con.execute(
             "SELECT id, number FROM episode WHERE item_id=? AND season=?", (item_id, season))}
         moved, keys, used = 0, {}, set()

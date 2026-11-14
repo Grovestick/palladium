@@ -289,6 +289,68 @@ def beside(video, language):
     return "%s.ai-gen.%s.srt" % (os.path.splitext(video)[0], language.lower()[:2])
 
 
+#: what a saved job carries: enough to start it again
+SAVED_KEYS = ("video", "language", "out", "copies", "file", "key", "names", "title")
+
+
+def saved_path():
+    """The jobs not finished, on disk: an install restarts the server, and a film's
+    subtitle half an hour in the making was dropped with it at the minutes written."""
+    return os.path.join(where_data(), "ai-subs-jobs.json")
+
+
+def _save():
+    with LOCK:
+        jobs = ([STATE["on"]] if STATE["on"] else []) + list(STATE["queued"])
+        keep = [{k: j.get(k) for k in SAVED_KEYS} for j in jobs]
+    try:
+        tmp = saved_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(keep, f)
+        os.replace(tmp, saved_path())
+    except OSError:
+        pass
+
+
+def resume():
+    """The jobs a server before this one left unfinished, back in line; the worker on each
+    carries on from the minutes already written. How many were put back."""
+    try:
+        with open(saved_path(), encoding="utf-8") as f:
+            jobs = json.load(f)
+    except (OSError, ValueError):
+        return 0
+    back = 0
+    for one in jobs if isinstance(jobs, list) else []:
+        if not isinstance(one, dict) or not one.get("out") or not os.path.exists(one.get("video") or ""):
+            continue
+        job = dict(one, at=0.0, what="waiting", when=int(time.time()), resume=True)
+        with LOCK:
+            if (STATE["on"] and STATE["on"]["out"] == job["out"]) or any(
+                    j["out"] == job["out"] for j in STATE["queued"]):
+                continue
+            STATE["queued"].append(job)
+        WAITING.put(job)
+        back += 1
+    if back:
+        start()
+    return back
+
+
+def _stop_leftover(out):
+    """A worker on this same file from before a restart, stopped: two would write it."""
+    try:
+        import psutil
+        for p in psutil.process_iter(["cmdline"]):
+            line = p.info.get("cmdline") or []
+            if any(str(a).endswith("pd_subs_make.py") for a in line) and out in line:
+                for kid in p.children(recursive=True):
+                    kid.kill()
+                p.kill()
+    except Exception:
+        pass
+
+
 def ask(video, language, title="", copies=(), key="", names=()):
     """Put a film in the queue. Returns what to tell the caller.
 
@@ -317,15 +379,16 @@ def ask(video, language, title="", copies=(), key="", names=()):
                "title": title, "at": 0.0, "what": "waiting", "when": int(time.time())}
         STATE["queued"].append(job)
     WAITING.put(job)
+    _save()
     start()
     return {"started": True, "state": look()}
 
 
-def stop(out=""):
+def stop(out="", why="stopped"):
     """Stop the job in hand, or take one out of the queue.
 
     Without a name it stops whatever is running, which is what a person pressing Stop
-    means. The worker is killed with its children: it has an ffmpeg of its own reading
+    means; `why` is what the job then says - the boss stopping a silent one says so. The worker is killed with its children: it has an ffmpeg of its own reading
     the soundtrack, and that would otherwise carry on alone.
     """
     with LOCK:
@@ -336,11 +399,12 @@ def stop(out=""):
                 job["ok"], job["what"] = False, "taken out of the queue"
                 STATE["queued"] = [j for j in STATE["queued"] if j is not job]
                 STATE["done"] = (STATE["done"] + [job])[-KEEP:]
+            _save()
             return {"stopped": bool(waiting)}
         proc = RUNNING.get("proc")
     if not on or not proc:
         return {"stopped": False}
-    on["what"] = "stopped"
+    on["what"], on["stopped"] = why, True
     try:
         import psutil
         me = psutil.Process(proc.pid)
@@ -366,13 +430,55 @@ def look():
                 "can": can}
 
 
+#: the helper's thread, by name, for the boss to find
+THREAD = "palladium-ai-subs"
+
+
+def alive():
+    """Whether the helper's thread is running."""
+    return any(t.name == THREAD and t.is_alive() for t in threading.enumerate())
+
+
+def revive():
+    """The helper started again if it has work and its thread has gone. Whether it was."""
+    global STARTED
+    with LOCK:
+        work = bool(STATE["on"] or STATE["queued"])
+    if not work or alive():
+        return False
+    with LOCK:
+        STARTED = False
+    start()
+    return True
+
+
+def retry(job):
+    """A failed job back in line, once more: it carries on from the minutes written."""
+    with LOCK:
+        STATE["done"] = [j for j in STATE["done"] if j is not job]
+        again = {k: job.get(k) for k in SAVED_KEYS}
+        again.update(at=0.0, what="waiting", when=int(time.time()), resume=True,
+                     tries=int(job.get("tries") or 0) + 1)
+        STATE["queued"].append(again)
+    WAITING.put(again)
+    _save()
+    start()
+    return again
+
+
+def clear(job):
+    """A finished job taken off the list."""
+    with LOCK:
+        STATE["done"] = [j for j in STATE["done"] if j is not job]
+
+
 def start():
     global STARTED
     with LOCK:
         if STARTED:
             return
         STARTED = True
-    threading.Thread(target=_work, daemon=True).start()
+    threading.Thread(target=_work, name=THREAD, daemon=True).start()
 
 
 def _work():
@@ -381,6 +487,8 @@ def _work():
         with LOCK:
             STATE["queued"] = [j for j in STATE["queued"] if j is not job]
             STATE["on"] = job
+            job["moved"] = time.time()
+        _save()
         try:
             _run(job)
         except Exception as e:
@@ -390,6 +498,7 @@ def _work():
             STATE["on"] = None
             job["finished"] = int(time.time())
             STATE["done"] = (STATE["done"] + [job])[-KEEP:]
+        _save()
 
 
 def _run(job):
@@ -439,6 +548,9 @@ def _run(job):
     if os.environ.get("PALLADIUM_DATA"):
         air["PALLADIUM_DATA"] = os.environ["PALLADIUM_DATA"]
     air["PALLADIUM_NAMES"] = json.dumps(job.get("names") or [])
+    if job.get("resume"):
+        air["PALLADIUM_RESUME"] = "1"
+    _stop_leftover(job["out"])
     # -P: the script's folder stays off the path, so nothing of ours is imported by
     # accident. cwd is the data folder for the same reason.
     proc = subprocess.Popen([python, "-P", script,
@@ -461,18 +573,26 @@ def _run(job):
             proc.wait(timeout=10)
         except Exception:
             pass
-    if job.get("what") == "stopped":
+    if job.get("stopped"):
         job["ok"] = False
         return
     if "ok" not in job:
         job["ok"] = proc.returncode == 0
         if not job["ok"]:
-            job["what"] = last[:160] or "the model stopped without saying why"
+            job["what"] = crash_words(last, proc.returncode)
     for other in job.get("copies") or []:
         try:
             shutil.copyfile(job["out"], other)
         except OSError:
             pass
+
+
+def crash_words(last, code):
+    """What to say when the worker ended without an answer: its last line if that is words,
+    not a progress bar - "Loading weights: 0%|..." was shown to a person as the reason."""
+    if last and "%|" not in last and not last.startswith("P "):
+        return last[:160]
+    return "the subtitle maker stopped part-way (exit %s)" % code
 
 
 def _read(proc, job):
@@ -483,6 +603,7 @@ def _read(proc, job):
         if not line:
             continue
         last = line
+        job["moved"] = time.time()
         # as soon as there is a file, say so: it grows while the rest is written and
         # a player can be watching it already
         if not job.get("file") and os.path.exists(job["out"]):
@@ -510,5 +631,6 @@ def _read(proc, job):
             job["at"], job["ok"], job["what"] = 1.0, True, "done"
             job["file"] = os.path.basename(job["out"])
         elif line.startswith("NO "):
-            job["ok"], job["what"] = False, line[3:]
+            # an answer about the film, not a fault: nothing to try again
+            job["ok"], job["what"], job["answer"] = False, line[3:], True
     return last

@@ -467,6 +467,32 @@ def write_srt(out, times, words):
     os.replace(tmp, out)
 
 
+def progress_file(out):
+    return out + ".at"
+
+
+def keep_progress(out, at, spoken, times, words):
+    """How far this worker has got, beside the subtitle: the next worker, after the server
+    was restarted part-way through a film, starts there rather than at the beginning."""
+    tmp = progress_file(out) + ".part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"at": at, "spoken": spoken, "times": times, "words": words}, f)
+    os.replace(tmp, progress_file(out))
+
+
+def progress_of(out):
+    """(at, spoken, times, words) as a worker before this one left them, or nothing done."""
+    try:
+        with open(progress_file(out), encoding="utf-8") as f:
+            got = json.load(f)
+        if os.path.exists(out):
+            return (float(got["at"]), str(got.get("spoken") or ""),
+                    [tuple(t) for t in got["times"]], [str(w) for w in got["words"]])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return 0.0, "", [], []
+
+
 #: The languages Whisper names, in NLLB's own codes. A Swedish subtitle is translated
 #: straight from the language spoken, not through English: a translation of a
 #: translation loses twice. A language missing here is one NLLB does not carry.
@@ -512,14 +538,29 @@ def route(want, spoken):
     return None
 
 
-def into_swedish(lines, times=None, out=None, source="eng_Latn"):
-    """Into Swedish from `source` (an NLLB code), a cue at a time, with NLLB."""
+#: the translation model, loaded once for the job, and its tokenizer for each language
+#: spoken. It was loaded again for every ten minutes of film and never let go: the third
+#: copy ran the machine out of memory a fifth of the way through (2026-11-13).
+NLLB_HELD = {"model": None, "tok": {}}
+
+
+def nllb(source):
+    """(tokenizer, model) for translating from `source`, the model loaded the first time."""
     import torch
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     name = plain_copy("facebook/nllb-200-distilled-1.3B", "tokenizer.json")
-    tok = AutoTokenizer.from_pretrained(name, src_lang=source)
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        name, dtype=torch.float16).to("cuda").eval()
+    if source not in NLLB_HELD["tok"]:
+        NLLB_HELD["tok"][source] = AutoTokenizer.from_pretrained(name, src_lang=source)
+    if NLLB_HELD["model"] is None:
+        NLLB_HELD["model"] = AutoModelForSeq2SeqLM.from_pretrained(
+            name, dtype=torch.float16).to("cuda").eval()
+    return NLLB_HELD["tok"][source], NLLB_HELD["model"]
+
+
+def into_swedish(lines, times=None, out=None, source="eng_Latn"):
+    """Into Swedish from `source` (an NLLB code), a cue at a time, with NLLB."""
+    import torch
+    tok, model = nllb(source)
     swedish = tok.convert_tokens_to_ids("swe_Latn")
     done = []
     # in batches, because one cue at a time spends its life starting the model up
@@ -635,9 +676,15 @@ def main():
     hints = ", ".join(dict.fromkeys(NAMES))[:300] or None
     whole = how_long(video)
     began = time.time()
-    times, words = [], []
-    spoken = ""
-    at = 0.0
+    # put back in line by a restarted server: on from the minutes already written
+    if os.environ.get("PALLADIUM_RESUME"):
+        at, spoken, times, words = progress_of(out)
+    else:
+        at, spoken, times, words = 0.0, "", [], []
+        try:
+            os.remove(progress_file(out))         # an earlier run's, of this same file
+        except OSError:
+            pass
     reader, wav = start_reading(video)
     try:
         while True:
@@ -725,6 +772,7 @@ def main():
             if words:
                 write_srt(out, times, words)
             at += STRETCH
+            keep_progress(out, at, spoken, times, words)
     finally:
         if reader.poll() is None:
             reader.kill()
@@ -738,6 +786,10 @@ def main():
         return 1
     say(0.99, "writing it out")
     write_srt(out, times, words)
+    try:
+        os.remove(progress_file(out))
+    except OSError:
+        pass
     print("OK %s %d lines in %.0f s" % (out, len(words), time.time() - began),
           flush=True)
     return 0

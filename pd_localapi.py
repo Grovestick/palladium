@@ -22,6 +22,16 @@ from pd_search import (EPISODE_CODE, episode_code, title_and_year, match_rank,
                        not_shown_yet, closest_first)
 from pd_library import edition_of, is_episode, is_title
 
+def shelf_on(shuffles, key):
+    """The shuffle whose round is on this title now - the last it drew, not finished - or ""."""
+    for cid, round_now in (shuffles or {}).items():
+        if isinstance(round_now, dict):
+            played = [str(k) for k in round_now.get("played") or []]
+            if played and played[-1] == str(key) and played[-1] != str(round_now.get("done") or ""):
+                return str(cid)
+    return ""
+
+
 def bare(text):
     """A title as it is searched: lower case, apostrophes gone, other punctuation a
     space - "Don't" is "dont", "Ant-Hill" is "ant hill"."""
@@ -700,8 +710,34 @@ def best_first(rows):
     # second half of a double episode is twice the bitrate of the whole one, and was
     # played as the episode - its first half was never seen
     longest = max((float(r["duration"] or 0) for r in out), default=0.0)
-    return ([r for r in out if not part_only(r["duration"], longest)] +
+    whole = [r for r in out if not part_only(r["duration"], longest)]
+    return (lead_within(whole) +
             [r for r in out if part_only(r["duration"], longest)])
+
+
+#: the most a copy may carry, in kilobits a second, to be the one put first when a larger
+#: one of the same cut is held: a 20 Mbit 4K encode before an 80 Mbit remux of the same
+#: film (owner, 2026-11-14). The remux stays one press away under Versions.
+LEAD_KBIT = 40000
+
+
+def lead_within(rows):
+    """rows, the best copy at or under LEAD_KBIT put first: the largest picture, then the
+    most bits, among those of the cut that leads. Unchanged where the first already fits,
+    where none does, or where a copy's rate is not known."""
+    if not rows:
+        return rows
+    first = rows[0]
+    if 0 < (first["bitrate"] or 0) <= LEAD_KBIT:
+        return rows
+    cut = is_extended(first["path"])
+    lines = lambda r: max(int(r["height"] or 0), int(r["width"] or 0) * 9 // 16)
+    fits = [r for r in rows if is_extended(r["path"]) == cut
+            and 0 < (r["bitrate"] or 0) <= LEAD_KBIT]
+    if not fits:
+        return rows
+    best = max(fits, key=lambda r: (lines(r), r["bitrate"] or 0))
+    return [best] + [r for r in rows if r is not best]
 
 
 #: the cuts that are the standard over a plain copy of the same title
@@ -2213,7 +2249,10 @@ class LocalAPI(pd_search.SearchParts):
 
     def _movie(self, con, row, brief=False):
         files = self._files(con, item_id=row["id"])
-        dur = int((files[0]["duration"] or 0) * 1000) if files else 0
+        # the length of the copy listed first, which is the one a client plays: the
+        # first row as stored was a short 1080p copy of a 4K film, and the player's
+        # timeline stopped at half the film (2026-11-14)
+        dur = int((best_first(files)[0]["duration"] or 0) * 1000) if files else 0
         prog = self._progress(con, str(row["id"]))
         out = {
             "ratingKey": str(row["id"]), "type": "movie", "title": row["title"],
@@ -2392,7 +2431,10 @@ class LocalAPI(pd_search.SearchParts):
     def _episode(self, con, row, show=None, brief=False):
         show = show or con.execute("SELECT * FROM item WHERE id=?", (row["item_id"],)).fetchone()
         files = self._files(con, episode_id=row["id"])
-        dur = int((files[0]["duration"] or 0) * 1000) if files else 0
+        # the length of the copy listed first, which is the one a client plays: the
+        # first row as stored was a short 1080p copy of a 4K film, and the player's
+        # timeline stopped at half the film (2026-11-14)
+        dur = int((best_first(files)[0]["duration"] or 0) * 1000) if files else 0
         prog = self._progress(con, str(row["id"]))
         # a series made of a pack has no poster of its own: its season's, official or drawn
         season_art = (self._drawn_series_art(show["title"], int(row["season"] or 0))
@@ -4043,6 +4085,11 @@ class LocalAPI(pd_search.SearchParts):
                                    position=excluded.position, duration=excluded.duration,
                                    updated=excluded.updated, casual=0""",
                                 (key, pos, dur, int(time.time()), self.who, pos))
+                    # something already watched, being watched again: its tick goes and
+                    # it has a place on Continue watching from here on
+                    if self.watched_again(con, key, pos, dur, one("state", "playing")):
+                        con.execute("UPDATE progress SET marked=0, furthest=? "
+                                    "WHERE who=? AND key=?", (pos, self.who, key))
                     con.commit()
                 # the same post tells the panel what is on screen: state and device are
                 # optional, so an older client simply reads as "playing"
@@ -4076,6 +4123,40 @@ class LocalAPI(pd_search.SearchParts):
             return out
         except Exception:
             return None                          # Pillow missing or a broken file
+
+    #: (viewer, title) -> when the viewing now under way of something already watched began
+    AGAIN_SINCE = {}
+    #: seconds of playing reports before a title already watched counts as watched again
+    AGAIN_AFTER = 30
+
+    def watched_again(self, con, key, pos, dur, state, now=None):
+        """Whether a title already watched - ticked, or played to the end - is being watched
+        again: playing past its first half minute, short of the watched line, for
+        AGAIN_AFTER seconds of reports. The furthest point reached kept it watched and off
+        Continue watching however far into it somebody got the second time (owner,
+        2026-11-13). A player closing as the tick is made, or put back to the start after
+        the credits, is not playing for half a minute and changes nothing."""
+        now = time.time() if now is None else now
+        mark = (self.who, str(key))
+        if len(self.AGAIN_SINCE) > 500:
+            self.AGAIN_SINCE.clear()
+        if state != "playing" or pos <= 30 or not dur or self.watched_through(pos, dur, key):
+            if state != "playing" or (dur and self.watched_through(pos, dur, key)):
+                self.AGAIN_SINCE.pop(mark, None)
+            return False
+        row = con.execute("SELECT COALESCE(marked, 0) marked, COALESCE(furthest, 0) furthest, "
+                          "position FROM progress WHERE who=? AND key=? AND COALESCE(casual, 0) = 0",
+                          (self.who, str(key))).fetchone()
+        done = bool(row) and (bool(row["marked"]) or self.watched_through(
+            max(float(row["furthest"] or 0), float(row["position"] or 0)), dur, key))
+        if not done:
+            self.AGAIN_SINCE.pop(mark, None)
+            return False
+        since = self.AGAIN_SINCE.setdefault(mark, now)
+        if now - since < self.AGAIN_AFTER:
+            return False
+        self.AGAIN_SINCE.pop(mark, None)
+        return True
 
     def note_uncasual(self, con, key, device, client, state):
         """Write down a report that arrives without the casual flag over a casual one.
@@ -7007,6 +7088,31 @@ class LocalAPI(pd_search.SearchParts):
         return None
 
     # ---- playback -----------------------------------------------------------
+    def index_of_part(self, key, part):
+        """Where the file with this id stands among the title's versions now, or None when
+        it is not one of them - a file of the other machine's, or one since gone. A player
+        names the file it is playing, so a reorder of the versions under it (a better copy
+        arriving, the preselection changing) does not hand it another file - with other
+        tracks - when it opens the stream again (2026-11-14)."""
+        key = str(key or "")
+        try:
+            part = int(part)
+        except (TypeError, ValueError):
+            return None
+        con = self.lib.db()
+        try:
+            if key.startswith("e"):
+                rows = con.execute("SELECT * FROM file WHERE episode_id=?", (key,)).fetchall()
+            else:
+                rows = con.execute("SELECT * FROM file WHERE item_id=? AND episode_id IS NULL",
+                                   (key,)).fetchall()
+            for n, r in enumerate(best_first(self._whole(rows))):
+                if int(r["id"]) == part:
+                    return n
+            return None
+        finally:
+            con.close()
+
     def file_for(self, key, media_index=0, who=None):
         """The file behind a rating key, for direct play or for the ffmpeg engine.
 

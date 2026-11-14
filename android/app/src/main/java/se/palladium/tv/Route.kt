@@ -153,6 +153,11 @@ object Route {
      *  it and came down again. */
     fun nameOver(barOnly: Boolean): List<String> = if (barOnly) listOf("bar") else listOf("bar", "row")
 
+    /** Whether Media3's middle row - play/pause and the 10 and 15 second jumps - is shown:
+     *  never on a television, where centre on the bar pauses and the knob says paused
+     *  (owner, 2026-11-13); on a phone, unless only the bar is asked for. */
+    fun middleButtons(television: Boolean, barOnly: Boolean): Boolean = !television && !barOnly
+
     /** Whether the picture is shaded and the controls grey: paused by somebody, not while
      *  it loads or waits for data (owner, 2026-11-05). */
     fun pausedLook(playWhenReady: Boolean, loading: Boolean): Boolean = !playWhenReady && !loading
@@ -179,6 +184,89 @@ object Route {
 
     /** How many times a playing reopens a live encode the server refused at a byte (416). */
     const val ENCODE_REOPENS = 5
+
+    /** Stalls on the viewer's own line - the server answering all the while - before the
+     *  film steps down by itself to a rate the line carries (owner, 2026-11-14). */
+    const val LINE_STALLS = 3
+
+    /** Seconds the picture stands still before it counts as a stall of the line, and the
+     *  seconds after a film opens that do not count at all: a new stream fills its buffer
+     *  first (owner, 2026-11-14: it should switch faster). */
+    const val LINE_STALL_SECONDS = 3
+    const val LINE_SETTLE_MS = 60_000L
+
+    /** Seconds of film in hand that say a stream has filled up once and settled: a
+     *  stream just opened or just sought fills its buffer first, and stalling then is
+     *  the stream starting, not the line. The 12 Mbit stream a step had just opened was
+     *  judged at 38 s, still filling, and stepped down again to 5 (2026-11-14). */
+    const val LINE_SETTLED_AHEAD = 15
+
+    /** The seconds at the end of a stall that measure the line: what arrives then is
+     *  all the line has, with the player waiting for it. */
+    const val LINE_MEASURE_MS = 6_000L
+
+    /** Seconds of stopped picture within the last minute before a short line steps the film
+     *  down: one hiccup - an install, a burst on the Wi-Fi - never caps a film (owner,
+     *  2026-11-14: "it should not cap that fast"), a line that cannot carry it adds up to
+     *  this inside the first minute. */
+    const val LINE_STILL_BUDGET = 10
+
+    /** What arrived over the last seconds of a stall that says the line is thin rather
+     *  than cut: a thin line still brings something; a server restarting brings nothing. */
+    const val LINE_STILL_ARRIVING_MBIT = 0.3
+
+    /** Whether the line was measured clearly short of what the film needs: then the first
+     *  stall steps down, not the third. */
+    fun lineClearlyShort(lineMbit: Double, needMbit: Int): Boolean =
+        lineMbit > 0 && needMbit > 0 && lineMbit < needMbit * LINE_SHARE
+
+    /** The rates it steps down through, largest first: the same as Quality offers. */
+    val LINE_LADDER = listOf(40, 20, 12, 8, 5, 4, 2)
+
+    /** Of what the line was measured to bring, the share a rate may use (owner,
+     *  2026-11-14: eighty per cent of what is coming in). */
+    const val LINE_SHARE = 0.8
+
+    /** How long a stepped-down film plays without a stall before it climbs back, and
+     *  the longest that wait grows to after falling again, in milliseconds. */
+    const val LINE_UP_AFTER = 10 * 60_000L
+    const val LINE_UP_MOST = 60 * 60_000L
+
+    /**
+     * The rate to climb back to when the line has room: the highest above what is
+     * playing, up to the viewer's own ceiling (0: the original), that fits in LINE_SHARE
+     * of the most the line has been seen to bring. 0 is the original; -1 is staying put.
+     * The original only when the film's own rate is known and fits.
+     */
+    fun lineUp(nowMbit: Int, ceilingMbit: Int, filmKbit: Int, bestMbit: Double): Int {
+        if (nowMbit <= 0 || bestMbit <= 0) return -1
+        val room = bestMbit * LINE_SHARE
+        val top = if (ceilingMbit > 0) ceilingMbit else filmKbit / 1000
+        if (top > nowMbit && top <= room && (ceilingMbit > 0 || filmKbit > 0))
+            return ceilingMbit                        // the ceiling itself: 0 is the original
+        return LINE_LADDER.filter { it > nowMbit && it <= room &&
+                                    (ceilingMbit <= 0 || it <= ceilingMbit) }
+            .maxOrNull() ?: -1
+    }
+
+    /**
+     * The megabits to step down to after the line has stalled LINE_STALLS times, or 0
+     * when there is nothing smaller to step to. The highest rung under what is playing
+     * now (the rate asked for, else the film's own) that fits in LINE_SHARE of what the
+     * line brought while it stalled; unmeasured, one rung down; a line too thin for any,
+     * the lowest.
+     */
+    fun lineStep(askedMbit: Int, filmKbit: Int, lineMbit: Double): Int {
+        val now = when {
+            askedMbit > 0 -> askedMbit
+            filmKbit > 0 -> filmKbit / 1000
+            else -> Int.MAX_VALUE
+        }
+        val below = LINE_LADDER.filter { it < now }
+        if (below.isEmpty()) return 0
+        if (lineMbit <= 0) return below.first()
+        return below.firstOrNull { it <= lineMbit * LINE_SHARE } ?: below.last()
+    }
 
     /** Whether a playback error is filed as a fault: not a 416 on an encode that is
      *  reopened at the second reached - that is how an encode goes on after a cut. */
@@ -216,6 +304,11 @@ object Route {
      *  again, rather than a spinner and the page drawn anew (owner, 2026-11-05). */
     fun quietReturn(tab: String, hasShelves: Boolean, searching: Boolean): Boolean =
         tab == "home" && hasShelves && !searching
+
+    /** Whether a card is given the focus by the app itself - after a return, a reload, a
+     *  shelf arriving: on a television, where the remote has to be somewhere. On a phone
+     *  a focused card was held in view and pulled a swiped row back (owner, 2026-11-13). */
+    fun focusByCode(television: Boolean): Boolean = television
 
     /** Whether a key went down after `since`: what arrives late does not move the remote
      *  from where somebody has taken it. */

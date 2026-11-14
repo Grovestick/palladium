@@ -572,6 +572,7 @@ private fun StartShelfRow(r: Api.StartShelf, onOpen: (Media) -> Unit, play: (Med
         val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
         val reqs = remember { HashMap<String, FocusRequester>() }
         val back by StartChoice.restore
+        val tvNow = onTv()
         LaunchedEffect(back, r.list) {
             val (row, key) = back ?: return@LaunchedEffect
             if (row != r.id) return@LaunchedEffect
@@ -579,7 +580,7 @@ private fun StartShelfRow(r: Api.StartShelf, onOpen: (Media) -> Unit, play: (Med
             if (at >= 0) {
                 runCatching { rowState.scrollToItem(at) }
                 kotlinx.coroutines.delay(80)
-                runCatching { reqs[key]?.requestFocus() }
+                if (Route.focusByCode(tvNow)) runCatching { reqs[key]?.requestFocus() }
             }
             StartChoice.restore.value = null
         }

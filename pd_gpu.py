@@ -580,7 +580,10 @@ class Engine:
         # over 4K h264 takes 4K HEVC without noticing, which is how these files play
         # untouched in the first place. Then nothing has to be made smaller.
         hevc = bool(hevc) and (ENCODER or {}).get("name") == "nvenc"
-        if not hevc and (ENCODER or {}).get("codec", "").startswith("h264"):
+        # The same on a machine with no card to encode on: libx264 kept a 4K remux at
+        # 3840 wide and 10 bits, which is High 10 - a profile no television decodes -
+        # at a tenth of realtime (2026-11-14).
+        if not hevc and (not HW_OK or (ENCODER or {}).get("codec", "").startswith("h264")):
             wide, tall = src.get("width") or 0, src.get("height") or 0
             if wide > 1920 and tall:
                 fits = int(round(tall * 1920.0 / wide)) // 2 * 2
@@ -664,7 +667,8 @@ class Engine:
             cmd += (["-vf", scale, "-c:v", codec] + list(ENCODER["preset"]) + rate + tag
                     + (["-profile:v", "main10"] if ten else []))
         else:                                       # same output, just slower
-            vf = "scale=-2:%d" % height if height and (src.get("height") or 0) > height else "null"
+            # 8 bits: a 10-bit source otherwise comes out as High 10
+            vf = ("scale=-2:%d,format=yuv420p" % height if smaller else "format=yuv420p")
             cmd += ["-vf", vf, "-c:v", "libx264", "-preset", "veryfast"] + rate
         # Audio depends on where it is going. Chrome has no Dolby decoder, so the web
         # client asks for AAC; a television or an Android device would rather have the

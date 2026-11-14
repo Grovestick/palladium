@@ -37,7 +37,7 @@ val QUALITY_SIZES = listOf(0 to "Original — no limit", 1080 to "1080p at most"
  * 1080p looks like the file itself at eight megabits or more; 720p is comfortable at
  * four, and two is the figure that survives a hotel.
  */
-val QUALITY_RATES = listOf(0 to "No limit", 20 to "20 Mbit at most",
+val QUALITY_RATES = listOf(0 to "No limit", 40 to "40 Mbit at most", 20 to "20 Mbit at most",
                            12 to "12 Mbit at most", 8 to "8 Mbit at most",
                            5 to "5 Mbit at most", 4 to "4 Mbit at most",
                            2 to "2 Mbit at most")
@@ -78,7 +78,7 @@ fun QualityPanel(
         containerColor = Skin.Panel,
         title = { Text(heading, color = Skin.Fg,
                        fontSize = if (LocalConfiguration.current.screenWidthDp < 600)
-                           17.sp else 22.sp) },
+                           17.sp else 18.sp) },
         text = {
             // Two columns side by side, each under its own heading and reading
             // straight down. Ten choices in one column is a list to be scrolled
@@ -91,8 +91,8 @@ fun QualityPanel(
                 Row(horizontalArrangement =
                         androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
                     Column(Modifier.weight(1f)) {
-                        Text("Picture", color = Skin.Dim, fontSize = 15.sp,
-                             modifier = Modifier.padding(bottom = 4.dp))
+                        Text("Picture", color = Skin.Dim, fontSize = 13.sp,
+                             modifier = Modifier.padding(bottom = 2.dp))
                         QUALITY_SIZES.forEach { (value, label) ->
                             // above the ceiling: shown, so it is clear what exists,
                             // but not offered - it would only be reduced again
@@ -103,8 +103,8 @@ fun QualityPanel(
                         }
                     }
                     Column(Modifier.weight(1f)) {
-                        Text("Line", color = Skin.Dim, fontSize = 15.sp,
-                             modifier = Modifier.padding(bottom = 4.dp))
+                        Text("Line", color = Skin.Dim, fontSize = 13.sp,
+                             modifier = Modifier.padding(bottom = 2.dp))
                         QUALITY_RATES.forEach { (value, label) ->
                             val barred = capMbit > 0 && (value == 0 || value > capMbit)
                             QualityRow(label, on = value == mbit, barred = barred) {
@@ -118,8 +118,8 @@ fun QualityPanel(
                 // in silence. This is usually noticed automatically; here it can be
                 // said outright, for the times it is not.
                 if (withSound) {
-                Text("Sound", color = Skin.Dim, fontSize = 15.sp,
-                     modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
+                Text("Sound", color = Skin.Dim, fontSize = 13.sp,
+                     modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
                 Row(horizontalArrangement = androidx.compose.foundation.layout
                         .Arrangement.spacedBy(10.dp)) {
                     Column(Modifier.weight(1f)) {
@@ -155,10 +155,13 @@ private fun QualityRow(label: String, on: Boolean, modifier: Modifier = Modifier
     // or was cut. A television has the room and keeps the larger type.
     val narrow = androidx.compose.ui.platform.LocalConfiguration.current
         .screenWidthDp < 600
+    // A television's screen is 540 points tall, and eight lines of rates at 58 points
+    // each, with the sound and the dialog's own frame, ran off it: the last choices had
+    // to be scrolled to with the remote (owner, 2026-11-14). Tighter, all of it shows.
     Row(
         modifier
             .fillMaxWidth()
-            .padding(vertical = if (narrow) 2.dp else 3.dp)
+            .padding(vertical = if (narrow) 2.dp else 1.dp)
             .clip(RoundedCornerShape(Skin.round(8.dp)))
             .background(if (on) Color(0x224A90F0) else Skin.Panel2)
             .border(if (focused) 2.dp else 0.dp,
@@ -167,18 +170,18 @@ private fun QualityRow(label: String, on: Boolean, modifier: Modifier = Modifier
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onPick)
-            .padding(horizontal = if (narrow) 12.dp else 20.dp,
-                     vertical = if (narrow) 9.dp else 14.dp),
+            .padding(horizontal = if (narrow) 12.dp else 16.dp,
+                     vertical = if (narrow) 9.dp else 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label,
              color = if (barred) Color(0xFFF0704F) else if (on) Skin.Accent else Skin.Fg,
-             fontSize = if (narrow) 13.5.sp else 18.sp,
+             fontSize = if (narrow) 13.5.sp else 15.sp,
              maxLines = 1, modifier = Modifier.weight(1f))
         if (barred) Text(if (narrow) "no" else "not allowed here",
                          color = Color(0xFFF0704F),
-                         fontSize = if (narrow) 11.sp else 13.sp)
+                         fontSize = if (narrow) 11.sp else 12.sp)
         else if (on) Text("now", color = Skin.Accent,
-                          fontSize = if (narrow) 11.sp else 15.sp)
+                          fontSize = if (narrow) 11.sp else 13.sp)
     }
 }
