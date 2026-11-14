@@ -148,6 +148,12 @@ def meets_all(one, wishes, stored, seconds):
     """Whether a release is inside every pill that is set: resolution, bitrate window,
     release, encoding and sound. Only such a release is put forward."""
     name = one.get("name")
+    # A film filmed in a cinema - a cam, a telesync - is never put forward, whatever the
+    # pills say: the most seeded copy of a new film was a telesync, and it was the one
+    # recommended (owner, 2026-11-14). Still listed, and still there to choose by hand.
+    import pd_streaming
+    if pd_streaming.cammed(name):
+        return False
     low = " " + str(name or "").lower() + " "
     for kind, want in wishes:
         if kind in ("quality", "seeds"):
@@ -172,6 +178,10 @@ def misses(one, wishes, stored, seconds):
     name = one.get("name")
     low = " " + str(name or "").lower() + " "
     out, far = [], 0.0
+    import pd_streaming
+    if pd_streaming.cammed(name):
+        out.append("filmed in a cinema")
+        far += 1
     for kind, want in wishes:
         if kind in ("quality", "seeds"):
             continue

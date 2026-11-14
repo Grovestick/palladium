@@ -14,6 +14,9 @@ the rest are secondary and give way.
 
   stuck worker         the server restarted, when viewers get their service back
   weekly restart       set in Settings; missed asleep or hibernated, it goes on waking
+  AI subtitle helper   a job silent for AI_STUCK stopped and put back; a failed one tried again
+                       AI_TRIES times from where it stopped, then cleared; an answer cleared
+                       after AI_CLEAR_AFTER; the helper started again if its thread has gone
 
 A thread that is stuck but alive cannot be killed from inside the server, and a second one
 beside it would do the work twice, so a restart is what clears it. The apps resume in place
@@ -57,6 +60,13 @@ NO_PROGRESS = 6 * 3600
 #: seconds stalled before a restart is called for
 LIVE_STUCK = 600
 SECONDARY_STUCK = 2 * 3600
+#: the AI subtitle helper: seconds a job may go without a word from its worker, how often a
+#: failed job is tried again, and how long an answer or a given-up job stays on the list
+AI_STUCK = 30 * 60
+AI_TRIES = 1
+AI_CLEAR_AFTER = 10 * 60
+#: what a person did, not a fault
+AI_BY_PERSON = ("stopped", "taken out of the queue")
 #: seconds between restarts: a fault a restart does not cure must not become a loop
 RESTART_EVERY = 6 * 3600
 #: seconds between asking whether the other server is up
@@ -78,7 +88,8 @@ GIVEN_BACK = ("check", "work")
 STATE = {"log": None, "watched": {}, "stalled": set(), "restarts": {}, "acted": 0, "crowded": False,
          "gaveUp": set(), "seen": {}, "rest": {}, "stress": "", "calmSince": 0.0, "busyRounds": 0,
          "short": None, "root": "", "viewers": None, "otherUp": None, "restart": None, "headStart": 0,
-         "otherWas": None, "otherSince": 0.0, "blocked": "", "weekly": None, "started": STARTED}
+         "otherWas": None, "otherSince": 0.0, "blocked": "", "weekly": None, "started": STARTED,
+         "ai": None}
 
 
 def watch(name, thread, start):
@@ -379,6 +390,42 @@ def just_woke(now):
     return now - STATE.get("wokeAt", 0.0) < AFTER_WAKING
 
 
+def check_ai(helper, now):
+    """The AI subtitle helper looked after: (stopped, tried again, cleared, revived).
+    helper: pd_ai_subs, or None on a server without it."""
+    if helper is None:
+        return [], [], [], False
+    stopped, again, cleared = [], [], []
+    seen = helper.look()
+    on = seen.get("on")
+    if on and now - float(on.get("moved") or on.get("when") or now) > AI_STUCK:
+        helper.stop(why="silent for %d min: stopped by the boss" % (AI_STUCK // 60))
+        stopped.append(on.get("file"))
+        STATE["acted"] += 1
+        _say("ai subtitles: %s said nothing for %d min: stopped" % (
+            on.get("file"), AI_STUCK // 60))
+    with helper.LOCK:
+        done = list(helper.STATE["done"])
+    for job in done:
+        if job.get("ok") or job.get("what") in AI_BY_PERSON:
+            continue
+        if not job.get("answer") and int(job.get("tries") or 0) < AI_TRIES:
+            helper.retry(job)
+            again.append(job.get("file"))
+            STATE["acted"] += 1
+            _say("ai subtitles: %s failed (%s): tried again from where it stopped" % (
+                job.get("file"), str(job.get("what"))[:80]))
+        elif now - float(job.get("finished") or now) > AI_CLEAR_AFTER:
+            helper.clear(job)
+            cleared.append(job.get("file"))
+            _say("ai subtitles: %s cleared from the list: %s" % (job.get("file"), str(job.get("what"))[:80]))
+    revived = helper.revive()
+    if revived:
+        STATE["acted"] += 1
+        _say("ai subtitles: the helper had stopped with work waiting: started again")
+    return stopped, again, cleared, revived
+
+
 def one_round(now):
     if just_woke(now):
         return
@@ -393,6 +440,7 @@ def one_round(now):
     short = STATE["short"]() if STATE["short"] else False
     judge_stress(read_stress(short, cpu, memory, len(names)), now)
     check_restart(status, now)
+    check_ai(STATE["ai"], now)
 
 
 def tally():
@@ -400,13 +448,15 @@ def tally():
     return STATE["acted"], len(STATE["stalled"])
 
 
-def start(log, short=None, root="", viewers=None, other_up=None, restart=None, head_start=0, weekly=None):
+def start(log, short=None, root="", viewers=None, other_up=None, restart=None, head_start=0, weekly=None,
+          ai=None):
     """log(text) a line in the debug log; short() whether a viewer is short of disk; root
     where boss.json lives; viewers() who is watching here, with their apps; other_up()
     whether the other server answers; restart() this server ended and started again;
-    head_start seconds more this one waits on the other; weekly() the weekly restart set."""
+    head_start seconds more this one waits on the other; weekly() the weekly restart set;
+    ai the AI subtitle helper (pd_ai_subs)."""
     STATE.update(log=log, short=short, root=root, viewers=viewers, otherUp=other_up, restart=restart,
-                 headStart=head_start, weekly=weekly)
+                 headStart=head_start, weekly=weekly, ai=ai)
 
     def work():
         while True:

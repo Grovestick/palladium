@@ -39,6 +39,10 @@ img{display:block}
 .tab.blink{animation:tabblink 1.2s ease-in-out infinite}
 @keyframes tabblink{0%,100%{box-shadow:0 0 0 2px var(--accent)}50%{box-shadow:0 0 0 2px transparent}}
 @media (prefers-reduced-motion:reduce){.tab.blink{animation:none;box-shadow:0 0 0 2px var(--accent)}}
+/* and on the Watchlist, the poster of what came in, the same way */
+.card.fresh .poster{animation:posterblink 1.2s ease-in-out infinite}
+@keyframes posterblink{0%,100%{box-shadow:0 0 0 3px var(--accent)}50%{box-shadow:0 0 0 3px transparent}}
+@media (prefers-reduced-motion:reduce){.card.fresh .poster{animation:none;box-shadow:0 0 0 3px var(--accent)}}
 #search{background:var(--panel);border:1px solid var(--line);border-radius:999px;
   color:var(--fg);padding:7px 14px;width:260px;outline:none}
 #search:focus{border-color:var(--accent)}

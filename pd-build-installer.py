@@ -150,6 +150,11 @@ def compile_one(script, name, console):
            # every core: this is hundreds of C files and it was compiling them one
            # after another
            "--jobs=%d" % (os.cpu_count() or 4),
+           # No link-time optimisation. With it the link re-optimised the whole program
+           # every build: 1,250 s of a 36-minute build once the server was split into
+           # parts, with 199 of the 201 C files straight from the cache (2026-11-14). A
+           # server waiting on disks and ffmpeg does not miss what it bought.
+           "--lto=no",
            "--output-dir=" + OUT, "--output-filename=" + name,
            "--company-name=Grovestick Studios", "--product-name=Palladium",
            "--file-version=" + VERSION, "--product-version=" + VERSION,

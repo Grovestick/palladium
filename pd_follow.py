@@ -2870,7 +2870,7 @@ def first_on_screen(wanted, folder, copying):
         if item.get("side") is not None or not is_hot(item):
             continue
         # one the round will not fetch: it put the copy in flight down all evening for nothing
-        if not item.get("part") or item.get("casual") or not worth_asking_again(item):
+        if not item.get("part") or not worth_asking_again(item):
             continue
         safe = copy_name(item)
         if not safe or safe == copying:
@@ -3138,8 +3138,9 @@ def _round(one, lib, api, folder):
         """Whether this one is worth fetching: named, a file, not here, not hopeless."""
         if not item.get("part"):
             return False
-        if item.get("casual"):
-            return False              # on a screen, unchosen: kept, not fetched
+        # on a screen though a shuffle drew it: fetched like any other, so the house can
+        # carry on from here if the main server goes - a draw nobody had copied ahead
+        # stopped when it did (2026-11-13). What follows it in order is still not taken.
         if not worth_asking_again(item):
             ROUND["skipped"].add(str(item.get("name") or "")[:60])
             return False

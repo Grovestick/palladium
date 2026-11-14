@@ -7410,6 +7410,37 @@
     return holder;
   }
 
+  /* After a crash: this server started again by its watchdog, or left down. */
+  function crashRestartRow(start) {
+    const holder = document.createElement("div");
+    let on = start !== false;
+    const draw = () => {
+      holder.innerHTML = "";
+      const top = document.createElement("div");
+      top.className = "addrow subrow";
+      const name = document.createElement("span");
+      name.textContent = "Restart after a crash";
+      top.appendChild(name);
+      [["On", true], ["Off", false]].forEach(([text, value]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (on === value ? " on" : "");
+        b.textContent = text;
+        b.onclick = async () => { on = value; await post("/settings", { restartOnCrash: on }); draw(); };
+        top.appendChild(b);
+      });
+      holder.appendChild(top);
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = on
+        ? "If this server crashes, it is started again within a minute - at most three times an hour. " +
+          "Shut down on purpose, from the tray or by an install, it stays down."
+        : "If this server crashes, it stays down until somebody starts it.";
+      holder.appendChild(note);
+    };
+    draw();
+    return holder;
+  }
+
   async function autoRunsBox() {
     const box = block("Automatic runs");
     let now = {};
@@ -7533,6 +7564,7 @@
     });
     paint();
     box.appendChild(weeklyRestartRow(said0.weeklyRestart || {}));
+    box.appendChild(crashRestartRow(said0.restartOnCrash));
     return box;
   }
 
@@ -7664,7 +7696,7 @@
   const HEIGHTS = [[0, "Original"], [1080, "1080p"], [720, "720p"]];
   //: megabits a second. 1080p wants around eight to look like the disc; 720p is
   //: comfortable at four, and two is the figure that survives a bad hotel.
-  const RATES = [[0, "Unlimited"], [20, "20"], [12, "12"], [8, "8"], [5, "5"],
+  const RATES = [[0, "Unlimited"], [40, "40"], [20, "20"], [12, "12"], [8, "8"], [5, "5"],
                  [4, "4"], [2, "2"]];
 
   /**

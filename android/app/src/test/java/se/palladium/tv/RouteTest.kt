@@ -1978,6 +1978,20 @@ class RouteTest {
         assertTrue(Route.PAUSED_INK in 0.3f..0.8f)
     }
 
+    @Test fun onlyATelevisionHasCardsFocusedByTheApp() {
+        assertTrue(Route.focusByCode(television = true))
+        // a phone: a card focused by the app was held in view and pulled a swiped row back
+        assertFalse(Route.focusByCode(television = false))
+    }
+
+    @Test fun aTelevisionHasNoPlayPauseOrJumps() {
+        assertFalse(Route.middleButtons(television = true, barOnly = false))
+        assertFalse(Route.middleButtons(television = true, barOnly = true))
+        // a phone keeps them: it has no centre press on the bar to pause with
+        assertTrue(Route.middleButtons(television = false, barOnly = false))
+        assertFalse(Route.middleButtons(television = false, barOnly = true))
+    }
+
     @Test fun theInformationLineComesWithNoPressOrTheUpper() {
         assertTrue(Route.infoLineWith(0))
         assertTrue(Route.infoLineWith(Route.LOOK_UPPER))
@@ -2159,5 +2173,32 @@ class RouteTest {
         assertEquals(listOf("720", "original"), Route.offlineQualities(720))
         assertEquals(listOf("original"), Route.offlineQualities(480))
         assertEquals(listOf("720", "1080", "original"), Route.offlineQualities(null))
+    }
+    @Test
+    fun aStallingLineStepsDownToWhatItCarries() {
+        // a 68 Mbit film, the line bringing 45: eighty per cent is 36, so 20
+        assertEquals(20, Route.lineStep(0, 68_000, 45.0))
+        assertEquals(20, Route.lineStep(0, 68_000, 30.0))
+        assertEquals(40, Route.lineStep(0, 68_000, 55.0))
+        // too thin for any rung: the lowest; unmeasured: one rung down
+        assertEquals(2, Route.lineStep(0, 68_000, 1.0))
+        assertEquals(20, Route.lineStep(40, 68_000, 0.0))
+        // already at the bottom: nothing smaller
+        assertEquals(0, Route.lineStep(2, 68_000, 1.0))
+        // a film no bigger than a rung is not "stepped down" to it
+        assertEquals(12, Route.lineStep(0, 18_000, 100.0))
+    }
+    @Test
+    fun aSteppedDownFilmClimbsBackAsFarAsTheLineAllows() {
+        // the line seen at 100: the 68 Mbit original fits under 80
+        assertEquals(0, Route.lineUp(20, 0, 68_000, 100.0))
+        // seen at 60: 48 of room, so 40
+        assertEquals(40, Route.lineUp(20, 0, 68_000, 60.0))
+        // no more room than it has now: stays
+        assertEquals(-1, Route.lineUp(20, 0, 68_000, 20.0))
+        // never past the viewer's own choice
+        assertEquals(12, Route.lineUp(8, 12, 68_000, 100.0))
+        // the original only when the film's own rate is known
+        assertEquals(40, Route.lineUp(20, 0, 0, 100.0))
     }
 }

@@ -198,6 +198,15 @@ class MainActivity : AppCompatActivity() {
     /** When back was last pressed on a bare home screen. */
     private var lastBareBack = 0L
 
+    /** A finger on the screen moves things as a key does: Continue watching arriving
+     *  late pulled a row being swiped back to its first card (owner, 2026-11-13). */
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN ||
+                event.actionMasked == android.view.MotionEvent.ACTION_MOVE)
+            keyAt = android.os.SystemClock.uptimeMillis()
+        return super.dispatchTouchEvent(event)
+    }
+
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_DOWN)
             keyAt = android.os.SystemClock.uptimeMillis()
@@ -2925,7 +2934,7 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
         }
     }
     // the Watchlist open, however it was reached: what blinked there has been seen
-    LaunchedEffect(tab) { if (tab == "watchlist") WatchBlink.seen() }
+    LaunchedEffect(tab) { if (tab == "watchlist") WatchBlink.seen() else WatchBlink.left() }
     tabPill("start", "Start")
     tabPill("home", "Home")
     tabPill("films", "Films")
@@ -5070,9 +5079,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             // the card this shelf answers with: the one in the
                             // column the remote is in, or the last of a short shelf
                             val leads = at == browse.column.coerceAtMost(shown.lastIndex)
+                            val tvNow = onTv()
                             LaunchedEffect(browse.focusKey) {
                                 if (browse.focusKey == m.ratingKey) {
-                                    runCatching { here.requestFocus() }
+                                    // the remote's place; a finger has none, and a card
+                                    // focused under it was pulled back into view
+                                    if (Route.focusByCode(tvNow))
+                                        runCatching { here.requestFocus() }
                                     browse.focusKey = ""
                                 }
                             }
@@ -5509,9 +5522,11 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             else -> null
                         }
                         val here = remember { FocusRequester() }
+                        val tvNow = onTv()
                         LaunchedEffect(browse.focusKey) {
                             if (browse.focusKey == m.ratingKey) {
-                                runCatching { here.requestFocus() }
+                                if (Route.focusByCode(tvNow))
+                                    runCatching { here.requestFocus() }
                                 browse.focusKey = ""
                             }
                         }
@@ -8897,7 +8912,10 @@ fun playIntent(ctx: Context, m: Media, at: Long, subIndex: Int? = null,
         // played: where the encoder evened it out, that is worth seeing too.
         m.lufs?.let { putExtra("lufs", it) }
         putExtra("gainUsed", m.gainDb)
-        putExtra("durationMs", m.durationMs)
+        // the length of the version being played: a film held twice can be held in two
+        // cuts, and the title's own length is only the first version's
+        putExtra("durationMs", m.copies.firstOrNull { it.mi == m.mi }?.durationMs
+            ?.takeIf { it > 0 } ?: m.durationMs)
         putExtra("source", listOfNotNull(
             m.height?.let { h -> if (h >= 1700) "4K" else h.toString() + "p" },
             m.videoCodec?.uppercase(),

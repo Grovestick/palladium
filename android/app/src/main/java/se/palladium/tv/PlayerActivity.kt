@@ -377,6 +377,17 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     @Volatile private var serverMb = -1.0
     /** when a stalled film was last opened again on the same server */
     private var reopenedAt = 0L
+    //: The viewer's own line, watched by watchTheLine(): stalls counted this playing and
+    //: when the last was; seconds the picture has stood still and whether the server has
+    //: been asked about it; the most the line has been seen to bring; since when it has
+    //: been quiet; and whether the viewer has been told it is short
+    private var lineStalls = 0
+    private var lineStallAt = 0L
+    private var lineStill = 0
+    private var lineAsked = false
+    private var lineBest = 0.0
+    private var lineQuietSince = 0L
+    private var lineSaid = false
     /** stream drops answered by opening it again on the same, answering, server */
     private var reopenedHere = 0
     /**
@@ -1938,6 +1949,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 delay(1_000)
                 if (infoBar?.visibility == android.view.View.VISIBLE) refreshInfo()
                 watchTheBuffer()
+                watchTheLine()
             }
         }
     }
@@ -1953,6 +1965,106 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
      * The first fifteen seconds are not counted: a transcode starts with an empty
      * buffer whatever the network is doing.
      */
+    /**
+     * The viewer's own line, once a second, whether or not another machine holds the film.
+     *
+     * A stall the server answers through is the line's: said once, and on the third the
+     * film steps down to the highest rate that fits in Route.LINE_SHARE of what was
+     * arriving. A film stepped down climbs back - as far as the original - once it has
+     * been quiet for a while and the line has been seen to bring enough. A guest's 4K
+     * remux at 70 Mbit stalled for an evening with nothing on screen to say why, and was
+     * moved between machines that sat behind the same line (owner, 2026-11-14).
+     */
+    private fun watchTheLine() {
+        val p = current() ?: return
+        if (onCastNow() || switching || isFinishing) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lineQuietSince == 0L) lineQuietSince = now
+        // a buffer filling takes everything the line has: the most seen is the line
+        throughput()?.let { val mb = it * 8 * 1.048576; if (mb > lineBest) lineBest = mb }
+        if (now - startedAt < 15_000) return
+        if (!p.playWhenReady) { lineStill = 0; lineAsked = false; return }
+        if (p.playbackState == Player.STATE_BUFFERING) lineStill++
+        else { lineStill = 0; lineAsked = false }
+        if (lineStill >= 5 && !lineAsked) {
+            lineAsked = true
+            lifecycleScope.launch {
+                val token = Servers.current(this@PlayerActivity)?.token ?: Api.token
+                if (Api.answering(doorInUse(), token)) lineStalled()
+            }
+            return
+        }
+        if (p.playbackState == Player.STATE_READY) climbBack(now)
+    }
+
+    /** One stall the server answered through: counted, said once, stepped down on the third. */
+    private fun lineStalled() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lineStallAt < 30_000 || isFinishing) return
+        lineStallAt = now
+        lineQuietSince = now
+        lineStalls++
+        val film = title.value ?: return
+        // what was arriving over the last twenty seconds: while the picture waits the
+        // player takes all it can get, so this is the line itself
+        val line = (throughput() ?: 0.0) * 8 * 1.048576
+        val step = Route.lineStep(chosenRate(), filmKbit(film), line)
+        val heard = if (line > 0) String.format(java.util.Locale.US, "about %.0f Mbit/s", line)
+                    else "less than the film needs"
+        log("line stall " + lineStalls + " of " + Route.LINE_STALLS + ", the line bringing " +
+            heard + (if (step > 0) ", next " + step + " Mbit" else " - nothing smaller"))
+        if (lineStalls >= Route.LINE_STALLS && step > 0) {
+            sayForAMoment("Your connection brings " + heard + " - playing at " + step + " Mbit", 8)
+            stepTo(film, step, down = true)
+            return
+        }
+        if (!lineSaid) {
+            lineSaid = true
+            sayForAMoment("Your connection is not keeping up with this film (" + heard + ")", 6)
+        }
+    }
+
+    /** A film the line stepped down climbs back when the line has room again. */
+    private fun climbBack(now: Long) {
+        if (!intent.getBooleanExtra("lineAuto", false)) return
+        val wait = intent.getLongExtra("lineWait", Route.LINE_UP_AFTER)
+        if (now - lineQuietSince < wait) return
+        val film = title.value ?: return
+        val up = Route.lineUp(chosenRate(), intent.getIntExtra("lineCeiling", 0),
+                              filmKbit(film), lineBest)
+        lineQuietSince = now                 // asked again only after another quiet spell
+        if (up < 0) return
+        log(String.format(java.util.Locale.US, "line has room: best %.0f Mbit/s, up to %s",
+                          lineBest, if (up == 0) "the original" else up.toString() + " Mbit"))
+        sayForAMoment("Your connection has room again - playing " +
+                      (if (up == 0) "the original" else "at " + up + " Mbit"), 6)
+        stepTo(film, up, down = false)
+    }
+
+    /** The film's own kilobits, for the version playing. */
+    private fun filmKbit(film: Media): Int =
+        film.copies.firstOrNull { it.mi == film.mi }?.bitrate?.takeIf { it > 0 } ?: film.bitrate
+
+    /**
+     * Start again at another rate the line chose, from where the film has got to. Carries
+     * what the viewer had chosen - the ceiling it climbs back to - and how long to wait
+     * before climbing, twice as long after each fall so it does not see-saw.
+     */
+    private fun stepTo(film: Media, mbit: Int, down: Boolean) {
+        val auto = intent.getBooleanExtra("lineAuto", false)
+        val ceiling = if (auto) intent.getIntExtra("lineCeiling", 0) else chosenRate()
+        val wait = intent.getLongExtra("lineWait", Route.LINE_UP_AFTER)
+        val nextWait = if (down && auto) minOf(wait * 2, Route.LINE_UP_MOST) else wait
+        val at = position() / 1000
+        startActivity(playIntent(this, film, at, chosenSub(), chosenAudio(), chosenHeight(), mbit,
+                                 plainSound = soundToKeep())
+                          .putExtra("casual", casually()).putExtra("shelf", offTheShelf())
+                          .putExtra("lineAuto", mbit != ceiling)
+                          .putExtra("lineCeiling", ceiling)
+                          .putExtra("lineWait", nextWait))
+        finish()
+    }
+
     private fun watchTheBuffer() {
         val p = current() ?: return
         if (onCastNow() || switching) return
@@ -2061,7 +2173,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 asking = true
                 lifecycleScope.launch {
                     val here = Servers.current(this@PlayerActivity)
-                    val where = srvBase.trimEnd('/').ifEmpty { Api.base }
+                    val where = doorInUse()
                     // Answering about itself is not the same as sending a film. A
                     // server on its way out - one that has just been replaced and is
                     // shutting down - says its version cheerfully while the picture
@@ -2592,7 +2704,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val row = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_bottom_bar)
         keepAway(listOfNotNull(
             v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_center_controls)
-                ?.takeIf { barOnly },
+                ?.takeIf { !Route.middleButtons(onTelevision(), barOnly) },
             row?.takeIf { barOnly },
             v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_minimal_controls)
                 ?.takeIf { loadingLook }))
@@ -2629,9 +2741,36 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 v.findViewById(androidx.media3.ui.R.id.exo_center_controls),
                 v.findViewById(androidx.media3.ui.R.id.exo_bottom_bar),
                 v.findViewById(androidx.media3.ui.R.id.exo_progress),
+                // the subtitles grey with the rest while paused (owner, 2026-11-13)
+                subs ?: v.subtitleView,
                 nameBar, infoBar, cornerRow)) {
             if (part != null && part.alpha != ink) part.alpha = ink
         }
+        knobShowsPause(paused)
+    }
+
+    //: Media3's knob on the time bar, and whether it is the pause sign now
+    private var knobField: java.lang.reflect.Field? = null
+    private var knobPaused: Boolean? = null
+    private val pauseMark by lazy {
+        PauseMark(androidx.media3.ui.DefaultTimeBar.DEFAULT_SCRUBBER_COLOR,
+                  resources.displayMetrics.density)
+    }
+
+    /** Paused: the knob on the time bar is a small P on a white dot; playing, Media3's dot
+     *  (owner, 2026-11-13). The bar has no setter for it - the drawable from its XML is set. */
+    private fun knobShowsPause(paused: Boolean) {
+        if (knobPaused == paused) return
+        val bar = timeBar() ?: return
+        runCatching {
+            val f = knobField ?: androidx.media3.ui.DefaultTimeBar::class.java
+                .getDeclaredField("scrubberDrawable").apply { isAccessible = true }
+                .also { knobField = it }
+            if (paused) pauseMark.setState(bar.drawableState)
+            f.set(bar, if (paused) pauseMark else null)
+            bar.invalidate()
+        }.onFailure { log("knob: " + it.javaClass.simpleName) }
+        knobPaused = paused
     }
 
     /** These of Media3's parts away this frame, and any put away before given back. */
@@ -2748,8 +2887,8 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val v = view ?: return
         val bar = timeBar() ?: return
         if (nextUp.value != null) return
-        // down chose the buttons: play/pause keeps the remote
-        if (look == Route.LOOK_LOWER) return
+        // down chose the buttons: play/pause keeps the remote, where there is one
+        if (look == Route.LOOK_LOWER && Route.middleButtons(onTelevision(), false)) return
         val focus = currentFocus
         val transport = setOf(androidx.media3.ui.R.id.exo_play_pause,
                               androidx.media3.ui.R.id.exo_rew_with_amount,
@@ -2834,8 +2973,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         if (look != 0) {
             val middle = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_center_controls)
             val controls = v.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_controller)
+            // with no middle row (a television) the bar is the top of the controls
             val atTop = focus == null || (middle != null && (focus === middle || isInside(middle, focus))) ||
-                (controls != null && focus !== controls && !isInside(controls, focus))
+                (controls != null && focus !== controls && !isInside(controls, focus)) ||
+                (focus === bar && !Route.middleButtons(onTelevision(), false))
             val next = Route.lookAfter(key, look, atTop)
             // down out of the upper: the information line goes and the remote moves on
             // down as it would, from pause to the bar and the row below - one step at a time
@@ -2869,8 +3010,13 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     /** The lower's remote on play/pause. Asked as the controls come up it was left on the
      *  player itself, so it is asked again once they are drawn, and where it went is said. */
     private fun pauseTakesTheRemote(tries: Int = 3) {
-        val pp = playPauseButton() ?: return
         if (look != Route.LOOK_LOWER) return
+        // no play/pause on a television: the time bar has the remote, as everywhere else
+        if (!Route.middleButtons(onTelevision(), false)) {
+            timeBar()?.requestFocus()
+            return
+        }
+        val pp = playPauseButton() ?: return
         if (currentFocus !== pp) pp.requestFocus()
         if (currentFocus === pp || tries <= 1) {
             if (tries <= 1 && currentFocus !== pp)
@@ -3487,7 +3633,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                         // opened again there. Only a server that does not answer is
                         // left for the copy - five tries, so a file it cannot read
                         // does not loop for ever.
-                        val where = srvBase.trimEnd('/').ifEmpty { Api.base }
+                        val where = doorInUse()
                         val token = Servers.current(this@PlayerActivity)?.token ?: Api.token
                         if (reopenedHere < 5 && Api.answering(where, token)) {
                             reopenedHere++
@@ -4790,14 +4936,44 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         if (direct || !streamUrl.contains("/gpu/stream")) return false
         val was = streamUrl
         streamUrl = streamUrl.replace("&copyv=1", "")
+        val asked = streamUrl
         val said = kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-            kotlinx.coroutines.withTimeoutOrNull(1800) { Api.encodeStart(streamUrl) }
+            kotlinx.coroutines.withTimeoutOrNull(1800) { Api.encodeStart(asked) }
         }
-        if (said != null && said.second && said.first >= 0) {
-            copyStartMs = Math.round(said.first * 1000)
+        if (said != null) {
+            if (said.second && said.first >= 0) {
+                copyStartMs = Math.round(said.first * 1000)
+                streamUrl += "&copyv=1"
+            }
+        } else {
+            // No answer in time is not a no. Taken as one, a guest reaching the cache
+            // from outside - 1.3 to 4 s for any answer - had every 4K remux encoded
+            // whole on a machine with no card, which loaded it so the next answer
+            // missed too (2026-11-14). The picture is asked to go through anyway - the
+            // server decides that, as it does when it has answered - and where the
+            // stream starts is put right when the answer comes.
             streamUrl += "&copyv=1"
+            startLearnedLate(asked, baseOffsetSec)
         }
         return streamUrl != was
+    }
+
+    /** Where a copied stream starts, asked again without the hurry and put right when
+     *  it arrives: the timeline and the subtitles count from that keyframe. */
+    private fun startLearnedLate(asked: String, base: Long) {
+        lifecycleScope.launch {
+            val said = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                Api.encodeStart(asked, patient = true)
+            } ?: return@launch
+            // a seek since has asked for another stream, which has its own answer
+            if (baseOffsetSec != base || copyStartMs >= 0) return@launch
+            if (said.second && said.first >= 0) {
+                copyStartMs = Math.round(said.first * 1000)
+                wrapper?.baseChanged(streamStartMs())
+                subsUrlFor(base)?.let { drawOwnSubtitles(it) }
+                log("stream start learned late: " + said.first + "s")
+            }
+        }
     }
 
     /** Where the stream in hand starts, in film time. */
@@ -4868,6 +5044,17 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
      * about the picture that has changed - and while two machines are carrying it
      * between them, the share beside it says how much each is doing.
      */
+    /**
+     * The door the film is coming through: the address in the stream itself. The
+     * server's own address is its home one, which nobody outside the house can reach -
+     * asked whether it was still there, it never answered a guest away from home, so
+     * every five-second stall on their own line moved them to the other machine with
+     * the main server up all along (2026-11-14).
+     */
+    private fun doorInUse(): String =
+        Regex("^(https?://[^/?#]+)").find(streamUrl)?.groupValues?.get(1)
+            ?: srvBase.trimEnd('/').ifEmpty { Api.base }
+
     private fun whichMachine(): String? {
         val where = srvBase.trimEnd('/').ifEmpty { return null }
         val srv = Servers.all(this).firstOrNull { it.base.trimEnd('/') == where }
@@ -5715,4 +5902,45 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         local = null
         cast = null
     }
+}
+
+/** The knob on the time bar while paused: a black P on a white dot (owner, 2026-11-13), the
+ *  size of Media3's own dot - 12 dp, 16 dp while the bar has the remote or is moved. Drawn
+ *  within the larger; the bar says which through the drawable's state. */
+private class PauseMark(colour: Int, private val density: Float) : android.graphics.drawable.Drawable() {
+    private val dot = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = colour }
+    private val ink = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.BLACK
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+    private val box = android.graphics.Rect()
+    private val small = androidx.media3.ui.DefaultTimeBar.DEFAULT_SCRUBBER_ENABLED_SIZE_DP * density
+    private val large = androidx.media3.ui.DefaultTimeBar.DEFAULT_SCRUBBER_DRAGGED_SIZE_DP * density
+    private var big = false
+    override fun getIntrinsicWidth() = large.toInt()
+    override fun getIntrinsicHeight() = large.toInt()
+    override fun isStateful() = true
+    override fun onStateChange(state: IntArray): Boolean {
+        val now = android.R.attr.state_focused in state || android.R.attr.state_pressed in state
+        if (now == big) return false
+        big = now
+        return true
+    }
+    override fun draw(canvas: android.graphics.Canvas) {
+        val b = bounds
+        val cx = b.exactCenterX()
+        val cy = b.exactCenterY()
+        // the bar scales the bounds as it grows and shrinks the knob; the dot keeps to it
+        val across = b.width() * (if (big) 1f else small / large)
+        canvas.drawCircle(cx, cy, across / 2f, dot)
+        // the letter's own ink centred, not its line: a P has no descender
+        ink.textSize = across * 0.72f
+        ink.getTextBounds("P", 0, 1, box)
+        canvas.drawText("P", cx, cy - box.exactCenterY(), ink)
+    }
+    override fun setAlpha(alpha: Int) { dot.alpha = alpha; ink.alpha = alpha }
+    override fun setColorFilter(filter: android.graphics.ColorFilter?) { dot.colorFilter = filter }
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
 }

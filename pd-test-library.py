@@ -10,6 +10,20 @@ Run by the build before anything is installed.
 import importlib.util
 import json
 import os
+
+def server_source():
+    """pd-server.py and its parts kept in their own files - Handler's (pd_h_*.py) and the
+    functions' (pd_srv_*.py) - as one text."""
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    names = ["pd-server.py"] + sorted(f for f in os.listdir(here)
+                                   if f.startswith(("pd_h_", "pd_srv_")) and f.endswith(".py"))
+    # a part reaches the server's names as S.name; without the S. it reads as it did in
+    # pd-server.py, which is what the checks on the code's own words were written against
+    return chr(10).join(re.sub(r"(?<![\w.])S\.(?=[A-Za-z_])", "",
+                               open(os.path.join(here, f), encoding="utf-8").read()) if f != "pd-server.py"
+                        else open(os.path.join(here, f), encoding="utf-8").read() for f in names)
+
 import re
 import shutil
 import sys
@@ -49,6 +63,22 @@ pd_torrents.STATE["lib"] = lambda: m.local().lib
 pd_torrents.load()
 api = m.local()
 FAILS = []
+
+
+def set_clock(t):
+    """The time module the server and its parts (pd_h_*.py, pd_srv_*.py) read, swapped for a test's clock."""
+    m.time = t
+    for name, mod in list(sys.modules.items()):
+        if name.startswith(("pd_h_", "pd_srv_")) and hasattr(mod, "time"):
+            mod.time = t
+
+
+def put_back(cls, names):
+    """A test's stand-ins taken off Handler again: a method kept in one of its parts is
+    found there once more, rather than left over it as a copy."""
+    for n in names:
+        if n in vars(cls) and any(n in vars(c) for c in cls.__mro__[1:]):
+            delattr(cls, n)
 
 
 def check(what, ok, detail=""):
@@ -419,7 +449,7 @@ check("10 never more than the file carries, whatever is asked or set",
       Q(0, 12, none, unset, 3) == (0, 3) and Q(0, 0, none, {"height": 0, "mbit": 8}, 3) == (0, 3))
 check("10 a file of unknown rate with nothing set is given no number",
       Q(0, 0, none, unset, 0) == (0, 0))
-src = open(os.path.join(HERE, "pd-server.py"), encoding="utf-8").read()
+src = server_source()
 check("10 no megabits for outside viewers that the Quality page does not show",
       "awayMbit" not in src and "at_home() and not mbit" not in src)
 rows = {r["name"]: r["value"] for g in m.Handler.settled_numbers() for r in g["rows"]}
@@ -543,8 +573,8 @@ H_ = m.Handler
 _keepC = (H_.a_film_is_struggling, H_.disk_reading_slow, H_.how_thin, H_.link_seen, dict(H_.PACE), m.time)
 try:
     _st = {"short": False, "thin": "", "t": 1000.0}
-    m.time = _tyC.SimpleNamespace(time=lambda: _st["t"], sleep=lambda s: None,
-                                  strftime=__import__("time").strftime, monotonic=__import__("time").monotonic)
+    set_clock(_tyC.SimpleNamespace(time=lambda: _st["t"], sleep=lambda s: None,
+                                  strftime=__import__("time").strftime, monotonic=__import__("time").monotonic))
     H_.a_film_is_struggling = staticmethod(lambda rows, side=None: _st["short"])
     H_.disk_reading_slow = classmethod(lambda cls, now=None: False)
     H_.how_thin = staticmethod(lambda now=None, side=None: _st["thin"])
@@ -561,15 +591,16 @@ try:
           seq == [0.0, 270.0, 243.0, 0.0, 0.0, 0.0] and panic == [0.0, 30.0], str((seq, panic)))
 finally:
     (H_.a_film_is_struggling, H_.disk_reading_slow, H_.how_thin, H_.link_seen) = _keepC[:4]
-    H_.PACE.clear(); H_.PACE.update(_keepC[4]); m.time = _keepC[5]
+    H_.PACE.clear(); H_.PACE.update(_keepC[4]); set_clock(_keepC[5])
+    put_back(H_, ("a_film_is_struggling", "disk_reading_slow", "how_thin", "link_seen"))
 # a dip counts after 10 s, and never for a player that reports its buffer
 H_ = m.Handler
 _keepD = (H_.running_dry, dict(H_.AHEAD), dict(H_.DIPS), m.time)
 try:
     import types as _tyD
     _tD = {"t": 5000.0}
-    m.time = _tyD.SimpleNamespace(time=lambda: _tD["t"], sleep=lambda s: None,
-                                  strftime=__import__("time").strftime, monotonic=__import__("time").monotonic)
+    set_clock(_tyD.SimpleNamespace(time=lambda: _tD["t"], sleep=lambda s: None,
+                                  strftime=__import__("time").strftime, monotonic=__import__("time").monotonic))
     H_.running_dry = staticmethod(lambda now=None, side=None: False)
     H_.AHEAD.clear(); H_.DIPS.clear()
     row = {"how": "direct play", "seconds": 60, "average": 1.0, "mbit": 1.0, "who": "g", "address": "1.2.3.4"}
@@ -587,9 +618,21 @@ try:
     check("13 dip: not at once, not after 3.5 s, yes after 10 s, never for a player reporting its buffer",
           (first, scene, later, first2, reported) == (False, False, True, False, False),
           str((first, scene, later, first2, reported)))
+    # and never for a player paused or stopped: it has stopped asking, which is not starving
+    H_.AHEAD.clear(); H_.DIPS.clear()
+    waits = []
+    for state in ("paused", "stopped", "playing"):
+        H_.DIPS.clear()
+        one = dict(row, state=state, who="p" + state)
+        H_.a_film_is_struggling([one])
+        _tD["t"] += 11.0
+        waits.append(H_.a_film_is_struggling([one]))
+    check("13 dip: a paused or stopped player under its own average is not short of disk; a playing one is",
+          waits == [False, False, True], str(waits))
 finally:
     H_.running_dry = _keepD[0]
-    H_.AHEAD.clear(); H_.AHEAD.update(_keepD[1]); H_.DIPS.clear(); H_.DIPS.update(_keepD[2]); m.time = _keepD[3]
+    H_.AHEAD.clear(); H_.AHEAD.update(_keepD[1]); H_.DIPS.clear(); H_.DIPS.update(_keepD[2]); set_clock(_keepD[3])
+    put_back(H_, ("running_dry",))
 import pd_release, pd_vtt
 check("13 the rules moved out are the server's own names still",
       m.video_mbit is pd_release.video_mbit and m.release_is is pd_release.release_is
@@ -1819,7 +1862,7 @@ try:
     _got242 = api.start_page(_con242, lambda k, d="", a=_ask242: a.get(k, d))
     api.start_forget("t242")
     _made242 = api.start_page(_con242, lambda k, d="", a=_ask242: a.get(k, d))
-    _sv242 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+    _sv242 = server_source()
     check("242 a front made by the fronts' process is served as it is, a day old or not; forgotten, one is made",
           _got242 is _p242 and _made242 is not _p242 and isinstance(_made242, dict))
     check("242 the fronts' process runs on a copy under its own root, once a day",
@@ -1830,11 +1873,11 @@ finally:
     api.who = _was242
     _con242.close()
 
-# ---- 243. the app reaches everyone at eight, if nothing holds it back; the owner at once
+# ---- 243. the app reaches everyone at eight, whatever fault reports are open; the owner at once
 _d243 = os.path.join(root, "t243")
 _root243, _static243 = os.path.join(_d243, "root"), os.path.join(_d243, "static")
 os.makedirs(_root243); os.makedirs(_static243)
-_was243 = (m.ROOT, m.STATIC, m.app_problems)
+_was243 = (m.ROOT, m.STATIC)
 
 
 def _app243(code, name):
@@ -1846,13 +1889,15 @@ def _app243(code, name):
 
 try:
     m.ROOT, m.STATIC = _root243, _static243
-    _held243 = ["1 open fault report"]
-    m.app_problems = lambda since: list(_held243)
+    # an automatic fault report open, and an app crash since the new app: neither holds it
+    with open(os.path.join(_root243, "feedback.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"id": "x", "source": "auto", "kind": "error", "when": int(time.time()),
+                            "text": "KeyError: x"}) + chr(10))
     _app243(10, "0.1.10")
     _first243 = m.app_release()
     _app243(11, "0.1.11")
-    _back243 = m.app_release()
-    # the role decided by the app routes themselves, never one left on the handler
+    open(os.path.join(_root243, "app-crash.log"), "w").write("crash")
+    # before eight: the role decided by the app routes themselves, never one left on the handler
     _guest243 = m.Handler.__new__(m.Handler); _guest243.role = "owner"
     _guest243.who = lambda path: None
     _owner243 = m.Handler.__new__(m.Handler); _owner243.role = "guest"
@@ -1870,24 +1915,24 @@ try:
     _calm243.app_channel = lambda: "daily"
     _k243 = open(_keen243.app_for_asker()[0]).read()
     _c243 = open(_calm243.app_for_asker()[0]).read()
-    _held243.clear()
+    # eight o'clock
     _out243 = m.app_release()
     _again243 = m.app_release()
     _g2_243 = open(_guest243.app_for_asker()[0]).read()
-    check("243 the first app here is the released one; a newer one waits while a fault is open",
-          _first243.startswith("app 0.1.10 released") and _back243.startswith("app 0.1.11 held back"), _first243 + " | " + _back243)
-    check("243 held back, a guest is given the released app and the owner the newest, at home or away",
+    check("243 the first app here is the released one", _first243.startswith("app 0.1.10 released"), _first243)
+    check("243 until eight, a guest is given the released app and the owner the newest, at home or away",
           _g243 == "apk 0.1.10" and _o243 == "apk 0.1.11" and _a243 == "apk 0.1.11",
           _g243 + " | " + _o243 + " | " + _a243)
-    _sv243 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+    _sv243 = server_source()
     check("243 the day of the eight o'clock look is kept on disk, so a restart after eight lets nothing out",
           'mark = os.path.join(ROOT, APP_RELEASED, "looked")' in _sv243 and "f.write(today)" in _sv243)
     check("243 Settings decide: a guest on Latest gets the newest, the owner on Daily the released one",
           _k243 == "apk 0.1.11" and _c243 == "apk 0.1.10", _k243 + " | " + _c243)
-    check("243 with nothing open it goes to everyone, once",
-          _out243.startswith("app 0.1.11 released") and _again243 == "" and _g2_243 == "apk 0.1.11", _out243)
+    check("243 at eight it goes to everyone whatever fault reports and crashes are open, once",
+          _out243.startswith("app 0.1.11 released") and _again243 == "" and _g2_243 == "apk 0.1.11"
+          and "app_problems" not in _sv243, _out243)
 finally:
-    m.ROOT, m.STATIC, m.app_problems = _was243
+    m.ROOT, m.STATIC = _was243
     shutil.rmtree(_d243, ignore_errors=True)
 
 # ---- 244. one reading of the settings for the length of an answer, and only on its thread
@@ -2272,7 +2317,7 @@ _was257 = (_pt257.QB, _pt257.load, _pt257._place)
 try:
     _pt257.QB, _pt257.load, _pt257._place = _QB257, (lambda: _d257), (lambda k: 1)
     m.COMING["at"] = 0.0
-    _rows257 = [(r["name"], r.get("state"), r.get("mbit")) for r in m.coming_in()]
+    _rows257 = [(r["name"], r.get("state"), r.get("mbit")) for r in m.read_coming()]
 finally:
     _pt257.QB, _pt257.load, _pt257._place = _was257
     m.COMING["at"] = 0.0
@@ -2388,7 +2433,7 @@ if _g260 and _old260 and _tok260:
           str(_after260.get("watchNews"))[:200])
     check("260 a game watched and taken off the watchlist is not put back",
           str(_g260["id"]) not in _gone260.get("watchlist", []))
-    _srv260 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+    _srv260 = server_source()
     check("260 opening the Watchlist clears what blinks, and a guest may say so",
           'GUEST_MAY_POST = ("/applog", "/log", "/trace", "/feedback", "/watchlist/seen",' in _srv260
           and 'mine["watchBlink"] = []' in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_notify.py"), encoding="utf-8").read()
@@ -2467,13 +2512,215 @@ try:
     _two263 = _h263.write_from_sound("X:/a film.mkv", "en", "k1")
 finally:
     _ai263.ready, _ai263.ask, _ai263.beside = _was263
-_src263 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src263 = server_source()
 check("263 no subtitle fits a watched title: one is written from its sound, never twice",
       _one263 and not _two263 and _asked263 == [("X:/a film.mkv", "en", "k1")]
       and "if fetch and not login_failed:" in _src263
       and "self.write_from_sound(video, language, key)" in _src263)
 check("263 an answer asked by the release's own number is kept only when it names this episode",
       "if not r.get(\"shifted\") or about_this_episode(r)]" in _src263)
+
+# ---- 264 Handler's parts in their own files: bound to this server, nothing defined twice
+_parts264 = [c for c in m.Handler.__mro__[1:] if c.__module__.startswith("pd_h_")]
+# methods only: a value such as Handler.DIPS is written onto Handler as the server runs
+_twice264 = sorted(n for c in _parts264 for n, v in vars(c).items() if not n.startswith("__")
+                   and isinstance(v, (type(lambda: 0), staticmethod, classmethod)) and n in vars(m.Handler))
+check("264 every part of Handler reaches this server's names through S",
+      bool(_parts264) and all(sys.modules[c.__module__].S is m for c in _parts264))
+check("264 a method is in Handler or in one of its parts, never both", not _twice264, ", ".join(_twice264))
+_seen264 = {}
+for _c264 in _parts264:
+    for _n264 in vars(_c264):
+        if not _n264.startswith("__"):
+            _seen264.setdefault(_n264, []).append(_c264.__name__)
+check("264 and never in two parts", all(len(v) == 1 for v in _seen264.values()),
+      ", ".join(k for k, v in _seen264.items() if len(v) > 1))
+# a moved subtitle method that reads the server's names, run as Handler runs it
+_h264 = m.Handler.__new__(m.Handler)
+_was264 = m.languages_read
+m.languages_read = lambda stored: ["xx"]
+try:
+    _got264 = m.Handler.languages_read(_h264, {})
+except Exception as _e264:
+    _got264 = repr(_e264)
+finally:
+    m.languages_read = _was264
+check("264 a moved method reads the server's own names through S", _got264 == ["xx"], repr(_got264))
+
+# ---- 265 something already watched, watched again: its tick goes and it is on Continue watching
+_con265 = api.lib.db()
+_who265 = api.who
+for _k265, _pos265, _far265, _mk265 in (("t265-done", 7100, 7100, 0), ("t265-tick", 0, 0, 1),
+                                          ("t265-half", 3000, 3000, 0)):
+    _con265.execute("INSERT OR REPLACE INTO progress (key, position, duration, updated, who, casual, "
+                    "furthest, marked) VALUES (?,?,?,?,?,0,?,?)",
+                    (_k265, _pos265, 7200, 1000, _who265, _far265, _mk265))
+_con265.commit()
+try:
+    _wa265 = api.watched_again
+    _seq265 = [_wa265(_con265, "t265-done", 100, 7200, "playing", now=1000),
+               _wa265(_con265, "t265-done", 120, 7200, "playing", now=1020),
+               _wa265(_con265, "t265-done", 131, 7200, "playing", now=1031)]
+    _tick265 = [_wa265(_con265, "t265-tick", 40, 7200, "playing", now=2000),
+                _wa265(_con265, "t265-tick", 75, 7200, "playing", now=2035)]
+    # a player closing as the tick is made, or put back to the start after the credits
+    _close265 = [_wa265(_con265, "t265-tick", 900, 7200, "stopped", now=3000),
+                 _wa265(_con265, "t265-done", 10, 7200, "playing", now=3000),
+                 _wa265(_con265, "t265-done", 12, 7200, "playing", now=3040)]
+    _half265 = [_wa265(_con265, "t265-half", 3100, 7200, "playing", now=4000),
+                _wa265(_con265, "t265-half", 3140, 7200, "playing", now=4040)]
+finally:
+    _con265.execute("DELETE FROM progress WHERE key LIKE 't265-%'")
+    _con265.commit()
+check("265 a watched title played again for half a minute counts as watched again, a ticked one too",
+      _seq265 == [False, False, True] and _tick265 == [False, True], repr((_seq265, _tick265)))
+check("265 not for a player closing, one back at the start after the credits, or one not watched yet",
+      _close265 == [False, False, False] and _half265 == [False, False], repr((_close265, _half265)))
+_src265 = open(os.path.join(HERE, "pd_localapi.py"), encoding="utf-8").read()
+check("265 the report clears the tick and the furthest point when it is",
+      'if self.watched_again(con, key, pos, dur, one("state", "playing")):' in _src265
+      and '"UPDATE progress SET marked=0, furthest=? "' in _src265)
+
+# ---- 266 a shuffle draw played since it was first named is kept; one untouched for a month is not
+_tok266 = str((m.read_settings() or {}).get("ownerIs") or "me")
+_h266 = m.Handler.__new__(m.Handler)
+_h266.role, _h266.headers, _h266.client_address, _h266.path = "owner", {}, ("127.0.0.1", 0), "/follow/playing"
+_con266 = api.lib.db()
+# draws that are on the list only as the shuffle's next: not the one it is on, not one left part-way
+_part266 = set(str(k) for k in _h266.casual_places(_tok266))
+_all266 = _h266.casual_ahead(_tok266)
+_hat266 = [k for k in _all266[1:] if k not in _part266
+           and _con266.execute("SELECT 1 FROM file WHERE episode_id=? OR item_id=?", (k, k)).fetchone()]
+if len(_hat266) >= 2:
+    _now266 = time.time()
+    _played266, _idle266 = _hat266[0], _hat266[1]
+    _book266 = m.read_ahead()
+    _was266 = {k: _book266.get(k) for k in (_played266, _idle266)}
+    _book266[_played266] = _book266[_idle266] = _now266 - 40 * 86400
+    _con266.execute("UPDATE watchlog SET updated=? WHERE key=?", (_now266 - 50 * 86400, _idle266))
+    _con266.execute("INSERT INTO watchlog (who, key, title, started, updated, position, duration, casual) "
+                    "VALUES (?,?,?,?,?,?,?,1)", (_tok266, _played266, "t", _now266 - 86400, _now266 - 86400, 100, 1300))
+    _con266.commit()
+    try:
+        _keys266 = {r.get("key") for r in _h266.worth_copying(6.0, True, 10, None, 10.0, False, "", None, 7.0)}
+    finally:
+        for _k266, _v266 in _was266.items():
+            if _v266 is None:
+                _book266.pop(_k266, None)
+            else:
+                _book266[_k266] = _v266
+    check("266 a shuffle's draw played since it was first named a month back is kept; one left a month is not",
+          _played266 in _keys266 and _idle266 not in _keys266, repr((_played266 in _keys266, _idle266 in _keys266)))
+else:
+    check("266 the owner's shuffle has draws with files to test with", False, repr(_hat266))
+_con266.close()
+
+# ---- 267 an episode's year finds its series a year either side, never a same-named one decades apart
+_con267 = api.lib.db()
+_con267.execute("INSERT INTO item (id, type, title, sort_title, year, tmdb_id) VALUES ('t267a', 'show', 'Twin Show', 'twin show', 1999, 1)")
+_con267.commit()
+try:
+    _far267 = api.lib._match_item(_con267, "show", "Twin Show", 2023)
+    _near267 = api.lib._match_item(_con267, "show", "Twin Show", 2000)
+    _none267 = api.lib._match_item(_con267, "show", "Twin Show", None)
+finally:
+    _con267.execute("DELETE FROM item WHERE id='t267a'")
+    _con267.commit()
+    _con267.close()
+check("267 a series of 1999 takes an episode named 2000 or with no year, not one named 2023",
+      _far267 is None and _near267 == "t267a" and _none267 == "t267a", repr((_far267, _near267, _none267)))
+
+# ---- 268 what is coming in is answered at once from the last reading; a slow or absent qBittorrent is never waited on
+import pd_torrents as _pt268
+class _QB268:
+    def __init__(self, *a, **k):
+        pass
+    def _call(self, *a, **k):
+        time.sleep(3)
+        raise OSError("not running")
+_was268 = (_pt268.QB, dict(m.COMING))
+try:
+    _pt268.QB = _QB268
+    m.COMING.update(at=0.0, rows=[{"name": "Kept From Before"}], busy=False)
+    _t268 = time.time()
+    _got268 = m.coming_in()
+    _took268 = time.time() - _t268
+    _again268 = m.coming_in()
+finally:
+    _deadline268 = time.time() + 10
+    while m.COMING.get("busy") and time.time() < _deadline268:
+        time.sleep(0.2)
+    _pt268.QB = _was268[0]
+    m.COMING.clear(); m.COMING.update(_was268[1])
+_was268b = dict(m.LANDING)
+try:
+    _pt268.QB = _QB268
+    m.LANDING.update(at=0.0, rows=[{"name": "Landed Before"}], busy=False)
+    _t268b = time.time()
+    _land268 = m.landing()
+    _took268b = time.time() - _t268b
+finally:
+    _deadline268 = time.time() + 10
+    while m.LANDING.get("busy") and time.time() < _deadline268:
+        time.sleep(0.2)
+    _pt268.QB = _was268[0]
+    m.LANDING.clear(); m.LANDING.update(_was268b)
+check("268 what has just arrived: answered at once from the last reading too",
+      _took268b < 0.5 and _land268 == [{"name": "Landed Before"}], repr(_took268b))
+check("268 downloads coming in: answered at once from the last reading while qBittorrent is read beside it",
+      _took268 < 0.5 and _got268 == [{"name": "Kept From Before"}] and _again268 == _got268, repr(_took268))
+
+# ---- 269 a file that is another film of the same name and year, set apart
+import pd_library as _pl269
+_con269 = api.lib.db()
+_pick269 = None
+for _r in _con269.execute("SELECT item_id, COUNT(*) c FROM file WHERE episode_id IS NULL "
+                          "GROUP BY item_id HAVING c >= 2").fetchall():
+    _fs = _con269.execute("SELECT path, duration FROM file WHERE item_id=? ORDER BY duration",
+                          (_r["item_id"],)).fetchall()
+    if len({os.path.basename(f["path"]).lower() for f in _fs}) == len(_fs):
+        _pick269 = (str(_r["item_id"]), _fs[0]["path"], [f["path"] for f in _fs[1:]])
+        break
+_con269.close()
+if _pick269 is None:
+    print("     NOT RUN: 269 no film here held in two differently named files")
+else:
+    _was269, _short269, _rest269 = _pick269
+    _name269 = os.path.basename(_short269)
+    _fake269 = 999999901
+    api.lib.set_apart(_name269, _fake269)
+    _moved269 = api.lib.refile(_name269)
+    _t269, _y269 = _pl269.parse_movie(_short269)
+    _want269 = _pl269.title_key("movie", _t269, _y269, _fake269)
+    _con269 = api.lib.db()
+    _at269 = lambda p: str((_con269.execute("SELECT item_id FROM file WHERE path=?", (p,))
+                            .fetchone() or {"item_id": ""})["item_id"])
+    _new269 = _at269(_short269)
+    _row269 = _con269.execute("SELECT tmdb_id FROM item WHERE id=?", (_new269,)).fetchone()
+    _would269 = api.lib.key_of_file(_con269, "movie", _short269)
+    # a file of the other film, filed afresh, does not join the one set apart
+    _join269 = api.lib._match_item(_con269, "movie", *_pl269.parse_movie(_rest269[0]))
+    _con269.close()
+    check("269 a file set apart: its own key from name, year and entry, matched as that entry",
+          _new269 == _want269 != _was269 and _row269 is not None
+          and int(_row269["tmdb_id"] or 0) == _fake269 and _would269 == _want269,
+          repr((_moved269, _want269, _would269)))
+    _con269 = api.lib.db()
+    check("269 the other film keeps its own copies, and a file of it never joins the one set apart",
+          all(_at269(p) == _was269 for p in _rest269) and _join269 == _was269, repr(_join269))
+    _con269.close()
+    api.lib.reparse()
+    _con269 = api.lib.db()
+    check("269 and stays apart when every file name is read again",
+          _at269(_short269) == _want269 and all(_at269(p) == _was269 for p in _rest269))
+    _con269.close()
+    api.lib.set_apart(_name269, 0)
+    api.lib.refile(_name269)
+    _con269 = api.lib.db()
+    check("269 taken back: the file is with its title again and the title made for it is gone",
+          _at269(_short269) == _was269 and not _con269.execute(
+              "SELECT 1 FROM item WHERE id=?", (_want269,)).fetchone())
+    _con269.close()
 
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):

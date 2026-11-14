@@ -1,5 +1,257 @@
 [
   {
+    "version": "0.20.50",
+    "when": "2026-11-14",
+    "title": "40 Mbit, line steps, watchlist blink, Paused viewers",
+    "items": [
+      "Quality: 40 Mbit at most, in the app, the web player and the server's ceilings",
+      "Quality menu on the television fits on one screen without scrolling",
+      "A stalling connection is said once, steps down to 80 per cent of what is arriving after three stalls, and climbs back to the original when it has room",
+      "Releases filmed in a cinema - cam, telesync, telecine, screener - are never recommended",
+      "Watchlist: the posters of what came in blink when it is opened after its tab blinked",
+      "A paused or stopped viewer no longer counts as short of disk, which held rips, copies and downloads on its drive while a film sat paused"
+    ]
+  },
+  {
+    "version": "0.20.49",
+    "when": "2026-11-14",
+    "title": "Stalls away from home",
+    "items": [
+      "A guest away from home whose line stalls stays on the main server instead of being moved to the copy, which was asked at an address only the house can reach"
+    ]
+  },
+  {
+    "version": "0.20.48",
+    "when": "2026-11-14",
+    "title": "Episode names after a long episode",
+    "items": [
+      "A long episode the release holds as one file takes one episode number, so the titles after it match their files",
+      "The server is built without link-time optimisation, which took most of each build"
+    ]
+  },
+  {
+    "version": "0.20.47",
+    "when": "2026-11-14",
+    "title": "Guest 4K playback, Two films of one name",
+    "items": [
+      "A title held in two versions shows the length of the version that plays, not the shorter one",
+      "A machine without a graphics card no longer encodes 4K films as 10-bit 4K H.264 that televisions cannot decode",
+      "The server raises itself to normal priority at startup",
+      "A file can be set apart as another film of the same name and year, with its own key and catalogue entry",
+      "When the server is slow to say whether the picture can be copied, the app still asks for a copy instead of a full encode",
+      "A failed check of a film's picture format is no longer remembered until restart"
+    ]
+  },
+  {
+    "version": "0.20.46",
+    "when": "2026-11-14",
+    "title": "Arrivals never waited on",
+    "items": [
+      "Recently added: what has just arrived also comes from the last reading of the download client, never waited on"
+    ]
+  },
+  {
+    "version": "0.20.45",
+    "when": "2026-11-14",
+    "title": "Downloads never waited on",
+    "items": [
+      "Recently added: films on their way come from the last reading of the download client, never waited on; a server without one is not held up"
+    ]
+  },
+  {
+    "version": "0.20.44",
+    "when": "2026-11-14",
+    "title": "Restart after a crash, Series year from file names",
+    "items": [
+      "Settings: Restart after a crash, on or off for each server; a watchdog starts it again after a crash, never after a shutdown",
+      "Library: a year in an episode's file name keeps same-named series apart, so a 2023 series is not filed under the 1999 one"
+    ]
+  },
+  {
+    "version": "0.20.43",
+    "when": "2026-11-14",
+    "title": "Shuffle draws kept on the cache",
+    "items": [
+      "Cache: a shuffle's next draws played since they were first named are kept on the cache; a second round's draws were all dropped as a month old"
+    ]
+  },
+  {
+    "version": "0.20.42",
+    "when": "2026-11-14",
+    "title": "Shuffle episode copied for failover",
+    "items": [
+      "Cache: the episode a shuffle has on a screen is copied to the cache first, so playing carries on there if the main server goes"
+    ]
+  },
+  {
+    "version": "0.20.41",
+    "when": "2026-11-13",
+    "title": "Invented words in the search examples",
+    "items": [
+      "Shelf rules: the examples use invented words"
+    ]
+  },
+  {
+    "version": "0.20.40",
+    "when": "2026-11-13",
+    "title": "App at eight",
+    "items": [
+      "App: the newest goes to everyone at eight, whatever fault reports are open"
+    ]
+  },
+  {
+    "version": "0.20.39",
+    "when": "2026-11-13",
+    "title": "Watched again",
+    "items": [
+      "Progress: a watched title played again loses its tick and goes back on Continue watching"
+    ]
+  },
+  {
+    "version": "0.20.38",
+    "when": "2026-11-13",
+    "title": "Cache list one plan at a time, phone rows hold still",
+    "items": [
+      "Cache list: asks arriving together are planned one after another; one emptied the other's shuffle marks and episodes were copied, then deleted",
+      "Phone: a row being swiped is not pulled back to its first card"
+    ]
+  },
+  {
+    "version": "0.20.37",
+    "when": "2026-11-13",
+    "title": "AI subtitles finish, boss watches them, shuffle restore",
+    "items": [
+      "AI subtitles: the Swedish model is loaded once a film; it was loaded every ten minutes and ran the machine out of memory",
+      "AI subtitles: the boss stops a silent job, tries a failed one again from where it stopped, then clears it",
+      "AI subtitles: a crash says so in words, not with a progress bar",
+      "Screens: a title a shuffle is on, sent to a screen, plays as the shuffle"
+    ]
+  },
+  {
+    "version": "0.20.36",
+    "when": "2026-11-13",
+    "title": "Functions out of the main file, AI subtitles survive a restart",
+    "items": [
+      "Server: the rest of the main file's functions moved into their own modules, unchanged",
+      "AI subtitles: a subtitle being made goes on where it stopped after the server restarts"
+    ]
+  },
+  {
+    "version": "0.20.35",
+    "when": "2026-11-13",
+    "title": "Subtitles dim when paused",
+    "items": [
+      "Player: the subtitles grey with the controls while paused"
+    ]
+  },
+  {
+    "version": "0.20.34",
+    "when": "2026-11-13",
+    "title": "Subtitle functions module",
+    "items": [
+      "Server: the subtitle reading functions moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.33",
+    "when": "2026-11-13",
+    "title": "GET routes module",
+    "items": [
+      "Server: the GET routes moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.32",
+    "when": "2026-11-13",
+    "title": "POST routes module",
+    "items": [
+      "Server: the POST routes moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.31",
+    "when": "2026-11-13",
+    "title": "House pages module",
+    "items": [
+      "Server: the app and installer handed out, reports, health, the watch party and the landing page moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.30",
+    "when": "2026-11-13",
+    "title": "Library answers module",
+    "items": [
+      "Server: the library's answers - seasons, shelves, collections, watchlists - moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.29",
+    "when": "2026-11-13",
+    "title": "Sign-in module",
+    "items": [
+      "Server: sign-in, roles and who is asking moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.28",
+    "when": "2026-11-13",
+    "title": "Settings module",
+    "items": [
+      "Server: settings and each viewer's choices moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.27",
+    "when": "2026-11-13",
+    "title": "Knob size and playback module",
+    "items": [
+      "Player: the paused P is the size of the playing dot, 12 dp, 16 dp on the remote",
+      "Server: playback and transcoding moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.26",
+    "when": "2026-11-13",
+    "title": "Pause knob as a P",
+    "items": [
+      "Player: the pause knob is a black P on a white dot"
+    ]
+  },
+  {
+    "version": "0.20.25",
+    "when": "2026-11-13",
+    "title": "Player knob and shuffle module",
+    "items": [
+      "Player: on a television no play/pause or 10 and 15 second jumps; the remote starts on the time bar",
+      "Player: the knob on the time bar is a small pause sign while paused",
+      "Server: the shuffle moved out of the main file into its own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.24",
+    "when": "2026-11-13",
+    "title": "Cache machine in its own module",
+    "items": [
+      "Server: the cache machine, sync back and copies moved out of the main file into their own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.23",
+    "when": "2026-11-13",
+    "title": "Subtitles in their own module",
+    "items": [
+      "Server: the subtitle handling moved out of the main file into its own module, unchanged"
+    ]
+  },
+  {
+    "version": "0.20.22",
+    "when": "2026-11-13",
+    "title": "Invented names in tests",
+    "items": [
+      "Tests and comments: invented titles in place of real ones"
+    ]
+  },
+  {
     "version": "0.20.21",
     "when": "2026-11-13",
     "title": "Screen gate and first search",
@@ -12835,8 +13087,8 @@
     "when": "2026-08-29",
     "title": "Search words, and a rule per bar",
     "items": [
-      "The Words box is called Search words and says what it takes: every word in a rule must appear in the title, so star wars finds only those; a bar starts another rule and a title joins if it answers any of them, so alien | predator takes both.",
-      "Measured on this library: alien | predator gathers fifteen titles, and alien vs gathers the two crossovers alone."
+      "The Words box is called Search words and says what it takes: every word in a rule must appear in the title, so night train finds only those; a bar starts another rule and a title joins if it answers any of them, so comet | harbour takes both.",
+      "Measured on this library: comet | harbour gathers fifteen titles, and comet vs gathers the two crossovers alone."
     ]
   },
   {

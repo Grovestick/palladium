@@ -2665,11 +2665,12 @@ object Api {
         }.getOrDefault(emptyList())
     }
 
-    /** How many titles on this viewer's watchlist have come in since they last opened it. */
-    suspend fun watchBlink(): Int = withContext(Dispatchers.IO) {
+    /** The titles on this viewer's watchlist that have come in since they last opened it. */
+    suspend fun watchBlink(): Set<String> = withContext(Dispatchers.IO) {
         runCatching {
-            JSONObject(get("/watchlist/blink")).optJSONArray("keys")?.length() ?: 0
-        }.getOrDefault(0)
+            val arr = JSONObject(get("/watchlist/blink")).optJSONArray("keys") ?: JSONArray()
+            (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }.toSet()
+        }.getOrDefault(emptySet())
     }
 
     /** A rip of a remux into a 1080p x264 copy beside it, made on the main server. */
@@ -3550,8 +3551,10 @@ object Api {
     /** Where an encoded stream will start, in film seconds, and whether its picture
      *  goes through as it is; null when the server cannot say. Blocking: asked off the
      *  main thread, with a short patience. */
-    fun encodeStart(streamUrl: String): Pair<Double, Boolean>? = try {
-        val conn = Net.open(streamUrl.replace("/gpu/stream?", "/gpu/begins?"), 1500, 1500)
+    fun encodeStart(streamUrl: String, patient: Boolean = false): Pair<Double, Boolean>? = try {
+        // patient: asked again after the stream has opened, when nobody waits on it
+        val conn = Net.open(streamUrl.replace("/gpu/stream?", "/gpu/begins?"),
+                            if (patient) 8000 else 1500, if (patient) 20000 else 1500)
         try {
             val o = JSONObject(conn.inputStream.bufferedReader().readText())
             Pair(o.optDouble("at", -1.0), o.optBoolean("copy", false))

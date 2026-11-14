@@ -12,3 +12,8 @@
     int uxState;
     java.lang.Runnable hideProgressBarRunnable;
 }
+
+# the knob on the time bar drawn as a pause sign while paused (PlayerActivity.knobShowsPause)
+-keepclassmembers class androidx.media3.ui.DefaultTimeBar {
+    android.graphics.drawable.Drawable scrubberDrawable;
+}

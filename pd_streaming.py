@@ -1304,15 +1304,24 @@ def learn_home(lib, most=200):
     return done
 
 
+def tag_words(name):
+    """The words of a release name that describe the release: those after its year, or
+    all of them when it has none. A title can be one of the words - a film called Cam -
+    and its real releases were read as filmed in a cinema."""
+    words = [w for w in re.split(r"[^a-z0-9]+", str(name or "").lower()) if w]
+    years = [i for i, w in enumerate(words) if re.fullmatch(r"(19|20)\d\d", w)]
+    return set(words[years[-1] + 1:] if years else words)
+
+
 def cammed(name):
     """Whether a release name says it was filmed in a cinema: a cam or a telesync."""
-    return bool(set(re.split(r"[^a-z0-9]+", str(name or "").lower())) & set(CAMMED))
+    return bool(tag_words(name) & set(CAMMED))
 
 
 def release_kind(name):
     """What a cinema release name says it is: "telesync", "telecine", "screener" or "cam";
     "" for a real release."""
-    words = set(re.split(r"[^a-z0-9]+", str(name or "").lower()))
+    words = tag_words(name)
     for kind, said in (("telesync", ("ts", "hdts", "telesync")), ("telecine", ("tc", "hdtc", "telecine")),
                        ("screener", ("screener", "scr", "dvdscr")), ("cam", ("cam", "hdcam", "camrip"))):
         if words & set(said):

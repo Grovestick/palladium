@@ -6,6 +6,20 @@
 Exit code 0 when every one held, 1 otherwise.
 """
 import os
+
+def server_source():
+    """pd-server.py and its parts kept in their own files - Handler's (pd_h_*.py) and the
+    functions' (pd_srv_*.py) - as one text."""
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    names = ["pd-server.py"] + sorted(f for f in os.listdir(here)
+                                   if f.startswith(("pd_h_", "pd_srv_")) and f.endswith(".py"))
+    # a part reaches the server's names as S.name; without the S. it reads as it did in
+    # pd-server.py, which is what the checks on the code's own words were written against
+    return chr(10).join(re.sub(r"(?<![\w.])S\.(?=[A-Za-z_])", "",
+                               open(os.path.join(here, f), encoding="utf-8").read()) if f != "pd-server.py"
+                        else open(os.path.join(here, f), encoding="utf-8").read() for f in names)
+
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -402,7 +416,7 @@ check("a file whose readings failed three times at its size is left; at another 
       and [o[0] for o in rcv.measure_order([(7, "g", 10, "aac"), (6, "f", 10, "aac")],
                                            {"7": FAILED, "6": dict(FAILED, failed=1)})] == [6])
 _known = {"1": dict(FAILED), "2": dict(WHOLE, failed=1, failedSize=10), "3": dict(WHOLE)}
-_srvL = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvL = server_source()
 check("Loudness is one of the runs the owner turns off, and off it measures nothing",
       '"fixer",\n             "loudness", "warmup", "xseed")' in _srvL
       and _srvL.index('if not auto_on("loudness"):') < _srvL.index("    if worker_waits(for_screen=playing, other_drive=free_drive):"))
@@ -466,26 +480,30 @@ rcv.KEPT.update(_real[3]); rcv.RAISED.clear()
 # must be handled under that method - a GET for a POST-only path is a 404 nobody sees
 import re as _re
 _here = os.path.dirname(os.path.abspath(__file__))
-_src = open(os.path.join(_here, "pd-server.py"), encoding="utf-8").read()
+_src = server_source()
 _fol = open(os.path.join(_here, "pd_follow.py"), encoding="utf-8").read()
 def _span(name, parts=""):
-    """Where a method stands in the source - and, for a route function, its parts after it."""
-    at = _src.index("    def %s(self" % name)
-    end = _src.index("\n    def ", at + 10)
-    while parts and _src.startswith("\n    def %s" % parts, end):
-        end = _src.index("\n    def ", end + 10)
-    return at, end
+    """Where a method stands in the source - and, for a route function, where each of its
+    parts stands, beside it or in a part file of its own."""
+    out = []
+    for one in [name] + sorted(set(_re.findall(r"\n    def (%s\w*)\(self" % parts, _src))) if parts else [name]:
+        at = _src.index("    def %s(self" % one)
+        end = _src.find("\n    def ", at + 10)
+        out.append((at, end if end > 0 else len(_src)))
+    return out
+def _inside(spans, at):
+    return any(a < at < b for a, b in spans)
 _post, _get, _both = _span("_do_POST", "_post_part_"), _span("_do_GET", "_get_part_"), _span("follow_reads")
 _handled = {"POST": set(), "GET": set()}
 for _m in _re.finditer(r'path == "(/follow[^"]*)"', _src):
-    if _both[0] < _m.start() < _both[1]:
+    if _inside(_both, _m.start()):
         # answered for whichever handler calls the shared method
         for _how, _sp in (("POST", _post), ("GET", _get)):
-            if "self.follow_reads(path)" in _src[_sp[0]:_sp[1]]:
+            if any("self.follow_reads(path)" in _src[a:b] for a, b in _sp):
                 _handled[_how].add(_m.group(1))
-    elif _post[0] < _m.start() < _post[1]:
+    elif _inside(_post, _m.start()):
         _handled["POST"].add(_m.group(1))
-    elif _get[0] < _m.start() < _get[1]:
+    elif _inside(_get, _m.start()):
         _handled["GET"].add(_m.group(1))
 _asked = {"GET": set(), "POST": set()}
 for _text in (_src, _fol):
@@ -615,7 +633,7 @@ check("the follow module's house table holds the owner and the doors together: %
 _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_follow.py"), encoding="utf-8").read()
 check("and is made once", len(_re.findall(r"(?m)^HOUSE\b[^\n=]*=", _src)) == 1)
 # the route functions stay cut into parts a checker can read
-_srv = _ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read())
+_srv = _ast.parse(server_source())
 _long = [(n.name, n.end_lineno - n.lineno + 1) for n in _ast.walk(_srv)
          if isinstance(n, _ast.FunctionDef) and n.end_lineno - n.lineno + 1 > 700]
 check("no function in the server is over 700 lines: %s" % _long, not _long)
@@ -696,10 +714,12 @@ _sh3.rmtree(_d, ignore_errors=True)
 _here2 = os.path.dirname(os.path.abspath(__file__))
 _need = {"pd-server.py": 5, "pd_follow.py": 1, "pd_invites.py": 1, "pd_library.py": 1, "pd_torrents.py": 1,
          "pd_traffic.py": 1}
-_have = {n: open(os.path.join(_here2, n), encoding="utf-8").read().count("pd_safe.settle(f)") for n in _need}
+# pd-server.py with the parts of its Handler
+_have = {n: (server_source() if n == "pd-server.py" else open(os.path.join(_here2, n), encoding="utf-8").read())
+         .count("pd_safe.settle(f)") for n in _need}
 check("each state writer forces its file to the disk before swapping it in: %s" % _have,
       all(_have[n] >= _need[n] for n in _need))
-_srvtext = open(os.path.join(_here2, "pd-server.py"), encoding="utf-8").read()
+_srvtext = server_source()
 check("the settings' spare is never a blind copy of whatever is there",
       'shutil.copyfile(path, path + ".bak")' not in _srvtext and "pd_safe.spare(path)" in _srvtext
       and "pd_safe.daily(path)" in _srvtext)
@@ -873,7 +893,7 @@ check("white text on the red accent, dark text on the gold", _sk.on("#e50914") =
 
 # ---- a shuffle's pack fetches wait for the episode it opened to play
 _srvmod = _load_server() if "_load_server" in globals() else None
-_src_fp = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src_fp = server_source()
 _ns_fp = {}
 exec(_src_fp[_src_fp.index("def first_picture(rows, who):"):_src_fp.index("def copies_coming(rows):")], _ns_fp)
 _fp = _ns_fp["first_picture"]
@@ -886,7 +906,7 @@ check("a pack fetch waits while the viewer's episode opens, and goes once it pla
       and "not first_picture(WATCHING.snapshot(), who)" in _src_fp)
 
 # ---- a guest may ask for a film the house has not got: the app shows them Request
-_gsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_gsrc = server_source()
 _glist = _gsrc[_gsrc.index("GUEST_MAY_POST = ("):]
 _glist = _glist[:_glist.index(chr(10) + "        # Giving the password")]
 check("a guest's Request reaches the server", '"/requests"' in _glist)
@@ -965,7 +985,7 @@ if True:
           _srv.landing_now(_game, _gdone, lambda t, y, n="": False, _now)
           and not _srv.landing_now(_game, _gdone,
                                    lambda t, y, n="": _srv.release_flat(n) in _gfile, _now))
-_pssrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_pssrc = server_source()
 check("the server's landing check looks for the release's own file in the library",
       "pd_tracker.release_flat(name) in read_in" in _pssrc)
 _lasrc = _read_localapi()
@@ -1050,7 +1070,7 @@ check("a release's source from its name", _src("Show.S03E12.1080p.BluRay.x265-RB
       and _src("Show S03E12 Blu-ray") == "bluray" and _src("Show.S03E12.WEB-DL.x264") == "web"
       and _src("Show.S03E12.HDTV.XviD") == "hdtv" and _src("Show.S03E12.DVDRip") == "dvd"
       and _src("Show.S03E12.x264") == "")
-_srvsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvsrc = server_source()
 _tier = _srvsrc[_srvsrc.index("def rank_subtitles"):_srvsrc.index("def rank_subtitles") + 6000]
 check("ranked after the verified group, before word overlap",
       _tier.index("release_family(name), 0)") < _tier.index("release_source(name) == source")
@@ -1112,11 +1132,11 @@ check("its own season's pack, not a single episode, not another programme",
       [r["id"] for r in _pbx29.season_packs(_rows29, "Road to Timbuktu", 1)] == ["1"])
 check("and a run of seasons that takes it in",
       [r["id"] for r in _pbx29.season_packs(_rows29, "Keeping Up With the Neighbours", 7)] == ["3"])
-_s29b = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_s29b = server_source()
 # (the episode's version list asking for its season is run in "an episode's packs" below)
 
 # ---- a season whose only packs miss the choices still gets one, the best seeded
-_s29 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_s29 = server_source()
 check("the finder takes the best seeded pack when none meets the choices",
       'best = found.get("pick") or max(' in _s29 and 'if int(o.get("seeds") or 0) > 0 and not o.get("unsure")],' in _s29)
 
@@ -1506,7 +1526,7 @@ check("newest first: episode 4 to 1 of the same day, then the day before",
       [e["index"] for e in sorted(_eps22, key=_pla.release_order, reverse=True)] == [4, 3, 2, 1, 9])
 
 # ---- the recommended version comes after what is on disk, whatever its seeders
-_s21 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_s21 = server_source()
 check("on disk, then recommended, then by seeders",
       'out.sort(key=lambda o: (not o.get("disk"), not o.get("pick"), -(o["seeds"] or 0)))' in _s21)
 _a21 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
@@ -1589,7 +1609,7 @@ _lbd = _io.BytesIO(); _ImgL.new("RGBA", (200, 100), (0, 0, 0, 255)).save(_lbd, "
 _drawn = _ImgL.open(_io.BytesIO(_psp.logo_poster(_lbd.getvalue(), 400)))
 check("a black logo is drawn light", sum(_drawn.getpixel((200, 300))) > 600)
 # ---- a seeder count nobody has asked the tracker for is not shown as none
-_srv17 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv17 = server_source()
 check("a pack's count from the client when it has one, else the tracker's list, else nothing",
       '"seeds": swarm.get(str(c["hash"]).lower()) or listed_seeds.get(' in _srv17
       and "for t in rows if int(t.get(\"num_complete\") or -1) > 0}" in open(os.path.join(
@@ -1725,7 +1745,7 @@ check("a search for the film finds it inside", len(_hit) == 1 and _hit[0][0] == 
 import pd_streaming as _pst2
 check("and the card says Download", _pst2.boxed({"title": "Primer", "year": 2004}))
 _pbx.STATE.clear(); _pbx.STATE.update(_bx_saved)
-_srvb = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvb = server_source()
 check("its version in the list, and Download adds the box set as a pack",
       '"id": "box:%s:%d" % (ident, int(film["index"]))' in _srvb
       and 'made = pd_boxsets.take(ident[4:])' in _srvb and 'ident = "pack:" + made["key"]' in _srvb
@@ -1842,7 +1862,7 @@ check("the films' Popular page hands the rest to the slow asking",
 # ---- films only to ask for are hidden until a viewer turns Request on, on server and clients
 _here117 = os.path.dirname(os.path.abspath(__file__))
 _fs117 = open(os.path.join(_here117, "pd_localapi.py"), encoding="utf-8").read()
-_fs117s = open(os.path.join(_here117, "pd-server.py"), encoding="utf-8").read()
+_fs117s = server_source()
 _fs117k = open(os.path.join(_here117, "android", "app", "src", "main", "java", "se", "palladium",
                             "tv", "Api.kt"), encoding="utf-8").read()
 _fs117w = open(os.path.join(_here117, "static", "settings.js"), encoding="utf-8").read()
@@ -1972,7 +1992,7 @@ try:
           and "Seen Lately" not in _asked135 and st.SHOW_GAP >= 20)
 finally:
     _pt135.state, _pt135.asked_within, _pt135.ask_for = _was135
-_srv135 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv135 = server_source()
 check("a series' page asked about before answers at once and asks again behind",
       "if pd_tracker.asked_within(str(title), 0, _known.CHECKED_FOR):" in _srv135
       and "pd_streaming.ask_tracker_slowly_about_shows(ask[10:])" in open(os.path.join(
@@ -2078,7 +2098,7 @@ _chk = _apikt[_apikt.index("fun comeHomeAt("):_apikt.index("fun comeHomeIfUp(")]
 check("the app asks /where to come home", '"/where", token, 3000, 3000' in _chk and '"/server"' not in _chk)
 
 # ---- the file being watched is measured next, not turned away by the backlog
-_m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_m = server_source()
 _mi = _m.index("def measure_loudness(")
 _mb = _m[_mi:_mi + 4000]
 check("a busy slot keeps the playing file for next", "MEASURE_NEXT[str(part)] = (path, size)" in _mb
@@ -2099,7 +2119,7 @@ _rows = [(1, "D:/a.mkv", 10), (2, "D:/b.mkv", 10), (3, "E:/c.mkv", 10)]
 check("the first about-to-be-watched file not yet measured", _pr.first_soon(_rows, _known, {}) == (2, "D:/b.mkv", 10))
 check("skipping the drive somebody is watching from", _pr.first_soon(_rows, _known, {}, {"D:"}) == (3, "E:/c.mkv", 10))
 check("all measured: the backlog's turn", _pr.first_soon(_rows[:1], _known, {}) is None)
-_srvm = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvm = server_source()
 _bi = _srvm.index("def measure_the_backlog")
 check("the backlog asks for them before its own list",
       _srvm.index("pd_receiver.first_soon(soon_to_be_watched()", _bi) < _srvm.index("while left:", _bi))
@@ -2158,7 +2178,7 @@ check("an episode, a season, and a film: %s" % [_et("TYSON S01E01 1080p WEB H264
       and _et("The.Show.2024.S02.1080p.WEB-DL") == ("The Show", 2, 0)
       and _et("Its Raining in Rotterdam S18E10 1080p") == ("Its Raining in Rotterdam", 18, 10)
       and _et("Colony 2026 1080p AMZN WEB-DL") is None and _et("Se7en 1995 1080p") is None)
-_srvt = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvt = server_source()
 _ti = _srvt.index("def tracker_coming")
 check("not matched to a film of the same name, and typed as what it is",
       _srvt.index('raise LookupError("an episode, or a page already known")', _ti) <
@@ -2183,7 +2203,7 @@ import pd_tracker as _ptr2
 check("å, ä and ö read as a, a and o", _ptr2.plain("Över Bergen") == "Over Bergen"
       and _ptr2._flat("Gränsbevakarna Sverige") == "gransbevakarnasverige"
       and _ptr2._flat("Bonde söker fru") == _ptr2._flat("Bonde Soker Fru"))
-_srvsw = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvsw = server_source()
 _ns = {}
 exec(_srvsw[_srvsw.index("def show_name(r):"):_srvsw.index("def show_rows():")], _ns)
 check("a Swedish series by its Swedish name, the rest by the catalogue's",
@@ -2246,7 +2266,7 @@ _g2 = _spt.episode_of("NFL 2026 10 12 Chicago Bears Vs Green Bay Packers 720p WE
 check("a game is NFL, numbered by its day and home team, the same every time: %s %s" % (_g1, _g2),
       _g1[0] == "NFL" and _g1[1] == 2026 and _g1[2] != _g2[2] and _g1[2] // 100 == 1012
       and _spt.episode_of("NFL 2026 10 12 Buffalo Bills Vs Los Angeles Rams 720p WEB H264-Y", []) == _g1)
-_srvsp = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvsp = server_source()
 check("the versions list reads an event's own releases, and a download is filed under its sport",
       "pd_sports.releases_of(str(body[\"key\"])" in _srvsp and "_pt.told(path) or _sp.told(path)" in _srvsp)
 
@@ -2325,7 +2345,7 @@ check("a channel's card: live, its poster drawn here", _lvc["live"] and _lvc["th
       and _lvc["title"] == "Alpha TV")
 check("its poster, a square JPEG for the round card, with or without a logo",
       _Img.open(_io.BytesIO(_lv.poster(_chs[0], None, 300))).size == (300, 300))
-_srvlv = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvlv = server_source()
 check("the server copies a channel into pieces and serves them",
       'pd_live.start(key, ffmpeg_now())' in _srvlv and 'pd_live.playlist(open(listed' in _srvlv)
 
@@ -2454,7 +2474,7 @@ check("and gets it once nobody has asked for the first in a while",
       _ip30.admit(_k30[1], now=1000.0 + _ip30.FREED_AFTER + 1) and _k30[0] not in _lv.RUNNING)
 _lv.RUNNING.clear()
 _lv.use_data_dir("")
-_ssrc30 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_ssrc30 = server_source()
 check("a channel that did not start is stopped, one that did is noted",
       "pd_live.stop(key)\n                        self.send_error(504" in _ssrc30.replace("\r\n", "\n")
       and "pd_live.played(key)" in _ssrc30)
@@ -2485,8 +2505,7 @@ check("eight seconds of picture, or two seconds after the first piece; never wit
       and not _lv.cushioned(0, 30.0)
       and _lv.seconds_in("#EXTINF:6.4,\nseg1.ts\n#EXTINF:3.2,\nseg2.ts") == 9.6)
 check("the playlist answer waits on it",
-      "if pd_live.cushioned(pd_live.seconds_in(text)," in open(os.path.join(
-          os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read())
+      "if pd_live.cushioned(pd_live.seconds_in(text)," in server_source())
 _calls53 = []
 _was53 = _lv._probe
 _lv._probe = lambda src, ff: (_calls53.append(src), (7, 50.0))[1]
@@ -2516,7 +2535,7 @@ _said38 = """  Stream #0:0[0x1](und): Video: h264 (Main), yuv420p, 448x252, 25 f
 check("the chosen stream's rate, the first picture's when none is named, nought when unsaid",
       _lv.rate_of(_said38, 7) == 50.0 and _lv.rate_of(_said38) == 25.0
       and _lv.rate_of("  Stream #0:0: Video: h264, 1280x720") == 0.0)
-_s38 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_s38 = server_source()
 check("the playlist answer carries it", 'self.send_header("X-Palladium-Fps", "%g" % pd_live.rate(key))' in _s38)
 
 # ---- a new release keeps its key when the list is read again from the other source
@@ -2528,7 +2547,7 @@ check("the same catalogue number, the key it had; a film new to the list, its ow
 
 # ---- a file's twin, measured already, gives its reading instead of a measurement
 _tw51 = {}
-exec(compile(__import__("ast").get_source_segment(_src51 := open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read(),
+exec(compile(__import__("ast").get_source_segment(_src51 := server_source(),
      next(n for n in __import__("ast").parse(_src51).body if getattr(n, "name", "") == "twin_of")), "x", "exec"),
      {"os": os}, _tw51)
 _good51 = {"lufs": -14.8, "size": 100, "how": "spread"}
@@ -2541,7 +2560,7 @@ check("same name and size, read the whole way through: its twin; anything less: 
 # ---- ffmpeg left behind by an earlier server is ours to stop, and only ours
 import importlib.util as _iu51
 _sp51 = _iu51.spec_from_file_location("pd_server_51", os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"))
-_src51 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src51 = server_source()
 _ns51 = {}
 exec(compile(__import__("ast").get_source_segment(_src51, next(n for n in __import__("ast").parse(_src51).body
      if getattr(n, "name", "") == "ffmpeg_is_ours")), "x", "exec"), _ns51)
@@ -2570,7 +2589,7 @@ _map58 = _pl58.doubles_map(_eps58)
 check("the catalogue's doubles take two of the release's numbers: E03E04 is E02, E05E06 E03, E09 E05, E18E19 E14",
       _map58[3] == 2 and _map58[4] == 2 and _map58[5] == 3 and _map58[9] == 5
       and _map58[18] == 14 and _map58[19] == 14 and _map58[1] == 1)
-_ps58 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_ps58 = server_source()
 check("and the season's numbering may be set to it",
       'mode not in ("auto", "files", "database", "doubles",' in _ps58 and '"titles"):' in _ps58)
 
@@ -2715,7 +2734,7 @@ finally:
 import sqlite3 as _sq357, pd_library as _pl357
 _c357 = _sq357.connect(":memory:"); _c357.row_factory = _sq357.Row
 _c357.executescript("CREATE TABLE item (id TEXT, tmdb_id INT); CREATE TABLE episode (id TEXT PRIMARY KEY, item_id TEXT, season INT, number INT, title TEXT, overview TEXT, aired TEXT, still TEXT, UNIQUE(item_id, season, number));"
-                    "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT, episode_id TEXT);"
+                    "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT, episode_id TEXT, duration REAL);"
                     "CREATE TABLE progress (who TEXT, key TEXT, position REAL, PRIMARY KEY (who, key));")
 # a viewer watched the file numbered E06 through, and is part way into E07
 _c357.execute("INSERT INTO progress VALUES ('v', 'e6', 1300), ('v', 'e7', 200)")
@@ -2736,7 +2755,7 @@ check("double numbering: a viewer's place follows the file to its new episode",
       _pr357 == {5: 1300, 6: 200})
 
 # ---- a verify made by a check marks the file and leaves every viewer's choice alone
-_sv358 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv358 = server_source()
 _vf358 = _sv358[_sv358.index("    def verify_subtitle"):]
 _vf358 = _vf358[:_vf358.index(chr(10) + "    def ", 10)]
 check("subtitle verify: only a person's own verify writes their series choice and pick",
@@ -2746,7 +2765,7 @@ check("subtitle verify: only a person's own verify writes their series choice an
 
 # ---- the next episode's file read ahead at both ends, served from memory
 import ast as _ast359, tempfile as _tf359, threading as _th359, time as _tm359
-_sv359 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv359 = server_source()
 _ns359 = {"os": os, "threading": _th359, "time": _tm359}
 _pa359 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
                            "se", "palladium", "tv", "PlayerActivity.kt"), encoding="utf-8").read()
@@ -2786,7 +2805,7 @@ check("edition: the file's own name still wins, and a plain one in a plain folde
 import sqlite3 as _sq361, pd_library as _pl361
 _c361 = _sq361.connect(":memory:"); _c361.row_factory = _sq361.Row
 _c361.executescript("CREATE TABLE item (id TEXT, tmdb_id INT); CREATE TABLE episode (id TEXT PRIMARY KEY, item_id TEXT, season INT, number INT, title TEXT, overview TEXT, aired TEXT, still TEXT, UNIQUE(item_id, season, number));"
-                    "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT, episode_id TEXT);"
+                    "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT, episode_id TEXT, duration REAL);"
                     "CREATE TABLE progress (who TEXT, key TEXT, position REAL, PRIMARY KEY (who, key));")
 _c361.execute("INSERT INTO item VALUES ('show', 1)")
 # as the catalogue numbering left it: the double E04E05 on 4, E06 on 5 "Mafia", E07 on 6
@@ -2822,7 +2841,7 @@ check("series version: with none picked by hand, the packs in use by themselves 
 
 # ---- an added pack is known on the tracker's list by its group and seasons
 import ast as _ast364
-_sv364 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv364 = server_source()
 _ns364 = {"re": __import__("re")}
 for _n364 in _ast364.parse(_sv364).body:
     if isinstance(_n364, _ast364.FunctionDef) and _n364.name == "release_group":
@@ -3278,7 +3297,7 @@ check("gate: the top films list may fall by a refresh, as the top shows may",
       and "n < v * 0.5" in _gt376)
 
 # ---- setting a pack's home never deletes here unless Sync back says so
-_sv377 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv377 = server_source()
 _at377 = _sv377.index("def sync_back_round")
 _rd377 = _sv377[_at377:_sv377.index("let_gone = []", _at377)]
 check("home: handing a torrent over removes its files here, so it runs only with Sync back on",
@@ -3388,7 +3407,7 @@ try:
 finally:
     _pt379.placed_path = _pp379
     _sh379.rmtree(_d379, ignore_errors=True)
-_sv379 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv379 = server_source()
 _rd379 = _sv379[_sv379.index("def sync_back_round"):_sv379.index("let_gone = []")]
 check("edges: a copy short only of its edges is not sent again; deleting here still asks for whole",
       "pd_homes.give(films, here, copy_holds, listed)" in _rd379
@@ -3462,7 +3481,7 @@ try:
 finally:
     _pt381.placed_path, _pt381.file_of, _pt381.elsewhere_path, _pt381.load, _pt381.QB, _pt381.asked_for, _pt381.kept_whole = _s381
     _sh381.rmtree(_d381, ignore_errors=True)
-_sv381 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv381 = server_source()
 check("send: the file sent is the one chosen", "where = pd_torrents.file_to_send(" in _sv381)
 
 # ---- split: each file stays where it came down, new downloads go to the machine chosen
@@ -3485,7 +3504,7 @@ try:
           _ph382.take_back(_rep382, _h382, lambda h, i: 5, {5}, True) == [] and _ph382.take_back(_rep382, _h382, lambda h, i: 5, {5}, False) == [])
 finally:
     _pt382.load, _pt382.save = _s382
-_sv382 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv382 = server_source()
 _rd382 = _sv382[_sv382.index("def sync_back_round"):_sv382.index("let_gone = []")]
 _vw382 = _rd382[_rd382.index("# the viewing rule"):_rd382.index("listed = [r.get")]
 check("split: nothing here is handed to the copy, so nothing moves; only the viewing rule reads a split pack, to fetch a copy",
@@ -3612,7 +3631,7 @@ check("read first: a film really on the disk is read, so it is not fetched again
 check("read first: a placeholder of the right length is not: its download starts at once",
       not _pt386.needs_read_first(_f386, _d386, [], "h", 0, share=lambda p: 0.3))
 _sh386.rmtree(_d386, ignore_errors=True)
-_sv386 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv386 = server_source()
 check("requests: the main server answers the quick look, moves left out",
       'if path == "/follow/asked":' in _sv386 and 'pd_torrents.for_copy() if not r.get("move")' in _sv386)
 
@@ -3688,7 +3707,7 @@ _sh390.rmtree(_d390, ignore_errors=True)
 
 # ---- a pack of a name two series share goes to the one it fits
 import ast as _ast91
-_src91 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src91 = server_source()
 _ns91 = {"re": __import__("re")}
 for _n91 in _ast91.parse(_src91).body:
     if getattr(_n91, "name", "") in ("twin_verdict", "release_year", "added_pack_for", "release_group", "series_twins"):
@@ -3843,8 +3862,14 @@ check("adding a series: the press says so at once, and the end says the pack was
 
 # ---- the versions played are on the copy list straight after a restart, nobody playing
 import json as _js102, tempfile as _tf102, time as _ti102
-_src102 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
-_src102 = _src102[_src102.index("PLAYED_FILES = {}"):_src102.index("def codec_of(part):")]
+_src102 = server_source()
+# the list's own values where the server keeps them, and the functions that read and
+# write it wherever they now stand
+_ast102 = __import__("ast")
+_tree102 = _ast102.parse(_src102)
+_src102 = _src102[_src102.index("PLAYED_FILES = {}"):_src102.index("PLAYED_READ = []") + len("PLAYED_READ = []")]     + chr(10) + chr(10).join(_ast102.get_source_segment(_src102, n) or "" for n in _tree102.body
+                             if isinstance(n, _ast102.FunctionDef)
+                             and n.name in ("_read_played", "played_file", "holding_changes", "log_rows", "played_files"))
 with _tf102.TemporaryDirectory() as _dir102:
     def _boot102():
         _ns = {"os": os, "json": _js102, "time": _ti102, "ROOT": _dir102}
@@ -3904,7 +3929,7 @@ check("copies: the kept names and the listed names both leave out what a pack ho
       and 'keeping.add(kept_path(folder, safe, item.get("size"), item.get("mark") or ""))' in _fol103)
 
 # ---- copies to the other server are listed with the downloads
-_src99 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src99 = server_source()
 _ns99 = {}
 exec(compile(__import__("ast").get_source_segment(_src99, next(n for n in __import__("ast").parse(_src99).body
      if getattr(n, "name", "") == "copies_coming")), "x", "exec"), _ns99)
@@ -3940,7 +3965,7 @@ finally:
 # ---- from the second code review
 import ast as _ast97, pd_follow as _pf97, pd_torrents as _pt97
 _here97 = os.path.dirname(os.path.abspath(__file__))
-_srv97 = open(os.path.join(_here97, "pd-server.py"), encoding="utf-8").read()
+_srv97 = server_source()
 _fol97 = open(os.path.join(_here97, "pd_follow.py"), encoding="utf-8").read()
 _tor97 = open(os.path.join(_here97, "pd_torrents.py"), encoding="utf-8").read()
 _learn97 = next(n for n in _ast97.parse(_fol97).body if getattr(n, "name", "") == "learn_the_viewers")
@@ -3973,8 +3998,8 @@ check("sync back: an error before the round starts does not leave it busy for go
       'Handler.SYNC_BACK["busy"] = False' in _soon97)
 _d97 = __import__("tempfile").mkdtemp()
 _hot97 = {"part": "x", "name": "Hot.mkv", "why": "on a screen now", "size": 5}
-check("copies: what the round will not fetch does not put another copy down",
-      _pf97.first_on_screen([dict(_hot97, casual=True)], _d97, "Film.mkv") == ""
+check("copies: what the round will not fetch does not put another copy down; a shuffle's draw on a screen does",
+      _pf97.first_on_screen([dict(_hot97, casual=True)], _d97, "Film.mkv") == "Hot.mkv"
       and _pf97.first_on_screen([{k: v for k, v in _hot97.items() if k != "part"}], _d97, "Film.mkv") == ""
       and _pf97.first_on_screen([_hot97], _d97, "Film.mkv") == "Hot.mkv")
 _row97 = {"key": "k", "state": "queued", "hash": "h"}
@@ -4219,7 +4244,7 @@ check("a doubles season is put on its numbers at start and again when a file arr
 
 # ---- the live channels are the main server's on the copy too, and not changed there
 import pd_follow as _pf92
-_srv92 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv92 = server_source()
 _lock92 = _srv92[_srv92.index("MIRROR_LOCKED = frozenset(("):]
 _lock92 = _lock92[:_lock92.index("))")]
 check("the copy takes the live playlist, YouTube channels and groups from the main server, and cannot change them",
@@ -4505,7 +4530,7 @@ check("one named after another episode of the season never is, hash or not",
                                   [{"chair", "model"}])
       and not _la76.names_another({"office", "s04e10", "bluray"}, {"branch", "wars"},
                                   [{"chair", "model"}]))
-_src76 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src76 = server_source()
 check("and the search asks for our number, the file's number added once, not twice",
       'return (src, row["title"], row["year"], row["season"], row["number"])' in _src76)
 
@@ -4580,7 +4605,7 @@ check("a still's second is asked as s, not as the sign-in key t",
 # ---- the subtitle list and fetching ahead are one order with one pick
 import importlib.util as _iu62
 _sp62 = _iu62.spec_from_file_location("pd_server_62", os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"))
-_src62 = open(_sp62.origin, encoding="utf-8").read()
+_src62 = server_source()
 _ns62 = {}
 exec(compile(_src62[_src62.index("def auto_pick("):_src62.index("def release_flat(")], "auto_pick", "exec"), _ns62)
 _ap62 = _ns62["auto_pick"]
@@ -4650,7 +4675,7 @@ check("with the year: the exact title of that year only",
       and _bfy54[1]["type"] == "person")
 
 # ---- a copy refuses changes to what it mirrors
-_s50 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_s50 = server_source()
 _locked50 = set(__import__("re").findall(r'"([A-Za-z0-9]+)"', _s50[_s50.index("MIRROR_LOCKED = frozenset(("):_s50.index("    def mirror_of(self):")]))
 import pd_follow as _pf50
 _house_body50 = {k for k in _pf50.HOUSE_MIRRORED if k not in ("subtitles", "subSizeBase", "subPlaceRound", "subLang", "subLang2", "homeRowsDefault")}
@@ -4660,7 +4685,7 @@ check("the settings endpoint refuses them first, and says which server they are 
       "locked = self.mirror_locked(body)" in _s50 and '"mirrorOf": self.mirror_of(),' in _s50)
 
 # ---- the copy knows each viewer's second subtitle language and their shelf choices
-_vk48 = _src45 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_vk48 = _src45 = server_source()
 _keep48 = _vk48[_vk48.index('if path == "/follow/viewers":'):]
 _keep48 = _keep48[:_keep48.index("out = {}")]
 check("every viewer setting goes to the copy, by the server's own list, but the ones naming titles by number",
@@ -4676,7 +4701,7 @@ check("a quality change keeps the subtitle showing", "o.subId = S.subId || 0;\n 
 
 # ---- the copy chooses releases by the main server's rules
 import pd_follow as _pf45
-_src45 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_src45 = server_source()
 _rel45 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_release.py"), encoding="utf-8").read()
 _used45 = set(__import__("re").findall(r'"(prefer[A-Z][A-Za-z0-9]*|rateLock|closeCall|seriesRate)"', _src45 + _rel45))
 check("every setting that chooses a release is mirrored to the copy: %s" % sorted(_used45 - set(_pf45.CHOOSING)),
@@ -4720,7 +4745,7 @@ check("Show more on the live row, and a group opened, hide sort, genre, decade a
       and _ma36.count("browse.liveView = true") == 2 and "liveView = false" in _ma36)
 
 # ---- the plugins load with the server, not with the first page that asks for them
-_ss35 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read().replace("\r\n", "\n")
+_ss35 = server_source().replace("\r\n", "\n")
 check("pd_plugins imported beside pd_live at start",
       "pd_live.use_data_dir(ROOT)\n        # the plugins at start" in _ss35)
 
@@ -4738,7 +4763,7 @@ check("the command is given the twin and the number", '"-i", src,' in _lvs34
 
 # ---- a live channel is answered at the address the web page asks
 import re as _re3
-_lvsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_lvsrc = server_source()
 _lvpat = _re3.search(r'm = re\.match\(r"(\^\(\?:/local\)\?/live/[^"]+)", path\)', _lvsrc)
 check("both /live/ and /local/live/ reach the channel",
       bool(_lvpat) and all(_re3.match(_lvpat.group(1), p) for p in
@@ -4774,7 +4799,7 @@ check("an offered draw keeps the collection open and refetches its grid",
 # ---- an episode's release list offers a season pack as a link, beside downloading the episode
 _here140 = os.path.dirname(os.path.abspath(__file__))
 _js140 = open(os.path.join(_here140, "static", "app.js"), encoding="utf-8").read()
-_srv140 = open(os.path.join(_here140, "pd-server.py"), encoding="utf-8").read()
+_srv140 = server_source()
 _tv140 = os.path.join(_here140, "android", "app", "src", "main", "java", "se", "palladium", "tv")
 _ed140 = open(os.path.join(_tv140, "EpisodeDownloads.kt"), encoding="utf-8").read()
 _ma140 = open(os.path.join(_tv140, "MainActivity.kt"), encoding="utf-8").read()
@@ -4787,7 +4812,7 @@ check("season pack rows add the pack as a link; no word search",
       and "if (c.fetchable) fetchingEp = c" not in _ma140)
 
 # ---- the collection editor's list shows a whole series' unlinked seasons, as its page does
-_srv143 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv143 = server_source()
 _t143 = _srv143[_srv143.find('if path == "/collections/test":'):][:4000]
 check("collection editor lists every season of a series held whole",
       "for show in self.whole_series(con, shelf):" in _t143
@@ -4806,7 +4831,7 @@ check("season page: Add pack lists the season's packs and adds one to that seaso
       and '.put("season", season.index ?: 0), readMs = 60_000)).optString("error", "")' in _api145)
 
 # ---- the web's collection list (/collections/items) shows unlinked seasons too
-_srv146 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv146 = server_source()
 _i146 = _srv146[_srv146.find('if path in ("/collections", "/collections/items"):'):][:3000]
 check("web collection list adds every season of a series held whole",
       "for show in self.whole_series(con, shelf):" in _i146
@@ -4931,7 +4956,7 @@ _here165 = os.path.dirname(os.path.abspath(__file__))
 _js165 = open(os.path.join(_here165, "static", "app.js"), encoding="utf-8").read()
 _st165 = open(os.path.join(_here165, "android", "app", "src", "main", "java", "se", "palladium",
                            "tv", "StartScreen.kt"), encoding="utf-8").read()
-_srv165 = open(os.path.join(_here165, "pd-server.py"), encoding="utf-8").read()
+_srv165 = server_source()
 check("Start feedback: web marks, app hold, a guest may tell it too",
       "strip.appendChild(startMarks(card(it), it))" in _js165
       and 'fetch("/start/feedback",' in _js165
@@ -4945,7 +4970,7 @@ _js168 = open(os.path.join(_here168, "static", "app.js"), encoding="utf-8").read
 _set168 = open(os.path.join(_here168, "static", "settings.js"), encoding="utf-8").read()
 _ma168 = open(os.path.join(_here168, "android", "app", "src", "main", "java", "se", "palladium",
                            "tv", "MainActivity.kt"), encoding="utf-8").read()
-_srv168 = open(os.path.join(_here168, "pd-server.py"), encoding="utf-8").read()
+_srv168 = server_source()
 check("Opens on: Start by default, Home when chosen - web, app and the server",
       'const tab = CFG && CFG.startTab === "home" ? "home" : "start";' in _js168
       and _js168.count("go(firstTab());") == 1
@@ -5045,8 +5070,7 @@ check("Start only at the opening: back and the end of a film go to Home, web and
 
 # ---- a shuffle's draw that must download first gives way to the next one here, which
 #      plays; the one coming in stays next in line
-_srv181 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"),
-               encoding="utf-8").read()
+_srv181 = server_source()
 _src181 = _srv181[_srv181.find("    def ready_first(order, to, usable, ready):"):]
 _src181 = _src181[:_src181.find("\n    def shuffle_settle")]
 _ns181 = {}
@@ -5078,7 +5102,7 @@ check("no Shuffle on a series' page, Start's Shuffle row kept, web and app",
 # ---- Start's rows: edited on the web as Home's are, kept per viewer, followed by the app
 _here183 = os.path.dirname(os.path.abspath(__file__))
 _js183 = open(os.path.join(_here183, "static", "app.js"), encoding="utf-8").read()
-_sv183 = open(os.path.join(_here183, "pd-server.py"), encoding="utf-8").read()
+_sv183 = server_source()
 _st183 = open(os.path.join(_here183, "android", "app", "src", "main", "java", "se", "palladium",
                            "tv", "StartScreen.kt"), encoding="utf-8").read()
 check("Start's rows editor on the web, the setting kept per viewer, the app following it",
@@ -5240,8 +5264,7 @@ _bad196 = _tf196.mkdtemp()
 os.makedirs(os.path.join(_bad196, "feedback.jsonl"))
 check("report board: a board that cannot be read is left alone",
       _pb196.take(_bad196, [{"id": "x", "when": 1}], True) is None)
-_srv196 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"),
-               encoding="utf-8").read()
+_srv196 = server_source()
 check("report board: every change to a row is stamped",
       _srv196.count('row["changed"] = ') >= 2 and 'back["changed"] = int(time.time())' in _srv196
       and 'if path == "/follow/feedback":' in _srv196)
@@ -5477,7 +5500,7 @@ finally:
     _pt215.QB, _pt215.STATE["data"], _pt215.STATE["root"], _pt215.STATE["held"] = _keep215
 
 # ---- the library is asked once which keys of a round are held, not once per key
-_srv216 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv216 = server_source()
 check("shuffle: held keys read once per round, not per key",
       "not in self.held_keys(" not in _srv216 and _srv216.count("held = self.held_keys(con, ") >= 2)
 
@@ -5628,7 +5651,7 @@ check("app: a search shows everything it found on every tab",
       and '"films" -> found.filter { it.type == "movie" }' not in _ma214)
 
 # ---- a screen can be told to carry on a shuffle, not only to play one title
-_srv225 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv225 = server_source()
 check("screens: /screen/play takes a shuffle to carry on, and the screen draws it",
       'NOTICE["shelf"] = shelf' in _srv225 and '"shelf": (NOTICE.get("shelf") or "") if fresh else ""' in _srv225
       and "startShuffle(ctx, word.shelf, onOpen)" in _ma214)
@@ -5677,20 +5700,20 @@ check("app: Start's rows end in a Show more that opens the tab",
       and "if (more != null && !onTv()) Modifier.clickable { onMore(more) }" in _st228)
 
 # ---- kept lists are read again every day by the server's own round
-_srv230 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv230 = server_source()
 check("lists: the server reads its kept lists again every day",
       "threading.Thread(target=keep_lists, name=\"palladium-lists\", daemon=True).start()" in _srv230
       and "api.refresh_lists(con)" in _srv230)
 
 # ---- Start's fronts are made ahead by the server's own round, dropped on feedback
-_srv232 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv232 = server_source()
 check("start: fronts made ahead every ten minutes, a viewer's dropped when they tell Start something",
       'threading.Thread(target=keep_start_ready, name="palladium-start",' in _srv232
       and "local().start_forget(self.viewer())" in _srv232)
 
 # ---- Start's Shuffle row: the shuffle used last first
 import importlib.util as _iu233
-_srv233 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv233 = server_source()
 _ns233 = {"Handler": type("H", (), {"round_stamp": staticmethod(
     lambda one: int(one.get("casualStamp") or 0) if isinstance(one, dict) else 0)})}
 exec(_srv233[_srv233.index("def shuffled_last_first"):_srv233.index("def series_episode_keys")], _ns233)
@@ -5701,7 +5724,7 @@ check("start: the Shuffle row leads with the shuffle used last, an unused one af
       and "local().start_forget(self.viewer())" in _srv233.split('if path == "/collections/shuffle":')[1][:2000])
 
 # ---- Collections: the series' shuffles in a row of their own; a Start shuffle with none makes one
-_srv234 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv234 = server_source()
 _js234 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
 check("collections: one row, a collection with a shuffle wearing its ribbon - web and app",
       _srv234.count("seriesShelf") >= 2
@@ -5737,7 +5760,7 @@ check("collections: Play all in the order shown and Play shuffle, and the player
       and 'putStringArrayListExtra("queue", ArrayList(keys.drop(1)))' in _ma214)
 
 # ---- a collection has a second rule for its shuffle, set on the web's collection form
-_srv239 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv239 = server_source()
 _js239 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
 check("collections: the shuffle's own span is saved and drawn from",
       "return shelf, self.shuffle_part(con, shelf, self.shelf_pool(con, shelf))" in _srv239
@@ -5746,7 +5769,7 @@ check("collections: the shuffle's own span is saved and drawn from",
 
 # ---- a collection's shuffle-excluded cards turn red while Play shuffle is pointed at
 _js241 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
-_srv241 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv241 = server_source()
 check("collections: what the shuffle leaves out is red while Play shuffle is pointed at - web and app",
       'if (it.notShuffled) el.classList.add("unshuf");' in _js241
       and 'playIt.addEventListener("mouseenter", lit(true));' in _js241
@@ -5772,7 +5795,7 @@ check("collections: a manual form searches on its own, the new name copied in un
       and 'findRow.classList.toggle("hidden", on);' in _form243)
 
 # ---- the cache never installs an older build from the main server
-_srv244 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srv244 = server_source()
 _door244 = _srv244.split('if path == "/update/install":')[1][:5000]
 import pd_update as _pu244
 check("update: an installer from the main server older than this one is refused",
@@ -5864,7 +5887,7 @@ check("phone: Start's cards start under the row's name",
       _st254.count("contentPadding = PaddingValues(horizontal = if (onTv()) 8.dp else 0.dp,") == 2)
 
 # ---- a title sent to the screens plays on the ones listening, not on one opened later
-_srv255 = open(os.path.join(_h214, "pd-server.py"), encoding="utf-8").read()
+_srv255 = server_source()
 _ma255 = open(os.path.join(_h214, "android", "app", "src", "main", "java", "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
 check("screens: a play command is for a minute, and an app's first ask does not act on it",
       'NOTICE["playUntil"] = time.time() + PLAY_FOR' in _srv255
@@ -6023,7 +6046,7 @@ check("link merge: the server's own internet calls through it, the house's machi
       and not _pt263._in_the_house("8.8.8.8"))
 
 # ---- a catalogue lookup by name keeps to the year asked for: Seven of 1995 is not a film of 1960
-_src264 = open(os.path.join(_h214, "pd-server.py"), encoding="utf-8").read()
+_src264 = server_source()
 _ns264 = {}
 exec(_src264[_src264.index("def hit_of_year"):_src264.index("def listed_tmdb")], _ns264)
 _hits264 = [{"id": 966, "release_date": "1960-10-12"}, {"id": 465948, "release_date": "1995-01-11"},
@@ -6083,7 +6106,7 @@ check("play build: TMDB and JustWatch credits in its settings",
       and "JustWatch" in _ro269)
 
 # ---- Start's fronts made ahead give way: not right after a start, and a pause between two
-_srv270 = open(os.path.join(_h214, "pd-server.py"), encoding="utf-8").read()
+_srv270 = server_source()
 import pd_localapi as _pl270
 class _Fake270:
     START_ACTIVE_DAYS = 31
@@ -6102,7 +6125,7 @@ _src271 = {"a": "fetch", "b": "fetch", "c": "", "d": "fetch", "e": "here", "m": 
 _now271, _new271 = _ps271.watch_changes(
     ["a", "b", "c", "d", "e"], {"a": "", "b": "fetch", "c": "", "e": "fetch", "m": "", "n": ""},
     lambda k: _src271.get(k, ""))
-_srv271 = open(os.path.join(_h214, "pd-server.py"), encoding="utf-8").read()
+_srv271 = server_source()
 check("watchlist: a step up - a cam, fetchable, or here - is news once; a here moved key too; new or had ones not",
       _new271 == ["a", "e", "m"] and _now271 == {"a": "fetch", "b": "fetch", "c": "", "d": "fetch", "e": "here"}
       and "_deck_arrivals" not in open(os.path.join(_h214, "pd_localapi.py"), encoding="utf-8").read()
@@ -6134,7 +6157,7 @@ check("app: grid columns from the width of a cell",
 
 # ---- a viewer can hide films not out yet
 import pd_localapi as _pl275
-_srv275 = open(os.path.join(_h214, "pd-server.py"), encoding="utf-8").read()
+_srv275 = server_source()
 _js275 = open(os.path.join(_h214, "static", "settings.js"), encoding="utf-8").read()
 check("films: Upcoming shown or hidden per viewer - popular list and search",
       _pl275.LocalAPI.FILMS_SHOW.get("upcoming") is False
@@ -6360,7 +6383,7 @@ check("Now playing: everything is read before the list is cleared, downloads are
 
 # ---- the cache copies only what is on a screen while a film comes in or the library scans
 import ast as _ast288, time as _time288, types as _types288
-_txt288 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_txt288 = server_source()
 _ns288 = {"time": _time288}
 for _n288 in _ast288.parse(_txt288).body:
     if isinstance(_n288, _ast288.FunctionDef) and _n288.name in ("disks_busy", "copy_while_busy"):
@@ -6392,7 +6415,7 @@ _wk289 = _pt289[_pt289.index("def _work():"):]
 _wk289 = _wk289[:_wk289.index("pd_beat.sleep(")]
 _ui289 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main",
                            "java", "se", "palladium", "tv", "Ui.kt"), encoding="utf-8").read()
-_sv289 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv289 = server_source()
 check("ready: downloads followed first in the round and after the slow steps; screens ask every 8 s; checks are not listed",
       _wk289.index('_step("_follow_downloads"') < _wk289.index('_step("_mirror_house"')
       and _wk289.count('_step("_follow_downloads"') >= 2
@@ -6401,7 +6424,7 @@ check("ready: downloads followed first in the round and after the slow steps; sc
       and 'or state.startswith("checking"):' in _sv289)
 
 # ---- loudness measuring leaves alone the drive the cache is copying from
-_sv290 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv290 = server_source()
 import ast as _ast290, types as _ty290
 _ns290 = {"os": os}
 for _n290 in _ast290.parse(_sv290).body:
@@ -6416,7 +6439,7 @@ check("measuring: the drive being watched from and the drive a copy reads from a
       and "busy |= playing_drives(copies=True)" in _sv290)
 
 # ---- background workers: on under playback with a full buffer, waiting for a copy, a download or a scan
-_sv291 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv291 = server_source()
 _q291 = _sv291[_sv291.index("def quiet_now():"):]
 _q291 = _q291[:_q291.index("def ", 10)]
 _bw291 = _sv291[_sv291.index("def background_waits():"):]
@@ -6465,7 +6488,7 @@ check("workers' gate: every worker asks it and nothing else",
       and "while held < 120 and playback_short():" in _sv291)
 
 # ---- checks are shown as checks: on Now playing in their own section, never as downloads
-_sv292 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv292 = server_source()
 _js292 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "settings.js"), encoding="utf-8").read()
 _fo292 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_follow.py"), encoding="utf-8").read()
 import ast as _ast292, types as _ty292, json as _json292, re as _re292
@@ -6581,8 +6604,8 @@ try:
     _whyR = _ptR.PLACE_WHY["why"]
 finally:
     _ptR.placed_path = _wasR
-_srR = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
-_tkR = _srR[_srR.index("    def take_from_the_copy(cls):"):_srR.index("    #: what the graphics card last said about itself")]
+_srR = server_source().replace(chr(13), "")
+_tkR = _srR[_srR.index("    def take_from_the_copy(cls):"):_srR.index(chr(10) + "    def ", _srR.index("    def take_from_the_copy(cls):") + 9)]
 check("taking back: a copy cut short writes nothing, says how short, and is queued again until its third try",
       _gotR == "" and "came short" in _whyR and not os.path.exists(os.path.join(_dR, "f.mkv.part"))
       and "if not got:" in _tkR and "cls.FROM_COPY.append(dict(one, tries=tries))" in _tkR
@@ -6654,7 +6677,7 @@ open(os.path.join(_du, _ptu.UNPACK_MARK), "wb").close()
 _half = _ptu.unpacked(os.path.join(_du, "x.rar"))
 os.remove(os.path.join(_du, _ptu.UNPACK_MARK))
 _whole = _ptu.unpacked(os.path.join(_du, "x.rar"))
-_srvu = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvu = server_source()
 _jsu = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "settings.js"), encoding="utf-8").read()
 _rtu = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main",
                          "java", "se", "palladium", "tv", "Route.kt"), encoding="utf-8").read()
@@ -6767,7 +6790,7 @@ check("title page: Download lit only once looked; pressed, it says Starting at o
 _lbP = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_library.py"), encoding="utf-8").read()
 _tiP = _lbP[_lbP.index("    def take_in(self, paths):"):]
 _tiP = _tiP[:_tiP.index("        return took")]
-_svP = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svP = server_source()
 _maP = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main",
                          "java", "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
 check("arrival: probed at once whatever the scan; arriving shown; the download list has no gap at the end",
@@ -6777,7 +6800,7 @@ check("arrival: probed at once whatever the scan; arriving shown; the download l
       and 'LANDING["at"] = 0.0' in _svP)
 
 # ---- a worker outside the server reports into the Workers boxes; the file fixer says its total
-_svO = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svO = server_source()
 _fxO = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_fixer.py"), encoding="utf-8").read()
 check("workers: an outside worker reports name, step, done and left; the fixer counts what is left",
       'if path == "/workers/report":' in _svO and "for one in list(OUTSIDE.values()):" in _svO
@@ -6808,7 +6831,7 @@ _wQ = [{"why": "kept ahead", "name": "far.mkv", "size": 5},
        {"part": "x", "why": "on a screen now", "name": "wanted.mkv", "size": 9},
        {"part": "x", "why": "on a screen now", "name": "wanted.mkv", "size": 9, "side": 0}]
 _srcQ = open(_pfQ.__file__, encoding="utf-8").read()
-_svQ = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svQ = server_source()
 check("cache: the first on a screen and not held is put first; held or being copied is not; "
       "subtitles chosen ahead only in the viewer's language",
       _pfQ.first_on_screen(_wQ, _dQ, "copying.mkv") == "wanted.mkv"
@@ -6817,7 +6840,7 @@ check("cache: the first on a screen and not held is put first; held or being cop
       and "if fits and mine_too and not self.picked_for(key):" in _svQ)
 
 # ---- a transcode's thin buffer is the encoder's lead, not a viewer running dry; its stalls still count
-_svT = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svT = server_source()
 _htT = _svT[_svT.index("    def how_thin(now=None, side=None):"):]
 _htT = _htT[:_htT.index("    def running_dry")]
 check("buffer: a transcoded screen's depth is skipped after its stall is counted",
@@ -6833,7 +6856,7 @@ check("copy speed: a freed line shows within the copy window; nothing in it read
       and _pwC.Watching.copy_rate(_mC, _lastC, 40.0, 1.0) == 0.0)
 
 # ---- a copy going out looks at viewers and its ceiling on a clock, not every megabyte
-_svL = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svL = server_source()
 _lpL = _svL[_svL.index("    def send_file_ranged(self, path, sid=None):"):]
 _lpL = _lpL[:_lpL.index("        if trouble:")]
 check("copy loop: viewers and settings read at most every COPY_LOOK_EVERY, copies in 1 MB blocks, pace by bytes sent",
@@ -6878,12 +6901,11 @@ check("weekly: one draw per week, ten, all rated GOOD, none seen, none from last
       and _pwW.line("First sentence is here. " + "x" * 300) == "First sentence is here."
       and len(_pwW.line("word " * 100)) <= 201
       and 'write_settings(dict({"weeklyPicks": picks}, **(' in
-          open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"),
-               encoding="utf-8").read())
+          server_source())
 
 # ---- a cross-seed or a race is not a film on its way
-_svN = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
-_ciN = _svN[_svN.index("def coming_in():"):]
+_svN = server_source()
+_ciN = _svN[_svN.index("def read_coming():"):]
 _ciN = _ciN[:_ciN.index("\ndef ")]
 check("coming in: cross-seed and race torrents are left out before anything is listed",
       'NOT_LIBRARY = ("cross-seed", "fl-race")' in _svN
@@ -7019,7 +7041,7 @@ check("a finished download dropped from the library while it was read over is ta
 
 # ---- the debug log is moved aside past its size, and left alone short of it
 import ast as _astL, tempfile as _tfL
-_svL = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svL = server_source()
 _nsL = {"os": os, "LOG_KEPT_MB": 20}
 for _nL in _astL.parse(_svL).body:
     if isinstance(_nL, _astL.FunctionDef) and _nL.name == "rotate_log":
@@ -7078,7 +7100,7 @@ check("an episode's packs: the season is asked of the tracker even with a pack a
 
 # ---- a whole-file subtitle read says in the log what it is for
 import types as _tyS, tempfile as _tfS
-_svS = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svS = server_source()
 _nsS = {"os": os, "time": time, "threading": __import__("threading"), "chr": chr}
 for _nS in _ast291.parse(_svS).body:
     if isinstance(_nS, _ast291.FunctionDef) and _nS.name == "pull_subtitle":
@@ -7304,7 +7326,7 @@ check("background read: a running job is stopped when its gate closes, not left 
 _rc300, _o300, _why300 = _pw300.run_yielding([sys.executable, "-c", "print('ok')"], lambda: "", 60,
                                               every=0.3, text=True)
 check("background read: a job its gate leaves alone runs to its end", _why300 == "" and "ok" in _o300)
-_sv300 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv300 = server_source()
 _ns300 = {"os": os, "URGENT_FILES": set()}
 import ast as _ast300, types as _ty300
 for _n300 in _ast300.parse(_sv300).body:
@@ -7407,7 +7429,7 @@ _ap312 = _tr312[_tr312.index("def already_placed("):_tr312.index("def recheck_if
 _pr312 = _tr312[_tr312.index("def place_and_recheck("):_tr312.index("def arrived(")]
 check("move in: placing a file never switches it on - only the stopped pack's recheck does",
       ".priority(" not in _ap312 and _pr312.index("if not recheck:") < _pr312.index(".priority("))
-_sv310 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv310 = server_source()
 _sb310 = _sv310[_sv310.index("    def sync_back_soon("):_sv310.index("    def take_from_the_copy(")]
 _tr310 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_torrents.py"), encoding="utf-8").read()
 _gc310 = _tr310[_tr310.index("def give_to_copy("):_tr310.index("ASKED_DAYS = ")]
@@ -7458,7 +7480,7 @@ check("managed copy server: the same settings again change nothing and write not
       not _pf330.take_managed(_o330, {"casualHours": 10}, _lib330) and _lib330.saved == 1)
 check("managed copy server: not managed, the main server's settings are not taken",
       not _pf330.take_managed(dict(_one330, allowRemote=False), {"casualHours": 10}, _lib330))
-_sv330 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv330 = server_source()
 check("managed copy server: changed on the copy server itself, its copying settings are refused",
       "locked = [k for k in pd_follow.MANAGED if k in body]" in _sv330
       and _sv330.index("locked = [k for k in pd_follow.MANAGED") < _sv330.index("pd_follow.apply_settings(one, body)"))
@@ -7531,7 +7553,7 @@ check("hand over: a torrent is put where the pack keeps the film, never outside 
       and _pt350.inside(os.path.join("D:", os.sep, "L"), "a/b.nfo") == os.path.join("D:", os.sep, "L", "a", "b.nfo")
       and _pt350.inside(os.path.join("D:", os.sep, "L"), "../b.nfo") == ""
       and _pt350.inside(os.path.join("D:", os.sep, "L"), os.path.join("C:", os.sep, "b.nfo")) == "")
-_sv350 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv350 = server_source()
 _ho350 = _sv350[_sv350.index("    def hand_over(cls"):_sv350.index("    def home_moved(cls")]
 check("hand over: its files go from here only after the copy seeds it whole and the file there is this one, never one another torrent seeds",
       _ho350.index("if not e[\"fits\"] or not copy_whole(") < _ho350.index("/follow/taketorrent")
@@ -7555,7 +7577,7 @@ _due360 = _ps360.approaching_due(["e3", "e9"], {("e9", "en"): (-5000, _good360),
                                  ["en", "sv"], 1000 + 60, 3600)
 check("next episode: its subtitle is fetched while the one before plays - not once found good, not again within the wait",
       _due360 == [("e3", "en", True), ("e9", "sv", True)])
-_sv360 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv360 = server_source()
 _lp360 = _sv360[_sv360.index("    def approaching():"):]
 _lp360 = _lp360[:_lp360.index("    def tally():") if "    def tally():" in _lp360 else 6000]
 _wk360 = _sv360[_sv360.index('pd_beat.sleep("subcheck", 15 if asked() else 60)'):][:900]
@@ -7563,7 +7585,7 @@ check("next episode: goes ahead of the background gate, the backlog still waits 
       "soon = approaching()" in _wk360 and "if not soon and not free():" in _wk360
       and "one = soon[0] if soon else next_one()" in _wk360)
 
-_sv370 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv370 = server_source()
 _cp370 = _sv370[_sv370.index("    def send_file_ranged"):][:12000]
 check("copies: stop, not walk, while a viewer's buffer runs down - and never longer than the reader waits",
       "while held < Handler.COPY_HOLD_MOST and (" in _cp370
@@ -7571,7 +7593,7 @@ check("copies: stop, not walk, while a viewer's buffer runs down - and never lon
       and _cp370.index("ceiling = Handler.sync_ceiling(") < _cp370.index("while held < Handler.COPY_HOLD_MOST and (")
       and "COPY_HOLD_MOST = 45" in _sv370)
 
-_sv380 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv380 = server_source()
 _wk380 = _sv380[_sv380.index('pd_beat.sleep("subcheck", 15 if asked() else 60)'):][:3000]
 check("subtitle check: a read stopped for a busy drive writes nothing down - not 'no speech' for two weeks",
       'return {"verdict": "stopped"}' in _sv380 and 'if said.get("verdict") == "stopped":' in _wk380
@@ -7596,7 +7618,7 @@ check("subtitles by name: a text is this episode when it says so or carries a wo
       _ps390.names_episode("1\n00:00:01 --> 00:00:02\nEpisode 3: Thorpe Park", "", 3)
       and _ps390.names_episode("they went to the harbour", "Harbour Club", 5)
       and not _ps390.names_episode("Merry Christmas everyone", "Harbour Club", 5))
-_sv390 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv390 = server_source()
 _ab390 = _sv390[_sv390.index("    def auto_by_name("):_sv390.index("    def auto_subtitle(")]
 check("subtitles by name: each one fetched is read before it is kept, and another episode's is deleted",
       _ab390.index("self.fetch_subtitle(") < _ab390.index("pd_subs.names_episode(") < _ab390.index("os.remove(where)")
@@ -7692,8 +7714,8 @@ check("pack files: a film being downloaded stays on though qBittorrent set its f
 check("pack files: while the pack is being read, the films on the disk stay on",
       any(0 in ix and v == 1 for ix, v in _c430.prio))
 
-_sv440 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
-_ci440 = _sv440[_sv440.index("def coming_in():"):][:4000]
+_sv440 = server_source()
+_ci440 = _sv440[_sv440.index("def read_coming():"):][:4000]
 check("downloads: a film out of a pack shows its own size, progress and time left, not the torrent's",
       '"size": int(pack.get("size") or 0) if pack else' in _ci440
       and '"progress": float(pack.get("progress") or 0) if pack else' in _ci440)
@@ -7754,7 +7776,7 @@ finally:
     (_tr450.JACKETT_TL, _tr450.given_cookie, _tr450.page, _tr450.jackett, _tr450.ask_jackett,
      _tr450.account_of, _tr450.jackett_resave) = _was450
 
-_sv460 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_sv460 = server_source()
 _gm460 = _sv460[_sv460.index("GUEST_MAY_POST = ("):]
 _gm460 = _gm460[:_gm460.index('")' + chr(10))]
 check("guests: a theme is each viewer's own to save, a guest's and the owner's from away",
@@ -7994,7 +8016,7 @@ check("rip: on the download line with its film's key - the one running with how 
       and _rowsR1[0]["offer"]["words"] == "50% · pass 2 of 2 · 0.8x · 2 h 5 min left"
       and _rowsR1[1]["offer"]["words"] == "waiting: the copy on D: first"
       and all(r["offer"]["stage"] == "ripping" and r["type"] == "movie" for r in _rowsR1))
-_srvR1 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvR1 = server_source()
 _acR1 = _srvR1[_srvR1.index('if path == "/torrents/active":'):][:1600]
 check("rip: on the line for the owner on every screen, not only the panel's asking",
       'if self.role == "owner":' in _acR1 and "pd_rip.line_rows()" in _acR1
@@ -8009,7 +8031,7 @@ import pd_speed as _spC1
 check("copy: runs while every viewer on its drive is full, waits while any is filling; an unknown buffer holds nobody",
       _spC1.copy_may_run([]) and _spC1.copy_may_run([_spC1.FULL_AHEAD, 51.0, None])
       and not _spC1.copy_may_run([51.0, _spC1.FULL_AHEAD - 1]) and not _spC1.copy_may_run([3.0]))
-_svC1 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_svC1 = server_source()
 _psC1 = _svC1[_svC1.index("def playback_short():"):_svC1.index("def aheads_on_drive(path):")]
 check("copy: held by the same running-low signal as qBittorrent, and by the buffers on its own drive, no fixed rate",
       'Handler.how_thin() in ("back", "panic")' in _psC1
@@ -8052,7 +8074,7 @@ check("subtap: waits for a cluster, feeds from it, goes on in order, a jump star
       "drops the block and never waits",
       _nextA == (None, []) and _nextB[0] == 2008 and _nextB[1] == [False] and _nextB[2] == _stT1.CLUSTER + b"cd"
       and _nextC == (2012, 1) and _nextD == 2 and _nextE is None)
-_srvT1 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvT1 = server_source()
 _srT1 = _srvT1[_srvT1.index("    def send_file_ranged"):][:12000]
 check("subtap: fed from a viewer's blocks and never a copy's; a screen asks it before reading the film again",
       "if not copying_out and taken >= 16:" in _srT1 and "pd_subtap.feed(path, at, chunk)" in _srT1
@@ -8109,7 +8131,7 @@ check("card word: on the tracker it is Get it; asked for only with nothing to fe
 
 # ---- the main server asks a cache for its downloads under /follow, the only paths a caller
 # marked as the main server may reach there
-_srvA1 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvA1 = server_source()
 _askA1 = _srvA1[_srvA1.index("def _ask_cache_downloads():"):_srvA1.index("def with_cache_downloads(")]
 _houseA1 = _srvA1[_srvA1.index('if self.headers.get("X-Palladium-House"):'):][:600]
 _pathsA1 = re.findall(r'\+ "(/[a-z/]+)"', _askA1)
@@ -8162,7 +8184,7 @@ check("adding a series from its pack puts it on the adder's watchlist",
 
 # ---- the house cache list: what it gained and lost since the last ask, each with its reason
 import ast as _astL
-_srcL = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srcL = server_source()
 _nsL = {}
 exec(compile(_astL.get_source_segment(_srcL, next(n for n in _astL.parse(_srcL).body
                                                  if isinstance(n, _astL.FunctionDef) and n.name == "holding_changes")),
@@ -8237,7 +8259,7 @@ check("cache folder: only somebody else's file is listed as not its own; a stale
 
 # ---- the download log for the panel: only the newest finished rows it asks for
 import ast as _astD2
-_srcD2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srcD2 = server_source()
 _nsD2 = {}
 exec(compile(_astD2.get_source_segment(_srcD2, next(n for n in _astD2.parse(_srcD2).body
                                                    if isinstance(n, _astD2.FunctionDef) and n.name == "log_rows")),
@@ -8476,7 +8498,7 @@ check("player statistics on the web: hidden until the pointer is over them",
       "#pl-stats:hover{opacity:1}" in _cssM1 and "pointer-events:none;min-width:0;" not in _cssM1
       and "opacity:0;transition:opacity .25s}" in _cssM1)
 # ---- a Range that cannot be served is a 416, not a 500 and a fault report
-_srB1 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srB1 = server_source().replace(chr(13), "")
 _fnB1 = next(n for n in _ast291.parse(_srB1).body if isinstance(n, _ast291.FunctionDef) and n.name == "byte_range")
 _nsB1 = {"re": _re}
 exec(compile(_ast291.Module([_fnB1], []), "x", "exec"), _nsB1)
@@ -8516,7 +8538,7 @@ check("download list in the app: focus held outside the dialog's text, asked for
       _dpS1.index("val opening = remember { FocusRequester() }") < _dpS1.index("AlertDialog(")
       and _dpS1.index("var landed by remember { mutableStateOf(false) }") < _dpS1.index("AlertDialog("))
 # ---- a poster of a film only the other server holds is answered here
-_srP1 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srP1 = server_source().replace(chr(13), "")
 _laP1 = _read_localapi().replace(chr(13), "")
 check("one list: a poster this server lacks is fetched from the other server, for its listed films and the ones it holds that have no file here",
       "pd_localapi.PEER_ART = peer_art" in _srP1
@@ -8526,7 +8548,7 @@ check("one list: a poster this server lacks is fetched from the other server, fo
       and 'headers={"X-Palladium-App": "follower"})' in _srP1[_srP1.index("def peer_art"):_srP1.index("def _ask_peer_recent")])
 # ---- a music video's copy is kept in a Music videos folder, so it is no film there
 import pd_follow as _pfM1, pd_library as _plM1
-_srM2 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srM2 = server_source().replace(chr(13), "")
 check("copies: a music video goes in a Music videos folder, a film beside the rest, a path in a name is cut off",
       _pfM1.copy_name({"name": "Song.mkv", "music": True}) == os.path.join("Music videos", "Song.mkv")
       and _pfM1.copy_name({"name": "Film.mkv"}) == "Film.mkv"
@@ -8548,7 +8570,7 @@ _fV1 = [({"hash": "a"}, {"tmdb": 1, "index": 0}), ({"hash": "a"}, {"tmdb": 2, "i
 _gotV1 = _phV1.watched_fetch(_fV1, {1, 3, 4}, lambda p, f: f["tmdb"] == 3, lambda p, f: f["tmdb"] != 4)
 check("viewing rule: watched off the copy and not here is fetched; held here, or not whole there, is not",
       [f["tmdb"] for _, f in _gotV1] == [1])
-_srV2 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srV2 = server_source().replace(chr(13), "")
 # ---- sync both ways: the same list, read the other way, through the same copy
 _cpW = {"t1": [({"hash": "A"}, {"index": 1}), ({"hash": "B"}, {"index": 2})],
         "t2": [({"hash": "C"}, {"index": 3})], "t3": [({"hash": "D"}, {"index": 4})]}
@@ -8633,9 +8655,9 @@ check("sync: copies_of gives every pack copy of a title, so the one the copy ser
       and 'return [(pack, film) for film, pack in ix["titles"].get(key) or []]' in open("pd_torrents.py", encoding="utf-8").read())
 
 # ---- the other server off: nothing waits on it - the handover's own answering record decides
-_srA = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srA = server_source().replace(chr(13), "")
 _artA = _srA[_srA.index("def peer_art("):_srA.index("def _ask_peer_recent")]
-_fetA = _srA[_srA.index("def peer_fetch("):_srA.index("#: a title's loudness as the other server read it")]
+_fetA = _srA[_srA.index("def peer_fetch("):_srA.index(chr(10) + "def ", _srA.index("def peer_fetch(") + 5)]
 check("other server off: asks to it - posters, what it holds, its readings - skip while its answering record says no",
       "return not where or not Handler.answering_now(Handler, where)" in _srA
       and _fetA.index("if peer_away():") < _fetA.index("_ureq.urlopen(")
@@ -8727,7 +8749,7 @@ check("split packs: let go again, a pack starts only when every file on is whole
       _r4 is False and _q4.did == [("start", "hS")] and _q5.did == [])
 check("split packs: the main server reads its own setting, the copy server the one it was told; unset is both",
       _m1 == (False, {"hS"}) and _c1 == (True, {"hS"}) and _c2 == (True, set()))
-_srS = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srS = server_source().replace(chr(13), "")
 _trS = open("pd_torrents.py", encoding="utf-8").read().replace(chr(13), "")
 _flS = open("pd_follow.py", encoding="utf-8").read().replace(chr(13), "")
 _grS = _trS[_trS.index("def _guard_packs():"):_trS.index("def downloads():")]
@@ -8751,7 +8773,7 @@ check("app: moving to the other machine carries the subtitle on the screen and t
       and "startActivity(carried" in _mvM and "playIntent(this@PlayerActivity, other, at)" not in _mvM)
 
 # ---- a film handed to the cache server shows as starting there until that server lists it
-_srH = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srH = server_source().replace(chr(13), "")
 _nsH = {"Handler": type("H", (), {"FOLLOWERS": {"http://c": {"name": "Cache"}}})}
 exec(compile(_ast291.get_source_segment(_srH, next(n for n in _ast291.parse(_srH).body
      if getattr(n, "name", "") == "handed_not_taken")), "x", "exec"), _nsH)
@@ -8773,7 +8795,7 @@ check("downloads: a film handed to the cache server is listed as starting there,
       and "for m in handed_not_taken(token):" in _srH)
 
 # ---- figures count every viewing, both machines', a sitting written twice once
-_srV = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srV = server_source().replace(chr(13), "")
 _nsV = {}
 exec(compile(_ast291.get_source_segment(_srV, next(n for n in _ast291.parse(_srV).body
      if getattr(n, "name", "") == "sittings")), "x", "exec"), _nsV)
@@ -8865,7 +8887,7 @@ check("packs: a film pack by how many it holds, any other by its title",
       and _ptS.pack_short("Some.Show.2020.S01-03.1080p.WebRip") == "Some Show"
       and _ptS.pack_short("Other Show - Complete Series - 1080p") == "Other Show"
       and _ptS.pack_short("") == "Pack")
-_srvS = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srvS = server_source()
 import pd_words as _pwS
 check("packs: the server's label for a pack row is its short name",
       _pwS.version_tag({"pack": True, "packShort": "Top 1K"}) == "Top 1K"
@@ -8874,8 +8896,7 @@ check("packs: every pack row of a download list carries its short name",
       _srvS.count('"packShort": pd_torrents.pack_short(') == 2)
 
 # ---- the watchlist keeps when each title was put on, so it can open newest first
-_srvW = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"),
-             encoding="utf-8").read()
+_srvW = server_source()
 _srcW = _srvW[_srvW.find("def put_on_watchlist(mine, keys):"):_srvW.find("def write_settings(stored")]
 _nsW2 = {"time": __import__("time")}
 exec(_srcW, _nsW2)
@@ -8993,7 +9014,7 @@ check("shuffle: each title once, the place on its title, a new one put in after 
       and _r["order"].index("e99") >= _r["pos"] + 2)
 
 # ---- loudness and stills shared between the servers, either way round
-_srX1 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srX1 = server_source().replace(chr(13), "")
 _fnX1 = next(n for n in _ast291.parse(_srX1).body if isinstance(n, _ast291.FunctionDef) and n.name == "stills_to_take")
 _nsX1 = {"os": os}
 exec(compile(_ast291.Module([_fnX1], []), "x", "exec"), _nsX1)
@@ -9029,7 +9050,7 @@ finally:
 check("rips: an unanswered ripper is asked for readings once a minute, not on every Now playing; a press always goes",
       _readsA1 == 1 and _pressA1 == 1)
 # ---- each server's check of the other asks as they ask each other, with the key
-_srO1 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srO1 = server_source().replace(chr(13), "")
 _upO1 = _srO1[_srO1.index("    def other_up():"):_srO1.index("    import pd_follow", _srO1.index("    def other_up():"))]
 check("restart guard: the other server is asked through /follow with its key, not /config bare",
       'peer_fetch("/follow/live", 4)' in _upO1 and '"/config"' not in _upO1)
@@ -9039,7 +9060,7 @@ from cryptography import x509 as _x5T
 from cryptography.hazmat.primitives import hashes as _haT, serialization as _seT
 from cryptography.hazmat.primitives.asymmetric import ec as _ecT
 from cryptography.x509.oid import NameOID as _noT
-_srT = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srT = server_source().replace(chr(13), "")
 _nsT = {"os": os, "time": _tmA1, "socket": _soT, "pd_log": type("L", (), {"raw": staticmethod(lambda *a: None)})}
 for _fnT in [n for n in _ast291.parse(_srT).body if isinstance(n, (_ast291.FunctionDef, _ast291.Assign))
              and (getattr(n, "name", "") in ("tls_context", "tls_or_plain")
@@ -9129,7 +9150,7 @@ check("continue watching: a film only in a pack here and held there drops its Do
       and _itH3[1].get("offered") is True and "elsewhere" not in _itH3[1]
       and "self._mark_held_there(items)" + chr(10) + "            self._places_on(con, items)" in
           _read_localapi().replace(chr(13), ""))
-_srH1 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
+_srH1 = server_source().replace(chr(13), "")
 _flH1 = open("pd_follow.py", encoding="utf-8").read().replace(chr(13), "")
 _laH1 = _read_localapi().replace(chr(13), "")
 check("positions: the main server keeps a place for a title only the copy holds, as the copy does",
@@ -9141,8 +9162,8 @@ check("positions: a pause or stop sends them across at once, through the same ex
 check("app: Continue watching opens a title the other server holds there, as Recently added does",
       'listFrom("/local/library/onDeck", srv).onEach { m ->' in open("android/app/src/main/java/se/palladium/tv/Api.kt", encoding="utf-8").read())
 # ---- a busy drive on the copy is a wait, not a fault and not a dropped film
-_srW9 = open("pd-server.py", encoding="utf-8").read().replace(chr(13), "")
-_tkW9 = _srW9[_srW9.index("    def take_from_the_copy(cls):"):_srW9.index("    #: what the graphics card last said about itself")]
+_srW9 = server_source().replace(chr(13), "")
+_tkW9 = _srW9[_srW9.index("    def take_from_the_copy(cls):"):_srW9.index(chr(10) + "    def ", _srW9.index("    def take_from_the_copy(cls):") + 9)]
 check("taking back: a 503 from the copy keeps the film for next round and files no fault; the round tries what waited",
       "if e.code == 503:" in _tkW9 and "cls.FROM_COPY.append(one)" in _tkW9
       and _tkW9.index("if e.code == 503:") < _tkW9.index("Handler.note_fault(")
@@ -9271,7 +9292,7 @@ import pd_notify as _pnN1
 _mN1 = {"watchlist": ["a", "b"], "watchBlink": ["a", "gone"], "watchNews": [{"key": "a"}]}
 _idN1 = _pnN1.NOTICE["id"]
 _saidN1 = _pnN1.say({"text": "  hello screens ", "seconds": 5})
-_srvN1 = open("pd-server.py", encoding="utf-8").read()
+_srvN1 = server_source()
 check("notify: a notice is numbered on, held at least ten seconds, and nothing to play",
       _saidN1 == {"id": _idN1 + 1, "text": "hello screens", "seconds": 10}
       and _pnN1.NOTICE["play"] == "" and _pnN1.NOTICE["until"] > 0)
@@ -9316,7 +9337,7 @@ check("app: a poster's line under it holds its lines, so a wrapped episode name 
       and ".wrapContentHeight(align = Alignment.Top, unbounded = true)" in _uiP7)
 # ---- timeline stills kept by the file's own id: a row number is given again to another file
 import pd_localapi as _laF1
-_srvF1 = open("pd-server.py", encoding="utf-8").read()
+_srvF1 = server_source()
 check("stills: kept under the file's own id, and the folders named by a row number let go",
       _laF1.frame_file("R", "abc123def4567-0f1e2d3c", 30, 320).replace(chr(92), "/")
       == "R/cache/frames/abc123def4567-0f1e2d3c/30.w320.jpg"
@@ -9401,8 +9422,7 @@ check("encode log: the recipe is read off the command: %s | %s" % (_rwNv, _rwCop
       _rwNv == "picture h264_nvenc scale_cuda=-2:1080 cq 19 b:v 0 maxrate 40M bufsize 80M; "
                "sound aac 6ch 448k"
       and _rwCopy == "picture copy; sound copy")
-_srcEnc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"),
-               encoding="utf-8").read()
+_srcEnc = server_source()
 check("encode log: the pipe and the HLS playlist both write the line",
       _srcEnc.count("self.encode_said(st, q, src, height, mbit,") == 2)
 
@@ -9688,8 +9708,7 @@ check("notifications: what the copy found is queued on the main server for a tit
 # door refuses it before the list of what a guest may write is read
 import re as _reD
 from pd_invites import Invites as _InvD
-_srcD = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"),
-             encoding="utf-8").read()
+_srcD = server_source()
 _listD = _srcD[_srcD.index("GUEST_MAY_POST = ("):]
 _listD = _listD[:_listD.index(")\n")]
 _mayD = _reD.findall(r'"(/[^"]*)"', _listD)
@@ -9946,8 +9965,7 @@ check("pack: a drop asked too early waits for 1.5, goes the round it is reached,
 # ---- the copy keeps a whole watchlist: cut at forty, the title at the cut was deleted each
 # time one was marked above it and copied back the next day (2026-11-12)
 import re as _reW40
-_srvW40 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"),
-               encoding="utf-8").read()
+_srvW40 = server_source()
 check("copy list: a watchlist is never cut short: %s"
       % _reW40.findall(r"watchlist_of\([^)]*\)\[[^\]]*\]", _srvW40),
       not _reW40.search(r"watchlist_of\([^)]*\)\[", _srvW40))
@@ -9956,7 +9974,7 @@ check("copy list: a watchlist is never cut short: %s"
 # ---- the cache answers for a film offered by its pack key: read as the title's own key, or a
 # film downloaded whole on the cache kept its Download ribbon on the main server (2026-11-12)
 import ast as _astH
-_srcH = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd-server.py"), encoding="utf-8").read()
+_srcH = server_source()
 _nsH = {}
 exec(compile(_astH.get_source_segment(_srcH, next(n for n in _astH.parse(_srcH).body
                                                  if isinstance(n, _astH.FunctionDef) and n.name == "held_here")),
@@ -10005,6 +10023,397 @@ check("copy: a main server its rounds see off is not asked; one not answering is
       _firstA is None and _secondA is None and _thirdA is None and _offA is None
       and _callsA == ["news", "news"])
 
+
+# ---- a subtitle made from the sound survives a server restart, and goes on where it stopped
+import tempfile as _tfAI, pd_subs_make as _mkAI, pd_ai_subs as _aiAI
+_dAI = _tfAI.mkdtemp()
+_outAI = os.path.join(_dAI, "film.ai-gen.sv.srt")
+_mkAI.keep_progress(_outAI, 1200.0, "en", [(1.0, 2.5), (601.0, 603.0)], ["Hej", "Hej då"])
+_noSrtAI = _mkAI.progress_of(_outAI)
+open(_outAI, "w", encoding="utf-8").write("1" + chr(10))
+_backAI = _mkAI.progress_of(_outAI)
+check("ai subtitles: a worker's progress is kept beside the subtitle and read back whole, and none without the subtitle",
+      _backAI == (1200.0, "en", [(1.0, 2.5), (601.0, 603.0)], ["Hej", "Hej då"])
+      and _noSrtAI == (0.0, "", [], []))
+_mkSrcAI = open("pd_subs_make.py", encoding="utf-8").read()
+check("ai subtitles: the worker starts from the kept progress only when put back in line, and saves it every stretch",
+      'if os.environ.get("PALLADIUM_RESUME"):' in _mkSrcAI
+      and "at += STRETCH" + chr(10) + "            keep_progress(out, at, spoken, times, words)" in _mkSrcAI)
+_wasAI = (dict(_aiAI.STATE), os.environ.get("PALLADIUM_DATA"), _aiAI.start)
+_vidAI = os.path.join(_dAI, "film.mkv")
+open(_vidAI, "w").write("x")
+try:
+    os.environ["PALLADIUM_DATA"] = _dAI
+    _aiAI.start = lambda: None
+    _jobAI = {"video": _vidAI, "language": "sv", "out": _outAI, "copies": [], "file": "f", "key": "k1",
+              "names": [], "title": "Film", "at": 0.4, "what": "listening"}
+    _aiAI.STATE.update(on=_jobAI, queued=[dict(_jobAI, out=_outAI + "2")], done=[])
+    _aiAI._save()
+    _aiAI.STATE.update(on=None, queued=[], done=[])
+    while not _aiAI.WAITING.empty():
+        _aiAI.WAITING.get_nowait()
+    _nAI = _aiAI.resume()
+    _againAI = _aiAI.resume()
+    _qAI = list(_aiAI.STATE["queued"])
+finally:
+    _aiAI.STATE.clear(); _aiAI.STATE.update(_wasAI[0]); _aiAI.start = _wasAI[2]
+    if _wasAI[1] is None:
+        os.environ.pop("PALLADIUM_DATA", None)
+    else:
+        os.environ["PALLADIUM_DATA"] = _wasAI[1]
+    while not _aiAI.WAITING.empty():
+        _aiAI.WAITING.get_nowait()
+check("ai subtitles: the job in hand and the queue are kept on disk and put back in line at start, once, marked to go on",
+      _nAI == 2 and _againAI == 0 and [j["out"] for j in _qAI] == [_outAI, _outAI + "2"]
+      and all(j.get("resume") for j in _qAI))
+_aiSrcAI = open("pd_ai_subs.py", encoding="utf-8").read()
+check("ai subtitles: a job put back tells its worker so, and a worker left over on the same file is stopped",
+      'if job.get("resume"):' + chr(10) + '        air["PALLADIUM_RESUME"] = "1"' + chr(10) + '    _stop_leftover(job["out"])' in _aiSrcAI
+      and "pd_ai_subs.resume()" in server_source())
+
+# ---- the Swedish translation model is loaded once a job, not once every ten minutes of film
+import types as _tyNL, contextlib as _clNL
+_loadsNL = []
+class _BatchNL(dict):
+    def to(self, where):
+        return self
+class _TokNL:
+    def __init__(self, src):
+        self.src = src
+    def __call__(self, lines, **kw):
+        return _BatchNL(lines=list(lines))
+    def convert_tokens_to_ids(self, t):
+        return 7
+    def batch_decode(self, said, skip_special_tokens=True):
+        return ["sv:" + x for x in said]
+class _ModelNL:
+    def to(self, where):
+        return self
+    def eval(self):
+        return self
+    def generate(self, lines=(), **kw):
+        return list(lines)
+_fakeTorchNL = _tyNL.SimpleNamespace(float16="f16", no_grad=_clNL.nullcontext)
+_fakeTfNL = _tyNL.SimpleNamespace(
+    AutoTokenizer=_tyNL.SimpleNamespace(from_pretrained=lambda name, src_lang="": _TokNL(src_lang)),
+    AutoModelForSeq2SeqLM=_tyNL.SimpleNamespace(
+        from_pretrained=lambda name, dtype=None: (_loadsNL.append(name), _ModelNL())[1]))
+_wasNL = (sys.modules.get("torch"), sys.modules.get("transformers"), _mkAI.plain_copy, _mkAI.say,
+          dict(_mkAI.NLLB_HELD, tok=dict(_mkAI.NLLB_HELD["tok"])))
+try:
+    sys.modules["torch"], sys.modules["transformers"] = _fakeTorchNL, _fakeTfNL
+    _mkAI.plain_copy = lambda repo, mark: "nllb-here"
+    _mkAI.say = lambda *a: None
+    _mkAI.NLLB_HELD.update(model=None, tok={})
+    _oneNL = _mkAI.into_swedish(["Hello"], source="eng_Latn")
+    _twoNL = _mkAI.into_swedish(["Goodbye", "Again"], source="eng_Latn")
+    _frNL = _mkAI.into_swedish(["Bonjour"], source="fra_Latn")
+finally:
+    for _nNL, _vNL in (("torch", _wasNL[0]), ("transformers", _wasNL[1])):
+        if _vNL is None:
+            sys.modules.pop(_nNL, None)
+        else:
+            sys.modules[_nNL] = _vNL
+    _mkAI.plain_copy, _mkAI.say = _wasNL[2], _wasNL[3]
+    _mkAI.NLLB_HELD.clear(); _mkAI.NLLB_HELD.update(_wasNL[4])
+check("ai subtitles: the translation model is loaded once for the whole film, each spoken language its own tokenizer",
+      len(_loadsNL) == 1 and _oneNL == ["sv:Hello"] and _twoNL == ["sv:Goodbye", "sv:Again"]
+      and _frNL == ["sv:Bonjour"] and _mkAI.NLLB_HELD["model"] is None)
+
+# ---- the boss looks after the AI subtitle helper: silent jobs stopped, failures tried again, then cleared
+import pd_boss as _pbAI, threading as _thAI
+class _HelperAI:
+    def __init__(self, on, done, alive=True):
+        self.LOCK = _thAI.RLock()
+        self.STATE = {"on": on, "queued": [], "done": done}
+        self.calls = []
+        self._alive = alive
+    def look(self):
+        return {"on": self.STATE["on"], "queued": [], "done": list(self.STATE["done"])}
+    def stop(self, out="", why="stopped"):
+        self.calls.append(("stop", why))
+    def retry(self, job):
+        self.calls.append(("retry", job["file"]))
+        self.STATE["done"].remove(job)
+    def clear(self, job):
+        self.calls.append(("clear", job["file"]))
+        self.STATE["done"].remove(job)
+    def revive(self):
+        return not self._alive
+_nowAI = 100000.0
+_hAI = _HelperAI({"file": "a.srt", "moved": _nowAI - _pbAI.AI_STUCK - 5, "when": _nowAI - 9999},
+                 [{"file": "crash.srt", "ok": False, "what": "the subtitle maker stopped part-way (exit 1)", "finished": _nowAI},
+                  {"file": "twice.srt", "ok": False, "what": "x", "tries": 1, "finished": _nowAI - _pbAI.AI_CLEAR_AFTER - 1},
+                  {"file": "fresh.srt", "ok": False, "what": "x", "tries": 1, "finished": _nowAI - 5},
+                  {"file": "quiet.srt", "ok": False, "what": "nothing was said in this file", "answer": True,
+                   "finished": _nowAI - _pbAI.AI_CLEAR_AFTER - 1},
+                  {"file": "mine.srt", "ok": False, "what": "stopped", "finished": _nowAI - 99999},
+                  {"file": "good.srt", "ok": True, "what": "done", "finished": _nowAI - 99999}], alive=False)
+_gotAI = _pbAI.check_ai(_hAI, _nowAI)
+check("boss and AI subtitles: a silent job stopped, a crash tried again, given-up and answered ones cleared after a while, "
+      "a person's stop and a good one left, a dead helper started",
+      _gotAI == (["a.srt"], ["crash.srt"], ["twice.srt", "quiet.srt"], True)
+      and _hAI.calls[0][0] == "stop" and _hAI.calls[0][1] != "stopped"
+      and [f for _, f in _hAI.calls[1:]] == ["crash.srt", "twice.srt", "quiet.srt"])
+_okAI = _HelperAI({"file": "b.srt", "moved": _nowAI - 60}, [])
+check("boss and AI subtitles: a job still talking is left alone", _pbAI.check_ai(_okAI, _nowAI) == ([], [], [], False)
+      and _okAI.calls == [] and _pbAI.check_ai(None, _nowAI) == ([], [], [], False))
+check("ai subtitles: a crash says so in words, never a progress bar",
+      _aiAI.crash_words("Loading weights:   0%|          | 0/1016", 1) == "the subtitle maker stopped part-way (exit 1)"
+      and _aiAI.crash_words("CUDA out of memory", 1) == "CUDA out of memory")
+_aiSrc2AI = open("pd_ai_subs.py", encoding="utf-8").read()
+check("ai subtitles: a stop says why, and only a person's stop is final",
+      'on["what"], on["stopped"] = why, True' in _aiSrc2AI and 'if job.get("stopped"):' in _aiSrc2AI
+      and "ai=pd_ai_subs)" in server_source())
+
+# ---- a title a shuffle is on, sent to a screen by name, goes as the shuffle
+import pd_localapi as _laSO
+_shSO = {"48ac2c7": {"played": ["a", "b", "c"], "done": ""},
+         "old": {"played": ["x", "y"], "done": "y"}, "bad": "not a round"}
+check("screens: a title a shuffle's round is on is played as that shuffle, a finished or earlier one is not",
+      _laSO.shelf_on(_shSO, "c") == "48ac2c7" and _laSO.shelf_on(_shSO, "b") == ""
+      and _laSO.shelf_on(_shSO, "y") == "" and _laSO.shelf_on(None, "c") == "")
+_postSO = open("pd_h_post.py", encoding="utf-8").read()
+check("screens: /screen/play asks that before sending a title by name",
+      _postSO.index("shelf = pd_localapi.shelf_on(") < _postSO.index('S.NOTICE["play"] = key'))
+
+# ---- the cache list: one plan at a time, so a second ask cannot empty the shared sets under the first
+import pd_h as _phPL, types as _tyPL
+if _phPL.SERVER is None:
+    # the part reads the server's names as its class is made; this test loads no server
+    _phPL.SERVER = _tyPL.SimpleNamespace(KEEP_DAYS=7.0)
+import pd_h_follow as _hfPL, threading as _thPL, time as _tmPL
+_inPL = {"now": 0, "most": 0}
+class _PlanPL(_hfPL.FollowParts):
+    def _worth_copying(self, *a, **kw):
+        _inPL["now"] += 1
+        _inPL["most"] = max(_inPL["most"], _inPL["now"])
+        _tmPL.sleep(0.05)
+        _inPL["now"] -= 1
+        return [kw.get("only", "")]
+_thrPL = [_thPL.Thread(target=lambda: _PlanPL().worth_copying(4.0, True, only="x")) for _ in range(4)]
+for _t in _thrPL:
+    _t.start()
+for _t in _thrPL:
+    _t.join()
+_fsPL = open("pd_h_follow.py", encoding="utf-8").read()
+check("cache list: asks that arrive together are planned one after another, never at once",
+      _inPL["most"] == 1 and _PlanPL().worth_copying(only="y") == ["y"]
+      and "with self.PLANNING:" + chr(10) + "                plan, _ = self.wanted_keys(" in _fsPL)
+
+# ---- the episode a shuffle has on a screen is copied first, so the house can carry on from the copy
+import pd_follow as _pfSH, tempfile as _tfSH
+_dSH = _tfSH.mkdtemp()
+_itemSH = {"name": "Show.S06E09.mkv", "part": "/gpu/file?key=e1", "why": "on a screen now", "casual": True,
+           "size": 1000, "key": "e1"}
+_wasSH = _pfSH.worth_asking_again
+try:
+    _pfSH.worth_asking_again = lambda item: True
+    _firstSH = _pfSH.first_on_screen([_itemSH], _dSH, "")
+finally:
+    _pfSH.worth_asking_again = _wasSH
+_fsSH = open("pd_follow.py", encoding="utf-8").read()
+check("cache: a shuffle's episode on a screen is fetched first, like any other on a screen",
+      _firstSH == "Show.S06E09.mkv" and 'if item.get("casual"):' + chr(10) + "            return False" not in _fsSH)
+
+# ---- restart after a crash: on unless turned off, this server's own, shown in Settings
+import pd_h_settings as _hsRC
+_rcRC = _hsRC.SettingsParts.restart_on_crash
+_jsRC = open("static/settings.js", encoding="utf-8").read()
+check("restart after a crash: on by default and when on, off only when turned off",
+      _rcRC({}) and _rcRC(None) and _rcRC({"restartOnCrash": True}) and not _rcRC({"restartOnCrash": False}))
+check("restart after a crash: saved by the owner, answered with the settings, drawn as On and Off",
+      'if "restartOnCrash" in body:' in server_source() and '"restartOnCrash": self.restart_on_crash(' in server_source()
+      and 'post("/settings", { restartOnCrash: on })' in _jsRC and "crashRestartRow(said0.restartOnCrash)" in _jsRC)
+
+# ---- a year between a series' name and its episode marker tells same-named series apart
+import pd_library as _plEY
+_eyEY = _plEY.episode_year
+check("series year: read from Name.2023.S01E01 and Name (2019) S02E03, none without one, none for a series called 1923",
+      _eyEY("D:/x/Twin.Show.2023.S01E01.Pilot.2160p.mkv") == 2023 and _eyEY("D:/x/Twin Show (2019) S02E03.mkv") == 2019
+      and _eyEY("D:/x/twin.show.s18e05.1080p.mkv") is None and _eyEY("D:/x/Twin.Show.S01E02.2160p.mkv") is None
+      and _eyEY("D:/x/1923.S01E01.1080p.mkv") is None)
+_lbEY = open("pd_library.py", encoding="utf-8").read()
+check("series year: both readings of an episode file pass it on as the series' year",
+      _lbEY.count("show_year = episode_year(path)") == 2)
+
+# ---- the server runs at normal priority whatever started it
+_svNP = server_source()
+import ast as _astNP, subprocess as _spNP
+_fnNP = next(n for n in _astNP.parse(_svNP).body if getattr(n, "name", "") == "at_normal_priority")
+_codeNP = ("import os" + chr(10) + _astNP.get_source_segment(_svNP, _fnNP) + chr(10)
+           + "import psutil; p = psutil.Process(); a = p.nice(); at_normal_priority(); print(a, p.nice())")
+_outNP = _spNP.run([sys.executable, "-c", _codeNP], capture_output=True, text=True,
+                   creationflags=0x40 if os.name == "nt" else 0).stdout.split()
+check("server: started at idle, it puts itself at normal priority first thing, so ffmpeg is never started at idle",
+      (os.name != "nt" or _outNP == ["64", "32"])
+      and _svNP.index("def main():") < _svNP.index("    at_normal_priority()", _svNP.index("def main():"))
+      < _svNP.index("trust_our_own_certificates()", _svNP.index("def main():")))
+
+# ---- a machine with no card to encode on never makes 4K or 10-bit h264 (2026-11-14)
+import pd_gpu as _pgC
+_wasC = (_pgC.HW_OK, _pgC.ENCODER, _pgC.FFMPEG)
+try:
+    _pgC.HW_OK, _pgC.ENCODER, _pgC.FFMPEG = False, None, "ffmpeg"
+    _engC = _pgC.Engine(_tfK.mkdtemp())
+    _srcC = {"file": "film.mkv", "width": 3840, "height": 2160, "duration": 100,
+             "videoCodec": "hevc", "audioCodec": "dts", "audioChannels": 6}
+    _cpuC = _engC.command(_srcC, 0, 0, audio_mode="passthrough", hevc=True)
+    _smallC = _engC.command(dict(_srcC, width=1280, height=720), 0, 0, audio_mode="passthrough")
+finally:
+    _pgC.HW_OK, _pgC.ENCODER, _pgC.FFMPEG = _wasC
+_vfC = _cpuC[_cpuC.index("-vf") + 1]
+check("encode on the CPU: a 4K 10-bit film comes out 1080 lines and 8 bits, never High 10 at 3840 (%s)" % _vfC,
+      "libx264" in _cpuC and _vfC == "scale=-2:1080,format=yuv420p"
+      and _smallC[_smallC.index("-vf") + 1] == "format=yuv420p")
+
+# ---- a film held twice is as long as the version a client plays first
+import pd_localapi as _laD
+_rowsD = [{"id": 1, "path": "a.1080p.mkv", "height": 1080, "width": 1920, "duration": 5163.0,
+           "size": 4673211458, "bitrate": 7000},
+          {"id": 2, "path": "a.2160p.mkv", "height": 2160, "width": 3840, "duration": 10355.0,
+           "size": 74000000000, "bitrate": 57000}]
+_srcD = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_localapi.py"), encoding="utf-8").read()
+_okD = False
+try:
+    _okD = _laD.best_first(_rowsD)[0]["id"] == 2
+except Exception as e:
+    print("     best_first on plain rows:", e)
+check("listing: a title's length is the first-listed version's, not the first row stored",
+      _okD and _srcD.count('dur = int((best_first(files)[0]["duration"] or 0) * 1000)') == 2
+      and 'dur = int((files[0]["duration"]' not in _srcD)
+_tvD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java", "se", "palladium", "tv")
+_maD = open(os.path.join(_tvD, "MainActivity.kt"), encoding="utf-8").read()
+_paD = open(os.path.join(_tvD, "PlayerActivity.kt"), encoding="utf-8").read()
+_apD = open(os.path.join(_tvD, "Api.kt"), encoding="utf-8").read()
+check("app: the player is handed the length of the version it plays",
+      'putExtra("durationMs", m.copies.firstOrNull { it.mi == m.mi }?.durationMs' in _maD
+      and 'putExtra("durationMs", m.durationMs)' not in _maD)
+_askD = _paD[_paD.index("private fun askWhereItStarts()"):_paD.index("private fun streamStartMs()")]
+_noD = _askD[_askD.index("} else {"):]
+check("app: no answer in time is not a no - the picture is still asked to go through, its start learned late",
+      "withTimeoutOrNull(1800) { Api.encodeStart(asked) }" in _askD
+      and '"&copyv=1"' in _noD and "startLearnedLate(asked, baseOffsetSec)" in _noD
+      and "Api.encodeStart(asked, patient = true)" in _askD
+      and "wrapper?.baseChanged(streamStartMs())" in _askD
+      and "if (baseOffsetSec != base || copyStartMs >= 0) return@launch" in _askD
+      and "if (patient) 8000 else 1500, if (patient) 20000 else 1500)" in _apD)
+_svD = server_source()
+_vfD = _svD[_svD.index("    def video_format(self, path):"):]
+_vfD = _vfD[:_vfD.index("    def ", 10)]
+check("server: a picture-format probe that failed is not remembered as the answer",
+      'if out.get("codec"):' in _vfD and _vfD.index('if out.get("codec"):') < _vfD.index("VIDEO_FORMATS[path] = out"))
+
+# ---- a long episode the release holds as one file takes one number, not two (2026-11-14)
+from pd_library import doubles_map as _dmO, release_files as _rfO
+_epsO = [{"episode_number": n, "runtime": r} for n, r in
+         [(1, 23), (2, 45), (3, 23), (4, 37), (5, 23), (6, 23), (7, 23), (8, 44)]]
+_rowsO = [{"path": "Show.S01E%s.mkv" % n, "duration": d} for n, d in
+          [("01", 1320), ("02E03", 2600), ("04", 1320), ("05", 2160), ("06", 1320), ("07", 1320),
+           ("08", 1320), ("09E10", 2640)]]
+_toO = _dmO(_epsO, _rfO(_rowsO, 1))
+# and a long one split into two half-length files still takes two numbers
+_halfO = _dmO([{"episode_number": 1, "runtime": 23}, {"episode_number": 2, "runtime": 45},
+               {"episode_number": 3, "runtime": 23}],
+              _rfO([{"path": "S.S01E01.mkv", "duration": 1320}, {"path": "S.S01E02.mkv", "duration": 1330},
+                    {"path": "S.S01E03.mkv", "duration": 1330}, {"path": "S.S01E04.mkv", "duration": 1320}], 1))
+check("official numbering: a double named E02E03 takes two numbers, a long one held whole takes one, "
+      "and the length alone still decides where the files say nothing (%s)" % _toO,
+      _toO == {1: 1, 2: 2, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 10: 8}
+      and _halfO == {1: 1, 2: 2, 3: 2, 4: 3}
+      and _dmO(_epsO) == {1: 1, 2: 2, 3: 2, 4: 3, 5: 4, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8, 11: 8})
+
+# ---- a stall asks the door the film comes through, not the server's home address (2026-11-14)
+_paW = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                         "se", "palladium", "tv", "PlayerActivity.kt"), encoding="utf-8").read()
+_askW = [m.start() for m in re.finditer(r"Api\.answering\(where", _paW)]
+check("player: whether the server is still there is asked at the stream's own door, in the stall check "
+      "and the dropped-stream reopen (%d asks)" % len(_askW),
+      len(_askW) == 2 and "private fun doorInUse(): String" in _paW
+      and all(_paW.rfind("val where = doorInUse()", 0, a) > _paW.rfind("val where = srvBase", 0, a) for a in _askW))
+
+# ---- a film filmed in a cinema is never the recommended release (2026-11-14)
+import pd_release as _prC, pd_streaming as _psC
+_relC = [{"name": "Film.2026.1080p.HDTS.x264-GRP", "size": 3 * 10**9, "seeds": 900},
+         {"name": "Film.2026.TELESYNC.720p-GRP", "size": 2 * 10**9, "seeds": 500},
+         {"name": "Film.2026.1080p.WEB-DL.DDP5.1.H.264-GRP", "size": 5 * 10**9, "seeds": 40}]
+_fitC = [o["name"] for o in _relC if _prC.meets_all(o, [], {}, 6000)]
+check("releases: a telesync or a cam never meets the wishes, however seeded, and says why (%s)" % _fitC,
+      _fitC == ["Film.2026.1080p.WEB-DL.DDP5.1.H.264-GRP"]
+      and _prC.misses(_relC[0], [], {}, 6000)[0] == ["filmed in a cinema"])
+check("releases: only the words after the year say what a release is - a film called Cam is a film",
+      not _psC.cammed("Cam.2018.1080p.NF.WEB-DL.DDP5.1.x264-GRP") and _psC.cammed("Film.2026.HDCAM")
+      and _psC.cammed("Film.HDCAM.x264") and _psC.release_kind("Blade.Runner.2049.2017.HDTS") == "telesync")
+
+# ---- a viewer's own line: said once, stepped down on the third stall to what it carries,
+#      and climbing back up to the original when it has room (2026-11-14)
+_tvL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                    "se", "palladium", "tv")
+_paL = open(os.path.join(_tvL, "PlayerActivity.kt"), encoding="utf-8").read()
+_roL = open(os.path.join(_tvL, "Route.kt"), encoding="utf-8").read()
+_qpL = open(os.path.join(_tvL, "QualityPanel.kt"), encoding="utf-8").read()
+_wL = _paL[_paL.index("    private fun watchTheLine() {"):_paL.index("    private fun watchTheBuffer() {")]
+check("player: the line is watched every second whether or not another machine holds the film",
+      "watchTheBuffer()" + chr(10) + " " * 16 + "watchTheLine()" in _paL
+      and "if (ready == null)" not in _wL
+      and "if (Api.answering(doorInUse(), token)) lineStalled()" in _wL)
+check("player: a line stall is counted once, said once, and the third steps down to a rate within "
+      "80 % of what was arriving",
+      "if (now - lineStallAt < 30_000 || isFinishing) return" in _wL and "lineStalls++" in _wL
+      and "if (!lineSaid) {" in _wL and "val line = (throughput() ?: 0.0) * 8 * 1.048576" in _wL
+      and "if (lineStalls >= Route.LINE_STALLS && step > 0) {" in _wL
+      and "const val LINE_STALLS = 3" in _roL and "const val LINE_SHARE = 0.8" in _roL
+      and "val LINE_LADDER = listOf(40, 20, 12, 8, 5, 4, 2)" in _roL)
+check("player: a stepped-down film climbs back as far as the original, waiting twice as long after each fall",
+      'if (!intent.getBooleanExtra("lineAuto", false)) return' in _wL
+      and "Route.lineUp(chosenRate()" in _wL and "minOf(wait * 2, Route.LINE_UP_MOST)" in _wL
+      and '.putExtra("lineAuto", mbit != ceiling)' in _wL
+      and "return ceilingMbit                        // the ceiling itself: 0 is the original" in _roL)
+# the ladder itself, worked through in Python exactly as Route.kt does it
+_LAD = [40, 20, 12, 8, 5, 4, 2]
+def _stepL(asked, film_kbit, line):
+    now = asked if asked > 0 else (film_kbit // 1000 if film_kbit > 0 else 10**9)
+    below = [r for r in _LAD if r < now]
+    if not below:
+        return 0
+    if line <= 0:
+        return below[0]
+    return next((r for r in below if r <= line * 0.8), below[-1])
+def _upL(now, ceiling, film_kbit, best):
+    if now <= 0 or best <= 0:
+        return -1
+    room = best * 0.8
+    top = ceiling if ceiling > 0 else film_kbit // 1000
+    if top > now and top <= room and (ceiling > 0 or film_kbit > 0):
+        return ceiling
+    up = [r for r in _LAD if r > now and r <= room and (ceiling <= 0 or r <= ceiling)]
+    return max(up) if up else -1
+check("line ladder: a 68 Mbit film on a 45 Mbit line plays at 20 (36 fits under 80 %), a 30 Mbit line at 20, "
+      "a 2 Mbit line at 2; back up to the original only when the line carries it",
+      _stepL(0, 68000, 45) == 20 and _stepL(0, 68000, 30) == 20 and _stepL(0, 68000, 2) == 2
+      and _stepL(40, 68000, 0) == 20 and _stepL(2, 68000, 1) == 0
+      and _upL(20, 0, 68000, 100) == 0 and _upL(20, 0, 68000, 60) == 40 and _upL(20, 0, 68000, 20) == -1
+      and _upL(8, 12, 68000, 100) == 12)
+check("quality: 40 Mbit can be chosen in the app, the web player and the server's ceilings",
+      '40 to "40 Mbit at most"' in _qpL
+      and '[40, "40"]' in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
+      and '[40, "40"]' in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "settings.js"), encoding="utf-8").read())
+
+# ---- the Watchlist opened after its tab blinked: the posters of what came in blink (2026-11-14)
+_hereB = os.path.dirname(os.path.abspath(__file__))
+_uiB = open(os.path.join(_hereB, "android", "app", "src", "main", "java", "se", "palladium", "tv", "Ui.kt"), encoding="utf-8").read()
+_maB = open(os.path.join(_hereB, "android", "app", "src", "main", "java", "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
+_jsB = open(os.path.join(_hereB, "static", "app.js"), encoding="utf-8").read()
+_cssB = open(os.path.join(_hereB, "static", "style.css"), encoding="utf-8").read()
+check("watchlist: opened after a blink, the posters of what came in blink until it is left - app and web",
+      "fresh = now" in _uiB and "fun left() { fresh = emptySet() }" in _uiB
+      and "val fresh = m.ratingKey in WatchBlink.fresh" in _uiB
+      and "else if (fresh) Skin.Accent.copy(alpha = pulse)" in _uiB
+      and 'if (tab == "watchlist") WatchBlink.seen() else WatchBlink.left()' in _maB
+      and 'if (WATCH_FRESH.has(el.dataset.key)) el.classList.add("fresh");' in _jsB
+      and "WATCH_FRESH = new Set(WATCH_KEYS);" in _jsB
+      and 'if (view !== "watchlist") WATCH_FRESH = new Set();' in _jsB
+      and ".card.fresh .poster{animation:posterblink" in _cssB)
 
 print("RULES FAILED: %d" % len(FAILS) if FAILS else "RULES PASSED")
 for f in FAILS:

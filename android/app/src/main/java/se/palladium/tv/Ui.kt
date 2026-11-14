@@ -130,19 +130,33 @@ object Arrivals {
  *  a game they downloaded: the Watchlist tab blinks until it is opened (owner, 2026-11-06). */
 object WatchBlink {
     var on by mutableStateOf(false)
+    /** what made it blink, by key */
+    private var keys: Set<String> = emptySet()
+    /** And on the Watchlist itself, the posters of what came in blink in turn, so it is
+     *  plain which ones they are (owner, 2026-11-14) - until the Watchlist is left. */
+    var fresh by mutableStateOf(emptySet<String>())
     private var askedAt = 0L
 
     /** Asked at most once a minute, from the arrivals look every screen already makes. */
     suspend fun look() {
         if (System.currentTimeMillis() - askedAt < 60_000L) return
         askedAt = System.currentTimeMillis()
-        on = Api.watchBlink() > 0
+        keys = Api.watchBlink()
+        on = keys.isNotEmpty()
     }
 
+    /** The Watchlist opened: its blinking posters are the ones that came in. Asked first,
+     *  so a blink that arrived since the last look is among them. */
     suspend fun seen() {
+        val now = Api.watchBlink().ifEmpty { keys }
+        fresh = now
+        keys = emptySet()
         on = false
         Api.watchSeen()
     }
+
+    /** The Watchlist left: nothing blinks there any more. */
+    fun left() { fresh = emptySet() }
 }
 
 object Skin {
@@ -554,6 +568,13 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
     // per cent of a poster overruns, so the white ring was cut off top and bottom.
     // Four fits, and reads the same across a room.
     val scale by animateFloatAsState(if (ring) 1.04f else 1f, label = "posterScale")
+    // came in since the Watchlist was last opened: an accent ring coming and going, the
+    // same as the heading that said so
+    val fresh = m.ratingKey in WatchBlink.fresh
+    val pulse = if (fresh) androidx.compose.animation.core.rememberInfiniteTransition(
+        label = "fresh").animateFloat(1f, 0.15f, androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(600),
+            androidx.compose.animation.core.RepeatMode.Reverse), label = "fresh").value else 0f
     // the pixels this will actually occupy, so the server can send that and no more
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     val pixels = remember(width, density) { ((width * density).toInt() / 20) * 20 }
@@ -668,9 +689,11 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
                 .clip(shape)
                 // white, not accent: half the things on screen are already accent, and
                 // on a television the only question is which one the remote is pointing at
-                .border(if (ring || shuffleOff > 0) 3.dp else 0.dp,
+                .border(if (ring || shuffleOff > 0 || fresh) 3.dp else 0.dp,
                         if (ring) Color.White
-                        else if (shuffleOff > 0) Color(0xFFD64A40) else Color.Transparent,
+                        else if (shuffleOff > 0) Color(0xFFD64A40)
+                        else if (fresh) Skin.Accent.copy(alpha = pulse)
+                        else Color.Transparent,
                         shape)
         ) {
             // A film on offer is shown in full colour like any other: the artwork is
