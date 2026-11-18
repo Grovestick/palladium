@@ -114,7 +114,9 @@ def rows_of(said):
                               "progress": float((r or j).get("progress") or 0),
                               "eta": (r or {}).get("eta"), "mbit": 0.0, "who": "",
                               "pass": (r or {}).get("pass"), "passes": (r or {}).get("passes"),
-                              "speed": (r or {}).get("speed")}})
+                              "speed": (r or {}).get("speed"),
+                              # why it stands still, for a screen that shows rips: the panel
+                              "paused": str((r or {}).get("paused") or "")}})
     return out
 
 

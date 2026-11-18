@@ -21,6 +21,8 @@ const { JSDOM } = require(jsdomAt);
 // another copy of the page script may be named, to see the checks fail on a broken one
 const SOURCE = fs.readFileSync(process.env.PD_APPJS || path.join(__dirname, "static", "app.js"), "utf8")
   .replace(/\r\n/g, "\n");
+// the page loads route.js before app.js, and so does every made-up page here
+const ROUTE_JS = fs.readFileSync(path.join(__dirname, "static", "route.js"), "utf8");
 const FAILS = [];
 const check = (what, ok, detail) => { if (!ok) FAILS.push(what + (detail ? " " + detail : "")); };
 
@@ -286,37 +288,106 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
           && d.querySelectorAll("#main > *").length === 2);
   }
 
-  // ---- 6. this page's own server not answering: a restart is waited out
+  // ---- 6. finding a server by the app's rules (route.js = Route.kt), played on a clock against
+  //      the same cases as the app's ReachSimTest: frozen, off, a blip, waking, film arriving
   {
-    const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
-    const w = dom.window;
-    w.eval("const HOME_GRACE_MS = 30000;\n" + take("homeVerdict") + "\nwindow.homeVerdict = homeVerdict;");
-    const run = (looks) => {             // [seconds, answered] pairs, in order
-      const st = { misses: 0, since: 0 };
-      let was = null;
-      return looks.map(([sec, ok]) => {
-        const v = w.homeVerdict(st, ok, was, 1000000 + sec * 1000);
-        was = v.home;
-        return v.home === true ? "up" : v.home === false ? "down" : "unknown";
-      }).join(" ");
+    const R = require(path.join(__dirname, "static", "route.js"));
+    const HOME = "http://192.168.0.181:8765", COPY = "http://192.168.0.25:8764";
+    const sim = (main, opt) => {
+      const o = Object.assign({ sending: () => false, opening: true, startAt: 0, until: 60000 }, opt || {});
+      const looks = {};
+      let opening = o.opening, onCopy = false, nextLook = o.startAt, nextReq = o.startAt + 500;
+      let failAt = null, failBegan = 0;
+      const moves = [];
+      const word = (t) => {                    // the copy's /where: down after two of its own asks
+        const asked = Math.floor(t / 10000) * 10000;
+        const down = main(asked) !== "up" && asked >= 10000 && main(asked - 10000) !== "up";
+        return { up: !down, ago: Math.floor((t - asked) / 1000) };
+      };
+      const lookOne = (a, t) => {
+        if (a === COPY) {
+          const w = word(t);
+          return [{ up: true, id: "C", ms: 40, at: t + 40, misses: 0, follows: HOME, followsId: "M",
+                    houseDown: R.houseSaysDown(w.up, w.ago) }, t + 40];
+        }
+        const st = main(t);
+        if (st === "up") return [{ up: true, id: "M", ms: 40, at: t + 40, misses: 0, follows: "", followsId: "", houseDown: false }, t + 40];
+        const end = st === "off" ? t + 1500 : t + (opening ? 2000 : 4000);
+        return [R.miss(end, (looks[a] || {}).id), end];
+      };
+      const round = (t) => {
+        const all = [HOME, COPY].map((a) => [a, lookOne(a, t)]).sort((x, y) => x[1][1] - y[1][1]);
+        let end = t;
+        for (const [a, got] of all) {
+          end = Math.min(t + 9500, got[1]);
+          let raw = got[0];
+          if (!raw.up && a === HOME && o.sending(end)) raw = Object.assign({}, looks[a] || {}, { up: true, misses: 0, at: end });
+          looks[a] = R.settle(looks[a], raw, end);
+          Object.assign(looks, R.confirmDown(looks, opening, { M: [HOME] }, end));
+          if (R.knownEnough(R.rowUp([HOME], looks, end), R.rowUp([COPY], looks, end))) break;
+        }
+        return end;
+      };
+      const decide = (t) => {
+        const home = R.rowUp([HOME], looks, t), copy = R.rowUp([COPY], looks, t);
+        if (home !== null) opening = false;
+        if (!onCopy && home === false && copy === true) { onCopy = true; moves.push([t, "to the copy"]); }
+        else if (onCopy && home === true) { onCopy = false; moves.push([t, "home again"]); }
+      };
+      let t = o.startAt;
+      while (t < o.until) {
+        if (failAt !== null && t >= failAt) {
+          if (!o.sending(t)) {
+            const m = R.requestMiss(looks[HOME], failBegan, t);
+            if (m) looks[HOME] = m;
+            nextLook = Math.min(nextLook, t);
+          }
+          failAt = null;
+        }
+        if (failAt === null && t >= nextReq && !onCopy) {
+          failBegan = t;
+          failAt = main(t) === "up" ? null : t + (main(t) === "off" ? 1500 : 8000);
+          nextReq = t + 3000;
+        }
+        if (t >= nextLook) {
+          const end = round(t);
+          decide(end);
+          const unsure = Object.values(looks).some((l) => l.misses > 0 && !R.isDown(l) && end - l.at < R.FRESH_MS);
+          nextLook = end + (unsure ? R.AGAIN_MS : 10000);
+          t = end;
+          continue;
+        }
+        t += 100;
+      }
+      return moves;
     };
-    check("6 a restart of twenty seconds never calls the server down",
-          run([[0, true], [10, false], [11.7, false], [13.4, false], [20, false], [28, false], [30, true]])
-          === "up up up up up up up");
-    check("6 gone for half a minute, it is down - and up again at its first answer",
-          run([[0, true], [10, false], [20, false], [39.9, false], [40, false], [50, false], [60, true]])
-          === "up up up up down down up");
-    check("6 one miss half a minute after another that was answered between is one miss",
-          run([[0, true], [10, false], [20, true], [45, false]]) === "up up up up");
-    check("6 never seen up, a miss is not known rather than down",
-          run([[0, false], [1.7, false], [10, false]]) === "unknown unknown unknown");
-    check("6 and that too is down after half a minute",
-          run([[0, false], [15, false], [30, false]]) === "unknown unknown down");
-    const st = { misses: 0, since: 0 };
-    check("6 while it waits it asks again soon, and stops asking soon once it knows",
-          w.homeVerdict(st, false, true, 1000).again === true
-          && w.homeVerdict(st, false, true, 40000).again === false
-          && w.homeVerdict(st, true, false, 41000).again === false);
+    const first = (moves, what) => (moves.find((m) => m[1] === what) || [Infinity])[0];
+    const frozenLong = sim(() => "frozen", { startAt: 30000, until: 60000 });
+    check("6 opening, main frozen a while: on the copy within half a second, by the copy's word (" + first(frozenLong, "to the copy") + ")",
+          first(frozenLong, "to the copy") <= 30500);
+    const justFroze = sim((t) => (t >= 25000 ? "frozen" : "up"), { startAt: 28000, until: 60000 });
+    check("6 opening 3 s after a freeze: on the copy within 4 s (" + first(justFroze, "to the copy") + ")",
+          first(justFroze, "to the copy") <= 32000);
+    const off = sim(() => "off", { until: 30000 });
+    check("6 opening, main off: on the copy within 3 s (" + first(off, "to the copy") + ")", first(off, "to the copy") <= 3000);
+    const freeze = sim((t) => (t >= 30000 && t < 210000 ? "frozen" : "up"), { opening: false, until: 260000 });
+    const went = first(freeze, "to the copy");
+    check("6 open, main frozen 30-210 s: on the copy by 55 s, not back while frozen, home by 225 s (" + JSON.stringify(freeze) + ")",
+          went >= 30000 && went <= 55000 && !freeze.some((m) => m[0] > went && m[0] < 210000 && m[1] !== "to the copy")
+          && freeze.some((m) => m[0] > 210000 && m[0] <= 225000 && m[1] === "home again"));
+    check("6 one blip moves nobody",
+          sim((t) => (t >= 30000 && t < 31500 ? "frozen" : "up"), { opening: false, until: 90000 }).length === 0);
+    check("6 film arriving keeps the main server whatever the looks say",
+          sim((t) => (t >= 20000 ? "frozen" : "up"), { opening: false, sending: () => true, until: 120000 }).length === 0);
+    check("6 opening with the main server fine stays on it", sim(() => "up", { until: 30000 }).length === 0);
+    const waking = sim((t) => (t < 60000 && Math.floor(t / 3000) % 2 === 1 ? "frozen" : "up"), { opening: false, until: 120000 });
+    check("6 a server waking up does not throw the viewer back and forth (" + JSON.stringify(waking) + ")",
+          waking.filter((m) => m[1] === "to the copy").length <= 1
+          && (!waking.length || waking[waking.length - 1][1] === "home again"));
+    const page = SOURCE;
+    check("6 the page asks route.js: its own 30-second rule is gone",
+          page.indexOf("function homeVerdict") < 0 && page.indexOf("ROUTE.confirmDown(LOOKS, REACH_OPENING, ways, now)") >= 0
+          && page.indexOf("isThere(location.origin).then") >= 0);
   }
 
   // ---- 7. where a title starts: past its skip rule on a fresh start from 0 only
@@ -734,7 +805,8 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
   {
     check("20f SVT Play: seasons in a menu; on a stream's page the cast is under Show more",
           SOURCE.includes("pick.onchange = () => show(+pick.value);") &&
-          SOURCE.includes('if (m.svt) wrap.querySelector(".cast").remove();') &&
+          // a film to download has no cast row at all now: who is in it is under Show more
+          !SOURCE.includes("castRow(wrap.querySelector(\".cast\"), m);\n  // Show more, as a film here has") &&
           SOURCE.includes('if (it.svt) { pressableText(wrap, m); wrap.querySelector(".cast").remove(); }'));
   }
 
@@ -960,7 +1032,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
   // ---- 20m. Films opens on its popular page too, unless a service is marked
   {
     check("20m Films and TV open on Popular from their button unless a service is marked",
-          SOURCE.includes('if (kind && serviceWanted[kind] === SRC_HOUSE) {\n      SORT_BY_TAB[t.dataset.view].key = "popular";') &&
+          SOURCE.includes('if (kind && (serviceWanted[kind] === SRC_HOUSE || !serviceWanted[kind])) {\n      SORT_BY_TAB[t.dataset.view].key = "popular";') &&
           SOURCE.includes('const SORT_BY_TAB = { movies: { key: "popular", dir: "desc" },'));
   }
 
@@ -1288,7 +1360,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
     const w = dom.window;
     w.fetch = () => new Promise(() => {});
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     const went = [];
     w.open = (it) => went.push(["open", it.ratingKey]);
     w.viewShow = (show) => went.push(["show", show]);
@@ -1309,7 +1381,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const answers = { "/tracker/list": { free: 100, versions: [{ id: "9", name: "F.2023.2160p", size: 8e9, seeds: 5 }] },
                       "/tracker/active": { taking: [] } };
     w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(answers[String(u)] || {}) });
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.moreLikeThis = () => Promise.resolve(null);
     w.castRow = () => {};
     w.api = () => new Promise(() => {});
@@ -1341,7 +1413,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const w = dom.window;
     const asked = [];
     w.fetch = (u) => { asked.push(String(u)); return new Promise(() => {}); };
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.viewShow(undefined); w.viewShow("undefined"); w.viewMovie(null);
     w.sessionStorage.setItem("pd-screen", JSON.stringify({ kind: "show", key: "undefined" }));
     await w.restoreScreen();
@@ -1357,7 +1429,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const w = dom.window;
     w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(String(u) === "/tracker/list" ? { versions: [] }
                                                                    : { taking: [] }) });
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.moreLikeThis = () => Promise.resolve(null);
     w.castRow = () => {};
     w.api = () => new Promise(() => {});
@@ -1385,7 +1457,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     w.fetch = (u, o) => { if (o && o.method === "POST") posted.push(String(u));
       return Promise.resolve({ json: () => Promise.resolve(String(u) === "/torrents/cancel" ? { ok: true }
         : String(u) === "/tracker/list" ? { versions: [] } : { taking: [] }) }); };
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.moreLikeThis = () => Promise.resolve(null);
     w.castRow = () => {};
     w.api = () => new Promise(() => {});
@@ -1442,7 +1514,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const w = dom.window;
     w.fetch = (u) => Promise.resolve({ json: () => Promise.resolve(String(u) === "/tracker/list"
                                                                    ? { versions: [] } : { taking: [] }) });
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.moreLikeThis = () => Promise.resolve(null);
     w.castRow = () => {};
     const played = [];
@@ -1557,7 +1629,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     w.fetch = async () => ({ json: async () => ({ free: 50, versions: [
       { id: "1", name: "Show S01E01 1080p WEB H264-A", size: 9e8, seeds: 30, have: true },
       { id: "2", name: "Show S01E01 1080p x265-B", size: 4e8, seeds: 12 }] }) });
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     const row = w.document.createElement("div");
     row.innerHTML = '<div class="info"></div><button class="eptick">x</button>';
     await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
@@ -1585,7 +1657,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
                 { id: "2", name: "Show S01E01 720p-B", size: 2e8, seeds: 9 },
                 { id: "3", name: "Show S01 720p-C", size: 4e9, seeds: 20, box: true, seasonPack: true }];
     w.fetch = async () => ({ json: async () => ({ free: 50, versions: rows }) });
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     const row = w.document.createElement("div");
     row.innerHTML = '<div class="info"></div>';
     await w.episodeDownloads(row, { ratingKey: "e1", grandparentTitle: "Show" });
@@ -1612,26 +1684,50 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
           seen() === 1 && !row.querySelector(".epmore"), String(seen()));
   }
 
-  // ---- 52. the film page's version menu: a version here already is chosen as the copy it is
+  // ---- 52. Download other version: the Version menu itself turns into the releases, only
+  //          them; a recommended one on disk keeps its colour; choosing one downloads it and
+  //          the copies come back
   {
-    const w = page('<div class="verline"><select id="s"><option value="0">F.2000.1080p.x264-A.mkv · 1080p</option>' +
-                   '<option value="1">F.2000.2160p-B.mkv · 4K</option><option value="dl:1">a</option>' +
-                   '<option value="dl:2">b</option></select></div>', ["offerDownload"]);
-    w.Event = w.Event || Event;
-    const sel = w.document.getElementById("s");
-    let changed = "";
-    sel.addEventListener("change", () => { changed = sel.value; });
-    sel._downloads = { free: 40, rows: [{ id: "1", have: true, size: 5e9, name: "F.2000.2160p-B" },
-                                        { id: "2", size: 6e9, name: "F.2000.720p-C" }] };
-    sel.value = "dl:1";
-    w.offerDownload({ title: "F", year: 2000 }, sel);
-    const none = !w.document.querySelector(".dlhere");
-    sel.value = "dl:2";
-    w.offerDownload({ title: "F", year: 2000 }, sel);
-    const two = w.document.querySelector(".dlhere .btn");
-    check("52 the one here becomes the chosen copy, no button; another gets Download",
-          none && changed === "1" && /^⤓ Download/.test(two.textContent) && !two.disabled,
-          changed + " | " + (two && two.textContent));
+    const said = [], asked = [];
+    const w = page('<div class="verline"><select id="copysel"><option value="0">here</option>' +
+                   '<option value="__get">get</option></select></div>',
+                   ["downloadMenu", "versionTag", "tint", "askFirst", "releaseLine", "releaseName"], {
+      CHECKING_TRACKER: "Checking the tracker…", toast: (t) => said.push(t),
+      fetch: async (url, o) => {
+        asked.push(url);
+        return { json: async () => url === "/tracker/list" ? { free: 40, versions: [
+          { id: "1", name: "F 2000 1080p-A", pick: true, res: "1080p", seeds: 9, size: 5e9 },
+          { id: "2", name: "F 2000 2160p-B", uhd: true, have: true, res: "4K", seeds: 3, size: 2e10 },
+          { id: "3", name: "F 2000 720p-C", seeds: 1, size: 2e9 }] } : url === "/tracker/cancel" ? { ok: true } : { taken: true, hash: "h1" } };
+      } });
+    const sel = w.document.getElementById("copysel");
+    await w.downloadMenu({ title: "F", year: 2000, ratingKey: "k" }, sel, "0");
+    const opts = [...sel.options];
+    check("52 one menu: the copies give way to the releases alone, no line to go back",
+          w.document.querySelectorAll("select").length === 1 && opts.length === 3
+          && !opts.some((o) => /Versions here/.test(o.textContent) || o.value === "0"),
+          opts.map((o) => o.value).join(","));
+    check("52 the best 4K on disk stays violet and says On disk, then 4K",
+          opts[1].style.color === "rgb(183, 148, 246)" && /^On disk  ·  4K/.test(opts[1].textContent),
+          opts[1].style.color + " " + opts[1].textContent);
+    sel.value = "dl:2"; await sel._dlChoose(); await tick();
+    check("52 the one on disk says so, fetches nothing, and the copies are back",
+          said.includes("That one is here - choose it in the Version menu") && !asked.includes("/tracker/get")
+          && sel.value === "0" && sel.options.length === 2, said.join("|") + " " + sel.value);
+    await w.downloadMenu({ title: "F", year: 2000, ratingKey: "k" }, sel, "0");
+    sel.value = "dl:3";
+    const going = sel._dlChoose(); await tick();
+    const ask = w.document.querySelector(".sheetback .askyes");
+    check("52 a download is asked about first, nothing fetched yet",
+          !!ask && !asked.includes("/tracker/get"), String(!!ask));
+    if (ask) ask.click();
+    await going; await tick();
+    check("52 another one is downloaded at the choice",
+          asked.includes("/tracker/get") && said.includes("Downloading") && sel.value === "0", said.join("|"));
+    const off = w.document.querySelector(".verline .dlcancel");
+    if (off) { off.click(); await tick(); await tick(); }
+    check("52 and it can be cancelled from beside the menu",
+          !!off && asked.includes("/tracker/cancel") && said.includes("Download cancelled"), said.join("|"));
   }
 
   // ---- 53. a download just started says so, not Arriving, until its progress comes
@@ -1744,7 +1840,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
       String(u) === "/tracker/list" ? { free: 100, versions: [{ id: "9", name: "New.2026.1080p", size: 5e9, seeds: 5 }] }
       : String(u) === "/tracker/active" ? { taking: [polls++ ? Object.assign({}, row, { done: true, progress: 1 }) : row] }
       : {}) });
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.moreLikeThis = () => Promise.resolve(null);
     w.castRow = () => {};
     const opened = [];
@@ -1827,7 +1923,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
       String(u) === "/tracker/list" ? { free: 100, versions: [{ id: "9", name: "New.2026.1080p", size: 5e9, seeds: 5 }] }
       : String(u) === "/tracker/active" ? { taking: [row] }
       : {}) }); };
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.moreLikeThis = () => Promise.resolve(null);
     w.castRow = () => {};
     w.api = () => Promise.resolve({ Metadata: [] });
@@ -1918,7 +2014,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
         : String(u) === "/tracker/active" ? { taking: [] }
         : { ok: true, taken: true, state: "queued" }) });
     };
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     w.moreLikeThis = () => Promise.resolve(null);
     w.castRow = () => {};
     w.api = () => new Promise(() => {});
@@ -1967,7 +2063,7 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://x/", pretendToBeVisual: true });
     const w = dom.window;
     w.fetch = () => new Promise(() => {});
-    w.eval(SOURCE);
+    w.eval(ROUTE_JS); w.eval(SOURCE);
     const cam = w.card({ ratingKey: "c1", type: "movie", title: "C", askable: true, onTracker: true, cam: true });
     const real = w.card({ ratingKey: "r1", type: "movie", title: "R", askable: true, onTracker: true });
     check("60 grey band for cam, the usual one otherwise",

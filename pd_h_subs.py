@@ -361,6 +361,55 @@ class SubtitleParts(_Base):
         finally:
             con.close()
 
+    #: how long a season's subtitle numbers are kept before the site is read again
+    SITE_NUMBERS_DAYS = 30
+
+    def site_number(self, key, client=None, language="en"):
+        """This episode's number on the subtitle site where it is not ours, from the season's
+        numbers kept with the episode list (subnumbers.json); None where they agree or it is
+        not known. Read from the site once a season, and again after SITE_NUMBERS_DAYS. A
+        number set by hand (byHand) stands over what is read."""
+        if not str(key).startswith("e"):
+            return None
+        import json as _json
+        import pd_localapi
+        where = os.path.join(S.ROOT, "subnumbers.json")
+        con = S.local().lib.db()
+        try:
+            here = con.execute("SELECT e.item_id, e.season, i.title FROM episode e JOIN item i "
+                               "ON i.id = e.item_id WHERE e.id=?", (str(key),)).fetchone()
+            if not here:
+                return None
+            mark = "%s|%d" % (here["item_id"], int(here["season"]))
+            try:
+                with open(where, encoding="utf-8") as f:
+                    kept = _json.load(f)
+            except (OSError, ValueError):
+                kept = {}
+            row = kept.get(mark)
+            stale = not row or time.time() - float(row.get("at") or 0) > self.SITE_NUMBERS_DAYS * 86400
+            if stale and client:
+                eps = [(r["id"], r["number"], r["title"] or "") for r in con.execute(
+                    "SELECT id, number, title FROM episode WHERE item_id=? AND season=?",
+                    (here["item_id"], here["season"]))]
+                names = client.season_names(here["title"], int(here["season"]), language,
+                                            imdb=self.imdb_for(key))
+                if names:
+                    by_hand = (row or {}).get("byHand") or {}
+                    numbers = pd_localapi.site_numbers(names, eps, int(here["season"]), self._words,
+                                                       show=here["title"])
+                    numbers.update(by_hand)
+                    row = {"at": time.time(), "numbers": numbers, "byHand": by_hand, "read": len(names)}
+                    kept[mark] = row
+                    with open(where, "w", encoding="utf-8") as f:
+                        _json.dump(kept, f)
+            got = ((row or {}).get("numbers") or {}).get(str(key))
+            return int(got) if got else None
+        except (TypeError, ValueError):
+            return None
+        finally:
+            con.close()
+
     def season_titles(self, key):
         """The words of each other episode's title in this episode's season."""
         if not str(key).startswith("e"):
@@ -846,8 +895,11 @@ class SubtitleParts(_Base):
         src, title, year, season, episode = self._title_for_search(key)
         if not title:
             return {"error": "Nothing here to search for.", "results": []}
+        # the site's own number for this episode, kept with the episode list where it is not
+        # ours: asked by it and accepted by it - read from the list, not guessed per search
+        site = self.site_number(key, client, language) if episode is not None else None
         results, err = client.search(title, year, language,
-                                     (src or {}).get("file"), season, episode,
+                                     (src or {}).get("file"), season, site or episode,
                                      imdb=self.imdb_for(key))
         # A season the scanner has renumbered has two numbers for the same episode:
         # ours, and the one the release carries. Subtitle sites are numbered both ways
@@ -966,8 +1018,10 @@ class SubtitleParts(_Base):
                 if said and season is not None and episode is not None:
                     got = ((int(said.group(1)), int(said.group(2))) if said.group(1)
                            else (int(said.group(3)), int(said.group(4))))
-                    # either number of this episode: the catalogue's or the file's
-                    if not pd_localapi.number_is_ours(got, season, episode, shift):
+                    # any number of this episode: the catalogue's, the file's, or the
+                    # subtitle site's as the episode list keeps it
+                    if not pd_localapi.number_is_ours(got, season, episode, shift) and \
+                            not (site and tuple(got) == (int(season), int(site))):
                         r["episode"] = False
                         continue
                 r["episode"] = (bool(mine)

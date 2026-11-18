@@ -147,6 +147,31 @@ class OpenSubtitles:
         found.sort(key=lambda f: (not f["fromHash"], -f["downloads"]))
         return found, ""
 
+    def season_names(self, title, season, languages="en", imdb="", pages=5):
+        """The release names the site has for one season, a page at a time: what its own
+        numbering calls each episode, read once and kept with the episode list."""
+        digits = "".join(c for c in str(imdb or "") if c.isdigit())
+        names = []
+        for page in range(1, pages + 1):
+            q = {"languages": languages, "season_number": str(season), "page": str(page)}
+            if digits:
+                q["parent_imdb_id"] = digits
+            else:
+                q["query"] = title
+            try:
+                out = self._call("/subtitles?" + urllib.parse.urlencode(q))
+            except Exception:
+                break
+            for row in out.get("data") or []:
+                a = row.get("attributes", {})
+                files = a.get("files") or []
+                name = a.get("release") or (files[0].get("file_name") if files else "")
+                if name:
+                    names.append(name)
+            if page >= int(out.get("total_pages") or 1):
+                break
+        return names
+
     def download(self, file_id):
         """The subtitle itself, as text. Requires the login and its daily allowance."""
         if not self.login():

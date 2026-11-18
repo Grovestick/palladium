@@ -216,6 +216,8 @@ document.addEventListener("fullscreenchange", () => {
    Cast SDK, which this does not touch.
    Safari is left alone: x-webkit-airplay is the only casting an iPhone will do from
    a web page, and this attribute would take that away as well. */
+// film arriving for the player from this page's own server: that server is up (route.js)
+if ($("#video")) $("#video").addEventListener("progress", () => { if (!CTX) FILM_AT = Date.now(); });
 if ($("#video")) {
   const safari = /^((?!chrome|chromium|android|crios|fxios).)*safari/i
     .test(navigator.userAgent);
@@ -706,56 +708,101 @@ function thisMachine(where) {
  * player and the shelves then know where to go before anything has failed: a stream
  * that broke used to be opened again on the server that was off, twice, before
  * anything moved. */
-const REACH = { home: null, copy: null, copyAt: "", at: 0 };
-//: how long this page's own server may go unanswered before its copy is used
-const HOME_GRACE_MS = 30000;
-//: and how soon it is asked again while it does not answer
-const HOME_AGAIN_MS = 1700;
-const HOME = { misses: 0, since: 0 };
+const REACH = { home: null, copy: null, copyAt: "", at: 0, homeId: "" };
+//: every address's last look, kept by the rules the app keeps (route.js, Route.kt)
+const LOOKS = {};
+//: this page has not yet heard from its own server: a look then gets two seconds, not four
+let REACH_OPENING = true;
+//: when film last arrived for the player from this page's own server
+let FILM_AT = 0;
 
-/* What a look at this page's own server says of it: true, false, or null for not
-   known - and whether to look again soon.
-
-   A page that is open came from that server, so a server that stops answering under
-   it is nearly always one being restarted: it is back in twenty seconds. Called down
-   on the second miss, the page was on the copy a second after every restart and back
-   again a few seconds later. So: down only once it has gone unanswered for half a
-   minute, asked every couple of seconds meanwhile; until then it is what it was. */
-function homeVerdict(st, answered, was, now) {
-  if (answered) {
-    st.misses = 0;
-    st.since = 0;
-    return { home: true, again: false };
+/* One look at an address: who answers there and what it says of the server it follows,
+   as the app's look reads it - an answer, not a connection; the copy's word about its main
+   server carried as houseDown. */
+async function lookAt(where, token, patience) {
+  const at = String(where || "").replace(/\/$/, "");
+  const began = Date.now();
+  const stop = new AbortController();
+  const late = setTimeout(() => stop.abort(), patience);
+  try {
+    const r = await fetch(at + "/where" + (token ? "?t=" + encodeURIComponent(token) : ""),
+                          { cache: "no-store", signal: stop.signal });
+    let said = {};
+    try { said = await r.json(); } catch (e) { /* answered; an older server says little */ }
+    const f = said.follows || {}, h = said.house;
+    return { up: true, id: said.id || "", ms: Date.now() - began, at: Date.now(), misses: 0,
+             follows: f.lan || f.outside || "", followsId: f.id || "",
+             houseDown: !!(h && ROUTE.houseSaysDown(h.up, h.ago)) };
+  } catch (e) {
+    return ROUTE.miss(Date.now(), (LOOKS[at] || {}).id);
+  } finally {
+    clearTimeout(late);
   }
-  st.misses += 1;
-  if (!st.since) st.since = now;
-  if (st.misses >= 2 && now - st.since >= HOME_GRACE_MS) return { home: false, again: false };
-  return { home: was === true ? true : null, again: true };
 }
 
-/* The background check asks fresh, with a short patience; its answers are what the
-   server picker's lights read as well. */
-const answers = (origin) => answersAt(origin, true, 2500);
+/* THE answer to "is that server there", as the app's Reach.isThere: film arriving from it,
+   else the record when a look under five seconds old is sure, else one look now by the same
+   rules, written into the record. */
+async function isThere(where) {
+  const at = String(where || "").replace(/\/$/, "");
+  const own = location.origin.replace(/\/$/, "");
+  const now = Date.now();
+  if (at === own && ROUTE.stillSending(FILM_AT, now)) return true;
+  const d = LOOKS[at];
+  if (d && now - d.at < 5000 && ((d.up && d.misses === 0) || ROUTE.isDown(d))) return d.up;
+  const raw = await lookAt(at, at === own ? "" : ((CFG && CFG.key) || ""), 4000);
+  LOOKS[at] = ROUTE.settle(LOOKS[at], raw, Date.now());
+  return raw.up;
+}
 
 /* What the last look found, while it is fresh: true, false, or null for not known. */
 function homeAnswers() { return Date.now() - REACH.at < 30000 ? REACH.home : null; }
 function copyAnswers() { return Date.now() - REACH.at < 30000 ? REACH.copy : null; }
 
+/* Which servers answer, by the app's rules (owner, 2026-11-15: the web's own - down after
+   half a minute unanswered - is gone). Every address at once; each answer settled as it
+   comes and decided as soon as it is known - this page's server answering, or its copy
+   saying it is down. A miss is believed on the second in a row, or the first with the copy's
+   word; film arriving from this page's server keeps it up. */
 async function reachCheck() {
-  // this page's own server, and each of the cache's addresses at once: which of the
-  // two answers is the check's to say, not a guess from the address in the bar
+  const homeDoors = [location.origin.replace(/\/$/, "")];
   const doors = standbyGuess();
-  const [homeNow, ...said] = await Promise.all([answers(location.origin)]
-    .concat(doors.map((d) => answers(d))));
-  const said2 = homeVerdict(HOME, homeNow, REACH.home, Date.now());
-  const home = said2.home;
-  if (said2.again) {
-    clearTimeout(reachCheck.soon);
-    reachCheck.soon = setTimeout(reachCheck, HOME_AGAIN_MS);
-  }
-  const copyAt = doors.find((d, i) => said[i]) || "";
+  const all = homeDoors.concat(doors);
+  const patience = REACH_OPENING ? 2000 : 4000;
+  const token = (CFG && CFG.key) || "";
+  await new Promise((done) => {
+    let left = all.length;
+    all.forEach((d) => lookAt(d, homeDoors.indexOf(d) >= 0 ? "" : token, patience).then((got) => {
+      const now = Date.now();
+      let raw = got;
+      if (!raw.up && homeDoors.indexOf(d) >= 0 && ROUTE.stillSending(FILM_AT, now))
+        raw = Object.assign({}, LOOKS[d] || {}, { up: true, misses: 0, at: now });
+      if (raw.up && homeDoors.indexOf(d) >= 0 && raw.id) REACH.homeId = raw.id;
+      LOOKS[d] = ROUTE.settle(LOOKS[d], raw, now);
+      const ways = {};
+      if (REACH.homeId) ways[REACH.homeId] = homeDoors;
+      Object.assign(LOOKS, ROUTE.confirmDown(LOOKS, REACH_OPENING, ways, now));
+      left -= 1;
+      if (left === 0 || ROUTE.knownEnough(ROUTE.rowUp(homeDoors, LOOKS, now),
+                                          doors.length ? ROUTE.rowUp(doors, LOOKS, now) : null)) done();
+    }));
+  });
+  const now = Date.now();
+  const home2 = ROUTE.rowUp(homeDoors, LOOKS, now);
+  const there = doors.length ? ROUTE.rowUp(doors, LOOKS, now) : null;
+  const copyAt = doors.find((d) => ROUTE.state(LOOKS[d], now) === true) || "";
   const copy = doors.length ? doors[0] : "";
-  const there = doors.length ? !!copyAt : null;
+  if (home2 !== null) REACH_OPENING = false;
+  // one miss is not believed: the second look comes at once
+  const unsure = all.some((d) => {
+    const l = LOOKS[d];
+    return l && l.misses > 0 && !ROUTE.isDown(l) && now - l.at < ROUTE.FRESH_MS;
+  });
+  if (unsure) {
+    clearTimeout(reachCheck.soon);
+    reachCheck.soon = setTimeout(reachCheck, ROUTE.AGAIN_MS);
+  }
+  const home = home2;
   const was = REACH.home;
   REACH.home = home; REACH.copy = there; REACH.copyAt = copyAt; REACH.at = Date.now();
   const wasCopy = REACH.copyWas;
@@ -2341,7 +2388,7 @@ function viewPopularShows(asTab, kind) {
   if (asTab) return viewSection(type);
   genreWanted[type] = "";
   decadeWanted[type] = "";
-  serviceWanted[type] = SRC_HOUSE;
+  serviceWanted[type] = "";
   go(view);
   // a step in the history like any other row: Back returns to the front page
   tabBelow = "home";
@@ -2953,7 +3000,7 @@ function startMore(more) {
   const tabState = SORT_BY_TAB[view];
   tabState.key = more.sort === "originallyAvailableAt" ? "released" : "popular";
   tabState.dir = "desc";
-  serviceWanted[kind] = more.service || SRC_HOUSE;
+  serviceWanted[kind] = more.service || "";
   genreWanted[kind] = more.genre || "";
   decadeWanted[kind] = "";
   go(view);
@@ -3122,9 +3169,11 @@ const CATS = [
   // would answer with the same films.
   { id: "seasonal", title: "Seasonal", by: "seasonRank", one: true,
     path: (sec) => ["/library/seasonal", {}] },
-  // one list for both servers, which this server joins: one machine is asked
-  { id: "newfilms", title: "Recently added in films", by: "addedAt", one: true,
-    path: (sec) => ["/library/sections/" + sec.movie + "/recentlyAdded", { both: 1 }] },
+  // the head of the Films tab in the order things arrived, on disk only: the page it
+  // opens onto (owner, 2026-11-15)
+  { id: "newfilms", title: "Recently added in films", by: "addedAt",
+    path: (sec) => ["/library/sections/" + sec.movie + "/all",
+                    { type: 1, sort: "addedAt:desc", disk: 1, start: 0, count: 40 }] },
   // Everything that has just come out, in one shelf: what this house holds, what a
   // pack can fetch and what can only be asked for, newest first. They were two rows
   // saying the same thing in two halves.
@@ -3138,7 +3187,7 @@ const CATS = [
   // a show from 2008 airing this week is more recent than one from 2024 that ended
   { id: "releasedtv", title: "Recently released episodes", by: "originallyAvailableAt",
     path: (sec) => ["/library/sections/" + sec.show + "/recentlyReleased", {}] },
-  // what is being watched now, of what this house can put on: held, or on a pack
+  // what is being watched now, held or not: the head of the page it opens onto
   { id: "popularshows", title: "Popular shows", by: "popularity",
     path: (sec) => ["/library/popularShows", {}] },
   // races and games on the tracker, newest first: pressed, the versions to fetch
@@ -3570,10 +3619,11 @@ const decadeWanted = { movie: "", show: "" };
 const countryWanted = { movie: "", show: "" };
 //: the streaming services marked, catalogue numbers comma-joined: the shelf is then
 //: their catalogue in this country rather than the library. And how many pages shown.
-//: the Service menu's two of this house - what is on its disks, what its packs carry -
-//: marked by default; nothing marked is everything there is, every service included
+//: the Service menu's two of this house - what is on its disks, what its packs carry;
+//: nothing marked is everything there is, every service included, and that is how Films
+//: and TV open: My library and In packs are not preselected (owner, 2026-11-15)
 const SRC_MINE = "-1", SRC_PACKS = "-2", SRC_HOUSE = "-1,-2";
-const serviceWanted = { movie: SRC_HOUSE, show: SRC_HOUSE };
+const serviceWanted = { movie: "", show: "" };
 const servicePages = { movie: 1, show: 1 };
 //: a service's catalogue in the popular page's orders: how popular, how well rated,
 //: released, year, name - one for both tabs
@@ -3962,15 +4012,17 @@ async function viewSection(type) {
   const genre = genreWanted[type] || "";
   const decade = decadeWanted[type] || "";
   const marked = String(serviceWanted[type] || "").split(",").filter(Boolean);
-  // nothing marked is everything there is: this house and every service - all of it
-  // at once, not a page with Show more under it
-  const everything = !marked.length;
+  // nothing marked is this house's own: the Popular page, the same list as the row, the
+  // films not out yet included - as every service's catalogue it was another list in
+  // another order (owner, 2026-11-15). A service marked is its catalogue.
+  const none = !marked.length;
+  const everything = false;
   if (everything) servicePages[type] = "all";
   const loadingAll = servicePages[type] === "all";
   if (!genreKeep) main.innerHTML = '<div class="empty">Loading&hellip;</div>';
   const services = marked.filter((v) => +v > 0);
-  const house = { mine: everything || marked.indexOf(SRC_MINE) >= 0,
-                  packs: everything || marked.indexOf(SRC_PACKS) >= 0 };
+  const house = { mine: none || marked.indexOf(SRC_MINE) >= 0,
+                  packs: none || marked.indexOf(SRC_PACKS) >= 0 };
   if (services.length || everything) {
     const ids = everything ? (await servicesFor()).map(([v]) => v).filter((v) => +v > 0)
       : services;
@@ -4491,6 +4543,10 @@ async function viewWatchlist() {
     main.querySelectorAll(".card[data-key]").forEach((c) => { c.dataset.watch = "1"; });
   }
   restoreListPlace();
+  // opened on a blink: to the poster that came in, over wherever the list was left
+  // (owner, 2026-11-15)
+  const came = WATCH_FRESH.size ? main.querySelector(".card.fresh") : null;
+  if (came) requestAnimationFrame(() => came.scrollIntoView({ block: "center", behavior: "smooth" }));
 }
 
 /* The genre and decade a watchlist, favorites or collection page is narrowed to. */
@@ -6530,6 +6586,15 @@ function fillPlayerSubs() {
   };
 }
 
+/* The copies here in the order the Version menu lists them: 1080p, then 4K, then the rest,
+   each kind as the server gave them (owner, 2026-11-18). Indexes into the list, so what is
+   chosen and played is unchanged. */
+function copyOrder(versions) {
+  const rank = (md) => { const r = String((md && md.videoResolution) || "");
+    return r === "1080" ? 0 : r === "4k" ? 1 : 2; };
+  return (versions || []).map((md, i) => i).sort((a, b) => rank(versions[a]) - rank(versions[b]) || a - b);
+}
+
 function playerBar(m, resume) {
   const versions = m.Media || [];
   const on = preferredCopy(m);
@@ -6541,8 +6606,10 @@ function playerBar(m, resume) {
     ? '<option value="__get">⤓ Download other version…</option>' : "";
   const verSel = versions.length > 1 || (versions.length && getOpt)
     ? '<select id="copysel" class="verpick" title="' +
-        esc(versionLabel(versions[on] || versions[0])) + '">' + versions.map((md, i) =>
-        '<option value="' + i + '"' + (i === on ? " selected" : "") + '>' +
+        esc(versionLabel(versions[on] || versions[0])) + '">' + copyOrder(versions).map((i) => [versions[i], i]).map(([md, i]) =>
+        '<option value="' + i + '"' + (i === on ? " selected" : "") +
+        // the download list's pick: 1080p green, the best 4K violet (owner, 2026-11-15)
+        (md.dlPick ? ' style="color:#5fd08a"' : md.dlUhd ? ' style="color:#b794f6"' : "") + '>' +
         esc(versionLabel(md)) + '</option>').join('') + getOpt + '</select>'
     // one copy is not a choice: say which file it is and leave it at that
     : (versions.length === 1 && versionFile(versions[0])
@@ -6567,12 +6634,12 @@ function playerBar(m, resume) {
     // subtitles stranded at the foot of the page under everything else - and they
     // are the same kind of decision, made at the same moment.
     (verSel ? '<div class="actions verline" id="fileline">' +
-              '<span class="rowlbl">Version</span>' + verSel + "</div>" : "") +
+              verSel + "</div>" : "") +
     // and under it, the box for another version of the film
 
     // a row of its own, directly under the file it belongs to
     '<div class="actions verline">' +
-    '<span class="rowlbl">Subtitles</span>' +
+
     // the list of subtitles to fetch, and writing one from the sound, live at the
     // foot of this menu: it is the menu somebody opens when the words are missing
     '<select id="subpick"><option value="">Off</option>' +
@@ -7017,8 +7084,6 @@ async function viewOffer(m) {
       o.free != null ? o.free + " GB free on the download drive" : ""]
       .filter(Boolean).map(esc)
       .join(" &middot; ") + "</div>" +
-    // where it has come out to be watched, as badges under the line
-    badgesRow([], m) +
     // Download instead of Request, where there is something to fetch. Not beside
     // it: asking somebody for a film this house can fetch in one press is not a
     // second choice, it is the wrong one. And nothing is guessed here about
@@ -7033,12 +7098,14 @@ async function viewOffer(m) {
     // its Cancel, arriving, Request - and one handler behind it (owner, 2026-11-09). The
     // list beside it chooses which version Download fetches.
     '<button class="btn" id="offerget"></button>' +
-    '<select id="offerpick" class="pick" style="display:none"></select>' +
     '<span class="note" id="offersaid"></span></div>' +
+    // laid out as a film here is (owner, 2026-11-15): the buttons, then the version on a row
+    // of its own, then where it streams
+    '<div class="actions verline" id="offerline" style="display:none">' +
+    '<select id="offerpick" class="pick"></select></div>' +
+    badgesRow([], m) +
     '<p class="summary tellme">' + esc(m.summary) + "</p>" +
-    // who is in it, the same row a film on the shelf has: a new release was a title
-    // and a summary with nobody in it
-    '<div class="cast"></div>' +
+    // who is in it under Show more, as on a film here (owner, 2026-11-15)
     '<div class="note">' + (fetches
       ? "Not in the library, but a pack here carries it. Downloading downloads this one "
         + "film in and leaves the rest of the pack alone."
@@ -7052,7 +7119,6 @@ async function viewOffer(m) {
   if (marks) marks.insertBefore(markControl(m), wrap.querySelector("#offersaid"));
   main.appendChild(wrap);
   sagaRow(wrap, m.ratingKey);
-  castRow(wrap.querySelector(".cast"), m);
   // Show more, as a film here has: what it is rated, how long, and everybody in it -
   // what decides whether it is worth downloading
   pressableText(wrap, m);
@@ -7063,8 +7129,6 @@ async function viewOffer(m) {
     const it = items(await api("/library/metadata/" + o.heldKey))[0];
     if (it) play(it, it.viewOffset ? Math.floor(it.viewOffset / 1000) : 0, {});
   };
-  // a stream's page is its Play button and its plot: who is in it is under Show more
-  if (m.svt) wrap.querySelector(".cast").remove();
   const b = wrap.querySelector("#offerget");
   const pick = wrap.querySelector("#offerpick");
   const said = wrap.querySelector("#offersaid");
@@ -7086,7 +7150,8 @@ async function viewOffer(m) {
     b.disabled = now.disabled;
     b.dataset.act = now.act;
     b.classList.toggle("here", !!now.here);
-    pick.style.display = (now.act === "start" || now.here || now.why) && st.rows.length ? "" : "none";
+    wrap.querySelector("#offerline").style.display =
+      (now.act === "start" || now.here || now.why) && st.rows.length ? "" : "none";
     // across the poster too, for a pack's copy coming in: which, how far, how long
     const packComing = !now.take && (o.state === "queued" || o.state === "downloading");
     pct.style.display = packComing ? "" : "none";
@@ -7209,20 +7274,14 @@ async function viewOffer(m) {
       rows.forEach((v) => {
         const opt = document.createElement("option");
         opt.value = v.id;
-        // the figures first, seeders leading as the list is sorted, then the name
-        opt.textContent = [
-          versionTag(v),
-          v.seeds == null ? "" : v.seeds + " seeding",
-          v.mbit ? v.mbit + " Mbit/s" : "",
-          v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "",
-        ].filter(Boolean).join("  ·  ") + "   —   " + releaseName(v.name) + [
-          v.pick && !v.have ? "recommended" : "",
-          v.why || "",
-        ].filter(Boolean).map((x) => "   ·   " + x).join("");
-        // the pack's blue, recommended green, on disk orange - said before anything else
+        // as a film here's release list says it: where it comes from, its 1080p or 4K, then
+        // the figures and the name (owner, 2026-11-18)
+        opt.textContent = releaseLine(v);
+        // the pack's blue, on disk yellow, the recommended green and best 4K violet on disk or not
         if (v.pack) opt.style.color = "#7fb4ff";
-        if (v.pick) opt.style.color = "#5fd08a";
         if (v.have) opt.style.color = "#e0b341";
+        if (v.uhd) opt.style.color = "#b794f6";
+        if (v.pick) opt.style.color = "#5fd08a";
         // one that cannot be fetched says so in the list, red and not to be chosen
         if (v.why) {
           opt.style.color = "#ff6b6b";
@@ -7442,7 +7501,8 @@ async function drawDownloadBanner() {
     el = document.createElement("button");
     el.id = "dlbanner";
     el.className = "dlbanner";
-    $("#topbar nav").after(el);
+    // to the right of the microphone (owner, 2026-11-15)
+    ($("#mic") || $("#search") || $("#topbar nav")).after(el);
   }
   const words = (x) => {
     const o = x.offer || {};
@@ -7880,10 +7940,62 @@ function watchFetches() {
    release, or a file here the tracker no longer lists. */
 /* What the tracker and the packs carry of this film, under Download in the Version
    menu itself: coloured as everywhere else, the recommended one green. */
-async function fillDownloads(m, sel) {
-  if (!sel || sel._downloads) return;
-  const wait = sel.querySelector('option[value="__get"]');
-  if (wait) { wait.textContent = "\u2913 Looking for versions to download\u2026"; wait.disabled = true; }
+/* One release as both download menus say it: where it comes from - On disk, Tracker, a pack -
+   its 1080p or 4K where it is the pick or the best 4K, the figures, then its name. */
+function releaseLine(v) {
+  return [versionTag(v), v.res || "", v.freeleech ? "Freeleech" : "",
+    v.seeds == null ? "" : v.seeds + " seeding",
+    v.mbit ? v.mbit + " Mbit/s" : "",
+    v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
+    .join("  ·  ") + "   —   " + releaseName(v.name) +
+    (v.why ? "   ·   " + v.why : "");
+}
+
+/* A question with a yes and a Cancel, over the page: true for the yes. Escape, a press
+   outside it or Cancel is no. */
+function askFirst(title, text, yes) {
+  return new Promise((done) => {
+    const back = document.createElement("div");
+    back.className = "sheetback";
+    back.innerHTML = '<div class="sheet"><h3></h3><p></p><div class="actions">' +
+      '<button class="btn askyes"></button><button class="btn ghost askno">Cancel</button></div></div>';
+    back.querySelector("h3").textContent = title;
+    back.querySelector("p").textContent = text;
+    back.querySelector(".askyes").textContent = yes;
+    const end = (said) => {
+      if (!back.isConnected) return;
+      back.remove();
+      document.removeEventListener("keydown", esc);
+      done(said);
+    };
+    const esc = (e) => { if (e.key === "Escape") end(false); };
+    back.onclick = (e) => { if (e.target === back) end(false); };
+    back.querySelector(".askyes").onclick = () => end(true);
+    back.querySelector(".askno").onclick = () => end(false);
+    document.addEventListener("keydown", esc);
+    document.body.appendChild(back);
+    back.querySelector(".askyes").focus();
+  });
+}
+
+/* The releases of a film to download, in the Version menu itself: only them, not the copies
+   here again, and one menu, not two (owner, 2026-11-15). A line is one colour - the settings'
+   pick green, the best 4K violet, on disk yellow, a pack blue, one that cannot be fetched red -
+   and says its resolution, where it comes from, seeders, bitrate and size. Choosing one
+   downloads it, as the app's list does; the first line, or leaving the menu, brings the copies
+   back. */
+async function downloadMenu(m, sel, was) {
+  const kept = sel.innerHTML;
+  const back = () => {
+    if (sel.dataset.mode !== "dl") return;
+    delete sel.dataset.mode;
+    sel.innerHTML = kept;
+    sel.value = was;
+    tint(sel);
+  };
+  sel.dataset.mode = "dl";
+  sel.innerHTML = "";
+  sel.add(new Option(CHECKING_TRACKER, ""));
   let said = {};
   try {
     said = await (await fetch("/tracker/list", {
@@ -7891,88 +8003,46 @@ async function fillDownloads(m, sel) {
       body: JSON.stringify({ title: m.title, year: m.year, fresh: true,
                              imdb: m.imdb || "", key: m.ratingKey }) })).json();
   } catch (e) { said = { versions: [] }; }
-  const rows = (said.versions || []).filter((v) => !v.disk);
-  if (wait) wait.remove();
-  const group = document.createElement("optgroup");
-  group.label = rows.length ? "Download" : "Nothing to download";
+  if (sel.dataset.mode !== "dl") return;
+  const rows = said.versions || [];
+  sel.innerHTML = "";
+  // no line of its own to go back: leaving the menu brings the copies back (owner, 2026-11-15)
+  if (!rows.length) sel.add(new Option(said.unasked ? "Could not ask the tracker just now"
+                                                    : "Nothing on the tracker for that one", ""));
   rows.forEach((v) => {
-    const o = document.createElement("option");
-    o.value = "dl:" + v.id;
-    // what each colour means, in words on the line: green recommended, blue in a
-    // pack here, yellow already on disk, red cannot be downloaded
-    // recommended and where it comes from, both: "Recommended" alone hid that it was a pack's
-    o.textContent = [v.pick && !v.have ? "Recommended" : "", versionTag(v),
-      v.freeleech ? "Freeleech" : "",
-      v.seeds == null ? "" : v.seeds + " seeding",
-      v.mbit ? v.mbit + " Mbit/s" : "",
-      v.size ? (v.size / 1073741824).toFixed(1) + " GB" : ""].filter(Boolean)
-      .join("  \u00b7  ") + "   \u2014   " +
-      String(v.name || "").replace(/\.(mkv|mp4|avi|m4v|ts)$/i, "") +
-      (v.pack && (v.pick || v.have) ? "   \u00b7   in a pack here" : "") +
-      (v.why ? "   \u00b7   " + v.why : "");
-    if (v.pack) o.style.color = "#7fb4ff";
-    if (v.pick) o.style.color = "#5fd08a";
-    if (v.have) o.style.color = "#e0b341";
-    if (v.why) { o.style.color = "#ff6b6b"; o.disabled = true; }
-    group.appendChild(o);
+    // where it comes from first - On disk, Tracker - then its resolution (owner, 2026-11-15)
+    const o = new Option(releaseLine(v), "dl:" + v.id);
+    o.style.color = v.why ? "#ff6b6b" : v.pick ? "#5fd08a" : v.uhd ? "#b794f6"
+      : (v.have || v.disk) ? "#e0b341" : v.pack ? "#7fb4ff" : "";
+    if (v.why) o.disabled = true;
+    sel.add(o);
   });
-  sel.appendChild(group);
-  sel._downloads = { rows: rows, free: said.free };
+  sel.value = "";
   tint(sel);
-  // open again, now with them in it
-  try { if (sel.showPicker) sel.showPicker(); else sel.focus(); } catch (e) { sel.focus(); }
-}
-
-/* A version chosen under Download: its button beside the menu, then its Cancel. */
-function offerDownload(m, sel) {
-  const id = sel.value.replace(/^dl:/, "");
-  const got = sel._downloads || { rows: [] };
-  const v = got.rows.find((r) => String(r.id) === id);
-  const line = sel.closest(".verline") || sel.parentNode;
-  let box = line.querySelector(".dlhere");
-  if (!box) {
-    box = document.createElement("span");
-    box.className = "dlhere";
-    line.appendChild(box);
-  }
-  box.innerHTML = "";
-  if (!v) return;
-  const gb = v.size ? (v.size / 1073741824).toFixed(1) + " GB" : "";
-  const go = document.createElement("button");
-  go.className = "btn";
-  go.textContent = "\u2913 Download" + (gb ? "  " + gb : "");
-  // a version here already: it is one of the copies above, chosen as they are - the
-  // page's own Play plays it
-  if (v.have) {
-    const flat = (x) => String(x || "").toLowerCase().replace(/\.(mkv|mp4|avi|m4v|ts)$/, "")
-      .replace(/[^a-z0-9]+/g, "");
-    const at = [...sel.options].findIndex((o) => /^\d+$/.test(o.value) &&
-      flat(o.textContent).includes(flat(v.name)));
-    box.remove();
-    if (at >= 0) {
-      sel.value = sel.options[at].value;
-      sel.dispatchEvent(new Event("change"));
-    }
-    return;
-  }
-  const room = document.createElement("span");
-  room.className = "roomleft";
-  if (got.free != null) room.textContent = Math.round(got.free) + " GB free";
-  go.onclick = async () => {
-    go.disabled = true;
-    go.textContent = "Starting the download\u2026";
+  sel._dlChoose = async () => {
+    const v = rows.find((r) => "dl:" + r.id === sel.value);
+    back();
+    if (!v) return;
+    if (v.have || v.disk) { toast("That one is here - choose it in the Version menu"); return; }
+    // asked first, as in the app (owner, 2026-11-15)
+    if (!await askFirst("Download this one?", String(v.name || "") +
+        (v.size ? "  ·  " + (v.size / 1073741824).toFixed(1) + " GB" : ""), "Download")) return;
+    toast("Starting the download…");
     let r = {};
     try {
       r = await (await fetch("/tracker/get", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: v.id, title: m.title, year: m.year }) })).json();
     } catch (e) { r = { error: "The server did not answer" }; }
-    go.textContent = r.taken ? "Downloading" : (r.error || "Could not download it");
-    toast(go.textContent);
-    if (!r.taken) { go.disabled = false; return; }
+    toast(r.taken ? "Downloading" : (r.error || "Could not download it"));
+    if (!r.taken) return;
+    // and its Cancel beside the menu, for as long as it can be taken back
+    const line = sel.closest(".verline") || sel.parentNode;
+    const old = line.querySelector(".dlcancel");
+    if (old) old.remove();
     const off = document.createElement("button");
-    off.className = "btn ghost";
-    off.textContent = "Cancel";
+    off.className = "btn ghost dlcancel";
+    off.textContent = "Cancel the download";
     off.onclick = async () => {
       off.disabled = true;
       const pack = String(v.id).startsWith("pack:");
@@ -7980,8 +8050,7 @@ function offerDownload(m, sel) {
       try {
         c = await (await fetch(pack ? "/torrents/cancel" : "/tracker/cancel", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(pack ? { key: String(v.id).slice(5) }
-                                    : { hash: r.hash || "" }) })).json();
+          body: JSON.stringify(pack ? { key: String(v.id).slice(5) } : { hash: r.hash || "" }) })).json();
       } catch (e) { c = { ok: false, why: "The server did not answer" }; }
       if (c.ok === false) {
         if (c.started) off.remove(); else off.disabled = false;
@@ -7989,13 +8058,15 @@ function offerDownload(m, sel) {
         return;
       }
       toast("Download cancelled");
-      box.remove();
+      off.remove();
     };
-    box.appendChild(off);
-    // a release's cancel lasts as long as its wait; a pack's film keeps its own rule
+    line.appendChild(off);
     if (!String(v.id).startsWith("pack:") && r.graceS) setTimeout(() => off.remove(), r.graceS * 1000);
   };
-  box.append(go, room);
+  // left without a choice: the copies again
+  sel.addEventListener("blur", back, { once: true });
+  // open again, now with the releases in it
+  try { if (sel.showPicker) sel.showPicker(); else sel.focus(); } catch (e) { sel.focus(); }
 }
 
 /* The row's number, picture and its watched and watchlist marks stay where they were
@@ -8056,7 +8127,11 @@ async function episodeDownloads(row, ep) {
   } catch (e) { said = { versions: [] }; }
   const rows = said.versions || [];
   box.textContent = "";
-  if (!rows.length) { box.textContent = "Nothing on the tracker for this one yet."; return; }
+  if (!rows.length) {
+    box.textContent = said.unasked ? "Couldn't ask the tracker just now - try again in a minute."
+                                   : "Nothing on the tracker for this one yet.";
+    return;
+  }
   if (said.free != null) {
     const room = document.createElement("div");
     room.className = "note";
@@ -8086,7 +8161,7 @@ async function episodeDownloads(row, ep) {
     const line = document.createElement("div");
     line.className = "epdlrow";
     const words = document.createElement("span");
-    words.textContent = [v.have ? "On disk" : v.pick ? "Recommended" : "",
+    words.textContent = [v.have ? "On disk" : "",
       // the heading says pack or single; a box still says which
       !v.pack && v.box ? (v.seasonPack ? "Season pack" : "Box set") : "",
       v.seeds == null ? "" : v.seeds + " seeding",
@@ -8205,7 +8280,7 @@ async function seasonPacks(list, seasonKey, button) {
     line.className = "epdlrow";
     const words = document.createElement("span");
     const runs = p.seasons || [];
-    words.textContent = [p.pick ? "Recommended" : "",
+    words.textContent = [
       runs.length > 1 ? "S" + String(runs[0]).padStart(2, "0") + "\u2013S" +
         String(runs[runs.length - 1]).padStart(2, "0") : "Season pack",
       p.seeds + " seeding",
@@ -8350,7 +8425,8 @@ function switchVersion(m, label) {
     if (!rows.length) {
       const none = document.createElement("span");
       none.className = "note";
-      none.textContent = "Nothing on the tracker for that one";
+      none.textContent = said.unasked ? "Couldn't ask the tracker just now - try again in a minute"
+                                      : "Nothing on the tracker for that one";
       wrap.appendChild(none);
       return;
     }
@@ -8370,10 +8446,11 @@ function switchVersion(m, label) {
         v.why || "",
       ].filter(Boolean).map((x) => "   ·   " + x).join("");
       if (v.why) { o.style.color = "#ff6b6b"; o.disabled = true; }
-      // on disk is said before anything else about it: orange, recommended or not
+      // on disk yellow, the recommended green and best 4K violet on disk or not
       if (v.pack) o.style.color = "#7fb4ff";
-      if (v.pick) o.style.color = "#5fd08a";
       if (v.have) o.style.color = "#e0b341";
+      if (v.uhd) o.style.color = "#b794f6";
+      if (v.pick) o.style.color = "#5fd08a";
       pick.appendChild(o);
     });
     const first = rows.find((v) => v.pick) || rows.find((v) => !v.why);
@@ -8542,12 +8619,13 @@ async function viewMovie(key) {
     '<div class="meta"><h1>' + esc(m.title) + "</h1>" +
     '<div class="sub">' + [m.year, mins(m.duration), m.contentRating]
       .filter(Boolean).map(esc).join(" &middot; ") + "</div>" +
-    badgesRow([(md && (md.cut || md.edition)) || ""].concat(specs), m) +
     // not out yet: no file to play, the date it comes out instead
     (m.upcoming
       ? '<div class="actions"><span class="btn ghost">' +
         esc(upcomingLine(m.originallyAvailableAt)) + '</span><span id="watchedbtn"></span></div>'
       : playerBar(m, resume)) +
+    // the copy's facts under the Version and Subtitles rows, as the app has them (owner, 2026-11-15)
+    badgesRow([(md && (md.cut || md.edition)) || ""].concat(specs), m) +
     '<p class="summary tellme">' + esc(m.summary) + "</p></div>";
   wrap.querySelectorAll("[data-off]").forEach((b) => {
     b.onclick = () => play(m, +b.dataset.off, opts());
@@ -8563,20 +8641,16 @@ async function viewMovie(key) {
     let was = verPick.value;
     verPick.dataset.play = was;
     verPick.onchange = () => {
+      // the menu holding the releases to download: the choice is one of those
+      if (verPick.dataset.mode === "dl") { verPick._dlChoose(); return; }
       if (verPick.value === "__get") {
-        // the versions to download, into this same menu, and the menu open again
+        // the versions to download in a list of their own, as the app has it: in this
+        // menu they stood under the copies here, which were then there twice (owner,
+        // 2026-11-15)
         verPick.value = was;
-        fillDownloads(m, verPick);
+        downloadMenu(m, verPick, was);
         return;
       }
-      if (!/^\d+$/.test(verPick.value)) {
-        // a version to download, from the Download part of the same menu: its
-        // button beside the menu, and the film keeps playing from the file it was on
-        offerDownload(m, verPick);
-        return;
-      }
-      const dl = wrap.querySelector(".dlhere");
-      if (dl) dl.remove();
       // the poster follows the copy: its own cover, or the film's
       const chose = (m.Media || [])[+verPick.value] || {};
       const pic = wrap.querySelector(".poster img");
@@ -10316,7 +10390,7 @@ function reopenStream(why) {
     // what the background check knows, else asked now with a short wait
     const known = homeAnswers();
     if (known === false) { comeBackTries = Math.max(comeBackTries, 2); toCopy(); return; }
-    answers(location.origin).then((up) => {
+    isThere(location.origin).then((up) => {
       if (up) again();
       else { comeBackTries = Math.max(comeBackTries, 2); toCopy(); }
     });
@@ -11270,7 +11344,7 @@ document.querySelectorAll(".tab").forEach((t) => {
     const aside = t.dataset.view === "settings" || t.dataset.view === "reports";
     // Films and TV open on Popular from their button; a marked service shows its own
     const kind = { movies: "movie", shows: "show" }[t.dataset.view];
-    if (kind && serviceWanted[kind] === SRC_HOUSE) {
+    if (kind && (serviceWanted[kind] === SRC_HOUSE || !serviceWanted[kind])) {
       SORT_BY_TAB[t.dataset.view].key = "popular";
       SORT_BY_TAB[t.dataset.view].dir = "desc";
     }

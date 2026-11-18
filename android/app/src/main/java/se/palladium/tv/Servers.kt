@@ -426,7 +426,10 @@ object Servers {
      * machine kept in a cupboard at home is reached one way on the sofa and another
      * way from a train, and the row is the same row.
      */
-    suspend fun doorThatOpens(s: Server): String {
+    /** The address of this row that answers as this machine, or null when none does: a
+     *  machine that does not answer is not one to switch to, and taking its filed address
+     *  anyway said "Now on" a server that was down (owner, 2026-11-15). */
+    suspend fun doorThatOpens(s: Server): String? {
         // The address on this network first, whichever of the two the row happens to
         // be filed under. A row that had been re-filed under its way in from outside
         // was opened there while standing in the same house as the machine - so the
@@ -440,7 +443,7 @@ object Servers {
         // cache's address written on it opened the cache, and going home went nowhere
         if (itselfAt(s, s.base.trimEnd('/'))) return s.base
         if (s.outside.isNotEmpty() && itselfAt(s, s.outside.trimEnd('/'))) return s.outside
-        return s.base
+        return null
     }
 
     /** Whether the machine answering at that address is this row's, by its id. */

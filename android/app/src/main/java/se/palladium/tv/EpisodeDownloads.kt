@@ -99,7 +99,7 @@ fun SeasonPacks(season: Media, onAdded: () -> Unit, onClose: () -> Unit) {
                     else -> packs.filter { !it.held }.forEach { p ->
                         val runs = if (p.seasons.size > 1)
                             "S%02d–S%02d".format(p.seasons.first(), p.seasons.last()) else "Season pack"
-                        val facts = listOf(if (p.pick) "Recommended" else "", runs,
+                        val facts = listOf(runs,
                                            "${p.seeds} seeding",
                                            if (p.size > 0) "%.1f GB".format(p.size / 1073741824.0) else "")
                             .filter { it.isNotEmpty() }.joinToString("  ·  ")
@@ -170,7 +170,8 @@ fun EpisodeDownloads(ep: Media, onPage: (() -> Unit)? = null, onTaken: () -> Uni
                 val rows = got?.rows
                 when {
                     rows == null -> Text("Asking the tracker…", color = Skin.Dim, fontSize = 14.sp)
-                    rows.isEmpty() -> Text("Nothing on the tracker for this one yet",
+                    rows.isEmpty() -> Text(Route.trackerEmpty(got?.unasked == true,
+                                                              "Nothing on the tracker for this one yet"),
                                            color = Skin.Dim, fontSize = 14.sp)
                     else -> {
                         got?.free?.takeIf { it >= 0 }?.let {
@@ -186,8 +187,6 @@ fun EpisodeDownloads(ep: Media, onPage: (() -> Unit)? = null, onTaken: () -> Uni
                              modifier = Modifier.padding(top = 6.dp))
                         at.map { rows[it] }.forEach { v ->
                             val facts = listOf(
-                                // both: "Recommended" alone hid that it was a pack's
-                                if (v.pick) "Recommended" else "",
                                 // the heading says pack or single; a box still says which
                                 if (v.box && !v.pack)
                                     (if (v.seasonPack) "Season pack" else "Box set") else "",

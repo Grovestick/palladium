@@ -51,6 +51,9 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
     // the search behind this list: said while it runs, and the list drawn again with it
     var live by remember { mutableStateOf(rows) }
     var checking by remember { mutableStateOf(onTake == null) }
+    // the release pressed, waiting on Download or Cancel
+    var asking by remember { mutableStateOf<Api.Carried?>(null) }
+    var askingPlain by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (onTake == null) {
             val newer = Api.trackerVersions(full, true).rows
@@ -71,6 +74,31 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
             if (landed) return@LaunchedEffect
             runCatching { opening.requestFocus() }
         }
+    }
+    asking?.let { one ->
+        AlertDialog(
+            onDismissRequest = { asking = null },
+            containerColor = Skin.Panel,
+            title = { Text("Download this one?", color = Skin.Fg, fontSize = 17.sp) },
+            text = {
+                Text(one.name + (if (one.size > 0) "  ·  " + String.format(java.util.Locale.US,
+                         "%.1f GB", one.size / 1073741824.0) else ""),
+                     color = Skin.Fg, fontSize = 13.sp, lineHeight = 18.sp)
+            },
+            confirmButton = {
+                Pill("Download", primary = true) {
+                    asking = null
+                    onClose()
+                    val plain = askingPlain
+                    onSaid(if (plain) "Checking the tracker…" else "Starting the download…")
+                    (ctx as AppCompatActivity).lifecycleScope.launch {
+                        val id = if (plain) Api.bestAtPress(full, one.id) else one.id
+                        val (got, word) = Api.takeFromTracker(full, id)
+                        onSaid(if (got) "" else word)
+                    }
+                }
+            },
+            dismissButton = { Pill("Cancel") { asking = null } })
     }
     AlertDialog(
         onDismissRequest = onClose,
@@ -107,44 +135,64 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                             }
                             .focusable()
                             .clickable {
+                                // a download is asked about first (owner, 2026-11-15)
+                                if (onTake == null && !one.have && one.why.isEmpty()) {
+                                    asking = one
+                                    // the one it opened on: nobody chose, so the best as of now
+                                    askingPlain = one === first
+                                    return@clickable
+                                }
                                 onClose()
                                 when {
                                     onTake != null -> onTake(one)
                                     one.have -> onSaid("That one is on disk already")
-                                    one.why.isNotEmpty() -> onSaid(one.why)
-                                    else -> {
-                                        // the one it opened on: nobody chose, so the best as of now
-                                        val plain = one === first
-                                        onSaid(if (plain) "Checking the tracker…" else "Starting the download…")
-                                        (ctx as AppCompatActivity).lifecycleScope.launch {
-                                            val id = if (plain) Api.bestAtPress(full, one.id) else one.id
-                                            val (got, word) = Api.takeFromTracker(full, id)
-                                            onSaid(if (got) "" else word)
-                                        }
-                                    }
+                                    else -> onSaid(one.why)
                                 }
                             }
                             .padding(horizontal = 12.dp, vertical = 9.dp)) {
                         Text(one.name,
                              color = if (ring) Color.Black
                                      else if (one.why.isNotEmpty()) Color(0xFFFF6B6B)
-                                     else if (one.have) Color(0xFFE0B341)
+                                     // the pick green and the best 4K violet, on disk or not;
+                                     // on disk says so in yellow on its tag (owner, 2026-11-15)
                                      else if (one.pick) Color(0xFF5FD08A)
+                                     else if (one.uhd) Color(0xFFB794F6)
+                                     else if (one.have) Color(0xFFE0B341)
                                      else if (one.pack) PackBlue
                                      else Skin.Fg,
                              fontSize = 13.sp, lineHeight = 17.sp)
-                        val under = listOfNotNull(
-                            one.word.takeIf { it.isNotEmpty() },
-                            "Recommended".takeIf { one.pick && !one.have },
-                            Route.versionTag(one.disk, one.have, one.pack, one.box, one.seasonPack, one.packShort),
-                            "Freeleech".takeIf { one.freeleech },
-                            "${one.seeds} seeding".takeIf { one.seeds >= 0 },
-                            one.mbit.takeIf { it > 0 }?.let { "$it Mbit/s" },
+                        // the 1080p / 4K tag in the row's colour, On disk in yellow, the rest dim
+                        val resColor = if (one.pick) Color(0xFF5FD08A)
+                                       else if (one.uhd) Color(0xFFB794F6) else null
+                        val tag = Route.versionTag(one.disk, one.have, one.pack, one.box,
+                                                   one.seasonPack, one.packShort)
+                        // where it comes from first - On disk, Tracker - then its resolution
+                        // (owner, 2026-11-15)
+                        val here = one.disk || one.have
+                        val tagPart = tag.takeIf { it.isNotEmpty() }?.let {
+                            it to (if (here) Color(0xFFE0B341) else null) }
+                        val parts = listOfNotNull(
+                            one.word.takeIf { it.isNotEmpty() }?.let { it to null },
+                            tagPart,
+                            one.res.takeIf { it.isNotEmpty() }?.let { it to resColor },
+                            "Freeleech".takeIf { one.freeleech }?.let { it to null },
+                            "${one.seeds} seeding".takeIf { one.seeds >= 0 }?.let { it to null },
+                            one.mbit.takeIf { it > 0 }?.let { "$it Mbit/s" to null },
                             one.size.takeIf { it > 0 }?.let {
-                                String.format(java.util.Locale.US, "%.1f GB", it / 1073741824.0) },
-                            one.why.takeIf { it.isNotEmpty() },
-                        ).joinToString("   ·   ")
-                        Text(under, color = if (ring) Color.Black else Skin.Dim,
+                                String.format(java.util.Locale.US, "%.1f GB", it / 1073741824.0) to null },
+                            one.why.takeIf { it.isNotEmpty() }?.let { it to null },
+                        )
+                        val line = androidx.compose.ui.text.buildAnnotatedString {
+                            parts.forEachIndexed { at, (words, color) ->
+                                if (at > 0) append("   ·   ")
+                                if (color != null && !ring) {
+                                    pushStyle(androidx.compose.ui.text.SpanStyle(color = color))
+                                    append(words)
+                                    pop()
+                                } else append(words)
+                            }
+                        }
+                        Text(line, color = if (ring) Color.Black else Skin.Dim,
                              fontSize = 11.5.sp, modifier = Modifier.padding(top = 2.dp))
                     }
                 } }

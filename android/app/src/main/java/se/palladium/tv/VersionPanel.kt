@@ -115,7 +115,8 @@ fun VersionPanel(
                     }
                 }
                 val keptPlays = hereChosen && here?.state == "ready"
-                if (inUse == null) media.copies.forEachIndexed { at, copy ->
+                // 1080p, then 4K, then the rest - each its own index still (owner, 2026-11-18)
+                if (inUse == null) Route.copyOrder(media.copies.map { it.height }).forEach { at -> val copy = media.copies[at]
                     val here = copy.mi == media.mi && !keptPlays
                     var onIt by remember { mutableStateOf(false) }
                     Row(
@@ -148,7 +149,17 @@ fun VersionPanel(
                                 copy.subtitleStreams.size
                                     .takeIf { it > 0 }?.let { it.toString() + " subtitles" },
                             ).joinToString("  ·  ")
-                            Text(facts, color = Skin.Dim, fontSize = 12.sp,
+                            // the download list's pick in its colours: its 1080p green, the
+                            // best 4K's 4K violet, in the facts (owner, 2026-11-15)
+                            val tag = if (copy.dlPick) "1080p" to Color(0xFF5FD08A)
+                                      else if (copy.dlUhd) "4K" to Color(0xFFB794F6) else null
+                            val at = tag?.let { facts.indexOf(it.first) } ?: -1
+                            Text(androidx.compose.ui.text.buildAnnotatedString {
+                                     append(facts)
+                                     if (tag != null && at >= 0) addStyle(
+                                         androidx.compose.ui.text.SpanStyle(color = tag.second),
+                                         at, at + tag.first.length)
+                                 }, color = Skin.Dim, fontSize = 12.sp,
                                  modifier = Modifier.padding(top = 3.dp))
                         }
                         if (here) {

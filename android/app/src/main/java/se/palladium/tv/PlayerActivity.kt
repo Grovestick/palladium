@@ -379,13 +379,12 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private var reopenedAt = 0L
     //: The viewer's own line, watched by watchTheLine(): stalls counted this playing and
     //: when the last was; seconds the picture has stood still and whether the server has
-    //: been asked about it; the most the line has been seen to bring; since when it has
-    //: been quiet; and whether the viewer has been told it is short
+    //: been asked about it; since when it has been quiet; and whether the viewer has been
+    //: told it is short
     private var lineStalls = 0
     private var lineStallAt = 0L
     private var lineStill = 0
     private var lineAsked = false
-    private var lineBest = 0.0
     private var lineQuietSince = 0L
     private var lineSaid = false
     //: when the stream last opened or was sought, and whether it has filled up once since
@@ -1816,6 +1815,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 // one mark a second is enough to work a rate out of
                 if (transfer.isEmpty() || now - transfer.last().first > 1000) {
                     transfer.addLast(Pair(now, bytesLoaded))
+                    // and the server it comes from is up: a full line is not a server gone.
+                    // Read off two machines, the reader credits each itself: here every byte
+                    // carried the first machine's address, and kept a frozen one up (2026-11-15).
+                    if (source !is TwoWays) spec.uri.host?.let { Reach.filmFrom(it, spec.uri.port) }
                 }
             }
 
@@ -1988,8 +1991,6 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         if (onCastNow() || switching || isFinishing) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (lineQuietSince == 0L) lineQuietSince = now
-        // a buffer filling takes everything the line has: the most seen is the line
-        throughput()?.let { val mb = it * 8 * 1.048576; if (mb > lineBest) lineBest = mb }
         // A new stream - opened, restarted or sought - fills its buffer before anything it
         // does says much about the line: judged only once it has had some film in hand,
         // or after a minute whatever it is doing.
@@ -2028,11 +2029,48 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             }
             lifecycleScope.launch {
                 val token = Servers.current(this@PlayerActivity)?.token ?: Api.token
-                if (Api.answering(doorInUse(), token)) lineStalled()
+                if (!Api.answering(doorInUse(), token)) return@launch
+                // an encode: the server's encoder may be what is slow, not the line
+                if (!direct && leftASlowEncoder()) return@launch
+                lineStalled()
             }
             return
         }
         if (p.playbackState == Player.STATE_READY) climbBack(now)
+    }
+
+    /**
+     * A stall in an encoded film, with film still arriving: the server's encoder is asked
+     * whether it is behind, and the line from that server measured beside it. Behind with
+     * room on the line is the server; then the other one is tested - it answers, has a
+     * hardware encoder, runs fewer encodes - and only then is the film moved. True when it
+     * was. A full line is the viewer's and travels with them: never a move.
+     */
+    private suspend fun leftASlowEncoder(): Boolean {
+        val film = whatIsPlaying() ?: return false
+        val here = Api.pace(film.srv) ?: return false
+        if (!here.behind) return false
+        val need = (chosenRate().takeIf { it > 0 } ?: (filmKbit(film) / 1000)).toDouble()
+        val line = Api.lineMbit(film)
+        if (!Route.encoderTooSlow(true, line, need)) {
+            log(String.format(java.util.Locale.US,
+                "encoder behind, line %.0f Mbit for %.0f: the line", line, need))
+            return false
+        }
+        val there = ready?.let { Api.pace(it.srv) }
+        if (!Route.otherEncodesBetter(there != null, there?.hw ?: false, there?.encodes ?: 0,
+                                      here.encodes)) {
+            log(String.format(java.util.Locale.US,
+                "encoder behind with the line at %.0f Mbit; the other machine %s - staying", line,
+                if (there == null) "does not answer or hold it"
+                else if (!there.hw) "has no hardware encoder" else "is busier"))
+            return false
+        }
+        log(String.format(java.util.Locale.US,
+            "encoder behind with the line at %.0f Mbit for %.0f; the other machine can - moving",
+            line, need))
+        leanOnTheCopy("This server cannot encode it fast enough - moving to " + theirName())
+        return true
     }
 
     /** One stall the server answered through: counted and said once; the film steps down
@@ -2087,15 +2125,21 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val film = title.value ?: return
         lineQuietSince = now                 // asked again only after another quiet spell
         lifecycleScope.launch {
+            // the film's own bytes over the same seconds the probe counts: the two share the line
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            val bytesThen = bytesLoaded
             val burst = Api.lineMbit(film)
             if (isFinishing || switching) return@launch
-            val taking = (throughput() ?: 0.0) * 8 * 1.048576
-            val seen = maxOf(lineBest, if (burst > 0) burst + taking else 0.0)
+            val secs = (android.os.SystemClock.elapsedRealtime() - startedAt) / 1000.0
+            val taking = if (secs > 0) (bytesLoaded - bytesThen) * 8 / 1e6 / secs else 0.0
+            // this measurement alone: the most seen earlier in the film can be from before
+            // the line slowed, and took the film back up to a rate it could not carry
+            val seen = if (burst > 0) burst + taking else 0.0
             val up = Route.lineUp(chosenRate(), intent.getIntExtra("lineCeiling", 0),
                                   filmKbit(film), seen)
             log(String.format(java.util.Locale.US,
-                "line measured: burst %.0f Mbit/s on top of %.0f, best seen %.0f - %s",
-                burst, taking, lineBest,
+                "line measured: %.0f Mbit/s beside the film's %.0f - %s",
+                burst, taking,
                 if (up < 0) "staying" else if (up == 0) "up to the original" else "up to $up Mbit"))
             if (up < 0) return@launch
             sayForAMoment("Your connection has room again - playing " +
@@ -4103,7 +4147,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                     // through the router costs the film
                     val had = one.srv
                     val near = had?.let {
-                        val door = Servers.doorThatOpens(it)
+                        val door = Servers.doorThatOpens(it) ?: return@mapNotNull null
                         if (door == it.base) it
                         else it.copy(base = door, outside = it.base)
                     }
@@ -4899,6 +4943,9 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 slow.cancel()
                 if (syncSaid.value.startsWith("Lifting")) syncSaid.value = ""
             }
+            // the whole track and no line past this point - opened after the last one:
+            // nothing to wait for (asked for 30 min and said "still reading", 2026-11-15)
+            if (ownCues.isEmpty() && Api.cuesWhole) return@launch
             if (ownCues.isEmpty()) {
                 // Nothing in it yet. A subtitle being written from the sound is empty
                 // for a minute and then is not, and giving up here left the film with

@@ -772,6 +772,18 @@ class StreamParts(_Base):
         src["remote"] = True
         return src
 
+    def house_seen(self):
+        """What this copy last saw of the main server it follows: {"up", "ago"}, down only after
+        two of its own asks in a row went unanswered; None when it follows nothing or has not
+        asked yet. Read only, never asked here: /where answers in milliseconds."""
+        import pd_srv_loops
+        import pd_torrents
+        one = pd_torrents._following() or {}
+        seen = pd_srv_loops.HOUSE_SEEN
+        if not one.get("master") or not seen["at"]:
+            return None
+        return {"up": seen["fails"] < 2, "ago": int(max(0.0, time.time() - seen["at"]))}
+
     def answering_now(self, where):
         """Whether that machine is up, asked at most once every thirty seconds.
 

@@ -446,9 +446,100 @@ object Route {
      */
     data class Look(val up: Boolean, val id: String, val ms: Long, val at: Long,
                     val follows: String = "", val followsId: String = "",
-                    val misses: Int = 0) {
+                    val misses: Int = 0,
+                    /** a copy's own word that the main server it follows did not answer it */
+                    val houseDown: Boolean = false) {
         val down get() = !up && misses >= MISSES
     }
+
+    /**
+     * An encode that stalls the picture is the server's doing when the encoder is behind
+     * and the line from the same server carries at least twice what the stream needs.
+     * A choked line holds the encoder back too, so behind alone says nothing.
+     */
+    fun encoderTooSlow(behind: Boolean, lineMbit: Double, needMbit: Double): Boolean =
+        behind && needMbit > 0 && lineMbit >= needMbit * 2
+
+    /**
+     * Whether the other server, asked first, would encode this better: it answers, has a
+     * hardware encoder, and runs fewer encodes than this one. A machine without one took
+     * a 4K encode on its processor at 98% and sent 2 Mbit (2026-11-15).
+     */
+    fun otherEncodesBetter(answers: Boolean, hw: Boolean, theirs: Int, ours: Int): Boolean =
+        answers && hw && theirs < ours
+
+    /** Film arrived from an address this recently: it is up, whatever a look says. */
+    const val SENDING_MS = 10_000L
+
+    /**
+     * Whether an address is sending this player film now. A line full of a server's own
+     * film delays a new connection past a look's patience: it read as the server off,
+     * and the film moved to the copy while it was still arriving (owner, 2026-11-15:
+     * "a down server must be down").
+     */
+    fun stillSending(lastBytesAt: Long?, now: Long): Boolean =
+        lastBytesAt != null && now - lastBytesAt in 0..SENDING_MS
+
+    /** A row's dot from its addresses' last looks: true when one answered its last look and
+     *  has missed none since, false when all are down, null otherwise. */
+    fun verified(looks: List<Look?>, now: Long, freshMs: Long): Boolean? = when {
+        looks.any { it != null && now - it.at < freshMs && it.up && it.misses == 0 } -> true
+        looks.isNotEmpty() && looks.all { it != null && now - it.at < freshMs && it.down } -> false
+        else -> null
+    }
+
+    /** What an empty download list says: nothing on the tracker, or that it could not be asked. */
+    fun trackerEmpty(unasked: Boolean, nothing: String): String =
+        if (unasked) "Couldn't ask the tracker just now - try again in a minute" else nothing
+
+    /** How old a copy's word about the main server may be and still count. */
+    const val HOUSE_WORD_MS = 30_000L
+
+    /** What a copy's /where says of its main server: down when it did not answer the copy's
+     *  own ask at most HOUSE_WORD_MS ago. */
+    fun houseSaysDown(up: Boolean?, agoSeconds: Int): Boolean =
+        up == false && agoSeconds * 1000L <= HOUSE_WORD_MS
+
+    /**
+     * A first miss of the main server made down at once - the first connection and a
+     * continued one by slightly different rules (owner, 2026-11-15). Opening, the copy
+     * answering is enough: the viewer is waiting for a library to appear. Continued, the
+     * copy must also say the main server did not answer it: two witnesses instead of a
+     * second look of its own, so a moment's hiccup does not move a viewer who is settled.
+     */
+    fun confirmDown(looks: Map<String, Look>, opening: Boolean = false,
+                    waysOf: Map<String, List<String>> = emptyMap(), now: Long = 0L): Map<String, Look> {
+        val copies = looks.values.filter { it.up && it.followsId.isNotEmpty() }
+        // The copy's verdict - two of its own asks in a row unanswered - is the servers knowing
+        // without a timeout here: every address of that server without a clean answer of its
+        // own is down at once, looked at or not. Its own answer always wins, so a copy that is
+        // wrong costs nothing (owner, 2026-11-15: "first that answers should have answer").
+        val verdict = copies.filter { it.houseDown }.map { it.followsId }.toSet()
+        // opening, the copy answering is enough for an address that missed once
+        val opened = if (opening) copies.map { it.followsId }.toSet() else emptySet()
+        if (verdict.isEmpty() && opened.isEmpty()) return looks
+        val out = HashMap(looks)
+        for (id in verdict) {
+            for (k in waysOf[id].orEmpty() + looks.filterValues { it.id == id }.keys) {
+                val d = out[k]
+                if (d == null) out[k] = Look(false, id, 0, now, misses = MISSES)
+                else if (!(d.up && d.misses == 0)) out[k] = d.copy(up = false, misses = MISSES)
+            }
+        }
+        // by the server the address is filed under too: an app just started has never had an
+        // answer there, so its misses carry no id (2026-11-15)
+        val theirs = opened.flatMap { waysOf[it].orEmpty() }.toSet()
+        for ((k, d) in looks) {
+            if (!d.up && d.misses in 1 until MISSES && (d.id in opened || k in theirs))
+                out[k] = d.copy(misses = MISSES)
+        }
+        return out
+    }
+
+    /** Whether a look has learned enough to decide before every address has answered: the
+     *  main server answered, or it is down and the copy answers. */
+    fun knownEnough(mainUp: Boolean?, copyUp: Boolean?): Boolean =
+        mainUp == true || (mainUp == false && copyUp == true)
 
     /** One look that got no answer. */
     fun miss(now: Long, id: String = "") = Look(false, id, 0, now, misses = 1)
@@ -740,11 +831,13 @@ object Route {
     /** The Service menu's two of this house: what is on its disks, what its packs carry. */
     const val SRC_MINE = "-1"
     const val SRC_PACKS = "-2"
-    /** both marked: how Films and TV open */
+    /** both marked: this house's own, the popular page's marks */
     const val SRC_HOUSE = "-1,-2"
 
     /** What a Service menu's marks stand for: the services' ids and this house's two.
-     *  Nothing marked is everything - this house and every service. */
+     *  Nothing marked is this house's own - the Popular page, the same list as the row, the
+     *  films not out yet included (owner, 2026-11-15): as everything, every service's
+     *  catalogue, it was another list in another order. A service marked is its catalogue. */
     data class Sources(val services: List<String>, val mine: Boolean, val packs: Boolean,
                        val everything: Boolean) {
         /** a catalogue to read: a service marked, or nothing marked at all */
@@ -755,7 +848,7 @@ object Route {
         val all = marked.split(",").map { it.trim() }.filter { it.isNotEmpty() }
         val none = all.isEmpty()
         return Sources(all.filter { (it.toIntOrNull() ?: 0) > 0 },
-                       none || SRC_MINE in all, none || SRC_PACKS in all, none)
+                       none || SRC_MINE in all, none || SRC_PACKS in all, false)
     }
 
     /** Whether a title of the tab stays under these marks: on disk for My library, in a
@@ -766,7 +859,7 @@ object Route {
     /** Whether pressing a tab opens its popular page: TV and Films do on this house's
      *  own marks; any other marks are a catalogue of their own. */
     fun tvOpensPopular(tab: String, service: String): Boolean =
-        (tab == "tv" || tab == "films") && service == SRC_HOUSE
+        (tab == "tv" || tab == "films") && (service == SRC_HOUSE || service.isEmpty())
 
     /** A streaming service's catalogue in the popular page's orders. */
     val SERVICE_ORDERS = listOf("popularity" to "Popular", "rating" to "Rating",
@@ -1135,6 +1228,24 @@ object Route {
     /** A Start card's width: on a television narrow enough that two whole rows, the
      *  second one's titles too, stand under the tabs - 270 left them under the screen's
      *  edge; on a phone 220, a tablet 280. */
+    /** How much larger a tablet draws everything, on every tab, so it is laid out as the
+     *  television's 960 x 540: on its side the height against 540, which is what gives Home
+     *  its two rows; standing up the long side against 960. Never smaller than as it is; 1 on
+     *  the television and on phones (owner, 2026-11-15). */
+    fun tvScale(tv: Boolean, smallestDp: Int, widthDp: Int, heightDp: Int): Float {
+        if (tv || smallestDp < 600) return 1f
+        // 1.8 times, the television's own 540, was too big (owner, 2026-11-15): 640 and 1140
+        val scale = if (widthDp >= heightDp) heightDp / 640f else heightDp / 1140f
+        return scale.coerceAtLeast(1f)
+    }
+
+    /** The copies here in the Version menu's order, as indexes: 1080p, then 4K, then the
+     *  rest, each kind in the server's order. `heights` the picture's lines, null unknown. */
+    fun copyOrder(heights: List<Int?>): List<Int> {
+        val rank = { h: Int? -> if (h == null) 2 else if (h >= 1700) 1 else if (h >= 900) 0 else 2 }
+        return heights.indices.sortedWith(compareBy({ rank(heights[it]) }, { it }))
+    }
+
     fun startCardW(screenWidthDp: Int, tv: Boolean): Float =
         if (tv) 256f else if (screenWidthDp < 600) 220f else 280f
 
@@ -1672,6 +1783,11 @@ object Route {
         val base: String,
         /** [base] can be reached from this network and was not seen down */
         val baseUsable: Boolean,
+        /** [base] can be reached from this network at all - a house address away from home
+         *  cannot; seen down or not */
+        val baseHere: Boolean = true,
+        /** [base] is one of the copy's own addresses */
+        val baseIsCopy: Boolean = false,
         /** the main server: up, down, or not known */
         val mainUp: Boolean?,
         /** an address answering as the main server */
@@ -1715,6 +1831,13 @@ object Route {
      * which takes two looks; and while it is not known, the library stays where it is
      * unless that address cannot be reached from here.
      */
+    /** Whether start-up keeps the route this run of the app already has: the screen made
+     *  again - opened from the launcher after a while away - with the app still alive, for the
+     *  same server. Setting it again moved the library from the copy to a main server asleep,
+     *  and everything was read twice (owner, 2026-11-18). A first start has none to keep. */
+    fun keepRoute(routedFor: String, now: String, base: String): Boolean =
+        routedFor.isNotEmpty() && routedFor == now && base.isNotEmpty()
+
     fun decide(s: Seen): Decision {
         if (s.chosenIsCopy) {
             val looked = s.homeUnlooked && s.mainUp != null
@@ -1727,12 +1850,18 @@ object Route {
                     Move.Library(s.mainTry) else Move.Stay
                 return Decision(move, false)
             }
-            val move = if (s.copyDoor != null && (s.base != s.copyDoor || s.standingBy))
+            val sameCopy = s.base == s.copyDoor || (s.baseIsCopy && s.baseHere)
+            val move = if (s.copyDoor != null && (!sameCopy || s.standingBy) &&
+                           !(sameCopy && s.base != s.copyDoor))
                 Move.Library(s.copyDoor) else Move.Stay
             return Decision(move, looked)
         }
         val looked = s.mainUp != null
-        val onCopy = s.copyDoor != null && s.standingBy && s.base == s.copyDoor
+        // On the copy is on any of its addresses that can be reached from here: at home its
+        // outside address comes back to the same machine, and hopping between the two on a miss
+        // read everything twice (owner, 2026-11-18). Away, the house address cannot answer.
+        val onCopy = s.copyDoor != null && s.standingBy &&
+            (s.base == s.copyDoor || (s.baseIsCopy && s.baseHere))
         val move = when {
             s.prefersCopy && s.copyDoor != null ->
                 if (onCopy) Move.Stay
@@ -1745,8 +1874,13 @@ object Route {
                 if (onCopy) Move.Stay
                 else Move.Standby(s.copyDoor, s.homeBase.ifEmpty { s.mainBase }, asked = false)
             s.mainUp == false -> Move.Nothing
-            // not known yet: one miss, or no look so far
-            !s.standingBy && !s.baseUsable && s.mainTry != null && s.mainTry != s.base ->
+            // not known yet: one miss, or no look so far - another of the main server's
+            // addresses tried only when nothing else answers, or when the one in use cannot
+            // work from here at all (a house address away from home). Otherwise, with the copy
+            // answering, the look decides: an untried outside address of a server asleep had
+            // the library read twice (owner, 2026-11-18)
+            !s.standingBy && !s.baseUsable && s.mainTry != null && s.mainTry != s.base &&
+                (s.copyDoor == null || !s.baseHere) ->
                 Move.Library(s.mainTry)
             else -> Move.Stay
         }

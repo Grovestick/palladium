@@ -1436,3 +1436,33 @@ private class PressNode(private val source: InteractionSource) :
         }
     }
 }
+
+/**
+ * A tablet laid out as the television is: the same screen in proportion, so Home shows two
+ * rows and a title's page fills the screen. A 13-inch tablet is about 1.8 times the
+ * television's 960 x 540 in layout units, and everything stood small on it with three
+ * rows of Home (owner, 2026-11-15). Phones and the television are left as they are.
+ */
+/** Whether this screen is a tablet drawn as the television by [TvSized]. */
+@Composable
+fun tvSizedNow(): Boolean =
+    androidx.compose.ui.platform.LocalConfiguration.current.densityDpi !=
+        androidx.compose.ui.platform.LocalContext.current.resources.configuration.densityDpi
+
+@Composable
+fun TvSized(content: @Composable () -> Unit) {
+    val cfg = androidx.compose.ui.platform.LocalConfiguration.current
+    val scale = Route.tvScale(onTv(), cfg.smallestScreenWidthDp, cfg.screenWidthDp, cfg.screenHeightDp)
+    if (scale <= 1f) { content(); return }
+    val d = androidx.compose.ui.platform.LocalDensity.current
+    val sized = android.content.res.Configuration(cfg).apply {
+        screenWidthDp = (cfg.screenWidthDp / scale).toInt()
+        screenHeightDp = (cfg.screenHeightDp / scale).toInt()
+        smallestScreenWidthDp = (cfg.smallestScreenWidthDp / scale).toInt()
+        densityDpi = (cfg.densityDpi * scale).toInt()
+    }
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides
+            androidx.compose.ui.unit.Density(d.density * scale, d.fontScale),
+        androidx.compose.ui.platform.LocalConfiguration provides sized) { content() }
+}

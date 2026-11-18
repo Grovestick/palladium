@@ -1099,6 +1099,16 @@ class GetRoutes(_Base):
             import pd_ai_subs
             self.reply_json(pd_ai_subs.look())
             return
+        if path == "/subs/numbers":
+            # each season's episodes as the subtitle site numbers them, where it differs
+            # from ours: read from the site once a season, and any set by hand
+            import json as _json
+            try:
+                with open(os.path.join(S.ROOT, "subnumbers.json"), encoding="utf-8") as f:
+                    self.reply_json(_json.load(f))
+            except (OSError, ValueError):
+                self.reply_json({})
+            return
         if path == "/subs/find":
             args = (urllib.parse.parse_qs(self.path.split("?", 1)[1])
                     if "?" in self.path else {})
@@ -1207,12 +1217,16 @@ class GetRoutes(_Base):
                                   else "off"),
                 "notify": ("on" if pd_notify.notify_on(self.viewer_settings(self.settings_file()))
                            else "off"),
+                "popularHome": self.viewer_settings(self.settings_file()).get("popularHome") or "off",
+                "popularHomeEvery": self.viewer_settings(self.settings_file()).get("popularHomeEvery") or 3,
+                "popularCountries": __import__("pd_localapi").LocalAPI.POPULAR_COUNTRIES,
                 "tvRequest": ((self.viewer_settings(self.settings_file()).get("tvRequest")
                                if self.viewer_settings(self.settings_file()).get("tvRequest")
                                in ("hide", "show") else "hide")),
                 "letThemFetch": self.let_them_fetch(),
                 "fetchMaxGb": self.fetch_most_gb(),
                 "preferRate265": str((S.read_settings() or {}).get("preferRate265") or "any"),
+                **self.rate_windows_4k(),
                 "autoRuns": {n: S.auto_set(n) for n in S.AUTO_RUNS},
                 "weeklyRestart": __import__("pd_boss").clean_weekly((S.read_settings() or {}).get("weeklyRestart")),
                 "restartOnCrash": self.restart_on_crash(S.read_settings()),
@@ -1462,6 +1476,10 @@ class GetRoutes(_Base):
                 row["aheadAt"] = int(said[1])
                 if len(said) > 4 and said[4]:
                     row["stalled"] = True
+            # how long each has stood at the same place, kept here rather than by the
+            # panel: a panel restarting started every paused film's clock over (2026-11-15)
+            for row in live:
+                row["stillFor"] = S.still_for(row, now)
             live.sort(key=lambda r: r.get("started") or 0)
             # and what the machine is listening to for its loudness, which is work
             # somebody watching a page should be able to see happening
@@ -1995,6 +2013,9 @@ class GetRoutes(_Base):
                 # one answers for itself and repeats what the main server told it while the
                 # house could still be asked.
                 "follows": self.house_doors(),
+                # and what this copy last saw of the main server: a second witness, so an
+                # app that missed it once moves at once instead of asking again (2026-11-15)
+                "house": self.house_seen(),
             })
             return
         if path == "/copying":
@@ -2453,8 +2474,13 @@ class GetRoutes(_Base):
             if sub == "/library/popularShows":
                 # the programmes being watched now that this house can put on - or
                 # the whole list, for the page the row opens onto
-                rows = (S.popular_everything() if (q.get("all") or [""])[0] in ("1", "true")
-                        else S.popular_shows())
+                # with this viewer's own country woven in, if they chose one
+                mine = self.viewer_settings(self.settings_file())
+                home, every = mine.get("popularHome") or "", int(mine.get("popularHomeEvery") or 3)
+                rows = S.popular_everything(home, every)
+                if (q.get("all") or [""])[0] not in ("1", "true"):
+                    # the row is the page's head: the trending ones, held or not (owner, 2026-11-15)
+                    rows = [r for r in rows if r.get("popularity")][:40]
                 self.reply_json({"MediaContainer": {"size": len(rows), "Metadata": rows}})
                 return
             if sub == "/library/watchlist":
@@ -3052,6 +3078,15 @@ class GetRoutes(_Base):
                 return
             import pd_speed
             self.reply_json(pd_speed.totals(S.other_server()[0], time.time()))
+            return
+        if path == "/builder":
+            # a build of this program, for Now playing: while it runs, and ten minutes after
+            if self.role != "owner":
+                self.send_error(403, "not allowed")
+                return
+            b = dict(S.BUILDING)
+            fresh = b and time.time() - float(b.get("at") or 0) < (600 if b.get("done") else 30)
+            self.reply_json(b if fresh else {})
             return
         if path == "/merge":
             # the link merge tool's links, speeds and totals, for Now playing: asked of

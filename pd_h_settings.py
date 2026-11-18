@@ -316,6 +316,13 @@ class SettingsParts(_Base):
         """One stored wish, with anything unknown in it dropped."""
         return self.wish_of(S.read_settings(), field, allowed, fallback)
 
+    @staticmethod
+    def rate_windows_4k():
+        """The 4K bitrate windows for the settings page: as set, or their starting values."""
+        import pd_release
+        stored = S.read_settings()
+        return {f: pd_release.rate_4k_of(stored, f) for f in ("preferRate265x4k", "preferRate264x4k")}
+
     def prefer_res(self):
         """The resolution to put forward, as the owner set it."""
         return self.wish("preferRes", self.RESOLUTIONS, "1080p")
@@ -730,7 +737,8 @@ class SettingsParts(_Base):
         "fetchMaxGb", "letThemFetch", "libraryShows", "newDays", "nextDelay",
         "preferBy", "preferCodec", "preferGroup", "preferOrder", "preferRes",
         "preferSound", "preferSource", "preferQuality", "preferSeeds",
-        "preferRate264", "preferRate265", "quality", "rateLock", "remoteAdmin",
+        "preferRate264", "preferRate265", "preferRate264x4k", "preferRate265x4k", "quality",
+        "rateLock", "remoteAdmin",
         "remoteOwner", "seasonal", "seriesRate", "volumeTarget", "watchRegion", "weeklyPicks",
         "weekPick", "weeklyRestart", "skipStart",
         "watchServices", "ownerName", "copyDefault",

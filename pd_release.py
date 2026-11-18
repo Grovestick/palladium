@@ -190,8 +190,8 @@ def misses(one, wishes, stored, seconds):
             if rate_fits(name, size, seconds, stored):
                 continue
             mbit = video_mbit(name, size, seconds) or 0.0
-            field = "preferRate265" if release_codec(low) == "h265" else "preferRate264"
-            band = rate_band(str((stored or {}).get(field) or "any").lower()) or (0, 0)
+            field = rate_field(name, low)
+            band = rate_band(window_of(stored, field).lower()) or (0, 0)
             least, most = band
             edge = most if mbit > most else least
             beyond = abs(mbit - edge) / max(edge, 0.1)
@@ -219,8 +219,8 @@ def reasons_of(one, height, wishes, stored, seconds):
             if rate_fits(name, size, seconds, stored):
                 continue
             mbit = video_mbit(name, size, seconds) or 0.0
-            field = "preferRate265" if release_codec(low) == "h265" else "preferRate264"
-            band = rate_band(str((stored or {}).get(field) or "any").lower()) or (0, 0)
+            field = rate_field(name, low)
+            band = rate_band(window_of(stored, field).lower()) or (0, 0)
             edge = band[1] if mbit > band[1] else band[0]
             out["rate-higher" if mbit > band[1] else "rate-lower"] = round(
                 abs(mbit - edge) / max(edge, 0.1), 3)
@@ -257,8 +257,8 @@ def which_side(one, height, stored, seconds):
     size = int(one.get("size") or 0)
     if not rate_fits(name, size, seconds, stored):
         mbit = video_mbit(name, size, seconds) or 0.0
-        field = "preferRate265" if release_codec(low) == "h265" else "preferRate264"
-        band = rate_band(str((stored or {}).get(field) or "any").lower())
+        field = rate_field(name, low)
+        band = rate_band(window_of(stored, field).lower())
         if band and mbit:
             if mbit > band[1]:
                 sides.add("higher")
@@ -316,6 +316,35 @@ def preference(low, kind, want):
     return 0 if release_is(low, kind, want) else -1
 
 
+#: a 4K release's own bitrate windows, by encoding, set beside the 1080p ones (owner,
+#: 2026-11-15: "we need a bitrate range for both codecs in 4k aswell")
+RATE_4K = {"h265": "preferRate265x4k", "h264": "preferRate264x4k"}
+
+
+#: the 4K windows a house that never set them starts from
+RATE_4K_DEFAULTS = {"preferRate265x4k": "14-30", "preferRate264x4k": "25-50"}
+
+
+def window_of(stored, field):
+    """A bitrate window as set, else a 4K window's starting value, else any."""
+    return str((stored or {}).get(field) or RATE_4K_DEFAULTS.get(field) or "any")
+
+
+def rate_4k_of(stored, field):
+    """A 4K window for the settings page: as set, or its starting value."""
+    return window_of(stored, field)
+
+
+def rate_field(name, low=None):
+    """The setting a release's bitrate is held to: by its encoding, and for a 4K release the
+    4K window of that encoding."""
+    low = low if low is not None else " " + str(name or "").lower() + " "
+    codec = "h265" if release_codec(low) == "h265" else "h264"
+    if height_of(name) == 2160:
+        return RATE_4K[codec]
+    return "preferRate265" if codec == "h265" else "preferRate264"
+
+
 def rate_fits(name, size, seconds, stored):
     """Whether a release's picture stays inside the bitrate set for its encoding. Met
     when nothing is set or nothing is known."""
@@ -323,8 +352,8 @@ def rate_fits(name, size, seconds, stored):
     if mbit is None:
         return True
     low = " " + str(name or "").lower() + " "
-    field = "preferRate265" if release_codec(low) == "h265" else "preferRate264"
-    want = str((stored or {}).get(field) or "any").lower()
+    field = rate_field(name, low)
+    want = window_of(stored, field).lower()
     band = rate_band(want)
     if band is None:
         return True
@@ -341,6 +370,8 @@ def for_series(stored):
     if band != "same":
         stored["preferRate264"] = band
         stored["preferRate265"] = band
+        stored["preferRate264x4k"] = band
+        stored["preferRate265x4k"] = band
     return stored
 
 

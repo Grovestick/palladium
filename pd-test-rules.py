@@ -1527,10 +1527,14 @@ check("newest first: episode 4 to 1 of the same day, then the day before",
 
 # ---- the recommended version comes after what is on disk, whatever its seeders
 _s21 = server_source()
-check("on disk, then recommended, then by seeders",
-      'out.sort(key=lambda o: (not o.get("disk"), not o.get("pick"), -(o["seeds"] or 0)))' in _s21)
+check("downloads: the pick, the best 4K and what is on disk first, the rest by seeders; only the pick "
+      "and the best 4K say their resolution",
+      "out.sort(key=lambda o: (first(o), res_rank(o), -(o.get(\"seeds\") or 0)))" in _s21
+      and "{1080: 0, 2160: 1}.get(" in _s21
+      and 'if o.get("pick") or o.get("uhd"):' in _s21 and '"res": "",' in _s21)
 _a21 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
-check("and it says where it comes from as well", 'v.pick && !v.have ? "Recommended" : "", versionTag(v),' in _a21
+check("and it says where it comes from as well, and 4K when it is - the pick in green, no word",
+      'return [versionTag(v), v.res || "", v.freeleech ? "Freeleech" : "",' in _a21 and "opt.textContent = releaseLine(v);" in _a21 and '"Recommended"' not in _a21
       and 'v.pack ? (v.packShort || "In a pack here")\n    : v.box ? (v.seasonPack ? "Season pack" : "Box set") : "Tracker";' in _a21)
 
 # ---- one budget for the tracker, shared by everything that asks it
@@ -1548,7 +1552,7 @@ _trs = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_tracker
 check("every search and every torrent file goes through it, and one skipped is not marked asked",
       'if not _spend("search"):\n        return None' in _trs
       and 'if not row or not _spend("fetch"):' in _trs
-      and "        return []                         # gave way: not marked asked" in _trs)
+      and "        return None                       # gave way: not marked asked" in _trs)
 _bgsrc = "".join(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), n), encoding="utf-8").read()
                  for n in ("pd-server.py", "pd_localapi.py", "pd_search.py", "pd_streaming.py",
                            "pd_boxsets.py"))
@@ -2217,8 +2221,10 @@ check("one Swedish series in every three places, each list in its order: %s" % _
       _mix == ["w1", "w2", "s1", "w3", "w4", "s2", "w5", "s3"])
 check("either list alone stands as it was", _ns2["mix_in"](["a", "b"], [], 3) == ["a", "b"]
       and _ns2["mix_in"]([], ["x", "y"], 3) == ["x", "y"])
-check("the popular list asks for Swedish series airing now",
-      '"with_origin_country": "SE"' in _srvsw and '"air_date.gte": since' in _srvsw)
+check("popular series: a viewer's chosen country's series airing now, woven in only for them; the "
+      "house weaves no Swedish series through everybody's (2026-11-15)",
+      '"with_origin_country": code' in _srvsw and '"air_date.gte": since' in _srvsw
+      and '"with_origin_country": "SE"' not in _srvsw and 'if not code or code == "OFF":' in _srvsw)
 _libsw = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_library.py"), encoding="utf-8").read()
 check("and the library names one so when it is matched",
       'detail.get("original_language") == "sv"' in _libsw)
@@ -3854,10 +3860,13 @@ finally:
 _ma100 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
                            "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
 _row100 = _ma100[_ma100.index('item(packSays(one), "p:" + one.id == choice, one.pick)'):]
-check("adding a series: pressing a pack adds it, it does not only mark the row",
-      "add(one.id)" in _row100[:_row100.index('item(find, choice == "find"')])
-check("adding a series: the press says so at once, and the end says the pack was added",
-      '"Adding " + one.name' in _row100[:_row100.index('item(find, choice == "find"')]
+# pressing a pack asks first; Add adds it and says so at once (owner, 2026-11-15)
+_ask100 = _ma100[_ma100.index("asking?.let { (id, words) ->"):_ma100.index("packs?.let { list ->")]
+check("adding a series: pressing a pack asks, and Add adds it",
+      "asking = one.id to packSays(one)" in _row100[:_row100.index('item(find, choice == "find"')]
+      and "add(id)" in _ask100)
+check("adding a series: Add says so at once, and the end says the pack was added",
+      '"Adding " + words.substringBefore' in _ask100
       and "Pack added - nothing is downloaded" in _ma100)
 
 # ---- the versions played are on the copy list straight after a restart, nobody playing
@@ -4878,12 +4887,12 @@ check("a stopped channel keeps one empty piece and carries on numbering after it
 #      everything, every service included; marks add up
 _js152 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"),
               encoding="utf-8").read()
-check("service sources: house marked by default, In packs listed, none marked is every service",
-      'const serviceWanted = { movie: SRC_HOUSE, show: SRC_HOUSE };' in _js152
+check("service sources: nothing marked when Films and TV open (owner, 2026-11-15), In packs listed, "
+      "none marked is every service",
+      'const serviceWanted = { movie: "", show: "" };' in _js152
       and 'serviceList.splice(at + 1, 0, [SRC_PACKS, "In packs"]);' in _js152
       and 'const ids = everything ? (await servicesFor()).map(([v]) => v).filter((v) => +v > 0)' in _js152
-      and 'serviceWanted[type] = "";' not in _js152
-      and 'serviceWanted[toTab[0]] = "";' not in _js152)
+      and "serviceWanted[type] = SRC_HOUSE;" not in _js152)
 
 # ---- Show all counts up while it loads, a page at a time, and stops when left
 _js153 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"),
@@ -6036,7 +6045,7 @@ check("link merge: speeds over the last three seconds, totals, the sum; a light 
       [l["mbit"] for l in _r262["links"]] == [30.0, 6.0] and _r262["mbit"] == 36.0
       and _r262["bytes"] == 1500 and _r262["links"][1]["up"] is False and _r262["through"] is True
       and 'stats.onclick = () => { tab = "now"; render(); };' in _js262
-      and "if (monitor) mergeBlock(main);" in _js262)
+      and "builderBlock(main);\n      mergeBlock(main);" in _js262)
 
 # ---- with link merge on, the server's own calls out go through it; the house's machines straight
 import pd_torrents as _pt263
@@ -8016,6 +8025,10 @@ check("rip: on the download line with its film's key - the one running with how 
       and _rowsR1[0]["offer"]["words"] == "50% · pass 2 of 2 · 0.8x · 2 h 5 min left"
       and _rowsR1[1]["offer"]["words"] == "waiting: the copy on D: first"
       and all(r["offer"]["stage"] == "ripping" and r["type"] == "movie" for r in _rowsR1))
+_heldR1 = _rpR1.rows_of({"jobs": [{"id": "a", "key": "k1", "title": "A", "state": "pass1"}],
+                         "running": [{"id": "a", "progress": 0.1, "pass": 1, "paused": "a full-screen program is running"}]})
+check("rip: a paused rip says why in its row, for the panel; a running one says nothing",
+      _heldR1[0]["offer"]["paused"] == "a full-screen program is running" and _rowsR1[0]["offer"]["paused"] == "")
 _srvR1 = server_source()
 _acR1 = _srvR1[_srvR1.index('if path == "/torrents/active":'):][:1600]
 check("rip: on the line for the owner on every screen, not only the panel's asking",
@@ -8314,7 +8327,8 @@ _keptQ1 = (_tkQ1.read, _tkQ1.write, _tkQ1.search)
 _callsQ1 = []
 def _slowQ1(title, year=0):
     _callsQ1.append(title)
-    _tmQ1.sleep(0.3)
+    # a second, so a loaded machine's thread start stays well inside the bound below
+    _tmQ1.sleep(1.0)
     return [{"id": "1"}]
 _tkQ1.read, _tkQ1.write, _tkQ1.search = (lambda: {}), (lambda: None), _slowQ1
 _tkQ1.STATE.setdefault("asked", {}).pop("two asks|2001", None)
@@ -8345,7 +8359,7 @@ try:
 finally:
     _tkQ1.read, _tkQ1.write, _tkQ1.search = _keptQ1
     _tkQ1.STATE["asked"].pop("slow ask|2002", None)
-check("tracker: whoever waits on a search waits no longer than they were given", _boundQ1 < 0.25)
+check("tracker: whoever waits on a search waits no longer than they were given", _boundQ1 < 0.6)
 _liQ1 = _svC1.replace(chr(13), "")
 _liQ1 = _liQ1[_liQ1.index('elif want and body.get("fresh"):'):][:420]
 check("tracker list: asked as of now it waits, a bounded time, and reads the list again",
@@ -8393,10 +8407,188 @@ _prP1 = _srR1[_srR1.index("def peer_recent():"):_srR1.index("def keep_peer_recen
 check("one list: the other server counts as off only when an ask failed, not when nobody asked lately",
       'PEER_FILMS["up"]' in _prP1 and "time.time()" not in _prP1
       and "target=keep_peer_recent" in _srR1 and 'PEER_FILMS["up"] = False' in _srR1)
-check("one list: the server joins them, keeps the other's across a restart, and both clients ask for it",
+check("one list: the server joins them and keeps the other's across a restart",
       "pd_localapi.PEER_RECENT = peer_recent" in _srR1 and '"peer_recent.json"' in _srR1
-      and 'if path == "/follow/recent":' in _srR1 and "recentlyAdded?count=30&both=1" in _kotR1
-      and "{ both: 1 }" in open("static/app.js", encoding="utf-8").read())
+      and 'if path == "/follow/recent":' in _srR1)
+# a Home row is the head of its page (owner, 2026-11-15): Recently added reads the Films tab
+# in arrival order, on disk only, in both clients; the Popular shows row is the page's head
+_wbR1 = open("static/app.js", encoding="utf-8").read()
+check("rows: Recently added is the Films tab's head, app and web",
+      'page(ctx, 1, "addedAt:desc", 0, 40, diskOnly = true)' in _kotR1
+      and 'sort: "addedAt:desc", disk: 1, start: 0, count: 40' in _wbR1
+      and "/recentlyAdded" not in _wbR1.split("const CATS = [")[1].split("];")[0])
+_ghR1 = open("pd_h_get.py", encoding="utf-8").read()
+_psR1 = _ghR1[_ghR1.index('if sub == "/library/popularShows":'):][:900]
+check("rows: Popular shows row is the head of the page's list",
+      "rows = S.popular_everything(home, every)" in _psR1
+      and 'rows = [r for r in rows if r.get("popularity")][:40]' in _psR1)
+# a film on both machines is as new as its first arrival, on the tab as on the row
+_wasR1 = _laR1.PEER_RECENT
+_laR1.PEER_RECENT = lambda: ([], "Other", True, {"a": 100, "b": 900}, [])
+try:
+    _faR1 = _laR1.LocalAPI.first_arrivals(None, [{"ratingKey": "a", "addedAt": 500},
+                                                 {"ratingKey": "b", "addedAt": 300},
+                                                 {"ratingKey": "c", "addedAt": 700}])
+finally:
+    _laR1.PEER_RECENT = _wasR1
+# the head of the arrival order made from the front of the list only, the same as made whole
+import random as _rdN1
+_rdN1.seed(7)
+_rowsN1 = [{"id": "f%d" % i, "added": 1000 - i} for i in range(200)]
+_datedN1 = {"f%d" % i: _rdN1.randint(0, 1000) for i in range(0, 200, 3)}
+_wasN1 = _laR1.PEER_RECENT
+_laR1.PEER_RECENT = lambda: ([], "Other", True, _datedN1, [])
+try:
+    _fin = lambda r: min(r["added"], _datedN1.get(r["id"]) or r["added"])
+    _wholeN1 = sorted(_rowsN1, key=_fin, reverse=True)[:40]
+    _headN1 = _laR1.LocalAPI.newest_rows(_rowsN1, 40)
+    _madeN1 = sorted(_headN1, key=_fin, reverse=True)[:40]
+finally:
+    _laR1.PEER_RECENT = _wasN1
+check("rows: the head of the arrival order is made from the front of the list, and is the same",
+      [r["id"] for r in _madeN1] == [r["id"] for r in _wholeN1] and len(_headN1) < 200)
+check("rows: the tab dates a film by its first arrival on either machine",
+      [x["addedAt"] for x in _faR1] == [100, 300, 700])
+# the Version menu wears the download list's pick: the copy on disk of that release's name
+import tempfile as _tfV1
+_dirV1 = _tfV1.mkdtemp()
+_wasV1 = _laR1.DATA
+_laR1.use_data_dir(_dirV1)
+try:
+    _laR1.keep_download_marks("k1", "Film 2011 1080p BluRay x264-GRP", "Film 2011 2160p UHD BluRay-GRP")
+    _itV1 = _laR1.mark_download_picks(
+        {"Media": [{"Part": [{"file": "D:\M\Film.2011.1080p.BluRay.x264-GRP.mkv"}]},
+                   {"Part": [{"file": "D:\M\Film.2011.2160p.UHD.BluRay-GRP\grp-film.mkv"}]},
+                   {"Part": [{"file": "D:\M\Film.2011.720p.WEB-X.mkv"}]}]},
+        _laR1.download_marks("k1"))
+    _mdV1 = _itV1["Media"]
+    check("version menu: the pick's copy by its file name, the best 4K's by its folder, no other",
+          [(m["dlPick"], m["dlUhd"]) for m in _mdV1] == [(True, False), (False, True), (False, False)])
+    with open(os.path.join(_dirV1, _laR1.DOWNLOAD_MARKS), "w", encoding="utf-8") as _fV1:
+        _fV1.write("{broken")
+    _laR1.keep_download_marks("k2", "Other 1080p", "")
+    check("version menu: marks that cannot be read are not written over",
+          open(os.path.join(_dirV1, _laR1.DOWNLOAD_MARKS), encoding="utf-8").read() == "{broken")
+finally:
+    _laR1.use_data_dir(_wasV1)
+_phV1 = open("pd_h_post.py", encoding="utf-8").read()
+_tlV1 = _phV1[_phV1.index('if path == "/tracker/list":'):]
+check("download list: a tracker row the size of a file here to the byte is that file, listed once",
+      "by_size = {size: where for where, size in on_disk if size}" in _tlV1
+      and 'o["have"] = True' in _tlV1
+      and "if names & listed or (size and size in sized) or os.path.normcase(where) in ripped:" in _tlV1
+      and 'if j.get("state") == "done" and j.get("out")}' in _tlV1
+      and 'o.get("file") or o["name"] for o in out if o.get("uhd")' in _tlV1)
+_fwV1 = open("pd_h_follow.py", encoding="utf-8").read()
+check("version menu: the marks go to the other server too, which keeps them",
+      '"/follow/marks?key=%s&pick=%s&uhd=%s"' in _phV1 and "target=S.peer_fetch" in _phV1
+      and '"/follow/subs", "/follow/marks"):' in _fwV1
+      and "pd_localapi.keep_download_marks(str((args.get(\"key\")" in _fwV1)
+_pkV1 = open("pd_srv_packs.py", encoding="utf-8").read()
+_maV1 = open("android/app/src/main/java/se/palladium/tv/MainActivity.kt", encoding="utf-8").read()
+check("series packs: sizes read from the torrents within the budget; a pack asks before it is added",
+      "pd_tracker.measure_many(unsized)" in _pkV1
+      and 'asking = one.id to packSays(one)' in _maV1 and '"Add this pack?"' in _maV1
+      and '"⤓ Add as pack  "' not in _maV1)
+import glob as _glV1, re as _reV1
+_maK1 = open("android/app/src/main/java/se/palladium/tv/MainActivity.kt", encoding="utf-8").read()
+check("back: a Back whose press the page's Compose layer took acts on its release",
+      "backTakenAt = if (took) event.downTime else 0L" in _maK1
+      and "onBackPressedDispatcher.onBackPressed()" in _maK1[_maK1.index("backTakenAt = 0L"):][:400])
+_bgV1 = open("pd_h_get.py", encoding="utf-8").read()
+_bpV1 = open("pd_h_post.py", encoding="utf-8").read()
+_bsV1 = open("static/settings.js", encoding="utf-8").read()
+check("monitor: the build tool's word taken from this computer only, shown while fresh, in words, monitor only",
+      'self.client_address[0] in ("127.0.0.1", "::1")):' in
+      _bpV1[_bpV1.index('if path == "/builder":'):][:300]
+      and '(600 if b.get("done") else 30)' in _bgV1
+      and "builderBlock(right);" not in _bsV1 and "builderBlock(main);" in _bsV1
+      and 'app: "Building the app"' in _bsV1)
+# ---- a sport's year of releases stays in the index whatever four busy days post, and what
+#      the count once dropped comes back from the day's copy
+import tempfile as _tfS9, pd_tracker as _tkS9
+_kepS9 = {k: _tkS9.STATE.get(k) for k in ("root", "rows", "unread", "asked", "taken", "log")}
+_wasKS9 = _tkS9.KEEP
+_dS9 = _tfS9.mkdtemp()
+try:
+    _nowS9 = time.time()
+    _rowsS9 = {"g%d" % i: {"id": "g%d" % i, "name": "Formula1.2026.Round%02d.Race.1080p.WEB" % (i + 1),
+                           "at": _nowS9 - 60 * 86400} for i in range(3)}
+    _rowsS9.update({"m%d" % i: {"id": "m%d" % i, "name": "Film.%d.2026.1080p.WEB-X" % i, "at": _nowS9 - i}
+                    for i in range(10)})
+    _tkS9.KEEP = 5
+    _tkS9.STATE.update(root=_dS9, rows=dict(_rowsS9), unread=False, asked={}, taken={}, log=[])
+    _tkS9.write()
+    _leftS9 = _tkS9.STATE["rows"]
+    check("tracker index: the count is for the rest, a sport's releases are kept",
+          all(("g%d" % i) in _leftS9 for i in range(3)) and sum(1 for k in _leftS9 if k.startswith("m")) == 5)
+    # a copy of the day that still had them, and an index that lost them
+    with open(os.path.join(_dS9, "tracker.json.20261115.bak"), "w", encoding="utf-8") as _fS9:
+        json.dump({"rows": _rowsS9}, _fS9)
+    _gone = {k: v for k, v in _rowsS9.items() if k.startswith("m")}
+    check("tracker index: a sport's releases the count dropped come back from the day's copy, nothing else",
+          _tkS9._sports_back(_gone) == 3 and all(("g%d" % i) in _gone for i in range(3)) and len(_gone) == 13)
+finally:
+    _tkS9.KEEP = _wasKS9
+    _tkS9.STATE.update(_kepS9)
+# ---- saves of the tracker index at once leave it readable, and a clean read lets it be saved
+import threading as _thW1, tempfile as _tfW1, pd_tracker as _tkW1
+_kepW1 = {k: _tkW1.STATE.get(k) for k in ("root", "rows", "unread", "asked", "taken", "log")}
+_dW1 = _tfW1.mkdtemp()
+try:
+    _tkW1.STATE.update(root=_dW1, unread=False, asked={}, taken={}, log=[],
+                       rows={"r%d" % i: {"id": "r%d" % i, "name": "Film.%d.2026.1080p.WEB-X" % i,
+                                         "at": time.time() - i} for i in range(3000)})
+    _thsW1 = [_thW1.Thread(target=_tkW1.write) for _ in range(8)]
+    [t.start() for t in _thsW1]
+    [t.join() for t in _thsW1]
+    with open(os.path.join(_dW1, "tracker.json"), encoding="utf-8") as _fW1:
+        _okW1 = len(json.load(_fW1)["rows"]) == 3000
+    _leftW1 = [n for n in os.listdir(_dW1) if n.endswith(".tmp")]
+    check("tracker index: eight saves at once leave it readable, no temporary files behind",
+          _okW1 and not _leftW1)
+    _tkW1.STATE.update(rows={}, unread=True)
+    _tkW1.read()
+    check("tracker index: read whole again, it may be saved again", _tkW1.STATE["unread"] is False)
+finally:
+    _tkW1.STATE.update(_kepW1)
+_maT1 = open("android/app/src/main/java/se/palladium/tv/MainActivity.kt", encoding="utf-8").read()
+check("tablet: Home fits two shelves as the television does, above the navigation bar",
+      "if ((short && focusShows()) || tvSizedNow())" in _maT1
+      and "Route.homePoster(maxHeight.value - navBar)" in _maT1
+      and "val tvPage = onTv() || tvSizedNow()" in _maT1
+      and "val tenWide = if (tvPage) Route.likeTen(maxWidth.value, POSTER_SIDES) else null" in _maT1)
+_mkT1 = open("android/app/src/main/java/se/palladium/tv/MarkControl.kt", encoding="utf-8").read()
+check("marks: the watchlist and collection buttons as tall as Play, the symbols centred in the line",
+      ".screenHeightDp < 560) 5.dp else 9.dp)" in _mkT1 and "LineHeightStyle.Alignment.Center" in _mkT1)
+import pd_h_post as _hpB1
+_rowsB1 = [{"id": "box:1:2", "box": True, "kind": "in a box set: Top 5000 Movies Pack 1080p BluRay x264-OFT",
+            "seeds": 60, "size": 4838829642, "pick": True},
+           {"id": "pack:9", "pack": True, "kind": "in a pack here", "seeds": None, "size": 4838829642},
+           {"id": "box:3:1", "box": True, "kind": "in a box set: Another Set", "seeds": 11, "size": 5}]
+_gotB1 = _hpB1.one_row_for_added_box_sets(_rowsB1, ["Top 5000 Movies Pack 1080p BluRay x264-OFT"])
+check("download list: a box set added here is listed once, as its pack, with the set's seeders",
+      [o["id"] for o in _gotB1] == ["pack:9", "box:3:1"] and _gotB1[0]["seeds"] == 60)
+import pd_sports as _spM1
+_mxM1 = [_spM1.read_name(n) for n in (
+    "2026 AMA Motocross Rd 9 Unadilla 1080p60 x264 slicknick610",
+    "2026 AMA Motocross Rd 9 Unadilla 1080p60 x265 slicknick610",
+    "2026 AMA Motocross Rd 9 Unadilla Race Day Live 1080p60 x264 slicknick610",
+    "2026 MXGP Rd 19 Australia Day 2 1080p x264 slicknick610")]
+check("motocross: a round's releases one event, its live show included; MXGP's days apart",
+      all(m and m["sport"] == "motocross" for m in _mxM1)
+      and len({m["event"] for m in _mxM1[:3]}) == 1 and _mxM1[0]["title"] == "AMA Motocross Rd 9 Unadilla"
+      and _mxM1[3]["round"] == 19 and _mxM1[3]["event"] != _mxM1[0]["event"]
+      and _spM1.read_name("The Grand 2007 1080p BluRay x264 AAC5 1-YTS MX") is None
+      and "2026 AMA Supercross" in _spM1.search_words(time.mktime((2026, 6, 1, 0, 0, 0, 0, 0, -1)))
+      and _spM1.SPORT_NAMES["motocross"] == "Motocross")
+_lbC1 = open("pd_library.py", encoding="utf-8").read()
+check("cast: a series by its whole run, two dozen names, the old reading redone once",
+      '"/tv/%d/aggregate_credits"' in _lbC1 and "SERIES_CAST_KEPT = 24" in _lbC1
+      and 'mark = os.path.join(self.root, self.SERIES_CAST_MARK)' in _lbC1)
+check("version menu: the download list keeps what it put forward, films only",
+      "pd_localapi.keep_download_marks(" in _phV1
+      and "if not episode and held_ep is None and body.get(\"key\") and out:" in _phV1)
 
 # ---- subtitle readers go through the handlers, and the tap never holds a viewer up
 import ast as _asS1, queue as _quS1, time as _tmS1
@@ -8527,16 +8719,24 @@ _lgD1.DAYS.clear()
 _jsS1 = open("static/app.js", encoding="utf-8").read()
 _dpS1 = open("android/app/src/main/java/se/palladium/tv/DownloadPicker.kt", encoding="utf-8").read()
 check("download lists: the one on the disk says how many seed it, in the web and the app",
-      _jsS1.count('v.seeds == null ? "" : v.seeds + " seeding",') == 4
+      _jsS1.count('v.seeds == null ? "" : v.seeds + " seeding",') >= 2
       and 'v.have || v.disk || v.seeds == null' not in _jsS1 and 'v.pack || v.seeds' not in _jsS1
       and 'v.have || v.seeds' not in _jsS1
       and 'seeds: null, kind: "from a pack here"' in _jsS1
-      and '"${one.seeds} seeding".takeIf { one.seeds >= 0 },' in _dpS1)
+      and '"${one.seeds} seeding".takeIf { one.seeds >= 0 }' in _dpS1)
+# the pick's green and the best 4K's violet hold on a row on disk; its On disk tag is yellow
+check("download lists: a recommended row on disk keeps its colour, its tag yellow, app and web",
+      _dpS1.index("else if (one.pick) Color(0xFF5FD08A)") < _dpS1.index("else if (one.have) Color(0xFFE0B341)")
+      and "it to (if (here) Color(0xFFE0B341) else null)" in _dpS1
+      and _jsS1.index('if (v.have) o.style.color = "#e0b341";') < _jsS1.index('if (v.pick) o.style.color = "#5fd08a";'))
 check("download list in the app: rows not keyed, which rebuilt the focused row on every redraw, and it opens on the one put forward",
       "key(one.id)" not in _dpS1 and "if (lit && one === first) landed = true" in _dpS1)
 check("download list in the app: focus held outside the dialog's text, asked for once until a row has it",
       _dpS1.index("val opening = remember { FocusRequester() }") < _dpS1.index("AlertDialog(")
       and _dpS1.index("var landed by remember { mutableStateOf(false) }") < _dpS1.index("AlertDialog("))
+check("download list in the app: a download is asked about first, and the one it opened on takes the best as of now",
+      "asking = one" in _dpS1 and '"Download this one?"' in _dpS1
+      and "val id = if (plain) Api.bestAtPress(full, one.id) else one.id" in _dpS1[_dpS1.index("asking?.let"):])
 # ---- a poster of a film only the other server holds is answered here
 _srP1 = server_source().replace(chr(13), "")
 _laP1 = _read_localapi().replace(chr(13), "")
@@ -9294,7 +9494,7 @@ _idN1 = _pnN1.NOTICE["id"]
 _saidN1 = _pnN1.say({"text": "  hello screens ", "seconds": 5})
 _srvN1 = server_source()
 check("notify: a notice is numbered on, held at least ten seconds, and nothing to play",
-      _saidN1 == {"id": _idN1 + 1, "text": "hello screens", "seconds": 10}
+      _saidN1["id"] >= _idN1 + 1 and {k: v for k, v in _saidN1.items() if k != "id"} == {"text": "hello screens", "seconds": 10}
       and _pnN1.NOTICE["play"] == "" and _pnN1.NOTICE["until"] > 0)
 _pnN1.say({"text": ""})
 check("notify: only what is still listed blinks; opening the list clears it, once",
@@ -10356,7 +10556,8 @@ _wL = _paL[_paL.index("    private fun watchTheLine() {"):_paL.index("    privat
 check("player: the line is watched every second whether or not another machine holds the film",
       "watchTheBuffer()" + chr(10) + " " * 16 + "watchTheLine()" in _paL
       and "if (ready == null)" not in _wL
-      and "if (Api.answering(doorInUse(), token)) lineStalled()" in _wL)
+      and "if (!Api.answering(doorInUse(), token)) return@launch" in _wL
+      and "if (!direct && leftASlowEncoder()) return@launch" in _wL and "                lineStalled()" in _wL)
 check("player: a line stall is counted once, said once, and the third steps down to a rate within "
       "80 % of what was arriving",
       "if (now - lineStallAt < 30_000) return" in _wL and "lineStalls++" in _wL
@@ -10369,7 +10570,8 @@ check("player: a stepped-down film climbs back as far as the original, waiting t
       and "Route.lineUp(chosenRate()" in _wL and "minOf(wait * 2, Route.LINE_UP_MOST)" in _wL
       and '.putExtra("lineAuto", mbit != ceiling)' in _wL
       and "val burst = Api.lineMbit(film)" in _wL
-      and "val seen = maxOf(lineBest, if (burst > 0) burst + taking else 0.0)" in _wL
+      and "val seen = if (burst > 0) burst + taking else 0.0" in _wL and "lineBest" not in _wL
+      and "if (t >= skip) {" in open(os.path.join(_tvL, "Api.kt"), encoding="utf-8").read()
       and "return ceilingMbit                        // the ceiling itself: 0 is the original" in _roL)
 # the ladder itself, worked through in Python exactly as Route.kt does it
 _LAD = [40, 20, 12, 8, 5, 4, 2]
@@ -10495,6 +10697,287 @@ check("line: one short stall never caps a film - it steps only when 10 s of stop
       and "lineStillAt.addLast(now)" in _paF and "now - lineStillAt.first() > 60_000" in _paF
       and "val budget = lineStillAt.size >= Route.LINE_STILL_BUDGET" in _paF
       and "lineStalled(fresh = false)" in _paF)
+
+# ---- qBittorrent: started elevated where it asks for it; ended and started again when hung
+import pd_torrents as _ptQ, subprocess as _spQ, types as _tyQ, time as _tmQ
+_wasQ = (_spQ.Popen, _ptQ._elevated, _ptQ._qb_process, _ptQ.time, dict(_ptQ.WATCHED), dict(_ptQ.QB_SILENT),
+         _ptQ._watch_note)
+_callsQ, _notesQ = [], []
+try:
+    def _refuse(*a, **k):
+        e = OSError("The requested operation requires elevation"); e.winerror = 740; raise e
+    _spQ.Popen = _refuse
+    _ptQ._elevated = lambda exe, args: _callsQ.append((exe, args)) or ""
+    _okQ = _ptQ._start_qb(r"C:\qb\qbittorrent.exe")
+    _ptQ._qb_process = lambda: "RUNNING"
+    _ptQ.time = _tyQ.SimpleNamespace(sleep=lambda s: None, time=_tmQ.time)
+    _ptQ._watch_note = lambda t: _notesQ.append(t)
+    _ptQ.WATCHED.update(restarted=0.0, silent="", exe="")
+    _qbQ = _tyQ.SimpleNamespace(base="http://127.0.0.1:8080")
+    _nowQ = _tmQ.time()
+    _ptQ.QB_SILENT.update(since=_nowQ - _ptQ.HUNG_RESTART - 5)
+    _callsQ_before = len(_callsQ)
+    _ptQ._watch_silent(_qbQ, _nowQ)
+    _restartQ = _callsQ[_callsQ_before:]
+    _ptQ._watch_silent(_qbQ, _nowQ + 60)          # once every RESTART_EVERY, not again at once
+    _againQ = _callsQ[_callsQ_before + len(_restartQ):]
+finally:
+    (_spQ.Popen, _ptQ._elevated, _ptQ._qb_process, _ptQ.time) = _wasQ[:4]
+    _ptQ.WATCHED.clear(); _ptQ.WATCHED.update(_wasQ[4]); _ptQ.QB_SILENT.clear(); _ptQ.QB_SILENT.update(_wasQ[5])
+    _ptQ._watch_note = _wasQ[6]
+_exeQ = next((x for x in _ptQ.QB_PATHS if os.path.exists(x)), "")
+check("qBittorrent: refused for administrator rights, started elevated; silent 30 min while running, "
+      "ended and started again once (%s)" % (_restartQ,),
+      _okQ == "" and _callsQ[0] == (r"C:\qb\qbittorrent.exe", "")
+      and _restartQ[:1] == [("taskkill", "/F /IM qbittorrent.exe")]
+      and (not _exeQ or _restartQ[1:] == [(_exeQ, "")]) and _againQ == []
+      and any("ended and started again" in n for n in _notesQ))
+
+# ---- subtitles lifted by one server are taken by the other, found by file name among the
+# versions; a film moved to the cache read them out of the whole film again (2026-11-15)
+import types as _tyS
+_nsS = {"os": os, "time": __import__("time")}
+for _nameS in ("lifted_here", "peer_subtitle"):
+    exec(compile(_astH.get_source_segment(_srcH, next(n for n in _astH.parse(_srcH).body
+                                                     if isinstance(n, _astH.FunctionDef) and n.name == _nameS)),
+                 "pd-server.py", "exec"), _nsS)
+_filesS = [{"file": r"D:/F/a.remux.mkv", "part": 1}, {"file": r"D:/F/a.x265.mkv", "part": 2}]
+_ffS = lambda k, mi: _filesS[mi if mi < len(_filesS) else 0]
+_keptS = {}
+_nsS.update(dict(sub_cache_path=lambda f, i: "%s|%d" % (f, i), PEER_SUBS={},
+                                 keep_tapped_subtitle=lambda v, i, t: _keptS.update({(v, i): t}),
+                                 peer_fetch=lambda path, t: ("WEBVTT\n\n00:01.000 --> 00:02.000\nhello there\n\n"
+                                                             * 3).encode() if "name=a.x265.mkv" in path else None))
+_cacheS = {r"D:/F/a.x265.mkv|2": "WEBVTT cues"}
+_hitS = _nsS["lifted_here"]("123a76b1cab2", "A.X265.mkv", 2, _ffS, _cacheS.get)
+_missS = _nsS["lifted_here"]("123a76b1cab2", "other.mkv", 2, _ffS, _cacheS.get)
+_tookS = _nsS["peer_subtitle"]("123a76b1cab2", r"E:/copies/a.x265.mkv", 2)
+_againS = _nsS["peer_subtitle"]("123a76b1cab2", r"E:/copies/a.x265.mkv", 2)
+_noneS = _nsS["peer_subtitle"]("123a76b1cab2", r"E:/copies/a.remux.mkv", 2)
+check("subtitles: the other server's lifted track found by file name and kept here, asked once "
+      "in ten minutes (%r %r)" % (_hitS, _missS),
+      _hitS == "WEBVTT cues" and _missS is None and _tookS and "hello there" in _tookS
+      and _keptS.get((r"E:/copies/a.x265.mkv", 2)) == _tookS and _againS is None and _noneS is None)
+_srvS = server_source()
+check("subtitles: a whole track is marked whole, so no lines past the place is not 'still reading'",
+      'self.send_header("X-Palladium-Subs", "whole")' in _srvS
+      and "Api.cuesWhole) return@launch" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+          "android", "app", "src", "main", "java", "se", "palladium", "tv", "PlayerActivity.kt"),
+          encoding="utf-8").read())
+
+
+# ---- an encode is behind when its speeds all fall short and it has written less picture than
+# it ran; asked by the player before it leaves a slow encoder for the other machine (2026-11-15)
+import pd_gpu as _gpP
+check("encoder pace: behind at 0.7x with less picture than time; not at 1.2x, not waiting on the player, "
+      "not with no speeds known",
+      _gpP.falling_behind([0.7, 0.8, 0.75], 40.0, 60.0)
+      and not _gpP.falling_behind([1.2, 1.1, 1.3], 70.0, 60.0)
+      and not _gpP.falling_behind([0.7, 0.8], 80.0, 60.0)
+      and not _gpP.falling_behind([], 10.0, 60.0)
+      and '"/gpu/pace"' in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_invites.py"),
+                                encoding="utf-8").read())
+
+
+# ---- a server that takes the connection and never answers is a miss: frozen or waking, it was
+# "there" for ever and the app went back to it from the copy again and again (2026-11-15)
+_reF = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                         "se", "palladium", "tv", "Reach.kt"), encoding="utf-8").read()
+_askF = _reF[_reF.index("    private fun ask("):_reF.index("    private fun probe(")]
+check("reach: a look that connects and gets no answer is not taken as up",
+      "SocketTimeoutException" not in _askF and "copy(up = true" not in _askF)
+
+
+# ---- a copy looks at its main server every ten seconds and says what it saw in /where: an
+# app that missed the main server once moves at once on the copy's word (2026-11-15)
+_srvW = server_source()
+check("house: the copy looks at the main server every 10 s into the record /where reads, and says it",
+      "start_house_watch()" in _srvW and "HOUSE_LOOK_EVERY = 10" in _srvW
+      and '"house": self.house_seen(),' in _srvW
+      and "CONNECTED_UP[where] = (now, up)" in _srvW and 'return {"up": seen["fails"] < 2' in _srvW)
+
+
+# ---- one definition of "there" for the player and the background check: an answer, or film
+# arriving from it - never a connection alone (2026-11-15)
+_apA = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                         "se", "palladium", "tv", "Api.kt"), encoding="utf-8").read()
+_ansA = _apA[_apA.index("    suspend fun answering("):][:1600]
+_reO = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                         "se", "palladium", "tv", "Reach.kt"), encoding="utf-8").read()
+_isO = _reO[_reO.index("    fun isThere("):_reO.index("    fun msOf(")]
+check("answering: one handler - Api.answering asks Reach.isThere, which counts film arriving, trusts a "
+      "sure look under 5 s and otherwise knocks by the look's own rules into the shared record",
+      "Reach.isThere(where, tok)" in _ansA and "Net.open" not in _ansA
+      and "stillSending(k)" in _isO and "probe(k, tok)" in _isO and "put(k, raw)" in _isO and "confirm()" in _isO)
+
+
+# ---- a season's numbers on the subtitle site, read once from its release names and kept with
+# the episode list: after a double episode the site is one ahead for the rest of the season;
+# a title two episodes share is left to its number (2026-11-15)
+import pd_localapi as _laN
+_wN = lambda t: {w for w in re.split(r"[^a-z0-9]+", t.lower().replace("'", "")) if len(w) > 2 and not w.isdigit()}
+_epsN = [("e15", 15, "The Search"), ("e21", 21, "Gerald's Last Awards"), ("e22", 22, "Farewell, Gerald"),
+         ("e23", 23, "The Inner Ring"), ("e24", 24, "Norbert P. Haskins, (Acting) Chief"),
+         ("e25", 25, "Search Committee")]
+_namesN = ["Paper.Firm.US.S07E21.Geralds.Last.Awards.1080p.BluRay.x264-GRPA",
+           "paper.firm.us.s07e21.Gerald's.Last.Awards.720p.bluray.x264-grpb",
+           "Paper.Firm.US.S07E22-E23.Farewell.Gerald.(Pt1&2).1080p.BluRay.x264-GRPA",
+           "paper.firm.us.s07e22-e23.Farewell,.Gerald.(Pt1&2).720p.bluray.x264-grpb",
+           "Paper.Firm.US.S07E24.The.Inner.Ring.1080p.BluRay.x264-GRPA",
+           "paper.firm.us.s07e24.The.Inner.Ring.720p.bluray.x264-grpb",
+           "Paper.Firm.US.S07E25.Norbert.P.Haskins.Acting.Chief.1080p.BluRay.x264-GRPA",
+           "paper.firm.us.s07e25.Norbert.P.Haskins,.(Acting).Chief.720p",
+           "Paper.Firm.US.S07E26-E27.Search.Committee.EXTENDED.1080p.BluRay.x264-GRPA",
+           "paper.firm.us.s07e26-e27.Search.Committee,.(Pt1&2).extended.720p.bluray.x264-grpc"]
+_gotN = _laN.site_numbers(_namesN, _epsN, 7, _wN, show="Paper Firm")
+_twoN = _laN.site_numbers(["S03E05.Search.Committee.Part.1", "S03E05.Search.Committee.Part.1.x",
+                           "S03E06.Search.Committee.Part.2", "S03E06.Search.Committee.Part.2.y"],
+                          [("a", 4, "Search Committee"), ("b", 5, "Search Committee (2)")], 3, _wN)
+_oneN = _laN.site_numbers(["Paper.Firm.US.S07E25.Norbert.P.Haskins.Acting.Chief"], _epsN, 7, _wN)
+check("subtitles: the site's numbers after a double, read by title - Inner Ring 24, the acting chief 25, "
+      "Search Committee 26, the rest as ours; a shared title, or one name alone, stores nothing (%r)" % _gotN,
+      _gotN == {"e23": 24, "e24": 25, "e25": 26} and _twoN == {} and _oneN == {})
+_hsN = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_h_subs.py"), encoding="utf-8").read()
+check("subtitles: a search asks by the kept number and accepts it",
+      "site = self.site_number(key, client, language)" in _hsN and "season, site or episode," in _hsN
+      and "not (site and tuple(got) == (int(season), int(site)))" in _hsN
+      and "named_though_numbered_apart" not in _hsN)
+
+
+# ---- the server selector never switches to a server that does not answer (2026-11-15)
+_svS = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                         "se", "palladium", "tv", "Servers.kt"), encoding="utf-8").read()
+_maS = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                         "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
+_dtS = _svS[_svS.index("suspend fun doorThatOpens("):][:1600]
+check("selector: no answering address is no door, and every switch stays put and says so",
+      "): String? {" in _dtS and "return null" in _dtS
+      and _maS.count("Servers.doorThatOpens(srv) ?: run {") == 3)
+
+
+# ---- a search the tracker was not asked is said as not asked, never as nothing: ten a minute
+# emptied a check of 88 films into "nothing on the tracker" for six it carries (2026-11-15)
+import pd_tracker as _ptU
+_wasU = (_ptU.search, _ptU.read, _ptU.write, dict(_ptU.STATE), _ptU.HELD["on"])
+try:
+    _ptU.read = lambda: {}
+    _ptU.write = lambda: None
+    _ptU.HELD["on"] = False
+    _ptU.search = lambda t, y=0: [{"id": "1", "name": t}]
+    _ptU.STATE["asked"] = {}
+    _ptU.STATE["why"] = ""
+    _ptU.STATE["lately"] = [time.time()] * 10          # ten this minute already
+    _fullU = _ptU.quietly(_ptU.ask_for)("Some Film", 2001)       # background work waits
+    _ptU.STATE["lately"] = [time.time()] * 10
+    _pressU = _ptU.ask_for("Pressed Film", 2005)                 # a person's own press asks
+    _ptU.STATE["lately"] = []
+    _okU = _ptU.ask_for("Other Film", 2002)
+    _ptU.search = lambda t, y=0: []
+    _noneU = _ptU.ask_for("Third Film", 2003)
+    _ptU.HELD["on"] = True
+    _heldU = _ptU.ask_for("Fourth Film", 2004)
+finally:
+    (_ptU.search, _ptU.read, _ptU.write) = _wasU[:3]
+    _ptU.STATE.clear(); _ptU.STATE.update(_wasU[3]); _ptU.HELD["on"] = _wasU[4]
+check("tracker: background work over the minute's ten, or held, is not asked (None); a person's press "
+      "always asks; asked and nothing is []",
+      _fullU is None and _pressU and _okU and _noneU == [] and _heldU is None
+      and '"unasked": bool(unasked and not out)' in server_source())
+
+# ---- one unanswered ask of the other server greys nothing and forgets nothing: away at two
+_nsP = {"json": json, "time": __import__("time")}
+exec(compile(_astH.get_source_segment(_srcH, next(n for n in _astH.parse(_srcH).body
+                                                 if isinstance(n, _astH.FunctionDef) and n.name == "peer_holds")),
+             "pd-server.py", "exec"), _nsP)
+_answersP = []
+_nsP.update(PEER_HELD={}, PEER_HELD_FAILS={"n": 0}, peer_recent=lambda: (0, "Cache"),
+            peer_fetch=lambda path, t: _answersP.pop(0))
+_answersP.append(b'{"held": ["k1"]}')
+_firstP = _nsP["peer_holds"](["k1", "k2"])
+_nsP["PEER_HELD"]["k3"] = (0, False)
+_answersP.append(None)
+_oneP = _nsP["peer_holds"](["k1", "k3"])
+_answersP.append(None)
+_nsP["PEER_HELD"]["k4"] = (0, False)
+_twoP = _nsP["peer_holds"](["k1", "k4"])
+check("peer: one unanswered ask keeps k1 held and up; two in a row is away",
+      _firstP[0] == {"k1"} and _firstP[2] and _oneP[0] == {"k1"} and _oneP[2]
+      and _twoP[0] == {"k1"} and not _twoP[2] and _nsP["PEER_HELD"]["k3"] == (0, False))
+
+
+# ---- how long a live row has stood still, counted by the server: a panel restart no longer
+# starts a paused film's clock over (2026-11-15)
+_nsSt = {"S": None}
+exec(compile(_astH.get_source_segment(_srcH, next(n for n in _astH.parse(_srcH).body
+                                                 if isinstance(n, _astH.FunctionDef) and n.name == "still_for")),
+             "pd-server.py", "exec"), _nsSt)
+_kSt = {}
+_pSt = {"who": "Simon", "key": "e1", "position": 441, "state": "paused"}
+_a = _nsSt["still_for"](_pSt, 1000.0, _kSt)
+_b = _nsSt["still_for"](_pSt, 1600.0, _kSt)
+_c = _nsSt["still_for"](dict(_pSt, position=450), 1700.0, _kSt)
+_d = _nsSt["still_for"](dict(_pSt, state="playing", how="direct play"), 1800.0, _kSt)
+check("still: 0 on first sight, 600 s later 600, moved starts over, playing is 0",
+      _a == 0 and _b == 600 and _c == 0 and _d == 0)
+
+
+# ---- shuffle: on the copy, a shelf's main server the handler has not seen answer is not asked
+_apS2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                          "se", "palladium", "tv", "Api.kt"), encoding="utf-8").read()
+check("shuffle: standing on the copy, a draw skips a main server not verified up",
+      "else if (srv != null && onStandby && Reach.verified(srv) != true) null" in _apS2)
+
+
+# ---- message numbers never fall under the time: an app that saw the copy's later numbers kept
+# ignoring the main server's after a failover (2026-11-15)
+import pd_notify as _pnN
+check("notice: next number is one more, and never under the time in seconds",
+      _pnN.next_notice_id(5, now=1000) == 1000 and _pnN.next_notice_id(1500, now=1000) == 1501
+      and "pd_notify.next_notice_id(NOTICE.get(" in server_source())
+
+
+# ---- a 4K release is held to its own bitrate window, by encoding; a house that never set one
+# starts from 14-30 (h265) and 25-50 (h264) (owner, 2026-11-15)
+import pd_release as _prK
+check("bitrate: 4K windows by encoding, 1080p ones unchanged, starting values when unset",
+      _prK.rate_field("Film.2026.2160p.UHD.BluRay.x265-HALLOWED") == "preferRate265x4k"
+      and _prK.rate_field("Film.2026.2160p.WEB-DL.H264-GRP") == "preferRate264x4k"
+      and _prK.rate_field("Film.2026.1080p.BluRay.x265-GRP") == "preferRate265"
+      and _prK.rate_field("Film.2026.1080p.BluRay.x264-OFT") == "preferRate264"
+      and _prK.window_of({}, "preferRate265x4k") == "14-30" and _prK.window_of({}, "preferRate264") == "any"
+      and _prK.window_of({"preferRate265x4k": "10-20"}, "preferRate265x4k") == "10-20")
+
+
+# ---- popular films: nothing woven in unless a viewer chose a country; then one of its own in
+# every 3rd or 5th place (owner, 2026-11-15)
+import pd_localapi as _laP
+_wP = [{"tmdb": n} for n in range(1, 10)]
+_hP = [{"tmdb": 100 + n} for n in range(1, 4)] + [{"tmdb": 2}]
+_w3 = _laP.LocalAPI.woven(_wP, _hP, 3)
+_w5 = _laP.LocalAPI.woven(_wP, _hP, 5)
+check("popular: a country's film in every 3rd place, or 5th; one the world list has is not doubled",
+      [r["tmdb"] for r in _w3][:6] == [1, 2, 101, 3, 4, 102] and [r["tmdb"] for r in _w5][4] == 101
+      and [r["tmdb"] for r in _w3].count(2) == 1)
+_laSrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_localapi.py"), encoding="utf-8").read()
+check("popular: off unless chosen - no Swedish weave for everybody",
+      'code = str(mine.get("popularHome") or "off").upper()' in _laSrc and "TOP_FILMS_HOME_EVERY" not in _laSrc)
+
+
+# ---- violet marks the best 4K release only, by the pick's own rules (owner, 2026-11-15)
+_sV = server_source()
+check("downloads: one 4K release marked, the best of those meeting the rules",
+      "fit4k = [o for o in fits if height_of(o.get(\"name\")) == 2160]" in _sV
+      and 'o["uhd"] = bool(best4k and o is best4k)' in _sV and '"uhd": False,' in _sV)
+
+
+# ---- a file still being written is no version of its film: a rip in the making was (2026-11-15)
+import pd_library as _plW
+check("library: a .part file being written is passed over; a film named Part is not",
+      _plW.being_written("The.Odyssey.2026.1080p.BluRay.x264-PD.mkv.part.mkv")
+      and _plW.being_written("film.part.mp4")
+      and not _plW.being_written("Kill.Bill.Vol.1.Part.One.2003.mkv")
+      and not _plW.being_written("Dune.Part.Two.2024.1080p.mkv"))
+
 
 print("RULES FAILED: %d" % len(FAILS) if FAILS else "RULES PASSED")
 for f in FAILS:

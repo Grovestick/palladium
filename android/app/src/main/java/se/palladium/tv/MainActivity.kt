@@ -245,8 +245,31 @@ class MainActivity : AppCompatActivity() {
             if (!event.isCanceled) holdIsOver()
             return true
         }
+        // A Back whose press the page's Compose layer took - the first one after a dialog
+        // closes - never reached the activity, so its release did nothing and a second Back
+        // was needed (owner, 2026-11-15). Its release does what a Back does.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                val took = safeKey(event) { super.dispatchKeyEvent(event) }
+                backTakenAt = if (took) event.downTime else 0L
+                return took
+            }
+            if (event.action == android.view.KeyEvent.ACTION_UP && backTakenAt != 0L &&
+                    event.downTime == backTakenAt) {
+                backTakenAt = 0L
+                val took = safeKey(event) { super.dispatchKeyEvent(event) }
+                if (!took && !event.isCanceled) {
+                    onBackPressedDispatcher.onBackPressed()
+                    return true
+                }
+                return took
+            }
+        }
         return safeKey(event) { super.dispatchKeyEvent(event) }
     }
+
+    /** The press time of a Back the Compose layer took, until its release comes. */
+    private var backTakenAt = 0L
 
     /** When the short way was last looked for, so coming back to the app is cheap. */
     private var lastLookedForTheShortWay = 0L
@@ -341,7 +364,7 @@ class MainActivity : AppCompatActivity() {
                 CompositionLocalProvider(LocalIndication provides PressOnly,
                     androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides
                         Slide.keeping(androidx.compose.foundation.gestures.LocalBringIntoViewSpec.current,
-                                      Slide.down)) { App() }
+                                      Slide.down)) { TvSized { App() } }
             }
         }
     }
@@ -755,7 +778,13 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
                                if (onIt) Color.White else Color.Transparent, shape)
                        .then(if (open) Modifier else Modifier.clickable {
                            ctx.lifecycleScope.launch {
-                               val door = Servers.doorThatOpens(srv)
+                               val door = Servers.doorThatOpens(srv) ?: run {
+                                android.widget.Toast.makeText(ctx,
+                                    srv.name.ifBlank { Servers.hostOf(srv.base) } +
+                                        " is not answering - staying where you are",
+                                    android.widget.Toast.LENGTH_LONG).show()
+                                return@launch
+                            }
                                Servers.use(ctx, if (door == srv.base) srv
                                                 else srv.copy(base = door,
                                                               outside = srv.base))
@@ -768,7 +797,8 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             // answering, and how it is known: green for a machine
                             // that spoke a moment ago
-                            val up = alive[srv.base]
+                            @Suppress("UNUSED_VARIABLE") val seen = Reach.changed.value
+                            val up = Reach.verified(srv)
                             val shut = up == true && letIn[srv.base] == false
                             Box(Modifier.padding(end = 8.dp).size(9.dp)
                                     .background(
@@ -835,7 +865,13 @@ private fun SetupScreen(onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
                         // machine learned at home is filed under an address that
                         // means nothing from a train, and it has another
                         ctx.lifecycleScope.launch {
-                            val door = Servers.doorThatOpens(srv)
+                            val door = Servers.doorThatOpens(srv) ?: run {
+                                android.widget.Toast.makeText(ctx,
+                                    srv.name.ifBlank { Servers.hostOf(srv.base) } +
+                                        " is not answering - staying where you are",
+                                    android.widget.Toast.LENGTH_LONG).show()
+                                return@launch
+                            }
                             Servers.use(ctx, if (door == srv.base) srv
                                              else srv.copy(base = door,
                                                            outside = srv.base))
@@ -2582,7 +2618,8 @@ private fun WhichServer(onDone: () -> Unit) {
     Column(Modifier.padding(top = 6.dp, bottom = 2.dp)) {
         list.forEach { srv ->
             val on = srv.base.trimEnd('/') == Api.base
-            val up = alive[srv.base]
+            @Suppress("UNUSED_VARIABLE") val seen = Reach.changed.value
+            val up = Reach.verified(srv)
             var lit by remember { mutableStateOf(false) }
             // Clipped before the press is drawn into it, and ringed while the remote
             // is on it. The rounded panel was painted after the press, so whatever
@@ -2598,7 +2635,13 @@ private fun WhichServer(onDone: () -> Unit) {
                             if (lit) Color.White else Color.Transparent, chip)
                     .clickable {
                         if (on) onDone() else ctx.lifecycleScope.launch {
-                            val door = Servers.doorThatOpens(srv)
+                            val door = Servers.doorThatOpens(srv) ?: run {
+                                android.widget.Toast.makeText(ctx,
+                                    srv.name.ifBlank { Servers.hostOf(srv.base) } +
+                                        " is not answering - staying where you are",
+                                    android.widget.Toast.LENGTH_LONG).show()
+                                return@launch
+                            }
                             Servers.use(ctx, if (door == srv.base) srv
                                              else srv.copy(base = door,
                                                            outside = srv.base))
@@ -3046,6 +3089,16 @@ private data class Filters(
 
 /** A shuffle's draw a pack still has to bring: the grid fetched again so its poster wears
  *  the download, the remote put on it, and the live download list asked at once. */
+/** The Watchlist opened on a blink: to the first poster that came in, the remote on it -
+ *  through the same return-to-a-poster the grid already does (owner, 2026-11-15). */
+private fun aimAtFresh(browse: Browse) {
+    if (browse.tab != "watchlist" || WatchBlink.fresh.isEmpty()) return
+    val key = browse.grid.firstOrNull { it.ratingKey in WatchBlink.fresh }?.ratingKey ?: return
+    browse.openedKey = key
+    browse.openedAt = null
+    browse.cameBack = browse.cameBack + 1
+}
+
 private fun drawnComing(ctx: Context, browse: Browse, m: Media) {
     browse.notice = "Downloading " + m.title
     browse.openedKey = m.ratingKey
@@ -3180,7 +3233,9 @@ private class Browse {
     /** the streaming services marked, catalogue numbers comma-joined: Films and TV then
      *  show their catalogue in this country rather than the library. The services to
      *  choose among, (id, name), and how many pages of the catalogue are in the grid. */
-    var service by mutableStateOf(Route.SRC_HOUSE)
+    // nothing marked when Films and TV open: My library and In packs are not preselected
+    // (owner, 2026-11-15)
+    var service by mutableStateOf("")
     /** and its own order, the popular page's: the library's order is kept apart */
     var serviceSortKey by mutableStateOf("popularity")
     var serviceSortAsc by mutableStateOf(false)
@@ -3790,6 +3845,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     browse.grid = narrowed(patiently { Api.watchlist(ctx) })
                         .filter { it.ratingKey !in keptKeys }
                     browse.more = false
+                    aimAtFresh(browse)
                 }
                 tab == "collections" -> {
                     // the shelves, or the one that has been opened
@@ -4890,7 +4946,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             browse.sortKey = more.sort
                             browse.sortAsc = false
                         }
-                        browse.service = more.service.ifEmpty { Route.SRC_HOUSE }
+                        browse.service = more.service
                         browse.diskOnly = false
                         browse.genre = more.genre
                         browse.decade = ""
@@ -4907,8 +4963,12 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
               // so two whole shelves fit whatever stands above them: per shelf its name
               // (18), the poster at 1.5 its width, and 8 of air.
               val short = LocalConfiguration.current.screenHeightDp < 560
-              val homeW = if (short && focusShows())
-                  Route.homePoster(maxHeight.value)
+              // and a tablet drawn as the television: the same two shelves (owner, 2026-11-15)
+              // the height above the navigation bar, which a tablet draws the page behind
+              val navBar = androidx.compose.foundation.layout.WindowInsets.navigationBars
+                  .asPaddingValues().calculateBottomPadding().value
+              val homeW = if ((short && focusShows()) || tvSizedNow())
+                  Route.homePoster(maxHeight.value - navBar)
                   else shelfPoster()
               LazyColumn(
                 state = browse.rowsState,
@@ -4954,8 +5014,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             browse.takeTabOrder(toTab.first)
                             browse.sortKey = toTab.second
                             browse.sortAsc = false
-                            // the tab itself, this house's own marked and nothing else
-                            browse.service = Route.SRC_HOUSE
+                            // the tab itself, nothing marked
+                            browse.service = ""
                             // what arrived here, on the shelf that
                             // is about arriving here
                             browse.diskOnly = toTab.second == "addedAt"
@@ -5323,6 +5383,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                         }
                     }
                 }
+                // the blink's titles can arrive after the Watchlist has loaded: aimed again then
+                LaunchedEffect(WatchBlink.fresh) { aimAtFresh(browse) }
                 // Back from a title opened here: the grid is put back on its poster,
                 // whatever else moved while the title's page was open. Run when the grid
                 // is drawn again, not when the poster is pressed.
@@ -6492,6 +6554,27 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                 if (lookFailed) {
                     Pill("Look again", filled = true) { lookFailed = false; lookAgain++ }
                 }
+                // a pack is asked about before it is added: (id, what it is), "" letting it find
+                // them itself (owner, 2026-11-15)
+                var asking by remember { mutableStateOf<Pair<String, String>?>(null) }
+                asking?.let { (id, words) ->
+                    AlertDialog(
+                        onDismissRequest = { asking = null },
+                        containerColor = Skin.Panel,
+                        title = { Text(if (id.isEmpty()) "Add to the library?" else "Add this pack?",
+                                       color = Skin.Fg, fontSize = 17.sp) },
+                        text = { Text(words, color = Skin.Fg, fontSize = 13.sp, lineHeight = 18.sp) },
+                        confirmButton = {
+                            Pill("Add", primary = true) {
+                                asking = null
+                                Toast.makeText(ctx, if (id.isEmpty()) "Adding to the library"
+                                                    else "Adding " + words.substringBefore("  ·  "),
+                                               Toast.LENGTH_SHORT).show()
+                                add(id)
+                            }
+                        },
+                        dismissButton = { Pill("Cancel") { asking = null } })
+                }
                 packs?.let { list ->
                     // one download menu: the packs, letting it find them, the single episodes
                     val choice = chosen ?: ((list.firstOrNull { it.pick } ?: list.firstOrNull { !it.unsure })
@@ -6509,8 +6592,6 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                                       e.seeds.takeIf { it > 0 }?.let { "$it seeding" })
                             .joinToString("  ·  ") }
                     val find = "Let it find packs by itself, a season at a time"
-                    val pack = list.firstOrNull { "p:" + it.id == choice }
-                    val ep = trackerEps.firstOrNull { "e:" + it.id == choice }
                     val takeEpisode = { e: Api.TrackerEpisode ->
                         (ctx as AppCompatActivity).lifecycleScope.launch {
                             val (ok, said) = Api.takeFromTracker(full, e.id)
@@ -6534,15 +6615,12 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                         list.forEach { one ->
                             item(packSays(one), "p:" + one.id == choice, one.pick) {
                                 chosen = "p:" + one.id
-                                // said at the press: a pack takes seconds to fetch and add
-                                Toast.makeText(ctx, "Adding " + one.name, Toast.LENGTH_SHORT).show()
-                                add(one.id)
+                                asking = one.id to packSays(one)
                             }
                         }
                         item(find, choice == "find", false) {
                             chosen = "find"
-                            Toast.makeText(ctx, "Adding to the library", Toast.LENGTH_SHORT).show()
-                            add("")
+                            asking = "" to find
                         }
                         if (trackerEps.isNotEmpty()) {
                             Text("Single episodes", color = Skin.Dim, fontSize = 12.sp,
@@ -6553,19 +6631,6 @@ private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit
                                 chosen = "e:" + e.id
                                 takeEpisode(e)
                             }
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Pill(when {
-                             busy -> "Adding…"
-                             ep != null -> "⤓ Download episode  " + gb(ep.size)
-                             pack != null -> "⤓ Add as pack  " + gb(pack.size)
-                             else -> "⤓ Add to the library"
-                         }, primary = true) {
-                        when {
-                            ep != null -> takeEpisode(ep)
-                            pack != null -> add(pack.id)
-                            else -> add("")
                         }
                     }
                 }
@@ -6849,7 +6914,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     // room: at the larger size its posters were cut off at the bottom of the screen.
     val roomForShelf = !portrait && !cramped
     //: a television's page: the marks on the Play row
-    val tvPage = onTv()
+    // and a tablet drawn as the television: no Back button, the shelf at the foot (owner, 2026-11-15)
+    val tvPage = onTv() || tvSizedNow()
     // By the object, not by equals(): Media is a data class, and the cast, the studios
     // and the services are kept outside its constructor - so the page loaded with them
     // counted as no change from the card it was opened from, and was thrown away.
@@ -7738,7 +7804,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                     versions = Api.trackerVersions(full)
                                 }
                                 said = if (versions.rows.isEmpty())
-                                    "Nothing on the tracker for that one" else ""
+                                    Route.trackerEmpty(versions.unasked, "Nothing on the tracker for that one") else ""
                                 picking = versions.rows.isNotEmpty()
                             }
                         }
@@ -8155,7 +8221,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                     pack = it.hash.isNotEmpty(), box = true, seasonPack = true,
                                     word = Route.packWord(it.hash, got.first))
                     })
-                    otherSaid = if (other.rows.isEmpty()) "Nothing on the tracker for it" else ""
+                    otherSaid = if (other.rows.isEmpty()) Route.trackerEmpty(other.unasked, "Nothing on the tracker for it") else ""
                     packList = other.rows.isNotEmpty()
                 }
             })
@@ -8192,7 +8258,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     otherSaid = "Looking…"
                     other = Api.trackerVersions(full)
                     otherSaid = if (other.rows.isEmpty())
-                        "Nothing on the tracker for that one" else ""
+                        Route.trackerEmpty(other.unasked, "Nothing on the tracker for that one") else ""
                     otherOpen = other.rows.isNotEmpty()
                 }
             }) else null)
@@ -8649,8 +8715,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                 // distance from the right, one size that fills it - and a row that
                 // never scrolls: sized by the room under the words, they changed size
                 // as the page settled and slid along under the remote.
-                val tenWide = if (onTv()) Route.likeTen(maxWidth.value, POSTER_SIDES) else null
-                val likeInset = if (onTv()) 0f else 7f
+                // ten across, as on the television - and on a tablet drawn as one (owner, 2026-11-15)
+                val tenWide = if (tvPage) Route.likeTen(maxWidth.value, POSTER_SIDES) else null
+                val likeInset = if (tvPage) 0f else 7f
                 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
                 androidx.compose.runtime.CompositionLocalProvider(
                     androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides

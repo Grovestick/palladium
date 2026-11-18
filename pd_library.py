@@ -67,6 +67,11 @@ def clean_title(name):
     return re.sub(r"\s{2,}", " ", name).strip(" -")
 
 
+def being_written(name):
+    """A file named as still being made: "film.mkv.part.mkv", "film.part.mp4"."""
+    return bool(re.search(r"\.part\.[a-z0-9]{2,4}$", str(name or "").lower()))
+
+
 def alone_in_folder(path):
     """Is this the only video file in its directory?
 
@@ -1452,6 +1457,10 @@ class Library:
                         full = os.path.join(dirpath, name)
                         if UNFINISHED and UNFINISHED(full):
                             continue
+                        # a file still being written under ".part": a rip in the making was
+                        # offered as a version of its film (2026-11-15)
+                        if being_written(name):
+                            continue
                         try:
                             st = os.stat(full)
                         except OSError:
@@ -2247,6 +2256,10 @@ class Library:
     #: how many of a cast list are worth keeping. A film has thirty names on it and
     #: nobody reads past the sixth; the ones after that are "Man in bar".
     CAST_KEPT = 12
+    #: a series' regulars over its whole run: nine seasons is more than a film's dozen
+    SERIES_CAST_KEPT = 24
+    #: marks the series cast read again by the whole run, once
+    SERIES_CAST_MARK = "series_cast_v2"
 
     def credits_for(self, item_id, fetch=True):
         """Who is in it: from the library, or from TMDB the first time.
@@ -2268,11 +2281,18 @@ class Library:
             if not (self.config().get("tmdb_key") or "").strip():
                 return []
             kind = "tv" if item["type"] == "show" else "movie"
+            # a series by its whole run: its plain credits are the last season's regulars,
+            # and somebody in five of nine seasons was not among them (owner, 2026-11-18)
             try:
-                said = self.tmdb("/%s/%d/credits" % (kind, int(item["tmdb_id"])))
+                said = self.tmdb(("/tv/%d/aggregate_credits" if kind == "tv" else "/movie/%d/credits")
+                                 % int(item["tmdb_id"]))
             except Exception:
                 return []
-            cast = (said.get("cast") or [])[:self.CAST_KEPT]
+            cast = (said.get("cast") or [])[:self.SERIES_CAST_KEPT if kind == "tv" else self.CAST_KEPT]
+            for p in cast:
+                # the whole run gives each part played, most episodes first
+                if "character" not in p:
+                    p["character"] = ((p.get("roles") or [{}])[0] or {}).get("character") or ""
             # a film with nobody listed is written down as such - a single empty row -
             # so it is not asked for again every time the page is opened
             con.execute("DELETE FROM credit WHERE item_id=?", (item_id,))
@@ -2388,6 +2408,15 @@ class Library:
             return 0
         con = self.db()
         try:
+            # the series read the old way, by their last season, once read again by the
+            # whole run: their rows go and this backlog fills them in
+            mark = os.path.join(self.root, self.SERIES_CAST_MARK)
+            if not os.path.exists(mark):
+                con.execute("DELETE FROM credit WHERE item_id IN "
+                            "(SELECT id FROM item WHERE type='show')")
+                con.commit()
+                with open(mark, "w") as f:
+                    f.write(time.strftime("%Y-%m-%d %H:%M"))
             waiting = [r["id"] for r in con.execute(
                 "SELECT i.id FROM item i WHERE i.tmdb_id > 0 "
                 "AND EXISTS (SELECT 1 FROM file f WHERE f.item_id = i.id) "

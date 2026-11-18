@@ -5796,6 +5796,15 @@ CHECK_FOR = 1800
 #: qBittorrent not answering this long: looked into; this long and running: said
 SILENT_FOR = 180
 HUNG_FOR = 600
+#: silent this long while running: ended and started again, at most once every RESTART_EVERY.
+#: Longer than HUNG_FOR: a qBittorrent whose disk is behind answers in minutes, and a
+#: restart then only costs a recheck (2026-11-12).
+HUNG_RESTART = 1800
+RESTART_EVERY = 7200
+#: where qBittorrent is when the running one cannot be asked: one started with
+#: administrator rights hides its path from a process without them
+QB_PATHS = (r"C:\Program Files\qBittorrent\qbittorrent.exe",
+            r"C:\Program Files (x86)\qBittorrent\qbittorrent.exe")
 #: a thing tried once is not tried again for this long: said instead
 TRY_AGAIN_AFTER = 6 * 3600
 #: qBittorrent's disk jobs waiting this long on average: the disk is behind, and a
@@ -5934,14 +5943,46 @@ def _qb_process():
     """qBittorrent's program file when it is running here, "" when it is not."""
     import subprocess
     try:
+        # running with administrator rights its path reads empty from here: said as
+        # RUNNING, not as not running - which started a second one (2026-11-14)
         out = subprocess.run(["powershell", "-NoProfile", "-Command",
-                              "(Get-Process qbittorrent -ErrorAction SilentlyContinue | "
-                              "Select-Object -First 1).Path"],
+                              "$p = Get-Process qbittorrent -ErrorAction SilentlyContinue | "
+                              "Select-Object -First 1; if ($p) { if ($p.Path) { $p.Path } "
+                              "else { 'RUNNING' } }"],
                              capture_output=True, text=True, timeout=20,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except Exception:
         return "?"
     return (out.stdout or "").strip()
+
+
+def _start_qb(exe):
+    """qBittorrent started: as it is, or elevated where Windows says it needs administrator
+    rights - a run-as-administrator flag on it failed every start with WinError 740
+    (2026-11-14). Prompts are off on this machine, so the elevated start is silent.
+    "" when started, otherwise why not."""
+    import subprocess
+    try:
+        subprocess.Popen([exe], close_fds=True,
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        return ""
+    except OSError as e:
+        if getattr(e, "winerror", 0) != 740:
+            return str(e)[:120]
+    return _elevated(exe, "")
+
+
+def _elevated(exe, args):
+    """A program run with administrator rights: "" when started, otherwise why not."""
+    if os.name != "nt":
+        return "not Windows"
+    import ctypes
+    shell = ctypes.WinDLL("shell32")
+    shell.ShellExecuteW.restype = ctypes.c_void_p
+    shell.ShellExecuteW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p,
+                                    ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_int]
+    done = shell.ShellExecuteW(None, "runas", exe, args or None, None, 0) or 0
+    return "" if int(done) > 32 else "an elevated start was refused (%d)" % int(done)
 
 
 def _watch_silent(qb, now):
@@ -5958,7 +5999,20 @@ def _watch_silent(qb, now):
     if path == "?":
         return
     if path:
-        WATCHED["exe"] = path
+        if path != "RUNNING":
+            WATCHED["exe"] = path
+        # silent this long: ended and started again, not just said
+        if now - since >= HUNG_RESTART and now - WATCHED.get("restarted", 0.0) >= RESTART_EVERY:
+            WATCHED["restarted"] = now
+            exe = next((x for x in (WATCHED["exe"],) + QB_PATHS if x and os.path.exists(x)), "")
+            why = _elevated("taskkill", "/F /IM qbittorrent.exe")
+            time.sleep(8)
+            why = why or (_start_qb(exe) if exe else "its program was not found")
+            WATCHED["silent"] = "restarted" if not why else "running, not answering"
+            _watch_note("qBittorrent had not answered for %d min: %s"
+                        % ((now - since) // 60, "ended and started again" if not why
+                           else "a restart failed: " + why))
+            return
         if now - since >= HUNG_FOR and not WATCHED["silent"].startswith("running"):
             WATCHED["silent"] = "running, not answering"
             _watch_note("qBittorrent is running but has not answered for %d min (%s)"
@@ -5966,23 +6020,19 @@ def _watch_silent(qb, now):
         return
     if WATCHED["started"] and now - WATCHED["started"] < HUNG_FOR:
         return
-    exe = next((p for p in (WATCHED["exe"], r"C:\Program Files\qBittorrent\qbittorrent.exe",
-                            r"C:\Program Files (x86)\qBittorrent\qbittorrent.exe")
-                if p and os.path.exists(p)), "")
+    exe = next((p for p in (WATCHED["exe"],) + QB_PATHS if p and os.path.exists(p)), "")
     WATCHED["started"] = now
     if not exe:
         WATCHED["silent"] = "not running"
         _watch_note("qBittorrent is not running, and its program was not found to start it")
         return
-    import subprocess
-    try:
-        subprocess.Popen([exe], close_fds=True,
-                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    why = _start_qb(exe)
+    if not why:
         WATCHED["silent"] = "started"
         _watch_note("qBittorrent was not running: started it")
-    except OSError as e:
+    else:
         WATCHED["silent"] = "not running"
-        _watch_note("qBittorrent is not running and would not start: %s" % str(e)[:120])
+        _watch_note("qBittorrent is not running and would not start: %s" % why)
 
 
 def _watch_act(qb, info_hash, fault):

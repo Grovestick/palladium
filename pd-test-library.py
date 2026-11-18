@@ -128,6 +128,15 @@ else:
               abs(int(mine[0].get("addedAt") or 0) - time.time()) < 120)
     check("1 the shelf holds no title twice",
           len({c.get("ratingKey") for c in shelf}) == len(shelf))
+    # the Films tab in arrival order is the page the row opens onto: the same front
+    tab = cards("/library/sections/1/all", {"sort": ["addedAt:desc"], "disk": ["1"]})
+    check("1 the Films tab by arrival leads with it as the row does",
+          [c.get("ratingKey") for c in tab[:len(shelf[:5])]]
+          == [c.get("ratingKey") for c in shelf[:5]],
+          str([c.get("ratingKey") for c in tab[:5]]) + " / " + str([c.get("ratingKey") for c in shelf[:5]]))
+    narrowed = cards("/library/sections/1/all", {"sort": ["addedAt:desc"], "genre": ["documentary"]})
+    check("1 a genre marked keeps the films coming in off the tab",
+          all(c.get("ratingKey") != key for c in narrowed))
     page = cards("/library/metadata/" + key)
     check("1 its own page says how far",
           bool(page) and (page[0].get("offer") or {}).get("progress") == 0.42,
@@ -2749,6 +2758,24 @@ else:
           _got270 == list(range(len(_ord270))) and api.index_of_part(_k270, 999999999) is None
           and api.index_of_part(_k270, "x") is None, repr(_got270))
 _con270.close()
+
+# ---- 271 a film coming in on the cache server leads Recently added, as one coming in here
+import pd_h as _ph271
+_S271 = _ph271.SERVER
+_was271 = (_S271.cache_downloads, _S271.handed_not_taken)
+try:
+    _row271 = {"ratingKey": "cache271film", "type": "movie", "title": "Made Up Cache Film", "year": 2031,
+               "offer": {"state": "downloading", "progress": 0.42, "on": "the cache", "mine": False,
+                         "token": "secret-token-271"}}
+    _S271.cache_downloads = lambda: [dict(_row271, offer=dict(_row271["offer"]))]
+    _S271.handed_not_taken = lambda token=None: []
+    _got271 = cards("/library/sections/1/recentlyAdded", {"X-Plex-Container-Size": ["40"]})
+    _hit271 = next((m for m in _got271 if m.get("ratingKey") == "cache271film"), None)
+    check("271 a film coming in on the cache server is on Recently added with how far it has got, its key left out",
+          _hit271 is not None and (_hit271.get("offer") or {}).get("progress") == 0.42
+          and "token" not in (_hit271.get("offer") or {}), repr(_hit271)[:200])
+finally:
+    _S271.cache_downloads, _S271.handed_not_taken = _was271
 
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):

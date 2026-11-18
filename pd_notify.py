@@ -18,6 +18,14 @@ from typing import Any
 import pd_log
 
 
+def next_notice_id(was, now=None):
+    """A message's number: one more than the last, and never under the time in seconds. Each
+    server counts its own, and an app keeps one last-seen number for both - after a failover
+    the main server's messages were numbered under the copy's and ignored (2026-11-15)."""
+    import time as _time
+    return max(int(was or 0) + 1, int(_time.time() if now is None else now))
+
+
 def _not_attached(*args, **kwargs) -> Any:
     raise RuntimeError("pd_notify.attach() has not been called")
 
@@ -60,7 +68,7 @@ def say(body):
     was set, for the answer."""
     words = str(body.get("text") or "").strip()[:200]
     hold = max(10, min(int(body.get("seconds") or 600), 86400))
-    NOTICE["id"] = NOTICE.get("id", 0) + 1
+    NOTICE["id"] = next_notice_id(NOTICE.get("id", 0))
     NOTICE["text"] = words
     # who it is for: nothing means the main server, an address means one screen,
     # "all" means everybody including whoever is watching from away

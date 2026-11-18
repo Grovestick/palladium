@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The start screen's mark: the launcher's white P on its blue tile, as the panel draws it,
+     drawn as a path so it is sharp at any size. The tile stands inside the circle the
+     system shows a start icon in (the middle two thirds of the 108 box). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="@color/tile"
+        android:pathData="M40.5,28.5 h27 a12,12 0 0 1 12,12 v27 a12,12 0 0 1 -12,12 h-27 a12,12 0 0 1 -12,-12 v-27 a12,12 0 0 1 12,-12 z" />
+    <group
+        android:pivotX="58"
+        android:pivotY="54"
+        android:scaleX="0.55"
+        android:scaleY="0.55"
+        android:translateX="-4">
+        <path
+            android:fillColor="#FFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M36,24 h26 a18,18 0 0 1 0,36 h-16 v24 h-10 z M46,34 v16 h16 a8,8 0 0 0 0,-16 z" />
+    </group>
+</vector>

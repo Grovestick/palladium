@@ -478,8 +478,14 @@ object Api {
     }
 
     /** The server this app opens with, and the list it came from. */
+    /** The server this run of the app has routed for: start-up made again keeps its route. */
+    @Volatile private var routedFor = ""
+
     fun loadServer(ctx: Context): String {
         Servers.current(ctx)?.let { cur ->
+            val now = cur.base.trimEnd('/') + "|" + cur.token
+            if (Route.keepRoute(routedFor, now, base)) return base
+            routedFor = now
             use(cur)
             // opened on the machine keeping copies: the main server is asked first,
             // and the copy only once it is known to be off
@@ -674,7 +680,26 @@ object Api {
      * stepped down to a small rate only ever receives that rate, so the line's room can
      * only be seen by asking for more. 0 when it could not be measured.
      */
-    suspend fun lineMbit(m: Media, seconds: Double = 3.0, most: Long = 24L shl 20): Double =
+    /** How a server's encoding goes: a hardware encoder, how many encodes it runs, and
+     *  whether its encode for this player is behind the picture. */
+    data class Pace(val hw: Boolean, val encodes: Int, val behind: Boolean)
+
+    /** A server's pace, asked of it; null when it does not answer. */
+    suspend fun pace(srv: Server?): Pace? =
+        withContext(Dispatchers.IO) {
+            val tok = srv?.token ?: token
+            runCatching {
+                val conn = Net.open(addressOf(srv) + auth("/gpu/pace", tok), 2500, 5000, tok)
+                val j = JSONObject(conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
+                Pace(j.optBoolean("hw"), j.optInt("encodes"),
+                     j.optJSONObject("stream")?.optBoolean("behind") ?: false)
+            }.getOrNull()
+        }
+
+    /** The line, read off the film's own file: Mbit/s over `seconds`, the first `skip` of them
+     *  left out - a throttled line lets a burst through at the start, and counted, it read 10
+     *  Mbit over a 20 Mbit limit already full (2026-11-15). */
+    suspend fun lineMbit(m: Media, seconds: Double = 6.0, most: Long = 48L shl 20, skip: Double = 1.5): Double =
         withContext(Dispatchers.IO) {
             val part = m.partKey ?: return@withContext 0.0
             val tok = m.srv?.token ?: token
@@ -683,6 +708,8 @@ object Api {
                 conn.setRequestProperty("Range", "bytes=0-" + (most - 1))
                 val began = System.nanoTime()
                 var got = 0L
+                var counted = 0L
+                var from = 0L
                 try {
                     conn.inputStream.use { inp ->
                         val buf = ByteArray(64 shl 10)
@@ -690,14 +717,19 @@ object Api {
                             val n = inp.read(buf)
                             if (n < 0) break
                             got += n
-                            if ((System.nanoTime() - began) / 1e9 >= seconds) break
+                            val t = (System.nanoTime() - began) / 1e9
+                            if (t >= skip) {
+                                if (from == 0L) from = System.nanoTime()
+                                counted += n
+                            }
+                            if (t >= seconds) break
                         }
                     }
                 } finally {
                     conn.disconnect()
                 }
-                val secs = (System.nanoTime() - began) / 1e9
-                if (secs > 0.3 && got > (1L shl 20)) got * 8 / 1e6 / secs else 0.0
+                val secs = if (from > 0) (System.nanoTime() - from) / 1e9 else 0.0
+                if (secs > 0.5 && counted > (1L shl 20)) counted * 8 / 1e6 / secs else 0.0
             }.getOrDefault(0.0)
         }
 
@@ -1263,13 +1295,10 @@ object Api {
         return ordered.sortedBy(undated)          // stable: the order above is kept
     }
 
-    suspend fun recentFilms(ctx: Context) = fromSome(ctx) { srv ->
-        // one list for both servers, which the server joins; a film only the other holds opens there
-        listFrom("/local/library/sections/1/recentlyAdded?count=30&both=1", srv).onEach { m ->
-            // that server off: its page here, where it can be downloaded
-            if (m.elsewhere.isNotEmpty() && !m.away) m.srv = Servers.holderOf(ctx, srv, standby)
-        }
-    }.sortedByDescending { it.addedAt }.take(40)
+    /** The head of the Films tab in the order things arrived, on disk only: the page the
+     *  row opens onto, so the row is that page's first forty (owner, 2026-11-15). */
+    suspend fun recentFilms(ctx: Context) =
+        page(ctx, 1, "addedAt:desc", 0, 40, diskOnly = true)
 
     /** The programmes being watched now that the house can put on, most watched first. */
     suspend fun popularShows(ctx: Context) = fromSome(ctx) { srv ->
@@ -1776,7 +1805,11 @@ object Api {
                        // downloading it counts nothing against the account
                        val freeleech: Boolean = false,
                        // which of the house's packs, shortly: Top 5K
-                       val packShort: String = "")
+                       val packShort: String = "",
+                       /** 4K, and 4K is among the resolutions chosen: its own colour */
+                       val uhd: Boolean = false,
+                       /** its resolution, said first on its line: 1080p, 4K, 720p */
+                       val res: String = "")
 
     /**
      * Every version of one film, the most carried first.
@@ -1785,7 +1818,9 @@ object Api {
      * it - so somebody picks rather than being handed whichever arrived last.
      */
     /** What the tracker holds for one film, and the room left where it would land. */
-    data class Carrying(val free: Double = -1.0, val rows: List<Carried> = emptyList())
+    data class Carrying(val free: Double = -1.0, val rows: List<Carried> = emptyList(),
+                        /** the tracker could not be asked just now: empty is not "nothing" */
+                        val unasked: Boolean = false)
 
     suspend fun trackerVersions(m: Media, fresh: Boolean = false): Carrying = withContext(Dispatchers.IO) {
         runCatching {
@@ -1793,7 +1828,7 @@ object Api {
                 .put("title", m.title).put("year", m.year ?: 0)
                 .put("key", m.ratingKey).put("fresh", fresh)))
             val rows = said.optJSONArray("versions") ?: return@runCatching Carrying()
-            Carrying(if (said.isNull("free")) -1.0 else said.optDouble("free", -1.0),
+            Carrying(if (said.isNull("free")) -1.0 else said.optDouble("free", -1.0), unasked = said.optBoolean("unasked"), rows =
                      (0 until rows.length()).mapNotNull { i ->
                          rows.optJSONObject(i)?.let {
                              Carried(it.optString("id"), it.optString("name"),
@@ -1811,7 +1846,8 @@ object Api {
                                      it.optBoolean("seasonPack", false),
                                      it.optString("packId", ""),
                                      freeleech = it.optBoolean("freeleech", false),
-                                     packShort = it.optString("packShort", ""))
+                                     packShort = it.optString("packShort", ""),
+                                     uhd = it.optBoolean("uhd"), res = it.optString("res", ""))
                          }
                      })
         }.getOrDefault(Carrying())
@@ -2404,8 +2440,13 @@ object Api {
         // Not the machine we have already fallen away from. Asked first, every press
         // of next waited out a connection to a server known to be off before trying
         // the one answering - which is a button that takes seconds to do anything.
+        // And while standing on the copy, any machine the one handler has not seen answer at
+        // its last look: the shelf's row could carry another address of the same main server,
+        // and the press waited 67 s on it frozen before the copy was asked (2026-11-15).
         val asking = if (srv != null && homeBase.isNotEmpty() &&
-                         srv.base.trimEnd('/') == homeBase.trimEnd('/')) null else srv
+                         srv.base.trimEnd('/') == homeBase.trimEnd('/')) null
+                     else if (srv != null && onStandby && Reach.verified(srv) != true) null
+                     else srv
         drawFromOne(id, asking, resume, back, from, at)?.let { return it }
         // The machine the shelf came from is not answering. The copy holds the round
         // as well and answers for itself while the main server is off, so it is worth
@@ -2992,20 +3033,11 @@ object Api {
                 paces[where] = 9_999
                 return@withContext false
             }
-            // Taking the connection is answering. A server busy encoding or scoring a
-            // film took longer than four seconds to say its version, was called gone,
-            // and the player moved to the copy with the main server up all along.
-            var reached = false
-            val said = runCatching {
-                val conn = Net.open(where.trimEnd('/') + auth("/app/version", tok), 2500, 8000, tok)
-                conn.connect()
-                reached = true
-                conn.inputStream.use { it.readBytes() }
-                true
-            }.getOrDefault(reached)
+            // asked of the one handler (Reach.isThere), which every look goes by too
+            val said = Reach.isThere(where, tok)
             // how long it took to answer, kept: two servers holding the same film
             // are not the same offer, and the near one should be the one that plays
-            paces[where] = if (said) System.currentTimeMillis() - began else 9_999
+            paces[where] = if (said) Reach.msOf(where) ?: (System.currentTimeMillis() - began) else 9_999
             said
         }
 
@@ -3673,6 +3705,8 @@ object Api {
      */
     /** Whether the last subtitle handed over was only the first part of one. */
     @Volatile var cuesPartial: Boolean = false
+    /** Whether the server had the whole track: no cues then means no lines past this point. */
+    @Volatile var cuesWhole: Boolean = false
 
     suspend fun cues(url: String): List<Triple<Long, Long, String>> =
         withContext(Dispatchers.IO) {
@@ -3688,6 +3722,7 @@ object Api {
                 // the server hands over the first stretch while it reads the rest out
                 // of the film, and says so here
                 cuesPartial = conn.getHeaderField("X-Palladium-Subs") == "partial"
+                cuesWhole = conn.getHeaderField("X-Palladium-Subs") == "whole"
                 // "01:02:03.400" and "02:03.400" are both WebVTT: ffmpeg leaves the
                 // hour out below an hour, which is what a track lifted out of a film
                 // looks like. Demanding it matched nothing in those, so an embedded

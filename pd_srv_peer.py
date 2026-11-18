@@ -241,6 +241,61 @@ def peer_reading(key):
     return said
 
 
+def lifted_here(key, name, index, file_for, cached):
+    """A track already lifted out of this server's copy of a file: its text, or None.
+    The file is found by its name among the title's versions - the order of versions
+    can differ between the servers, the file name does not."""
+    name = os.path.basename(str(name or "")).lower()
+    if not name:
+        return None
+    for mi in range(16):
+        found = file_for(key, mi) or {}
+        if not found.get("file"):
+            return None
+        if os.path.basename(found["file"]).lower() == name:
+            return cached(S.sub_cache_path(found["file"], index))
+        if mi and found.get("part") == (file_for(key, 0) or {}).get("part"):
+            return None              # past the last version: file_for hands back the first
+    return None
+
+
+def peer_subtitle(key, video, index):
+    """A track the other server has already lifted out of its copy of this file, kept
+    here as if lifted here: its text, or None. A film moved to the other server read
+    its subtitles out of the whole film again (2026-11-15). Asked once in ten minutes
+    a track, while the player asks every ten seconds."""
+    mark = (video, int(index))
+    if time.time() - S.PEER_SUBS.get(mark, 0.0) < 600:
+        return None
+    S.PEER_SUBS[mark] = time.time()
+    import urllib.parse as _uparse
+    said = S.peer_fetch("/follow/subs?key=%s&index=%d&name=%s"
+                        % (_uparse.quote(str(key)), int(index),
+                           _uparse.quote(os.path.basename(video))), 5)
+    text = (said or b"").decode("utf-8", "replace")
+    if len(text) <= 40 or not text.startswith("WEBVTT") or "-->" not in text:
+        return None
+    S.keep_tapped_subtitle(video, index, text)
+    return text
+
+
+def still_for(row, now, kept=None):
+    """Seconds a live row has stood at the same place - paused, or a player that stopped
+    reporting - by who and what: nought while it plays on. Rows not seen for an hour go."""
+    kept = S.STILL if kept is None else kept
+    mark = "%s|%s" % (row.get("who") or "", row.get("key") or row.get("title") or "")
+    at = int(float(row.get("position") or 0))
+    playing = str(row.get("state") or "playing") == "playing" and row.get("how") != "waiting"
+    was = kept.get(mark)
+    if playing or not was or was[0] != at:
+        kept[mark] = (at, now, now)
+    else:
+        kept[mark] = (at, was[1], now)
+    for k in [k for k, v in kept.items() if now - v[2] > 3600]:
+        kept.pop(k, None)
+    return 0 if playing else int(now - kept[mark][1])
+
+
 def held_here(asked, file_for, title_of):
     """Of the keys asked about, those this server holds a file for. A film offered from a
     pack is asked about by its pack key, which no file here is filed under: read as its
@@ -265,17 +320,23 @@ def peer_holds(keys):
     now = time.time()
     keys = [str(k) for k in keys if k]
     ask = [k for k in keys if now - S.PEER_HELD.get(k, (0, False))[0] > 120]
-    up = True
     if ask:
         said = None
         try:
             said = json.loads(S.peer_fetch("/follow/held?keys=" + _uparse.quote(",".join(ask[:200])), 4) or b"null")
         except ValueError:
             said = None
-        up = isinstance(said, dict)
-        held = set((said or {}).get("held") or [])
-        for k in ask[:200]:
-            S.PEER_HELD[k] = (now, k in held)
+        if isinstance(said, dict):
+            S.PEER_HELD_FAILS["n"] = 0
+            held = set(said.get("held") or [])
+            for k in ask[:200]:
+                S.PEER_HELD[k] = (now, k in held)
+        else:
+            # Unanswered: what was known stays known, and the other server is away only
+            # after two of these in a row. Taken at one, a slow answer greyed every film it
+            # holds and wrote "holds nothing" over the rest for two minutes (2026-11-15).
+            S.PEER_HELD_FAILS["n"] += 1
+    up = S.PEER_HELD_FAILS["n"] < 2
     name = S.peer_recent()[1] or ("the other server")
     return {k for k in keys if S.PEER_HELD.get(k, (0, False))[1]}, name, up
 

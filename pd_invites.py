@@ -68,6 +68,7 @@ GUEST_PREFIXES = (
     "/gpu/hls",         # the same, in segments, for Safari
     "/live/",           # a live channel as the app asks for it; the web asks /local/live/
     "/gpu/subs",
+    "/gpu/pace",        # how an encode for this player goes, before failover
     "/app",             # the install page and the version check
     "/palladium.apk",
     "/s/",              # the landing page the invite link opens
@@ -123,6 +124,7 @@ GUEST_PREFIXES = (
     "/chat",            # what is said in the lobby and in the party
     "/notice",          # and a line from the server addressed to them
     "/app.js", "/chat.js", "/controls.js", "/settings.js", "/style.css", "/index.html",
+    "/route.js",        # finding a server: the app's rules, the same for the page
     "/dash.all.min.js", "/favicon.ico", "/palladium.ico",
     "/hls.min.js",      # the live channel player, loaded when one is opened
     "/iptv.js",         # the IPTV plugin's part of the page

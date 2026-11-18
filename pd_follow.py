@@ -716,7 +716,8 @@ VIEWERS_EVERY = 120
 #: machines. The copy had none of the choosing rules and picked by its defaults.
 CHOOSING = ("preferRes", "preferSource", "preferCodec", "preferSound", "preferGroup",
             "preferOrder", "preferQuality", "preferSeeds", "preferBy", "preferRate264",
-            "preferRate265", "rateLock", "closeCall", "seriesRate")
+            "preferRate265", "preferRate264x4k", "preferRate265x4k", "rateLock", "closeCall",
+            "seriesRate")
 #: and what every viewer meets the same on either machine: the quality ceilings at
 #: home and away, who may be sent a burned-in subtitle, even volume, the pause before
 #: the next episode, fetching a subtitle before it starts, the streaming country and

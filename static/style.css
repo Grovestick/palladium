@@ -178,6 +178,8 @@ h2 .seeall,h2 .count{font-size:12px;letter-spacing:0;text-transform:none;
 .svtplayer video{width:100%;height:100%;object-fit:contain;background:#000}
 .svtplayer .svtclose{position:absolute;top:14px;right:14px;z-index:2}
 .badges{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:-8px 0 16px}
+/* under the Version and Subtitles rows: its own room, not tucked up into them */
+.actions.verline + .badges{margin:12px 0 16px}
 .badge{font-size:12px;font-weight:500;line-height:18px;color:var(--dim);background:var(--panel2);border-radius:6px;padding:4px 9px;white-space:nowrap}
 .badges .providers{margin-left:0;display:contents}
 .providers img{width:26px;height:26px;border-radius:6px;display:block}
@@ -1979,8 +1981,6 @@ body.phonelike .watchlog .how{grid-area:how}
 /* a subtitle already beside the film, in the download list */
 .btn.kind.ondisk{color:#e0b341}
 
-/* a version to download, beside the Version menu */
-.dlhere{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 /* packs: a row each - name and actions, a bar of how much has come, its figures as chips */
 .packlist{display:flex;flex-direction:column;gap:8px;margin-top:10px;max-width:900px}
 .packrow{background:var(--panel2,#0002);border:1px solid var(--line,#ffffff14);border-radius:8px;padding:8px 10px}

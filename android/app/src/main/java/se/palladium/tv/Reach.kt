@@ -51,6 +51,73 @@ object Reach {
 
     private fun now() = System.currentTimeMillis()
 
+    /** When film last arrived from each address, by host:port: the player says so. */
+    private val sending = ConcurrentHashMap<String, Long>()
+
+    private fun hostPort(at: String): String =
+        runCatching { java.net.URI(at.trimEnd('/')).let { it.host + ":" + it.port } }.getOrDefault(at)
+
+    /** Film arrived from this address just now: the player's own bytes. */
+    fun filmFrom(host: String, port: Int) { sending[host + ":" + port] = now() }
+
+    /** Whether this address is sending film now: not down, whatever a look says. */
+    fun stillSending(at: String): Boolean = Route.stillSending(sending[hostPort(at)], now())
+
+    /** A look this young answers "is it there" without knocking again. */
+    private const val RECENT_MS = 5_000L
+
+    /**
+     * THE answer to "is that server there", for every part of the app: the player in a
+     * stall, the server lists, the check that an address is this machine. There while film
+     * arrives from it; else the record when a look under RECENT_MS old is sure; else one
+     * knock now by the same rules as every look - an answer, not a connection - written
+     * into the record the library is routed by. Two judges with two rules let a frozen
+     * server hold a film while the library had left it (owner, 2026-11-15: "all should
+     * use same handler"). Blocking; call it off the main thread.
+     */
+    fun isThere(at: String, tok: String): Boolean {
+        val k = key(at)
+        if (stillSending(k)) return true
+        if (!Api.homeHere(k)) return false
+        val d = doors[k]
+        if (d != null && now() - d.at < RECENT_MS && ((d.up && d.misses == 0) || d.down)) return d.up
+        val raw = try { probe(k, tok) } catch (e: Exception) { return false }   // no network here
+        if (doors.containsKey(k)) {
+            put(k, raw)
+            confirm()
+        }
+        return raw.up
+    }
+
+    /**
+     * What a server list's dot says of a row: true only when an address of it answered its
+     * last look, false when every address is down, null while it is not known. A dot from a
+     * knock up to ten seconds old was green on a server frozen since (owner, 2026-11-15:
+     * "should not show green dot until it is verified online").
+     */
+    fun verified(s: Server): Boolean? = Route.verified(ways(s).map { doors[it] }, now(), FRESH_MS)
+
+    /** How long this address took to answer at its last look, when it has one. */
+    fun msOf(at: String): Long? = doors[key(at)]?.takeIf { it.up }?.ms
+
+    /** The copy's word applied: a first miss it confirms is down. */
+    private fun confirm() {
+        val rows = app?.let { Servers.all(it) }.orEmpty()
+        val waysOf = rows.filter { it.id.isNotEmpty() }.groupBy { it.id }
+            .mapValues { (_, same) -> same.flatMap { ways(it) } }
+        Route.confirmDown(HashMap(doors), opening = Api.homeUnlooked(), waysOf = waysOf, now = now())
+            .forEach { (k, d) -> if (d != doors[k]) doors[k] = d }
+    }
+
+    /** The open row's main server answered, or is down with its copy answering: enough to decide. */
+    private fun knownEnough(rows: List<Server>): Boolean {
+        val chosen = app?.let { Servers.current(it) } ?: return false
+        val main = rows.firstOrNull { r -> keepsCopiesOf(chosen, r) }
+        val home = main ?: chosen
+        val copy = if (main != null) chosen else rows.firstOrNull { r -> keepsCopiesOf(r, chosen) }
+        return Route.knownEnough(upRow(home), copy?.let { upRow(it) })
+    }
+
     /** when the last look, and the decision made from it, finished */
     @Volatile private var lookedAt = 0L
 
@@ -117,6 +184,7 @@ object Reach {
      *  miss, and the check looks again now. */
     fun missed(at: String, began: Long) {
         val k = key(at)
+        if (stillSending(k)) return           // the film still comes from there: not a miss
         if (!Api.homeHere(k)) {
             doors[k] = Route.never(now(), doors[k]?.id.orEmpty())
         } else {
@@ -201,13 +269,29 @@ object Reach {
         }
         val until = now() + LOOK_MS
         var none = false
-        looks.forEach { (at, job) ->
-            val got = withTimeoutOrNull(maxOf(1L, until - now())) { job.await() }
-            val raw = if (got == null) Route.miss(now(), doors[at]?.id.orEmpty())
-                      else got.getOrNull()
+        fun take(at: String, got: Result<Route.Look>?) {
+            var raw = if (got == null) Route.miss(now(), doors[at]?.id.orEmpty()) else got.getOrNull()
+            // no answer from an address the film is still coming from: up, as last known
+            if (raw != null && !raw.up && stillSending(at)) {
+                raw = doors[at]?.copy(up = true, at = now(), misses = 0)
+                      ?: Route.Look(true, "", 0, now())
+            }
             if (raw == null) none = true else put(at, raw)
         }
+        // Each answer as it comes, and decided as soon as it is known: the main server answering,
+        // or the copy answering that it is down. Waiting for every address made the slowest -
+        // a frozen server's timeout - the time every opening took.
+        val out = looks.toMutableList()
+        while (out.isNotEmpty() && now() < until) {
+            val done = out.filter { it.second.isCompleted }
+            if (done.isEmpty()) { kotlinx.coroutines.delay(15); continue }
+            done.forEach { (at, job) -> out.remove(at to job); take(at, job.await()) }
+            confirm()
+            if (knownEnough(rows)) break
+        }
+        if (now() >= until) out.forEach { (at, _) -> take(at, null) }
         noNetwork = none
+        confirm()
         val after = doors.keys.associateWith { upAt(it) }
         if (after == before) return null
         changed.value = changed.value + 1
@@ -224,24 +308,29 @@ object Reach {
     private fun ask(at: String, tok: String, asAt: String, began: Long): Route.Look {
         // a server on this network connects in milliseconds; from outside, a second,
         // and a phone's radio waking is another: Net.open gives outside four
+        // opening: two seconds to answer - a viewer is waiting for a library, the copy is there
+        // in milliseconds, and a look decides only when every address has said; settled,
+        // four, so a busy moment does not count
+        val patience = if (Api.homeUnlooked()) 2000 else 4000
         val conn = Net.open(at + "/where" + (if (tok.isEmpty()) "" else "?t=" + tok),
-                            1500, 4000, tok)
+                            1500, patience, tok)
+        // Connected and then no answer is a miss like any other: a server frozen or still
+        // waking accepts the connection and never answers, and taken as "there" it was up
+        // for ever while every request to it timed out - the app went back to it from the
+        // copy again and again (2026-11-15). A film still arriving keeps it up (Route.stillSending).
         val said = try {
             JSONObject(conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
         } catch (e: java.io.FileNotFoundException) {
             // an older server without /where: it answered, so it is there
             return Route.Look(true, "", now() - began, now())
-        } catch (e: java.net.SocketTimeoutException) {
-            if ((e.message ?: "").contains("connect", ignoreCase = true)) throw e
-            // connected and then slow: there, and as it was last known
-            val had = doors[asAt]
-            return had?.copy(up = true, ms = now() - began, at = now(), misses = 0)
-                ?: Route.Look(true, "", now() - began, now())
         }
         val f = said.optJSONObject("follows")
+        val house = said.optJSONObject("house")
         return Route.Look(true, said.optString("id"), now() - began, now(),
             f?.optString("lan").orEmpty().ifEmpty { f?.optString("outside").orEmpty() },
-            f?.optString("id").orEmpty())
+            f?.optString("id").orEmpty(),
+            houseDown = house != null &&
+                Route.houseSaysDown(house.optBoolean("up", true), house.optInt("ago", 9_999)))
     }
 
     /** One address: who answers there, and how fast. Throws when this device has no
@@ -302,6 +391,8 @@ object Reach {
             standingBy = Api.standingBy(),
             base = base,
             baseUsable = Api.homeHere(base) && upAt(base) != false,
+            baseHere = Api.homeHere(base),
+            baseIsCopy = copy != null && ways(copy).any { key(it) == base },
             mainUp = upRow(home),
             mainDoor = doorOf(home),
             mainTry = ways(home).firstOrNull { Api.homeHere(it) && upAt(it) != false },

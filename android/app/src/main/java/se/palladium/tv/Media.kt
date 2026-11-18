@@ -168,6 +168,9 @@ data class Copy(
     val path: String = "",
     /** the one this viewer settled on, if they have settled on one */
     val picked: Boolean = false,
+    /** the release the download list puts forward at 1080p, or as the best 4K */
+    val dlPick: Boolean = false,
+    val dlUhd: Boolean = false,
 ) {
     /** What to call it in a list: the release if the library knows it, else the facts -
      *  always the facts on a phone, where a release name runs off the screen. */
@@ -716,6 +719,8 @@ data class Media(
                 pickedSub = chosen,
                 path = part?.optString("file") ?: "",
                 picked = media?.optBoolean("picked") == true,
+                dlPick = media?.optBoolean("dlPick") == true,
+                dlUhd = media?.optBoolean("dlUhd") == true,
             )
         }
 

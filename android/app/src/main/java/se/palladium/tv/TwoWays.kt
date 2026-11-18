@@ -396,6 +396,8 @@ class TwoWays(
                 if (stop.get()) break
                 brought.addAndGet(side, got.toLong())
                 lastBrought = android.os.SystemClock.elapsedRealtime()
+                // the machine these bytes came from is up, and only that one
+                if (got > 0) Uri.parse(url).let { u -> u.host?.let { Reach.filmFrom(it, u.port) } }
                 synchronized(gate) {
                     spent[side] += (android.os.SystemClock.elapsedRealtime() - took) / 1000.0
                     fetched[side] = android.os.SystemClock.elapsedRealtime()
@@ -448,22 +450,10 @@ class TwoWays(
         runCatching { src.close() }
     }
 
-    /**
-     * Whether that machine is there at all, asked cheaply and answered quickly.
-     *
-     * A second and a half: a machine on the same network answers in milliseconds, and
-     * one that is off never answers at all. This is the difference between finding
-     * that out on a thread nobody is waiting on and finding it out on the stretch the
-     * picture needs next.
-     */
+    /** Whether that machine is there, asked of the one handler every part of the app asks. */
     private fun answers(url: String): Boolean = runCatching {
         val at = java.net.URL(url)
-        val conn = Net.open(at.protocol + "://" + at.authority + "/app/version", 1_500, 1_500)
-        try {
-            conn.responseCode in 200..499     // answering at all is the question
-        } finally {
-            conn.disconnect()
-        }
+        Reach.isThere(at.protocol + "://" + at.authority, "")
     }.getOrDefault(false)
 
     /** Let a side back in, once it is answering again. */

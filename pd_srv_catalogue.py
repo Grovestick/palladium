@@ -508,19 +508,37 @@ def season_gaps(title, tmdb=0):
             "missing": [s for s in every if s not in files and s not in offered]}
 
 
-def top_shows(fresh=False):
+def top_shows(fresh=False, home="", every=3):
     """The programmes most watched now, from the catalogue: trending this week and
-    popular, a few pages of each, kept a day.
+    popular, a few pages of each, kept a day - and a country's own series of the last
+    three months woven through every `every` places when a viewer chose one (`home`, a
+    country code). The house no longer weaves Swedish series through everybody's
+    (owner, 2026-11-15).
 
     Each carries its catalogue number, which is what puts one in the library before
     the library holds a single file of it.
     """
-    where = os.path.join(S.ROOT, "top_shows.json")
+    world = _kept_shows("top_shows.json", [("/trending/tv/week", {}), ("/tv/popular", {})],
+                        (1, 2, 3), fresh)
+    code = str(home or "").upper()
+    if not code or code == "OFF":
+        return world
+    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - 90 * 86400))
+    theirs = _kept_shows("top_shows_%s.json" % code.lower(),
+                         [("/discover/tv", {"with_origin_country": code, "sort_by": "popularity.desc",
+                                            "air_date.gte": since})], (1, 2), fresh)
+    seen = {x.get("tmdb") for x in world}
+    return S.mix_in(world, [x for x in theirs if x.get("tmdb") not in seen],
+                    every if every in (3, 5) else 3)
+
+
+def _kept_shows(name, sources, pages, fresh=False):
+    """A list of series from the catalogue, kept a day under `name`."""
+    where = os.path.join(S.ROOT, name)
     try:
         with open(where, encoding="utf-8") as f:
             kept = json.load(f)
         shows = kept.get("shows") or []
-        # kept before the Swedish list was mixed in: read again
         dated = shows and kept.get("v") != S.TOP_SHOWS_V
         if not fresh and not dated and \
                 time.time() - float(kept.get("at") or 0) < S.TOP_SHOWS_EVERY:
@@ -529,20 +547,13 @@ def top_shows(fresh=False):
         kept = {}
     out, seen = [], set()
     lib = S.local().lib
-    # Swedish series airing in the last three months, most watched first: the world's
-    # lists carry almost none, and they are what this house watches as well
-    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - 90 * 86400))
-    sources = [("/trending/tv/week", {}), ("/tv/popular", {}),
-               ("/discover/tv", {"with_origin_country": "SE", "sort_by": "popularity.desc",
-                                 "air_date.gte": since})]
     try:
         named = {int(g["id"]): str(g["name"]) for g in
                  (lib.tmdb("/genre/tv/list") or {}).get("genres") or []}
     except Exception:
         named = {}
-    home = []
     for path, extra in sources:
-        for page in ((1, 2) if extra else (1, 2, 3)):
+        for page in pages:
             try:
                 said = lib.tmdb(path, page=page, **extra) or {}
             except Exception:
@@ -552,7 +563,7 @@ def top_shows(fresh=False):
                 if not number or number in seen:
                     continue
                 seen.add(number)
-                (home if extra else out).append({"tmdb": number,
+                out.append({"tmdb": number,
                             "show": S.show_name(r),
                             "year": int(str(r.get("first_air_date") or "0")[:4] or 0),
                             "overview": str(r.get("overview") or ""),
@@ -565,7 +576,6 @@ def top_shows(fresh=False):
                             "countries": [str(c) for c in r.get("origin_country") or []]})
     if not out:
         return kept.get("shows") or []
-    out = S.mix_in(out, home, S.TOP_SHOWS_HOME_EVERY)
     try:
         with open(where, "w", encoding="utf-8") as f:
             json.dump({"at": time.time(), "v": S.TOP_SHOWS_V, "shows": out}, f)
@@ -636,14 +646,14 @@ def show_rows():
     return keys
 
 
-def popular_everything():
+def popular_everything(home="", every=3):
     """The whole list of what is being watched now, most watched first.
 
     Held or carried by a pack, a programme is its own card. Otherwise it is a card
     with an Add band: pressed, it goes on the Top shows list and into the library,
     and opens there.
     """
-    shows = S.top_shows()
+    shows = S.top_shows(home=home, every=every)
     flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
     out = []
     con = S.local().lib.db()
@@ -720,59 +730,6 @@ def add_popular(show, number):
         S.write_settings(stored)
     keys = S.show_rows()
     return keys.get(int(number)) or keys.get(str(show)) or ""
-
-
-def popular_shows(most=40):
-    """The programmes ticked under Top shows, most watched first.
-
-    In the order of the list they were chosen from; a ticked one that has since
-    dropped off that list goes at the end rather than disappearing. With nothing
-    ticked, the popular programmes this house can already put on stand in instead,
-    so the row is never simply empty.
-    """
-    shows = S.top_shows()
-    rank = {int(x.get("tmdb") or 0): len(shows) - at for at, x in enumerate(shows)}
-    chosen = S.library_shows()
-    flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
-    out = []
-    if chosen:
-        keys = S.show_rows()
-        con = S.local().lib.db()
-        try:
-            for one in sorted(chosen, key=lambda x: -rank.get(int(x.get("tmdb") or 0), 0)):
-                key = keys.get(int(one.get("tmdb") or 0) or one["show"])
-                got = S.local().metadata_for(con, str(key), brief=True) if key else None
-                if got:
-                    got["popularity"] = rank.get(int(one.get("tmdb") or 0), 0)
-                    out.append(got)
-        finally:
-            con.close()
-        return out[:most]
-    con = S.local().lib.db()
-    try:
-        held, named = {}, {}
-        for r in con.execute("SELECT id, tmdb_id, title FROM item WHERE type='show'"):
-            if r["tmdb_id"]:
-                held[int(r["tmdb_id"])] = r["id"]
-            named[flat(r["title"])] = r["id"]
-        try:
-            import pd_torrents
-            offered = {flat(o.get("title")): o for o in (pd_torrents.offered_shows() or [])}
-        except Exception:
-            offered = {}
-        for at, one in enumerate(shows):
-            key = held.get(int(one.get("tmdb") or 0)) or named.get(flat(one.get("show")))
-            got = S.local().metadata_for(con, str(key), brief=True) if key else None
-            if not got and flat(one.get("show")) in offered:
-                got = dict(offered[flat(one.get("show"))])
-            if got:
-                got["popularity"] = len(shows) - at
-                out.append(got)
-            if len(out) >= most:
-                break
-    finally:
-        con.close()
-    return out
 
 
 def shelf_series(con, shelf):

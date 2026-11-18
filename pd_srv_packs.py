@@ -221,6 +221,15 @@ def show_packs(title, look=False, tmdb=0):
                           "seeds": int(row.get("seeds") or 0),
                           "unsure": verdict == "unsure",
                           "fits": all(S.release_is(low, k, w) for k, w in wishes)})
+        # each one's size, which the feed does not carry: read from the torrents as the
+        # films' list does, within its budget - the rest the next time (owner, 2026-11-15)
+        unsized = [o["id"] for o in found + episodes if not o["size"] and o["id"]]
+        if unsized:
+            pd_tracker.measure_many(unsized)
+            sizes = pd_tracker.read()
+            for o in found + episodes:
+                if not o["size"]:
+                    o["size"] = int((sizes.get(o["id"]) or {}).get("size") or 0)
         # the one Choosing puts forward is marked green; the list is by seeders
         best = max([o for o in found if o["fits"] and not o["unsure"]],
                    key=lambda o: (S.rank_key(o, wishes, stored, 0),

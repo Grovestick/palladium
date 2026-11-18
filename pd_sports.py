@@ -32,6 +32,11 @@ _F1 = re.compile(r"(?i)^Formula[ ._]?1[ ._](\d{4})[ ._](?:Round[ ._]?(\d{1,2})[ 
                  r"Post[ ._-]?Race[ ._]Show|Ted.?s[ ._]Notebook)(?=[ ._]|$)")
 _NFL = re.compile(r"(?i)^NFL[ ._](\d{4})[ ._](\d{2})[ ._](\d{2})[ ._](.+?)[ ._]Vs[ ._](.+?)"
                   r"[ ._](?:\d{3,4}p|WEB|HDTV)")
+#: motocross, year first: "2026 AMA Supercross Rd 9 Indianapolis 1080p", "2026 MXGP Rd 19
+#: Australia Day 2 1080p", "2026 Motocross of Nations Ernee Day 1 1080p" (owner, 2026-11-18)
+_MX = re.compile(r"(?i)^(\d{4})[ ._](AMA[ ._]Supercross|AMA[ ._]Motocross|Australian[ ._]Supercross|"
+                 r"MXGP|Motocross[ ._]of[ ._]Nations)[ ._](?:Rd[ ._]?(\d{1,2})[ ._])?(.+?)"
+                 r"[ ._](?:\d{3,4}p\d*|WEB|HDTV)(?:[ ._]|$)")
 #: the rest: named for the event, then a year or a stage
 _OTHER = [
     ("cycling", re.compile(r"(?i)^(Tour[ ._]de[ ._]France|Giro[ ._]d.?Italia|La[ ._]Vuelta|"
@@ -43,7 +48,7 @@ _OTHER = [
                         r"DP[ ._]World[ ._]Tour|US[ ._]Open[ ._]Golf)\b")),
 ]
 SPORT_NAMES = {"f1": "Formula 1", "nfl": "NFL", "cycling": "Cycling", "dakar": "Dakar",
-               "golf": "Golf"}
+               "golf": "Golf", "motocross": "Motocross"}
 
 
 def search_words(now=None):
@@ -55,7 +60,8 @@ def search_words(now=None):
         # the races by name: asked for the year alone, the forty answers were mostly
         # practice and qualifying, and ten races of two seasons were found
         out += ["Formula 1 %d Race" % y, "Formula1 %d Race" % y, "NFL %d" % y,
-                "Tour de France %d" % y, "PGA Tour %d" % y, "Dakar %d" % y]
+                "Tour de France %d" % y, "PGA Tour %d" % y, "Dakar %d" % y,
+                "%d AMA Supercross" % y, "%d AMA Motocross" % y, "%d MXGP" % y]
     return tuple(out)
 
 
@@ -104,6 +110,14 @@ def read_name(name):
         return {"sport": "f1", "year": year, "round": rnd, "place": place,
                 "event": _key("f1", year, re.sub(r"[^a-z0-9]", "", place.lower())),
                 "title": "%s Grand Prix" % place, "when": ""}
+    m = _MX.match(name)
+    if m:
+        year, series, rnd = int(m.group(1)), _words(m.group(2)), int(m.group(3) or 0)
+        # the live show of a round is the same round: one event, its releases together
+        place = re.sub(r"(?i)\s*(?:Race\s+)?Day\s+Live$", "", _words(m.group(4))).strip()
+        return {"sport": "motocross", "year": year, "round": rnd, "place": place,
+                "event": _key("mx", year, series.lower(), rnd, re.sub(r"[^a-z0-9]", "", place.lower())),
+                "title": "%s%s %s" % (series, " Rd %d" % rnd if rnd else "", place), "when": ""}
     m = _NFL.match(name)
     if m:
         year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -136,7 +150,7 @@ def newest_first(e):
     """The order a sport's events stand in: the newest event first - a race by its year
     and round, a game by its day - not the newest posting, so a race posted again a
     week later stays where it was run."""
-    if e["sport"] == "f1" and e.get("round"):
+    if e["sport"] in ("f1", "motocross") and e.get("round"):
         return (-int(e.get("year") or 0), -int(e["round"]), -float(e.get("at") or 0))
     if e.get("when"):
         y, m, d = (int(x) for x in str(e["when"]).split("-"))

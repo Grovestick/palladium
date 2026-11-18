@@ -65,10 +65,21 @@ private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit,
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onPress)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            // Play's own height beside it: the same padding over the same 24 sp line, where
+            // 10 dp made these two a head taller than Play (owner, 2026-11-15)
+            .padding(horizontal = 16.dp,
+                     vertical = if (androidx.compose.ui.platform.LocalConfiguration.current
+                                        .screenHeightDp < 560) 5.dp else 9.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(mark, fontSize = 17.sp,
-             color = markColour ?: if (on) Color(0xFF111111) else Skin.Dim)
+        // the symbol in the middle of its line, not on the line's baseline: the arrow sat
+        // lower than the star
+        Text(mark, fontSize = 17.sp, lineHeight = 24.sp,
+             color = markColour ?: if (on) Color(0xFF111111) else Skin.Dim,
+             style = androidx.compose.ui.text.TextStyle(
+                 platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
+                 lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+                     alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+                     trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.None)))
     }
 }

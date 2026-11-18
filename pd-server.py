@@ -691,10 +691,9 @@ SEASON_RUN = re.compile(r"(?:^|[^A-Za-z0-9])[sS](\d{1,2})(?:\s*-\s*[sS]?(\d{1,2}
 TOP_SHOWS_EVERY = 24 * 3600
 
 
-#: the popular list's form; a list kept in another is read again
-TOP_SHOWS_V = 2
-#: one Swedish series in every so many places on the popular list
-TOP_SHOWS_HOME_EVERY = 3
+#: the popular list's form; a list kept in another is read again - 3: the world's alone, a
+#: country's own woven in only for a viewer who chose one (owner, 2026-11-15)
+TOP_SHOWS_V = 3
 
 
 #: (programme, season) -> when the tracker had nothing to add for it; asked again a day later
@@ -715,7 +714,7 @@ SERIES_TWINS = {}
 from pd_srv_catalogue import (
     imdb_number, runtime_of, catalogue_title, hit_of_year, listed_tmdb, upgrades, duplicates,
     catalogue_runtime, episode_runtimes, ready_at, seasons_named, season_gaps, top_shows,
-    mix_in, show_name, show_rows, popular_everything, add_popular, popular_shows, shelf_series,
+    mix_in, show_name, show_rows, popular_everything, add_popular, shelf_series,
     series_shelves, shuffled_last_first, series_episode_keys, library_shows, stock_shows,
     series_names, release_year, twin_verdict, _held_series_number, series_twins)
 
@@ -959,8 +958,21 @@ HOUSE_LOUDNESS = {"at": 0.0}
 PEER_READINGS = {}
 
 
+#: a subtitle track the other server was asked for, by (file, track): {mark: when asked}
+PEER_SUBS = {}
+
+
 #: what the other server said it holds, by key: {key: (when asked, held)}
 PEER_HELD = {}
+
+#: asks of the other server for what it holds that went unanswered in a row: away only at two
+PEER_HELD_FAILS = {"n": 0}
+
+#: each live row's place and since when it has stood there: {who|key: (position, since, seen)}
+STILL = {}
+#: a build of this program as the tool making it last said, for Now playing: {v, step, pct,
+#: left, done, ok, at} - told by the tool on this computer, kept in memory only
+BUILDING = {}
 
 
 #: when the positions last went across because somebody paused or stopped
@@ -974,7 +986,8 @@ PEER_STILLS = {"at": 0.0}
 from pd_srv_peer import (
     peer_recent, keep_peer_recent, copy_answers, peer_art, _ask_peer_recent, peer_live,
     _ask_peer_live, peer_marks, peer_away, peer_fetch, peer_reading, held_here, peer_holds,
-    place_said, stills_folder, stills_rows, stills_to_take, take_peer_stills)
+    place_said, stills_folder, stills_rows, stills_to_take, take_peer_stills, peer_subtitle,
+    lifted_here, still_for)
 
 
 #: the last reading of Windows' disk events, kept an hour: (when, [{drive, count, kinds}])
@@ -2048,6 +2061,9 @@ class Handler(pd_h_subs.SubtitleParts, pd_h_follow.FollowParts, pd_h_shuffle.Shu
                 partial = False
                 if q.get("src", [""])[0] == "local" and video:
                     ready = cached_subtitle(sub_cache_path(video, index))
+                    if ready is None:
+                        # lifted already by the other server: taken, not read again
+                        ready = peer_subtitle(q.get("key", [""])[0], video, index)
                     if ready is not None:
                         said = ready
                     elif pd_subtap.wait_for(video, index, 5):
@@ -2134,8 +2150,16 @@ class Handler(pd_h_subs.SubtitleParts, pd_h_follow.FollowParts, pd_h_shuffle.Shu
                 # read from a play: only as far as the player has fetched, so it asks again soon
                 self.send_header("X-Palladium-Subs-Until",
                                  str(int(last_cue(body)) if tapped else head_from + SUB_HEAD))
+            else:
+                # the whole track: no lines past the offset means none, not not yet
+                self.send_header("X-Palladium-Subs", "whole")
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path == "/gpu/pace":
+            # how this machine's encode for the asking player goes, and whether it could
+            # take one: the player's test before it leaves a slow encoder for the other
+            self.reply_json(engine().pace_for(self.client_address[0]))
             return
         if path == "/gpu/status":
             body = json.dumps(engine().status()).encode()
@@ -2545,6 +2569,9 @@ CHOOSING_DEFAULTS = {
     "preferSound": "ddp,ac3,atmos,aac",
     "preferRate264": "5-8",
     "preferRate265": "5-8",
+    # 4K: an x265 4K encode runs 15-25 Mbit/s of picture, a remux 50 and more
+    "preferRate264x4k": "25-50",
+    "preferRate265x4k": "14-30",
     "rateLock": False,
     "preferQuality": "pergb",
     "preferSeeds": "most",

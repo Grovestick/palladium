@@ -52,7 +52,7 @@ class FollowParts(_Base):
             self.reply_json({"fits": {self.fit_key(k): v for k, v in held.items()}})
             return True
         if path in ("/follow/loudness", "/follow/stills", "/follow/stillpack", "/follow/reading",
-                    "/follow/held", "/follow/placesnow"):
+                    "/follow/held", "/follow/placesnow", "/follow/subs", "/follow/marks"):
             # what one server has measured or made, for the other: the copy asks with its
             # key, the main server asks its copy as the house. Each holds files the other
             # has too and need not read them through again.
@@ -71,6 +71,29 @@ class FollowParts(_Base):
                 # the other server's viewer paused or stopped: the exchange now
                 import pd_follow
                 threading.Thread(target=pd_follow.places_now, args=(S.local(),), daemon=True).start()
+                self.reply_json({"ok": True})
+            elif path == "/follow/subs":
+                # a track lifted out here already, for the other server's copy of the file
+                text = S.lifted_here(str((args.get("key") or [""])[0]),
+                                     str((args.get("name") or [""])[0]),
+                                     int("0" + "".join(c for c in str((args.get("index") or ["0"])[0]) if c.isdigit())),
+                                     S.local().file_for, S.cached_subtitle)
+                if text is None:
+                    self.send_error(404, "not lifted here")
+                else:
+                    body = text.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/vtt; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+            elif path == "/follow/marks":
+                # what the other server's download list put forward for a film, so the
+                # Version menu is the same from either (owner, 2026-11-15)
+                import pd_localapi
+                pd_localapi.keep_download_marks(str((args.get("key") or [""])[0]),
+                                                str((args.get("pick") or [""])[0]),
+                                                str((args.get("uhd") or [""])[0]))
                 self.reply_json({"ok": True})
             elif path == "/follow/held":
                 asked = [k for k in str((args.get("keys") or [""])[0]).split(",") if k][:200]

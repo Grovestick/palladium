@@ -30,6 +30,26 @@ else:
 S: Any = pd_h.SERVER
 
 
+
+def one_row_for_added_box_sets(out, pack_names):
+    """A box set on the tracker that is already added here as a pack is that pack: its
+    film is listed once, as the pack's row, carrying the box set's seeders - it stood
+    twice, the pack's row last with no seeders (owner, 2026-11-18)."""
+    flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
+    here = {flat(n) for n in pack_names}
+    keep = list(out)
+    for b in [o for o in out if o.get("box") and not o.get("seasonPack")]:
+        if flat(str(b.get("kind") or "").split(":", 1)[-1]) not in here:
+            continue
+        twin = next((o for o in keep if o.get("pack")
+                     and int(o.get("size") or 0) == int(b.get("size") or 0)), None)
+        if twin is None:
+            continue
+        if not twin.get("seeds"):
+            twin["seeds"] = b.get("seeds")
+        keep.remove(b)
+    return keep
+
 class PostRoutes(_Base):
     def _post_part_01(self, path):
         """POST routes, part 1 of 20:
@@ -309,7 +329,7 @@ class PostRoutes(_Base):
                     (self.viewer_settings(self.settings_file()) or {}).get("shuffles"), key)
                 if shelf:
                     key = ""
-            S.NOTICE["id"] = S.NOTICE.get("id", 0) + 1
+            S.NOTICE["id"] = pd_notify.next_notice_id(S.NOTICE.get("id", 0))
             S.NOTICE["play"] = key
             S.NOTICE["shelf"] = shelf
             # for the screens listening now: a minute, and a screen opened after that is
@@ -847,6 +867,19 @@ class PostRoutes(_Base):
             self.reply_json(pd_rip.ask(key, row[2], row[0], row[1], float(row[3] or 0) / 1000,
                                        str(body.get("profile") or "")))
             return
+        if path == "/builder":
+            # the build tool on this computer saying where a build has got, for Now playing
+            if not (self.role == "owner" and self.client_address[0] in ("127.0.0.1", "::1")):
+                self.send_error(403, "not allowed")
+                return
+            body = self.read_json() or {}
+            S.BUILDING.clear()
+            S.BUILDING.update({"v": str(body.get("v") or "")[:20], "step": str(body.get("step") or "")[:30],
+                               "pct": int(body.get("pct") or 0), "left": int(body.get("left") or 0),
+                               "done": bool(int(body.get("done") or 0)), "ok": bool(int(body.get("ok") or 0)),
+                               "at": time.time()})
+            self.reply_json({"ok": True})
+            return
         if path == "/disk/hold":
             # a program beside this server reading a drive - the ripper - asking whether to wait
             if not (self.role == "owner" and self.client_address[0] in ("127.0.0.1", "::1")):
@@ -1015,7 +1048,27 @@ class PostRoutes(_Base):
         return ()
 
     def _post_part_06(self, path):
-        """POST routes, part 6 of 20: /feedback."""
+        """POST routes, part 6 of 20: /feedback, and a viewer's popular country."""
+        if path == "/settings":
+            # theirs: a country's own popular films through their list, and how often -
+            # handled here, the rest of the body left for part 7
+            body = getattr(self, "settings_body", None) or self.read_json() or {}
+            if "popularHome" in body or "popularHomeEvery" in body:
+                import pd_localapi
+                codes = {c for c, _ in pd_localapi.LocalAPI.POPULAR_COUNTRIES}
+                stored = self.settings_file()
+                mine = self.viewer_settings(stored)
+                if "popularHome" in body:
+                    code = str(body.get("popularHome") or "off").upper()
+                    mine["popularHome"] = code if code in codes else "off"
+                if "popularHomeEvery" in body:
+                    every = int(str(body.get("popularHomeEvery") or "3")[:2] or 3)
+                    mine["popularHomeEvery"] = every if every in (3, 5) else 3
+                S.write_settings(stored, merge=False)
+                self.reply_json({"popularHome": mine.get("popularHome") or "off",
+                                 "popularHomeEvery": mine.get("popularHomeEvery") or 3})
+                return
+            self.settings_body = body
         if path == "/feedback":
             # anyone using this server may report a fault or ask for something; it is
             # the one thing a guest is allowed to write here
@@ -1498,7 +1551,7 @@ class PostRoutes(_Base):
                                        "preferSource", "preferSound", "preferOrder",
                                        "preferGroup",
                                        "preferRate265", "preferRate264", "rateLock",
-                                       "preferQuality", "preferSeeds",
+                                       "preferRate265x4k", "preferRate264x4k", "preferQuality", "preferSeeds",
                                        "seriesRate", "closeCall",
                                        "followShows",
                                        "grabLatest", "libraryShows")):
@@ -1537,7 +1590,7 @@ class PostRoutes(_Base):
                     # h265 holds the same picture in about a third fewer bits, so one
                     # band settles both: h264 is set and h265 follows it
                     stored["rateLock"] = bool(body["rateLock"])
-                for field in ("preferRate265", "preferRate264"):
+                for field in ("preferRate265", "preferRate264", "preferRate265x4k", "preferRate264x4k"):
                     if field in body:
                         want = str(body.get(field) or "any").lower()
                         if want != "any" and S.rate_band(want) is None:
@@ -1638,6 +1691,7 @@ class PostRoutes(_Base):
                                      "preferRate265") or "any"),
                                  "preferRate264": str((S.read_settings() or {}).get(
                                      "preferRate264") or "any"),
+                                 **self.rate_windows_4k(),
                                  "preferQuality": str((S.read_settings() or {}).get(
                                      "preferQuality") or "any"),
                                  "preferSeeds": str((S.read_settings() or {}).get(
@@ -1830,6 +1884,39 @@ class PostRoutes(_Base):
             mine["soundPick"] = picks
             S.write_settings(stored, merge=False)
             self.reply_json({"ok": True})
+            return
+        if path == "/subs/numbers":
+            # one episode's number on the subtitle site, set by hand: it stands over what is
+            # read from the site; 0 takes it back to what was read
+            import json as _json
+            body = self.read_json() or {}
+            key = str(body.get("key") or "")
+            con = S.local().lib.db()
+            try:
+                here = con.execute("SELECT item_id, season FROM episode WHERE id=?", (key,)).fetchone()
+            finally:
+                con.close()
+            if not here:
+                self.send_error(404, "no such episode")
+                return
+            where = os.path.join(S.ROOT, "subnumbers.json")
+            try:
+                with open(where, encoding="utf-8") as f:
+                    kept = _json.load(f)
+            except (OSError, ValueError):
+                kept = {}
+            row = kept.setdefault("%s|%d" % (here["item_id"], int(here["season"])),
+                                  {"at": 0, "numbers": {}, "byHand": {}})
+            number = int(body.get("number") or 0)
+            if number > 0:
+                row.setdefault("byHand", {})[key] = number
+                row.setdefault("numbers", {})[key] = number
+            else:
+                row.setdefault("byHand", {}).pop(key, None)
+                row["at"] = 0                     # read from the site again at the next search
+            with open(where, "w", encoding="utf-8") as f:
+                _json.dump(kept, f)
+            self.reply_json({"ok": True, "season": row})
             return
         if path == "/subs/pick":
             # which subtitle a viewer settled on for one title: offered first from now
@@ -2705,6 +2792,8 @@ class PostRoutes(_Base):
                 import pd_sports
                 sport = pd_sports.releases_of(str(body["key"]),
                                               list(pd_tracker.read().values()))
+            # the tracker could not be asked just now: an empty list is then not "nothing"
+            unasked = False
             if sport:
                 got = list(sport["releases"])[:25]
                 want, year = sport["title"], 0
@@ -2729,7 +2818,7 @@ class PostRoutes(_Base):
             if episode or sport:
                 pass
             elif not got and want:
-                pd_tracker.ask_for(want, year)
+                unasked = pd_tracker.ask_for(want, year) is None
                 got = pd_tracker.find(want, year, number)[:25]
                 if not got:
                     # still nothing: the name it goes by here may be short for the one
@@ -2738,12 +2827,12 @@ class PostRoutes(_Base):
                     full, imdb = S.catalogue_title(want, year, str(body.get("key") or ""))
                     flat = lambda t: re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
                     if full and flat(full) != flat(want):
-                        pd_tracker.ask_for(full, year)
+                        unasked = pd_tracker.ask_for(full, year) is None and unasked
                         got = pd_tracker.find(full, year, imdb or number)[:25]
             elif want and body.get("fresh"):
                 # a page's second ask or a plain press on Download: the search behind the
                 # list waited for, and the list as of now
-                pd_tracker.ask_waiting(want, year, S.Handler.FRESH_MOST)
+                unasked = pd_tracker.ask_waiting(want, year, S.Handler.FRESH_MOST) is None
                 got = pd_tracker.find(want, year, number)[:25]
             elif want:
                 # already known: the list opens on what is held and is asked about
@@ -2780,12 +2869,17 @@ class PostRoutes(_Base):
                 return ""
 
             out = []
+            mark_4k = "2160p" in str((S.read_settings() or {}).get("preferRes") or "")
             length = S.runtime_of(str(body.get("key") or ""), want, year)
             for r in got:
                 size = int((held.get(str(r.get("id"))) or r).get("size") or 0)
                 flat = re.sub(r"[^a-z0-9]+", "", str(r.get("name") or "").lower())
                 out.append({"id": r.get("id"), "name": r.get("name"),
                             "kind": r.get("kind", ""),
+                            # the best 4K release is marked below: its own colour
+                            "uhd": False,
+                            # what the line says first: its resolution, for the pick and the best 4K only
+                            "res": "",
                             "seeds": int(r.get("seeds") or 0), "size": size,
                             # downloading it counts nothing against the account
                             "freeleech": pd_tracker.freeleech(r),
@@ -2869,16 +2963,33 @@ class PostRoutes(_Base):
                                      if S.video_mbit(shown, film.get("size"), length) else None),
                             "have": bool(flat and flat in here),
                             "why": refused(film.get("size"))})
+            # a box set already added here as a pack is that pack (owner, 2026-11-18)
+            out = one_row_for_added_box_sets(out, pack_names.values())
+            # the same release posted under another name: a tracker row as large as a file
+            # here, to the byte, is that file (owner, 2026-11-15: a 4K on disk stood twice,
+            # once as a download)
+            on_disk = [] if episode else self.disk_files(str(body.get("key") or ""), want, year)
+            by_size = {size: where for where, size in on_disk if size}
+            for o in out:
+                where = by_size.get(int(o.get("size") or 0))
+                if where:
+                    o["have"] = True
+                    o["file"] = os.path.splitext(os.path.basename(where))[0]
+            sized = {int(o.get("size") or 0) for o in out if o.get("file")}
             # and a file on disk that nothing listed matches: the version this house
             # has, whatever the tracker carries now
             listed = {re.sub(r"[^a-z0-9]+", "", os.path.splitext(str(o.get("name") or ""))[0].lower())
                       for o in out}
-            for where, size in ([] if episode else
-                                self.disk_files(str(body.get("key") or ""), want, year)):
+            # what the ripper made here is a version to play, not one to download: it
+            # stays off this list (owner, 2026-11-15)
+            import pd_rip
+            ripped = {os.path.normcase(str(j.get("out") or "")) for j in pd_rip.jobs()
+                      if j.get("state") == "done" and j.get("out")}
+            for where, size in on_disk:
                 names = {re.sub(r"[^a-z0-9]+", "", n.lower()) for n in
                          (os.path.splitext(os.path.basename(where))[0],
                           os.path.basename(os.path.dirname(where)))}
-                if names & listed:
+                if names & listed or (size and size in sized) or os.path.normcase(where) in ripped:
                     continue
                 shown = os.path.basename(os.path.dirname(where))                     if len(os.path.basename(where)) < 24 else os.path.basename(where)
                 out.append({"id": "", "name": shown, "kind": "on disk", "disk": True,
@@ -2932,16 +3043,49 @@ class PostRoutes(_Base):
                     best = max(chosen, key=lambda o: (o in fits, o["seeds"] or 0))
             for o in out:
                 o["pick"] = bool(best and o is best)
+            # and the best 4K one, by the same rules among the 4K releases that meet them, in
+            # its own colour when 4K is among the resolutions (owner, 2026-11-15: "violet
+            # should mark the best 4k release" - every 4K one in violet was most of the list)
+            if mark_4k:
+                fit4k = [o for o in fits if S.height_of(o.get("name")) == 2160]
+                best4k = max(fit4k, key=lambda o: (S.rank_key(o, wishes, stored, length),
+                                                   settled(o)), default=None)
+                for o in out:
+                    o["uhd"] = bool(best4k and o is best4k)
             # what is on disk and nowhere else first, then most seeded; the recommended
             # one is preselected, not moved
             # and the recommended one next: a pack's copy whose seeders nobody knows sank
             # to the foot of the list it was recommended in
-            out.sort(key=lambda o: (not o.get("disk"), not o.get("pick"), -(o["seeds"] or 0)))
+            # The coloured lines first - the pick, the best 4K, what is on disk - each with its
+            # resolution said, then the rest by seeders (owner, 2026-11-15)
+            for o in out:
+                if o.get("pick") or o.get("uhd"):
+                    o["res"] = {2160: "4K", 1080: "1080p", 720: "720p"}.get(S.height_of(o.get("name")), "")
+            first = lambda o: (0 if o.get("pick") else 1 if o.get("uhd") else
+                               2 if (o.get("have") or o.get("disk")) else 3)
+            # on disk as the Version menu has them: 1080p, then 4K, then the rest (owner, 2026-11-18)
+            res_rank = lambda o: ({1080: 0, 2160: 1}.get(S.height_of(o.get("name")), 2)
+                                  if first(o) == 2 else 0)
+            out.sort(key=lambda o: (first(o), res_rank(o), -(o.get("seeds") or 0)))
             # nothing to fetch for what is already here, whatever else it is
             for o in out:
                 if o["have"]:
                     o["why"] = ""
-            self.reply_json({"free": free, "versions": out})
+            # and what it put forward kept for the film's Version menu (owner, 2026-11-15)
+            if not episode and held_ep is None and body.get("key") and out:
+                import pd_localapi
+                import pd_torrents
+                marked = (pd_torrents.title_of(str(body.get("key"))),
+                          next((o.get("file") or o["name"] for o in out if o.get("pick")), ""),
+                          next((o.get("file") or o["name"] for o in out if o.get("uhd")), ""))
+                pd_localapi.keep_download_marks(*marked)
+                # and on the other server, which a page may be opened from
+                import urllib.parse as _up
+                threading.Thread(target=S.peer_fetch, daemon=True, args=(
+                    "/follow/marks?key=%s&pick=%s&uhd=%s" % tuple(_up.quote(str(x)) for x in marked),
+                    5)).start()
+            self.reply_json({"free": free, "versions": out,
+                             "unasked": bool(unasked and not out)})
             return
         return ()
 

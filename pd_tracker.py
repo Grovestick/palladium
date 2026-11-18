@@ -747,16 +747,50 @@ def read():
     if said is None:
         STATE["unread"] = True
         said = {}
+    else:
+        # read whole again: what is written now is what was read, not an empty start
+        STATE["unread"] = False
     rows = said.get("rows") if isinstance(said, dict) else None
     asked = said.get("asked") if isinstance(said, dict) else None
     taken = said.get("taken") if isinstance(said, dict) else None
     log = said.get("log") if isinstance(said, dict) else None
+    rows = rows if isinstance(rows, dict) else {}
+    if not STATE.get("unread"):
+        _sports_back(rows)
     with LOCK:
-        STATE["rows"] = rows if isinstance(rows, dict) else {}
+        STATE["rows"] = rows
         STATE["asked"] = asked if isinstance(asked, dict) else {}
         STATE["taken"] = taken if isinstance(taken, dict) else {}
         STATE["log"] = log if isinstance(log, list) else []
         return STATE["rows"]
+
+
+def _sports_back(rows):
+    """A sport's releases the count cut once dropped, taken back from the newest day's
+    copy of the index: four days of postings filled the whole index and the Sports row
+    lost every race (owner, 2026-11-15). Within the year a sport is kept, never a row
+    that is here already."""
+    try:
+        import glob
+        import pd_sports
+        copies = sorted(glob.glob(_path() + ".*.bak"))
+        if not copies:
+            return 0
+        with open(copies[-1], encoding="utf-8") as f:
+            old = (json.load(f) or {}).get("rows") or {}
+        long_cut = time.time() - SPORT_KEEP_DAYS * 86400
+        back = 0
+        for k, v in old.items():
+            if k not in rows and isinstance(v, dict) and float(v.get("at") or 0) >= long_cut                     and pd_sports.read_name(v.get("name")) is not None:
+                rows[k] = v
+                back += 1
+        return back
+    except Exception:
+        return 0
+
+
+#: one save of the index at a time
+SAVING = threading.Lock()
 
 
 def write():
@@ -774,13 +808,19 @@ def write():
     kept = {k: v for k, v in rows.items()
             if float(v.get("at") or 0) >= (long_cut if sport(v) else cut)}
     if len(kept) > KEEP:
-        newest = sorted(kept.values(), key=lambda r: float(r.get("at") or 0),
-                        reverse=True)[:KEEP]
-        kept = {r["id"]: r for r in newest}
+        # the count is for everything else: a sport's year of releases is kept whatever
+        # four busy days post (owner, 2026-11-15)
+        games = {k: v for k, v in kept.items() if sport(v)}
+        newest = sorted((v for k, v in kept.items() if k not in games),
+                        key=lambda r: float(r.get("at") or 0), reverse=True)[:KEEP]
+        kept = dict(games, **{r["id"]: r for r in newest})
     with LOCK:
         STATE["rows"] = kept
     where = _path()
-    tmp = where + ".tmp"
+    # each save its own file, and one save at a time: two threads saving at once wrote the
+    # same .tmp, and the index was left with a brace too many - unreadable, and the server
+    # reading it again on every lookup until nothing else answered (2026-11-15)
+    tmp = "%s.%d.%d.tmp" % (where, os.getpid(), threading.get_ident())
     if not kept:
         return                            # nothing learned yet: leave what is there
     if STATE.get("unread") or not STATE.get("root"):
@@ -807,14 +847,18 @@ def write():
                            "taken": dict(STATE.get("taken") or {}),
                            # who took what, kept past the download itself
                            "log": list(STATE.get("log") or [])})
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, where)
-    except OSError:
-        pass
+    with SAVING:
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, where)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _bendecode(raw, at=0) -> tuple:
@@ -1321,16 +1365,20 @@ def ask_for(title, year=0, again_after=90.0):
     learns is kept in the index like everything else, and asked again the next time
     somebody opens that list, so a release that came out since is there. The short
     guard is only against the same open asking twice.
+
+    None when the tracker was not asked - held, asked a moment ago, ten a minute already,
+    or no answer - and [] only when it answered with nothing: told apart, a list emptied
+    by the limit said "nothing on the tracker" for films it carries (2026-11-15).
     """
     if HELD["on"]:
-        return []
+        return None
     read()
     mark = "%s|%d" % (str(title or "").strip().lower(), int(year or 0))
     # being asked already: waited for, not asked twice
     going = ASKING.get(mark)
     if going is not None:
         going.wait(ASK_WAIT_MOST)
-        return []
+        return None
     now = time.time()
     with LOCK:
         when = float((STATE.get("asked") or {}).get(mark) or 0)
@@ -1339,26 +1387,31 @@ def ask_for(title, year=0, again_after=90.0):
         # is a search. Ten a minute is a person browsing; a hundred is a robot, and
         # the tracker is entitled to think so.
         lately = [t for t in (STATE.get("lately") or []) if now - t < 60.0]
-        room = len(lately) < 10
+        # the ten a minute hold back background work only: a person's own press always
+        # asks, counted all the same - a page's background asks had used the minute up,
+        # and the press found "nothing on the tracker" (2026-11-15)
+        room = len(lately) < 10 or not getattr(_HOW, "background", False)
         if room:
             lately.append(now)
         STATE["lately"] = lately
-    if time.time() - when < again_after or not room:
-        return []
+    if time.time() - when < again_after:
+        return []                         # asked a moment ago: what it said is in the index
+    if not room:
+        return None
     ASKING[mark] = threading.Event()
     try:
         got = search(title, year)
     finally:
         ASKING.pop(mark).set()
     if got is None:
-        return []                         # gave way: not marked asked
+        return None                       # gave way: not marked asked
     with LOCK:
         failed = not got and bool(STATE.get("why"))
     if failed:
         # the tracker or the indexer did not answer: not asked, and asked again next
         # time. Marked, a network that was down for a minute turned every series asked
         # in it into Request for two weeks
-        return []
+        return None
     with LOCK:
         STATE.setdefault("asked", {})[mark] = time.time()
     write()
@@ -1366,10 +1419,16 @@ def ask_for(title, year=0, again_after=90.0):
 
 
 def ask_waiting(title, year, most):
-    """ask_for with somebody waiting on it: at most so many seconds, and it finishes behind them."""
-    asking = threading.Thread(target=ask_for, args=(title, year), daemon=True)
+    """ask_for with somebody waiting on it: at most so many seconds, and it finishes behind them.
+    What ask_for said, or None when it had not said in time."""
+    said = []
+
+    def go():
+        said.append(ask_for(title, year))
+    asking = threading.Thread(target=go, daemon=True)
     asking.start()
     asking.join(most)
+    return said[0] if said else None
 
 
 def ask_about(many=1, gap=5.0):

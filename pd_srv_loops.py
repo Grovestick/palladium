@@ -592,9 +592,51 @@ def start_speed():
     pd_speed.start(S.other_server, here, S.Handler.how_thin, log)
 
 
+#: how often a copy asks the main server it follows whether it is there
+HOUSE_LOOK_EVERY = 10
+#: its asks: when the last was, and how many in a row went unanswered
+HOUSE_SEEN = {"at": 0.0, "fails": 0}
+
+
+def look_at_house(now=None):
+    """A copy asks the main server it follows, as answering_now does and into the same record:
+    what /where then tells an app about the house is never more than this old."""
+    import pd_torrents
+    import urllib.error as _uerr
+    one = pd_torrents._following()
+    where = str((one or {}).get("master") or "").rstrip("/")
+    if not where:
+        return None
+    try:
+        with urllib.request.urlopen(where + "/where", timeout=2) as answer:
+            up = answer.status == 200
+    except _uerr.HTTPError:
+        up = True                     # it answered, if not to this question
+    except Exception:
+        up = False
+    now = time.time() if now is None else now
+    S.Handler.CONNECTED_UP[where] = (now, up)
+    # two asks in a row unanswered, ten seconds apart, before /where says it is down: a
+    # moment's blip seen by this copy and an app at once moved a settled viewer (2026-11-15)
+    HOUSE_SEEN.update(at=now, fails=0 if up else HOUSE_SEEN["fails"] + 1)
+    return up
+
+
+def start_house_watch():
+    def work():
+        while True:
+            try:
+                look_at_house()
+            except Exception:
+                pass
+            time.sleep(HOUSE_LOOK_EVERY)
+    threading.Thread(target=work, name="palladium-house-look", daemon=True).start()
+
+
 def start_boss():
     """The boss over every worker, and the ones it may start again."""
     import pd_boss
+    start_house_watch()
 
     def log(text):
         pd_log.raw("%s %s%s" % (time.strftime("%H:%M:%S"), text, chr(10)))

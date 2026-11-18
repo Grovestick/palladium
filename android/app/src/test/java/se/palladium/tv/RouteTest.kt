@@ -80,6 +80,7 @@ private class World(val away: Boolean, startBase: String, var chosenIsCopy: Bool
             standingBy = standingBy,
             base = base,
             baseUsable = reachable(base) && state(base) != false,
+            baseHere = reachable(base),
             mainUp = up(MAIN, "M"),
             mainDoor = door(MAIN, "M"),
             mainTry = MAIN.firstOrNull { reachable(it) && state(it) != false },
@@ -1014,7 +1015,8 @@ class RouteTest {
     fun tvOpensOnPopular() {
         assertEquals(true, Route.tvOpensPopular("tv", Route.SRC_HOUSE))
         assertEquals(false, Route.tvOpensPopular("tv", "1899"))
-        assertEquals(false, Route.tvOpensPopular("tv", ""))
+        // nothing marked: this house's Popular page too
+        assertEquals(true, Route.tvOpensPopular("tv", ""))
         assertEquals(true, Route.tvOpensPopular("films", Route.SRC_HOUSE))
         assertEquals(false, Route.tvOpensPopular("films", "8"))
         assertEquals(false, Route.tvOpensPopular("home", Route.SRC_HOUSE))
@@ -1026,9 +1028,9 @@ class RouteTest {
         val house = Route.sources(Route.SRC_HOUSE)
         assertEquals(false, house.catalogue)
         assertEquals(true, house.mine && house.packs)
-        // nothing marked: everything, every service included
+        // nothing marked: this house's own, the Popular page - no catalogue
         val none = Route.sources("")
-        assertEquals(true, none.everything && none.catalogue && none.mine && none.packs)
+        assertEquals(true, !none.everything && !none.catalogue && none.mine && none.packs)
         // a service and In packs: that catalogue, and the packs, not the disks
         val mixed = Route.sources("-2,1899")
         assertEquals(listOf("1899"), mixed.services)
@@ -2210,5 +2212,146 @@ class RouteTest {
         // nothing measured, or nothing known about the film: wait
         assertFalse(Route.lineClearlyShort(0.0, 68))
         assertFalse(Route.lineClearlyShort(18.0, 0))
+    }
+    @Test
+    fun aServerSendingFilmIsNotDown() {
+        // film arrived three seconds ago: up, whatever a look says
+        assertTrue(Route.stillSending(97_000L, 100_000L))
+        // nothing for longer than SENDING_MS, or never: a look decides
+        assertFalse(Route.stillSending(100_000L - Route.SENDING_MS - 1, 100_000L))
+        assertFalse(Route.stillSending(null, 100_000L))
+    }
+    @Test
+    fun aSlowEncoderIsTheServerOnlyWithRoomOnTheLine() {
+        // behind, and the line carries 60 for a 20 stream: the server
+        assertTrue(Route.encoderTooSlow(true, 60.0, 20.0))
+        // behind with a line of 18 for 20: the line holds the encoder back
+        assertFalse(Route.encoderTooSlow(true, 18.0, 20.0))
+        // keeping up, or nothing known of what it needs
+        assertFalse(Route.encoderTooSlow(false, 60.0, 20.0))
+        assertFalse(Route.encoderTooSlow(true, 60.0, 0.0))
+    }
+    @Test
+    fun theCopysWordMakesAFirstMissDown() {
+        // the copy did not reach the main server 10 s ago: its word counts; 40 s ago it does not
+        assertTrue(Route.houseSaysDown(false, 10))
+        assertFalse(Route.houseSaysDown(false, 40))
+        assertFalse(Route.houseSaysDown(true, 5))
+        assertFalse(Route.houseSaysDown(null, 5))
+        val main = Look(false, "M", 0, 1_000, misses = 1)
+        val copy = Look(true, "C", 20, 1_000, followsId = "M", houseDown = true)
+        val other = Look(false, "X", 0, 1_000, misses = 1)
+        val out = Route.confirmDown(mapOf("main" to main, "copy" to copy, "x" to other))
+        // the main server's first miss is down; another machine's is not; the copy untouched
+        assertTrue(out.getValue("main").down)
+        assertFalse(out.getValue("x").down)
+        assertEquals(copy, out.getValue("copy"))
+        // the copy saying the main server answers it: one miss stays one miss
+        val fine = Route.confirmDown(mapOf("main" to main, "copy" to copy.copy(houseDown = false)))
+        assertFalse(fine.getValue("main").down)
+        // opening the app: the copy answering is enough for a first miss
+        val opening = Route.confirmDown(mapOf("main" to main, "copy" to copy.copy(houseDown = false)),
+                                        opening = true)
+        assertTrue(opening.getValue("main").down)
+        // an app just started: its misses have no id, and are found by the row they belong to
+        val bare = Look(false, "", 0, 1_000, misses = 1)
+        val byRow = Route.confirmDown(mapOf("http://lan" to bare, "https://out" to bare,
+                                            "copy" to copy.copy(houseDown = false)),
+                                      opening = true, waysOf = mapOf("M" to listOf("http://lan", "https://out")))
+        assertTrue(byRow.getValue("http://lan").down)
+        assertTrue(byRow.getValue("https://out").down)
+        // the copy's verdict alone: an address never looked at is down; one that answered cleanly is not
+        val verdict = Route.confirmDown(mapOf("copy" to copy, "http://lan" to Look(true, "M", 20, 900)),
+                                        waysOf = mapOf("M" to listOf("http://lan", "https://out")), now = 1_000)
+        assertTrue(verdict.getValue("https://out").down)
+        assertTrue(verdict.getValue("http://lan").up)
+        assertTrue(Route.knownEnough(true, null))
+        assertTrue(Route.knownEnough(false, true))
+        assertFalse(Route.knownEnough(null, true))
+        assertFalse(Route.knownEnough(false, null))
+        // and nothing at all when the copy does not answer either
+        val none = Route.confirmDown(mapOf("main" to main, "copy" to copy.copy(up = false)), opening = true)
+        assertFalse(none.getValue("main").down)
+    }
+    @Test
+    fun aDotIsGreenOnlyWhenVerified() {
+        val now = 100_000L
+        val answered = Look(true, "M", 20, now - 3_000)
+        val missedOnce = Look(true, "M", 20, now - 3_000, misses = 1)
+        val down = Look(false, "M", 0, now - 3_000, misses = Route.MISSES)
+        assertEquals(true, Route.verified(listOf(answered, down), now, 45_000))
+        // answered before and missed since: not green, not red
+        assertNull(Route.verified(listOf(missedOnce, down), now, 45_000))
+        assertEquals(false, Route.verified(listOf(down, down), now, 45_000))
+        // never looked at, or an answer too old
+        assertNull(Route.verified(listOf(null), now, 45_000))
+        assertNull(Route.verified(listOf(answered.copy(at = now - 60_000)), now, 45_000))
+    }
+    @Test
+    fun theOtherServerIsTestedBeforeAMove() {
+        // answers, hardware encoder, nothing running: better
+        assertTrue(Route.otherEncodesBetter(true, true, 0, 1))
+        // no hardware encoder: a 4K encode on its processor is worse
+        assertFalse(Route.otherEncodesBetter(true, false, 0, 1))
+        // busier than here, or not answering
+        assertFalse(Route.otherEncodesBetter(true, true, 2, 1))
+        assertFalse(Route.otherEncodesBetter(false, true, 0, 1))
+    }
+    @Test fun aTabletIsLaidOutAsTheTelevision() {
+        // the television and phones as they are
+        assertEquals(1f, Route.tvScale(true, 540, 960, 540), 0.001f)
+        assertEquals(1f, Route.tvScale(false, 411, 891, 411), 0.001f)
+        // a 13-inch tablet at 2.25: 1557 x 973 dp on its side, drawn 1.8 times larger
+        val side = Route.tvScale(false, 973, 1557, 973)
+        assertEquals(973f / 640f, side, 0.001f)
+        // standing up: the long side against 960 decides
+        assertEquals(1557f / 1140f, Route.tvScale(false, 973, 973, 1557), 0.001f)
+        // a small tablet: only as much as its height asks
+        assertEquals(1f, Route.tvScale(false, 600, 960, 600), 0.001f)
+        // never smaller than as it is
+        assertEquals(1f, Route.tvScale(false, 600, 1000, 600 - 100), 0.001f)
+    }
+    @Test fun theCopiesHereStand1080pThen4kThenTheRest() {
+        // 4K, a remux 4K, a 1080p rip, a 720p: the 1080p first, the two 4K in their order
+        assertEquals(listOf(2, 0, 1, 3), Route.copyOrder(listOf(2160, 2160, 1080, 720)))
+        assertEquals(listOf(0, 1), Route.copyOrder(listOf(1080, null)))
+    }
+    @Test fun anUntriedMainAddressIsNotTakenWhileTheCopyAnswers() {
+        // the television's own decision at 07:04:00.321 (2026-11-18): the home address known
+        // off, the outside one not tried yet, the copy answering. It moved the library to the
+        // outside address, which was off too, and loaded everything twice.
+        val seen = Route.Seen(chosenIsCopy = false, homeUnlooked = true, prefersCopy = false,
+            standingBy = false, base = "http://192.168.0.181:8765", baseUsable = false,
+            mainUp = null, mainDoor = null, mainTry = "https://maverick.palladium.video:8765",
+            copyDoor = "http://192.168.0.25:8764", mainBase = "http://192.168.0.181:8765",
+            homeBase = "")
+        assertEquals(Route.Move.Stay, Route.decide(seen).move)
+        // with nothing else answering, the untried address is still worth a go
+        assertEquals(Route.Move.Library("https://maverick.palladium.video:8765"),
+                     Route.decide(seen.copy(copyDoor = null)).move)
+        // and away from home, where the house address cannot answer at all
+        assertEquals(Route.Move.Library("https://maverick.palladium.video:8765"),
+                     Route.decide(seen.copy(baseHere = false)).move)
+    }
+
+    @Test fun startUpKeepsTheRouteThisRunAlreadyHas() {
+        assertTrue(Route.keepRoute("http://192.168.0.181:8765", "http://192.168.0.181:8765",
+                                   "http://192.168.0.25:8764"))
+        assertFalse(Route.keepRoute("", "http://192.168.0.181:8765", ""))
+        assertFalse(Route.keepRoute("http://other:8765", "http://192.168.0.181:8765", "http://x"))
+    }
+    @Test fun standingByTheCopyDoesNotHopBetweenItsOwnAddresses() {
+        // the television at 07:14:00.164 (2026-11-18): on the copy at home, its house address
+        // missed twice as the app came back to the screen, its outside address answered. It
+        // moved there and back in 2.5 s, each a fresh read; both lead to the same machine.
+        val seen = Route.Seen(chosenIsCopy = false, homeUnlooked = false, prefersCopy = false,
+            standingBy = true, base = "http://192.168.0.25:8764", baseUsable = false,
+            baseHere = true, baseIsCopy = true,
+            mainUp = false, mainDoor = null, mainTry = null,
+            copyDoor = "https://maverick.palladium.video:8764", mainBase = "http://192.168.0.181:8765",
+            homeBase = "http://192.168.0.181:8765")
+        assertEquals(Route.Move.Stay, Route.decide(seen).move)
+        // away from home the house address cannot answer: the outside one is taken
+        assertTrue(Route.decide(seen.copy(baseHere = false)).move is Route.Move.Standby)
     }
 }

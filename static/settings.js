@@ -7937,6 +7937,47 @@
       ? "Series that no pack, no tracker release and no streaming service carries are left out."
       : "Series that nothing carries are shown with Request, beside those you can add or stream.";
     box.appendChild(n2);
+    // a country's own popular films woven through this viewer's Popular, and how often -
+    // nobody's by default (owner, 2026-11-15)
+    const home = String(data.popularHome || "off").toUpperCase();
+    const every = +data.popularHomeEvery === 5 ? 5 : 3;
+    const rowP = document.createElement("div");
+    rowP.className = "addrow subrow";
+    rowP.innerHTML = "<span class='sublabel'>Popular from a country</span>";
+    const pick = document.createElement("select");
+    [["OFF", "Off"]].concat(data.popularCountries || []).forEach(([code, name]) => {
+      const o = document.createElement("option");
+      o.value = code;
+      o.textContent = name;
+      if (code === home || (code === "OFF" && home === "OFF")) o.selected = true;
+      pick.appendChild(o);
+    });
+    pick.onchange = async () => {
+      await post("/settings", { popularHome: pick.value === "OFF" ? "off" : pick.value });
+      render();
+    };
+    rowP.appendChild(pick);
+    if (home !== "OFF") {
+      [[3, "Every 3rd"], [5, "Every 5th"]].forEach(([val, text]) => {
+        const b = document.createElement("button");
+        b.className = "btn ghost kind" + (every === val ? " on" : "");
+        b.textContent = text;
+        b.onclick = async () => {
+          await post("/settings", { popularHomeEvery: val });
+          render();
+        };
+        rowP.appendChild(b);
+      });
+    }
+    box.appendChild(rowP);
+    const nP = document.createElement("div");
+    nP.className = "note";
+    const named = ((data.popularCountries || []).find(([c]) => c === home) || [home, home])[1];
+    nP.textContent = home === "OFF"
+      ? "Popular is the films most watched everywhere, nothing woven in."
+      : "Popular has one of " + named + "'s own films of the last year in every " +
+        (every === 5 ? "5th" : "3rd") + " place.";
+    box.appendChild(nP);
     // and films only had so far as a cam or a telesync: hidden as it comes
     const cams = data.camReleases === "show" ? "show" : "hide";
     const row3 = document.createElement("div");
@@ -8770,6 +8811,10 @@
       "Mbit/s of picture, sound taken off. About 1 GB per Mbit/s for two hours."],
      ["Bitrate h265", "preferRate265", [],
       "h264 divided by 1.6 while the multiplier is on."],
+     ["Bitrate h264 4K", "preferRate264x4k", [],
+      "A 4K release's own window. A remux runs 50 Mbit/s and more."],
+     ["Bitrate h265 4K", "preferRate265x4k", [],
+      "4K h264 divided by 1.6 while the multiplier is on. An x265 4K encode runs 15-25."],
      ["Quality", "preferQuality",
       [["best", "Highest"], ["pergb", "Best"], ["any", "Any"]],
       "Highest: most picture (h265 counts 1.6). Best: most picture per GB."],
@@ -8787,6 +8832,7 @@
       .map((w) => [w, { preferRes: "res", preferSource: "source",
                         preferCodec: "codec", preferSound: "sound",
                         preferRate265: "rate", preferRate264: "rate",
+                        preferRate265x4k: "rate", preferRate264x4k: "rate",
                         preferQuality: "quality", preferSeeds: "seeds",
                         preferGroup: "group" }[w[1]]])
       .sort((a, b) => {
@@ -8806,15 +8852,15 @@
         const was = { preferRes: "1080p", preferBy: "seeds" }[field] || "any";
         const now = String(data[field] || was);
         // Settle by and a bitrate are one answer; the wishes above can hold several
-        const many = ["preferBy", "preferRate265", "preferRate264", "preferQuality",
-                      "preferSeeds"].indexOf(field) < 0;
+        const many = ["preferBy", "preferRate265", "preferRate264", "preferRate265x4k",
+                      "preferRate264x4k", "preferQuality", "preferSeeds"].indexOf(field) < 0;
         const chosen = now.split(",").map((x) => x.trim()).filter(Boolean);
         const row = document.createElement("div");
         row.className = "addrow subrow";
         row.innerHTML = "<span class='sublabel'>" + label + "</span>";
         // up and down: which wish counts first when a release cannot meet them all.
         // The two bitrates are one wish and move together, from the first of them.
-        if (kind && field !== "preferRate265") {
+        if (kind && ["preferRate265", "preferRate264x4k", "preferRate265x4k"].indexOf(field) < 0) {
           const at = kinds.indexOf(kind);
           [["↑", -1], ["↓", 1]].forEach(([arrow, step]) => {
             const m = document.createElement("button");
@@ -8833,21 +8879,22 @@
         }
         // A bitrate is a band: a From and a To, each set on its own. A ceiling by
         // itself took a thin rip as readily as a good one.
-        if (field === "preferRate265" || field === "preferRate264") {
+        // and 4K's own pair, the same way (owner, 2026-11-15)
+        if (/^preferRate26[45](x4k)?$/.test(field)) {
           const cut = now === "any" ? ["any", "any"]
             : now.indexOf("-") > 0 ? now.split("-") : ["any", now];
           const from = (cut[0] || "any").trim() || "any";
           const to = (cut[1] || "any").trim() || "any";
-          const locked = !!data.rateLock && field === "preferRate265";
+          const locked = !!data.rateLock && /^preferRate265/.test(field);
           const times = (v) => v === "any" ? "any"
             : String(Math.round(parseFloat(v) / 1.6 * 10) / 10);
           const put = async (f, u) => {
             const body = {};
             const said = (f === "any" && u === "any") ? "any" : (f + "-" + u);
             body[field] = said;
-            // h264 carries h265 with it while the multiplier is on
-            if (field === "preferRate264" && data.rateLock) {
-              body.preferRate265 = said === "any" ? "any"
+            // h264 carries h265 with it while the multiplier is on, 4K its own
+            if (/^preferRate264/.test(field) && data.rateLock) {
+              body[field.replace("264", "265")] = said === "any" ? "any"
                 : times(f) + "-" + times(u);
             }
             await post("/settings", body);
@@ -8892,12 +8939,16 @@
             lock.onclick = async () => {
               const body = { rateLock: !data.rateLock };
               if (!data.rateLock) {
-                const his = String(data.preferRate264 || "any");
-                const bits = his === "any" ? ["any", "any"]
-                  : his.indexOf("-") > 0 ? his.split("-") : ["any", his];
-                body.preferRate265 = his === "any" ? "any"
-                  : times((bits[0] || "any").trim()) + "-" +
-                    times((bits[1] || "any").trim());
+                // both pairs, 1080p and 4K, follow their h264 once it is on
+                [["preferRate264", "preferRate265"], ["preferRate264x4k", "preferRate265x4k"]]
+                  .forEach(([h264, h265]) => {
+                    const his = String(data[h264] || "any");
+                    const bits = his === "any" ? ["any", "any"]
+                      : his.indexOf("-") > 0 ? his.split("-") : ["any", his];
+                    body[h265] = his === "any" ? "any"
+                      : times((bits[0] || "any").trim()) + "-" +
+                        times((bits[1] || "any").trim());
+                  });
               }
               await post("/settings", body);
               render();
@@ -10303,6 +10354,42 @@
     tick();
   }
 
+  /* A build of this program on Now playing: its version, the step, how far and how long
+     left - and how it ended, for ten minutes after. Hidden while nothing is building. */
+  function builderBlock(into) {
+    const box = block("Builder");
+    box.classList.add("mergebox", "builderbox");
+    box.style.display = "none";
+    into.appendChild(box);
+    const table = document.createElement("div");
+    table.className = "mergelinks";
+    box.appendChild(table);
+    const tick = async () => {
+      if (!box.isConnected) return;
+      // a missed answer keeps the box as it was: the install restarts this server
+      let b = tick.last || {};
+      try { b = tick.last = await get("/builder"); } catch (e) { /* kept */ }
+      if (!box.isConnected) return;
+      box.style.display = b.v ? "" : "none";
+      if (b.v) {
+        table.innerHTML = "";
+        const r = document.createElement("div");
+        r.className = "mergerow" + (b.done && !b.ok ? " off" : "");
+        r.innerHTML = "<span class='n'></span><span class='s'></span><span class='t'></span>";
+        // the step in words: what the build is doing now (owner, 2026-11-15)
+        const STEPS = { starting: "Starting", compile: "Checking the code", tests: "Running the tests",
+                        app: "Building the app", package: "Building the installer",
+                        install: "Installing on both servers" };
+        r.querySelector(".n").textContent = b.v + (b.done ? "" : "  ·  " + (STEPS[b.step] || b.step));
+        r.querySelector(".s").textContent = b.done ? (b.ok ? "installed" : "failed") : b.pct + "%";
+        r.querySelector(".t").textContent = b.done ? "" : Math.ceil(b.left / 60) + " min left";
+        table.appendChild(r);
+      }
+      setTimeout(tick, 3000);
+    };
+    tick();
+  }
+
   async function paneNow(main) {
     if (document.body.classList.contains("monitor")) main.appendChild(designBar());
     // The drawing, the totals and the streams in one column, a box for each worker in
@@ -10340,7 +10427,10 @@
       right.appendChild(work);
     }
     drawLive(live, sum, work);
-    if (monitor) mergeBlock(main);
+    if (monitor) {
+      builderBlock(main);
+      mergeBlock(main);
+    }
   }
 
   /* Who is following this server, and what has already gone to them. */

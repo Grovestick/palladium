@@ -1,5 +1,338 @@
 [
   {
+    "version": "0.20.93",
+    "when": "2026-11-18",
+    "title": "No library reload while the main server sleeps",
+    "items": [
+      "App: opened again after a while away it keeps the server it was on, not starting over from the main one\nApp: while the copy answers, an untried address of the main server is not tried - the library was read twice\nApp: standing by on the copy it does not hop between the copy's own addresses at home"
+    ]
+  },
+  {
+    "version": "0.20.92",
+    "when": "2026-11-18",
+    "title": "Cast by the whole run, motocross, version order",
+    "items": [
+      "Search: a series' actors are its whole run's, so an actor from later seasons finds it\nSports: Motocross - AMA Supercross, AMA Motocross, MXGP and the Motocross of Nations, a round each\nVersion menu: copies on disk in the order 1080p, then 4K, then the rest, in the app and on the web\nDownload lists: a box set already added here is listed once, as its pack, with its seeders\nWeb: a film to download lists its releases as a film here does, 1080p and 4K marked"
+    ]
+  },
+  {
+    "version": "0.20.91",
+    "when": "2026-11-16",
+    "title": "Start screen P",
+    "items": [
+      "App: opens on the P on its blue tile, as the panel shows it"
+    ]
+  },
+  {
+    "version": "0.20.90",
+    "when": "2026-11-15",
+    "title": "Tablet Start as the television's",
+    "items": [
+      "App: on a tablet Start is laid out as on the television, its slide above the navigation bar"
+    ]
+  },
+  {
+    "version": "0.20.89",
+    "when": "2026-11-15",
+    "title": "Tablet poster page as the television's",
+    "items": [
+      "App: on a tablet a title's page has no Back button and More like this at the foot of the screen, as on the television"
+    ]
+  },
+  {
+    "version": "0.20.88",
+    "when": "2026-11-15",
+    "title": "Tablet Home two shelves",
+    "items": [
+      "App: on a tablet Home fits two whole shelves above the navigation bar, as on the television"
+    ]
+  },
+  {
+    "version": "0.20.87",
+    "when": "2026-11-15",
+    "title": "Tracker index saved one at a time; tablet smaller",
+    "items": [
+      "Tracker index: saved one at a time, each save its own file; it can be saved again once it reads whole\nApp: a tablet draws about 1.5 times larger, not 1.8"
+    ]
+  },
+  {
+    "version": "0.20.86",
+    "when": "2026-11-15",
+    "title": "Tablet laid out as the television",
+    "items": [
+      "App: a tablet draws every tab larger, laid out as the television, so Home shows two rows"
+    ]
+  },
+  {
+    "version": "0.20.85",
+    "when": "2026-11-15",
+    "title": "Poster page tidier",
+    "items": [
+      "Web: no Version and Subtitles words beside the menus; a film to download has who is in it under Show more"
+    ]
+  },
+  {
+    "version": "0.20.84",
+    "when": "2026-11-15",
+    "title": "Film page spacing, Download page laid out as the play page",
+    "items": [
+      "Web: the film's facts row has its own room under the Version and Subtitles rows",
+      "Web: a film to download has its buttons, Version row and facts in the same order as a film here"
+    ]
+  },
+  {
+    "version": "0.20.83",
+    "when": "2026-11-15",
+    "title": "Ask before a download, web page order",
+    "items": [
+      "Download other version: choosing a release asks before it downloads, in the app and on the web\nWeb: the film's facts sit under the Version and Subtitles rows, as in the app\nWeb: the download line sits to the right of the microphone\nWeb: the release menu has no line of its own to go back"
+    ]
+  },
+  {
+    "version": "0.20.82",
+    "when": "2026-11-15",
+    "title": "Sports kept, web cancel, source word first",
+    "items": [
+      "Tracker index: a sport's year of releases is kept outside the row limit; dropped ones come back from the day's copy\nWeb: a download started from the Version menu can be cancelled beside it\nDownload lists: where a release comes from is said first, then its resolution\nMonitor: the Builder box names the step and is not on Now playing"
+    ]
+  },
+  {
+    "version": "0.20.81",
+    "when": "2026-11-15",
+    "title": "On disk first",
+    "items": [
+      "Download lists: a release on disk says On disk first, then its resolution"
+    ]
+  },
+  {
+    "version": "0.20.80",
+    "when": "2026-11-15",
+    "title": "Web download list in the Version menu",
+    "items": [
+      "Web: Download other version turns the Version menu into the releases, files on disk marked; choosing one downloads it"
+    ]
+  },
+  {
+    "version": "0.20.79",
+    "when": "2026-11-15",
+    "title": "Web download list as a drop-down",
+    "items": [
+      "Web: Download other version opens a second drop-down beside the Version menu with only the releases; choosing one downloads it"
+    ]
+  },
+  {
+    "version": "0.20.78",
+    "when": "2026-11-15",
+    "title": "Back after a menu, faster Home, builder on Now playing",
+    "items": [
+      "App: Back right after closing a menu now works the first time\nHome: Recently added builds only the films it shows, not every film first\nNow playing: a Builder box with the build's version, step, progress and time left"
+    ]
+  },
+  {
+    "version": "0.20.77",
+    "when": "2026-11-15",
+    "title": "Web download list and dialogs close at once",
+    "items": [
+      "Web: Download other version opens its own list, as in the app, instead of adding to the version menu\nApp: closing a dialog no longer swallows the next Back"
+    ]
+  },
+  {
+    "version": "0.20.76",
+    "when": "2026-11-15",
+    "title": "Series add: sizes and a question first",
+    "items": [
+      "Adding a series: each pack and episode says its size; a pack asks before it is added; the extra add button is gone"
+    ]
+  },
+  {
+    "version": "0.20.75",
+    "when": "2026-11-15",
+    "title": "Own rips off the download list",
+    "items": [
+      "Download list: a file the ripper made is not listed; it is a version to play"
+    ]
+  },
+  {
+    "version": "0.20.74",
+    "when": "2026-11-15",
+    "title": "Version menu marks on both servers",
+    "items": [
+      "Version menu: the download pick's colours come from either server"
+    ]
+  },
+  {
+    "version": "0.20.73",
+    "when": "2026-11-15",
+    "title": "Download list knows a release on disk by its size",
+    "items": [
+      "Download list: a tracker release the exact size of a file on disk counts as on disk, and is listed once"
+    ]
+  },
+  {
+    "version": "0.20.72",
+    "when": "2026-11-15",
+    "title": "Download list colours on disk",
+    "items": [
+      "Download list: a recommended 1080p or best 4K row on disk keeps its green or violet, its On disk tag yellow"
+    ]
+  },
+  {
+    "version": "0.20.71",
+    "when": "2026-11-15",
+    "title": "Version menu shows the download pick",
+    "items": [
+      "Version menu: the copy that is the download list's 1080p pick shows its 1080p in green, the best 4K's 4K in violet"
+    ]
+  },
+  {
+    "version": "0.20.70",
+    "when": "2026-11-15",
+    "title": "Home rows are the head of their pages",
+    "items": [
+      "Recently added films row is the first 40 of the Films tab in arrival order, app and web\nFilms tab in arrival order dates a film by its first arrival on either server and leads with downloads coming in\nPopular shows row is the head of the Popular shows page, titles not held included\nDownload list: the 1080p and 4K tag keeps its colour on a row that is on disk",
+      "Tracker wait test given room on a loaded machine"
+    ]
+  },
+  {
+    "version": "0.20.69",
+    "when": "2026-11-15",
+    "title": "Download list: coloured first, Popular page, popular series",
+    "items": [
+      "The download list puts the pick, the best 4K and what is on disk first, the rest by seeders; only the pick and the best 4K say their resolution",
+      "Films and TV with nothing marked open on Popular - the same list as the row, films not out yet included - in the app and on the web",
+      "Popular series no longer weave Swedish series through everybody's list; a viewer's chosen country is woven in for them, off by default"
+    ]
+  },
+  {
+    "version": "0.20.68",
+    "when": "2026-11-15",
+    "title": "Tracker search on a press, Best 4K release marked, Download list order, rips in the making",
+    "items": [
+      "Opening a film's download list always asks the tracker; only background searches wait for the ten-a-minute limit",
+      "Violet in the download list marks the best 4K release only, by the same rules as the pick",
+      "The download list follows the resolutions set - 1080p, then 4K - with the rest in the choosing rules' order and what is on disk last; each line says its resolution instead of Recommended, the pick in green",
+      "A file still being written, such as a rip in the making, is no longer offered as a version of its film"
+    ]
+  },
+  {
+    "version": "0.20.67",
+    "when": "2026-11-15",
+    "title": "4K windows, download colours, popular country, Films and TV",
+    "items": [
+      "Choosing a release has its own bitrate windows for 4K, h264 and h265, starting at 25-50 and 14-30 Mbit/s",
+      "The download list shows 4K releases in violet with 4K in the line, when 4K is among the resolutions",
+      "Films and TV open with nothing marked: My library and In packs are not preselected",
+      "Popular no longer weaves Swedish films through everybody's list; a viewer can choose a country's own films every 3rd or 5th place, off by default"
+    ]
+  },
+  {
+    "version": "0.20.66",
+    "when": "2026-11-15",
+    "title": "Messages after failover, watchlist blink",
+    "items": [
+      "Messages to a screen are numbered by the time, so a screen that failed over no longer ignores the main server's",
+      "Opening the Watchlist on a blink scrolls to the poster that came in, in the app and on the web"
+    ]
+  },
+  {
+    "version": "0.20.65",
+    "when": "2026-11-15",
+    "title": "Web on the app's handler, shuffle, subtitles",
+    "items": [
+      "Web page finds its server by the app's rules: a server is down on two missed looks, or one the cache server confirms; film arriving keeps it up",
+      "Shuffle draws from the cache server at once while the main server is not answering",
+      "Subtitle sites' episode numbers are read once per season and kept with the episode list; a search asks by them",
+      "Download list says when the tracker could not be asked, instead of nothing on the tracker",
+      "A title on the cache server is greyed only after two unanswered asks; one slow answer no longer greys or forgets it",
+      "Climbing back after a slow line measures the line fresh, leaving out the first burst",
+      "Each live viewing says how long it has stood still, for the wall panel"
+    ]
+  },
+  {
+    "version": "0.20.64",
+    "when": "2026-11-15",
+    "title": "Server selector",
+    "items": [
+      "Choosing a server that does not answer stays where you are and says it is not answering, instead of saying Now on it"
+    ]
+  },
+  {
+    "version": "0.20.63",
+    "when": "2026-11-15",
+    "title": "Subtitles after a double episode",
+    "items": [
+      "A subtitle that names the episode's own title is taken for it even when the subtitle site numbers the season differently after a double episode"
+    ]
+  },
+  {
+    "version": "0.20.62",
+    "when": "2026-11-15",
+    "title": "Failover: film credited to its server",
+    "items": [
+      "A film read off both servers counts as arriving only from the server each piece came from, so a frozen main server is seen as down"
+    ]
+  },
+  {
+    "version": "0.20.61",
+    "when": "2026-11-15",
+    "title": "Failover: first connection and dots, Failover: simulated and checked, Failover: first answer decides",
+    "items": [
+      "Opening the app with the main server down starts on the cache server after one miss, without trying the main server's outside address first",
+      "At home, opening the app waits two seconds for the main server instead of four",
+      "The server list's dot is green only when the server answered its last check, grey while unknown",
+      "The cache server says the main server is down only after two of its own asks in a row failed, so a moment's blip moves nobody",
+      "Opening the app gives every address two seconds to answer",
+      "Quality and soundtrack menus highlight in the viewer's own colour",
+      "The app decides on the first answer that settles it: the main server answering, or the cache server saying it is down - no waiting for a timeout"
+    ]
+  },
+  {
+    "version": "0.20.60",
+    "when": "2026-11-15",
+    "title": "Failover from a frozen server",
+    "items": [
+      "A server that takes the connection but does not answer counts as not answering: the app moves to the other server and stays there until it answers again",
+      "The cache server says in /where whether the main server answered it in the last 30 s; an app that missed the main server once moves at once on its word",
+      "The player and the background check judge a server the same way: it answers, or film is arriving from it",
+      "Every part of the app asks one handler whether a server is there; opening the app starts on the cache server after one miss, an open app moves only on two misses or one the cache server confirms"
+    ]
+  },
+  {
+    "version": "0.20.59",
+    "when": "2026-11-15",
+    "title": "Failover tests the server",
+    "items": [
+      "A server still sending the film is not counted as down; a full line no longer moves a film to the other machine",
+      "An encode that cannot keep up while the line has room moves to the other machine, only when it answers, has a hardware encoder and is less busy"
+    ]
+  },
+  {
+    "version": "0.20.58",
+    "when": "2026-11-15",
+    "title": "Rip state on the panel",
+    "items": [
+      "A paused rip says why in its download row, so the wall panel can show it paused"
+    ]
+  },
+  {
+    "version": "0.20.57",
+    "when": "2026-11-15",
+    "title": "Subtitles and qBittorrent",
+    "items": [
+      "Subtitles one server has lifted are taken by the other instead of read out of the film again",
+      "Opened after a film's last line: no more 'still reading subtitles'",
+      "qBittorrent started with administrator rights when it needs them, and restarted after 30 min without answering"
+    ]
+  },
+  {
+    "version": "0.20.56",
+    "when": "2026-11-14",
+    "title": "Cache downloads on Recently added",
+    "items": [
+      "A film coming in on the cache server leads Recently added with its poster and how far it has got, as one coming in on the main server"
+    ]
+  },
+  {
     "version": "0.20.55",
     "when": "2026-11-14",
     "title": "Copy leaves room, steps not too fast",

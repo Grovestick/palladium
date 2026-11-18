@@ -385,6 +385,14 @@ def deep_picture(path):
     return DEEP[path]
 
 
+def falling_behind(speeds, made, ran):
+    """Whether an encode is slower than the picture: its last speeds all under 0.95x and
+    less picture written than the time it has run. A choked line holds ffmpeg back the
+    same way, so this alone does not say whose fault it is - the player measures its
+    line beside it."""
+    return bool(speeds) and all(v < 0.95 for v in speeds) and made + 2 < ran
+
+
 def waited_on_player(made, ran):
     """The words for a transcode log line when the encoder had written more picture than
     the time it ran: under 1x then means the player stopped reading (paused, buffered
@@ -977,6 +985,23 @@ class Engine:
             if time.time() > deadline:
                 return None
             time.sleep(0.25)
+
+    def pace_for(self, address):
+        """How this machine's encoding goes, for a player at that address: whether it has
+        a hardware encoder, how many encodes it runs, and its newest encode for that
+        player - behind or not."""
+        with self.lock:
+            alive = [st for st in self.streams.values()
+                     if st.alive() and not getattr(st, "folder", None)]
+        mine = [st for st in alive if str(getattr(st, "who", "")).startswith(str(address) + "/")]
+        out = {"hw": HW_OK, "encodes": len(alive), "stream": None}
+        st = max(mine, key=lambda s: s.started, default=None)
+        if st is not None:
+            speeds, made = st.speeds(), st.made()
+            ran = time.time() - st.started
+            out["stream"] = {"speeds": speeds, "made": round(made, 1), "ran": round(ran, 1),
+                             "behind": falling_behind(speeds, made, ran)}
+        return out
 
     def stop_others(self, address, device, keep):
         """Stop what this same viewer had running before.

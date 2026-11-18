@@ -8,6 +8,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -265,7 +267,7 @@ Slide.down
         else if (StartChoice.cameFrom == null) runCatching { list.scrollToItem(0) }
     }
     LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 40.dp),
-               verticalArrangement = Arrangement.spacedBy(if (onTv()) 6.dp else 22.dp)) {
+               verticalArrangement = Arrangement.spacedBy(if (onTv() || tvSizedNow()) 6.dp else 22.dp)) {
         // the remote on the picture: the page stays at its top, under the tabs; it moves
         // only once the remote goes down into the rows
         if (slides.isNotEmpty()) item(key = "hero", contentType = "hero") {
@@ -323,8 +325,8 @@ private fun StartTextTab(label: String, on: Boolean, onPick: () -> Unit) {
 private fun StartShuffleRow(shelves: List<Triple<String, String, String>>,
                             onOpen: (Media) -> Unit) {
     val ctx = LocalContext.current
-    val cardW = Route.startCardW(LocalConfiguration.current.screenWidthDp, onTv())
-    Column(verticalArrangement = Arrangement.spacedBy(if (onTv()) 4.dp else 8.dp)) {
+    val cardW = Route.startCardW(LocalConfiguration.current.screenWidthDp, onTv() || tvSizedNow())
+    Column(verticalArrangement = Arrangement.spacedBy(if (onTv() || tvSizedNow()) 4.dp else 8.dp)) {
         // heading and tagline on one baseline
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Shuffle", color = Skin.Fg, fontSize = 14.sp, fontWeight = FontWeight.Bold,
@@ -435,7 +437,10 @@ private fun StartCarousel(slides: List<Triple<Media, String, String>>, onOpen: (
         delay(8000)
         at = (at + 1) % slides.size
     }
-    val tall = LocalConfiguration.current.screenHeightDp
+    // the height above the navigation bar, which a tablet draws the page behind (owner, 2026-11-15)
+    val tall = LocalConfiguration.current.screenHeightDp -
+        androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues()
+            .calculateBottomPadding().value.toInt()
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     // a remote steps with the arrows; a finger swipes the picture itself
     val tv = onTv()
@@ -555,9 +560,9 @@ private fun StartSlide(m: Media, eyebrow: String, text: String, wide: Boolean,
 @Composable
 private fun StartShelfRow(r: Api.StartShelf, onOpen: (Media) -> Unit, play: (Media) -> Unit,
                           onMore: (Api.StartMore) -> Unit) {
-    val cardW = Route.startCardW(LocalConfiguration.current.screenWidthDp, onTv())
+    val cardW = Route.startCardW(LocalConfiguration.current.screenWidthDp, onTv() || tvSizedNow())
     val ctx = LocalContext.current
-    Column(verticalArrangement = Arrangement.spacedBy(if (onTv()) 4.dp else 8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (onTv() || tvSizedNow()) 4.dp else 8.dp)) {
         // heading and tagline on one baseline - and on a phone or tablet, pressed, the
         // row's Show more; not on a television, where the remote would stop on it
         val more = r.more
