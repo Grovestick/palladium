@@ -225,6 +225,10 @@ def take_copy(root):
         if name.endswith(".json") and os.path.isfile(src):
             shutil.copy2(src, os.path.join(root, name))
             names.append(name)
+        # and the one-time marks (series_cast_v2): without one the copy ran a one-time job again -
+        # the series cast wiped and, with no network, never fetched back (2026-11-18)
+        elif "." not in name and os.path.isfile(src) and os.path.getsize(src) < 4096:
+            shutil.copy2(src, os.path.join(root, name))
     for db in ("library.db",):
         src = os.path.join(LIVE, db)
         if os.path.exists(src):

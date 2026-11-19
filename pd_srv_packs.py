@@ -667,8 +667,14 @@ def cache_downloads():
         return []
     if time.time() - S.CACHE_ACTIVE["asked"] > 4:
         S.CACHE_ACTIVE["asked"] = time.time()
-        threading.Thread(target=S._ask_cache_downloads, name="palladium-cache-active",
-                         daemon=True).start()
+        S.CACHE_ACTIVE["thread"] = threading.Thread(target=S._ask_cache_downloads,
+                                                    name="palladium-cache-active", daemon=True)
+        S.CACHE_ACTIVE["thread"].start()
+    # no answer from the last minute: wait for this one, up to 2 s - returning nothing left the
+    # first Recently added after a quiet minute without the cache's download (2026-11-18)
+    asking = S.CACHE_ACTIVE.get("thread")
+    if time.time() - S.CACHE_ACTIVE["at"] >= 60 and asking is not None and asking.is_alive():
+        asking.join(2)
     return list(S.CACHE_ACTIVE["rows"]) if time.time() - S.CACHE_ACTIVE["at"] < 60 else []
 
 

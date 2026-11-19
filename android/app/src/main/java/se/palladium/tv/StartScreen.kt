@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.key.type
@@ -444,10 +445,12 @@ private fun StartCarousel(slides: List<Triple<Media, String, String>>, onOpen: (
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     // a remote steps with the arrows; a finger swipes the picture itself
     val tv = onTv()
+    // the arrows for a remote or a controller; a finger swipes on a tablet either way
+    val steer = steerByKeys()
     var swiped by remember { mutableStateOf(0f) }
     Box(Modifier.fillMaxWidth().height((tall * if (wide) 0.6f else 0.62f).coerceIn(300f, 620f).dp)
             .onFocusChanged {
-                held = tv && it.hasFocus
+                held = steer && it.hasFocus
                 if (it.hasFocus) onFocus()
             }
             .clip(RoundedCornerShape(Skin.round(12.dp)))
@@ -469,7 +472,7 @@ private fun StartCarousel(slides: List<Triple<Media, String, String>>, onOpen: (
             StartSlide(m, eyebrow, text, wide, onOpen, play, aspect = heroW / heroH)
         }
         if (slides.size > 1) {
-            if (tv) {
+            if (steer) {
                 // on an arrow, the remote's own left or right turns the picture too,
                 // as pressing it does: there is nothing further that way to go to
                 Box(Modifier.align(Alignment.CenterStart).padding(start = 6.dp)
@@ -567,7 +570,8 @@ private fun StartShelfRow(r: Api.StartShelf, onOpen: (Media) -> Unit, play: (Med
         // row's Show more; not on a television, where the remote would stop on it
         val more = r.more
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = if (more != null && !onTv()) Modifier.clickable { onMore(more) }
+            modifier = if (more != null && !onTv())
+                           Modifier.focusProperties { canFocus = false }.clickable { onMore(more) }
                        else Modifier) {
             Text(r.name, color = Skin.Fg, fontSize = 14.sp, fontWeight = FontWeight.Bold,
                  modifier = Modifier.alignByBaseline())
@@ -577,7 +581,7 @@ private fun StartShelfRow(r: Api.StartShelf, onOpen: (Media) -> Unit, play: (Med
         val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
         val reqs = remember { HashMap<String, FocusRequester>() }
         val back by StartChoice.restore
-        val tvNow = onTv()
+        val tvNow = steerByKeys()
         LaunchedEffect(back, r.list) {
             val (row, key) = back ?: return@LaunchedEffect
             if (row != r.id) return@LaunchedEffect

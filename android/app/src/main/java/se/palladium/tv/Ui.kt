@@ -32,6 +32,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -424,9 +425,7 @@ fun stillTheHold(): Boolean {
 /** True while an event still belongs to the press that opened something by being held. */
 fun fromTheHold(e: android.view.KeyEvent): Boolean =
     holdOpen && !holdStuck() &&
-        (e.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER ||
-         e.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
-         e.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER) &&
+        Route.isPress(e.keyCode) &&
         (holdDownTime == 0L || e.downTime == holdDownTime)
 
 
@@ -456,17 +455,25 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
                  fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
         }
         if (url != null) {
-            // A poster that failed is asked for again, three times with a pause between:
-            // switching servers asks a whole screen of them at once, and one that timed
-            // out then stayed blank until the app was started again.
+            // A poster that failed is asked for again while it is on screen (Route.artPause),
+            // and at once when the app moves to another server: switching servers asks a
+            // whole screen of them at once, and one that timed out stayed blank.
             var tries by remember(url) { mutableStateOf(0) }
             var failed by remember(url) { mutableStateOf(false) }
-            if (failed && tries < 3) {
-                androidx.compose.runtime.LaunchedEffect(url, tries) {
-                    kotlinx.coroutines.delay(1500L * (tries + 1))
-                    failed = false
-                    tries += 1
+            var notThere by remember(url) { mutableStateOf(false) }
+            val moved = Api.swapped.value
+            if (failed) {
+                val pause = Route.artPause(tries, notThere)
+                if (pause != null) {
+                    androidx.compose.runtime.LaunchedEffect(url, tries, moved) {
+                        kotlinx.coroutines.delay(pause)
+                        failed = false
+                        tries += 1
+                    }
                 }
+            }
+            androidx.compose.runtime.LaunchedEffect(url, moved) {
+                if (moved != 0 && failed) { failed = false; tries += 1 }
             }
             val asked = if (tries == 0) url
                         else url + (if (url.contains("?")) "&" else "?") + "again=" + tries
@@ -486,7 +493,12 @@ fun Art(url: String?, title: String, modifier: Modifier = Modifier, mark: Int = 
                        // a picture Fit leaves room beside keeps its ground: that is
                        // where the grey shows
                        onSuccess = { if (scale != ContentScale.Fit) shown = true },
-                       onError = { failed = true })
+                       onError = {
+                           // a 404 is the server saying there is none; anything else is the way there
+                           notThere = (it.result.throwable as? coil.network.HttpException)
+                               ?.response?.code in 400..499
+                           failed = true
+                       })
         }
     }
 }
@@ -603,9 +615,8 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // repeating, and to shut the gate again when the press is released.
             .then(if (onHold == null) Modifier else Modifier.onPreviewKeyEvent { e ->
                 val key = e.nativeKeyEvent
-                val select = key.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER ||
-                    key.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
-                    key.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
+                // and a controller's Cross, held for the menu as the remote's centre is
+                val select = Route.isPress(key.keyCode)
                 if (!select) return@onPreviewKeyEvent false
                 when {
                     // The press begins. Nothing is a hold yet.
@@ -989,6 +1000,26 @@ val MicIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
         .build()
 }
 
+/** One of Material's marks, white, from its path: drawn here rather than from the extended
+ *  icon library, which is megabytes for three of them. */
+private fun mark(name: String, path: String): androidx.compose.ui.graphics.vector.ImageVector =
+    androidx.compose.ui.graphics.vector.ImageVector.Builder(
+        name = name, defaultWidth = 24.dp, defaultHeight = 24.dp,
+        viewportWidth = 24f, viewportHeight = 24f)
+        .addPath(androidx.compose.ui.graphics.vector.PathParser().parsePathString(path).toNodes(),
+                 fill = SolidColor(Color.White))
+        .build()
+
+/** The tab row's marks in place of their words (owner, 2026-11-18): the gear, the bookmark,
+ *  the film library. */
+val SettingsIcon by lazy { mark("Settings", "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z") }
+val WatchlistIcon by lazy { mark("Watchlist", "M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z") }
+/** Not on the watchlist: the bookmark's outline. */
+val WatchlistOffIcon by lazy { mark("Add to watchlist", "M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2zm0 15l-5-2.18L7 18V5h10v13z") }
+/** A favorite: the heart. */
+val FavoriteIcon by lazy { mark("Favorite", "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z") }
+val CollectionsIcon by lazy { mark("Collections", "M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z") }
+
 /** Pill button used for the tabs and for anything the remote should be able to reach. */
 @Composable
 fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
@@ -1117,6 +1148,41 @@ object Typing {
     }
 }
 
+/** A game controller connected - a tablet steered from the sofa - watched as they come and go:
+ *  the app steers as on a television while one is there, and by touch as well (owner, 2026-11-18). */
+object Pad {
+    val on = androidx.compose.runtime.mutableStateOf(false)
+    /** The last L1 or R1 pressed: (when it went down, -1 or +1) - the top row steps on it. */
+    val shoulder = androidx.compose.runtime.mutableStateOf(0L to 0)
+    /** While L1 or R1 moves the ring: a tab it lands on opens. */
+    @Volatile var stepping = false
+    private var watching = false
+    fun watch(ctx: android.content.Context) {
+        if (watching) return
+        watching = true
+        val im = ctx.getSystemService(android.content.Context.INPUT_SERVICE)
+            as? android.hardware.input.InputManager ?: return
+        fun look() {
+            on.value = im.inputDeviceIds.any { id ->
+                im.getInputDevice(id)?.let { Route.isPad(it.sources, it.isVirtual) } == true }
+        }
+        im.registerInputDeviceListener(object : android.hardware.input.InputManager.InputDeviceListener {
+            override fun onInputDeviceAdded(id: Int) = look()
+            override fun onInputDeviceRemoved(id: Int) = look()
+            override fun onInputDeviceChanged(id: Int) = look()
+        }, android.os.Handler(android.os.Looper.getMainLooper()))
+        look()
+    }
+}
+
+/** Steered with keys now: a television's remote, or a controller on a tablet whose last
+ *  input was one of its keys - a finger on the screen is touch, controller or not (owner,
+ *  2026-11-18). Layout still asks onTv(). */
+@Composable
+fun steerByKeys(): Boolean = onTv() || (Pad.on.value &&
+    androidx.compose.ui.platform.LocalInputModeManager.current.inputMode ==
+        androidx.compose.ui.input.InputMode.Keyboard)
+
 /** True on a television, where the remote is the only input device. */
 @Composable
 fun onTv(): Boolean {
@@ -1149,6 +1215,10 @@ fun TextBox(
     // the app's own keyboard on a television, unless this device is set to type on a phone
     Typing.load(androidx.compose.ui.platform.LocalContext.current)
     val tv = onTv() && !Typing.phone.value
+    // a controller on a tablet: the box is a stop with a ring, and its Cross opens the app's
+    // own keyboard - the phone's ignores a controller's buttons. A finger types as ever.
+    val pad = !tv && Pad.on.value && !Typing.phone.value
+    val view = androidx.compose.ui.platform.LocalView.current
     var focused by remember { mutableStateOf(false) }
 
     Box(
@@ -1162,7 +1232,15 @@ fun TextBox(
             // ring then never appeared although the remote was there
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
                 .focusable()
-                .clickable { editing = true } else Modifier)
+                .clickable { editing = true }
+            else if (pad) Modifier
+                .onFocusChanged { focused = it.isFocused }
+                .onPreviewKeyEvent {
+                    if (focused && it.nativeKeyEvent.action == android.view.KeyEvent.ACTION_DOWN &&
+                        Route.isPress(it.nativeKeyEvent.keyCode)) { editing = true; true } else false
+                }
+                .focusable()
+            else Modifier)
             // On a short screen the box stands on the same line as the name and the
             // picker, and a box twice their height is what pushed the second shelf
             // off the bottom. The letters stay readable; it is the air that goes.
@@ -1187,7 +1265,9 @@ fun TextBox(
                 visualTransformation = if (password)
                     androidx.compose.ui.text.input.PasswordVisualTransformation()
                 else androidx.compose.ui.text.input.VisualTransformation.None,
-                modifier = Modifier.fillMaxWidth(),
+                // with a controller, reached only by a finger: the remote stops on the box
+                modifier = Modifier.fillMaxWidth().then(if (pad) Modifier.focusProperties {
+                    canFocus = view.isInTouchMode } else Modifier),
             )
         }
     }

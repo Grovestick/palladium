@@ -567,7 +567,7 @@ def file_code(path):
 
 
 def file_id(title_id, path):
-    """Which copy: the title it is, and the code of its name - "e5d4ce2d5d554-c4043735".
+    """Which copy: the title it is, and the code of its name - "e5d4ce2d5d554-427194bc".
     The same on both servers and for a file still inside a pack (owner, 2026-11-06)."""
     return "%s-%s" % (title_id, file_code(path)) if title_id else ""
 

@@ -1396,6 +1396,9 @@ const tick = () => new Promise((done) => setTimeout(done, 0));
     check("43 one button on the page, no second Download or Cancel beside it",
           !d.getElementById("offertracker") && !d.getElementById("offercancel")
           && d.querySelectorAll(".actions button.btn").length === 1, d.querySelector(".actions").innerHTML.slice(0, 300));
+    // no "Not in the library" line under the summary: the button and the version list say it (owner, 2026-11-18)
+    check("43 no line saying where a download would come from", !/Not in the library/.test(d.querySelector("main").textContent),
+          d.querySelector("main").textContent.slice(0, 300));
     // the server's words: looking for seeders is not "Downloading 0%"
     w.viewOffer({ ratingKey: "oB", type: "movie", title: "F", year: 2023, offered: true,
                   offer: { size: 6e9, state: "downloading", progress: 0, file: "F.mkv",

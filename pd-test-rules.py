@@ -2284,7 +2284,7 @@ _pics = [_spt.poster(e, 300) for e in (_spt.read_name("Formula1 2026 Round17 Sin
                                      {"sport": "golf", "title": "PGA Tour 2026 Round 4", "year": 2026})]
 check("a poster for a race, a game and the rest, 2:3 and JPEG",
       all(p[:2] == b"\xff\xd8" and _Img.open(_io.BytesIO(p)).size == (300, 450) for p in _pics))
-check("and the card points at it", _spt.card(dict(_ev[0]))["thumb"] == "/art/%s/poster" % _ev[0]["key"])
+check("and the card points at it", _spt.card(dict(_ev[0]))["thumb"].startswith("/art/%s/poster?h=" % _ev[0]["key"]))
 
 # ---- the TV tab by country: kept with the library, counted and narrowed
 import pd_library as _plib
@@ -4907,7 +4907,7 @@ check("Show all loads page by page with a count that counts up",
 #      at a time can be put back in order
 _la153 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pd_localapi.py"),
               encoding="utf-8").read()
-check("catalogue cards carry popularity", _la153.count("cards.append(ranked(") == 4)
+check("catalogue cards carry popularity", _la153.count("cards.append(ranked(") == 5)
 
 # ---- nothing marked loads everything at once, counting up while it comes
 _js154 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"),
@@ -5029,8 +5029,9 @@ check("app Start rows scroll sideways like Home's",
 _st173 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src",
                            "main", "java", "se", "palladium", "tv", "StartScreen.kt"),
               encoding="utf-8").read()
-check("app hero: swiped on a phone or tablet, arrows only on a television",
-      "detectHorizontalDragGestures(" in _st173 and "if (tv) {" in _st173
+check("app hero: swiped on a phone or tablet, arrows for a remote or a controller",
+      "detectHorizontalDragGestures(" in _st173 and "if (steer) {" in _st173
+      and "val steer = steerByKeys()" in _st173
       and "if (tv || slides.size < 2) Modifier else Modifier.pointerInput(slides)" in _st173)
 
 # ---- the chosen tab from the first frame: remembered on the device, web and app
@@ -5180,7 +5181,7 @@ _st191 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android"
                            "java", "se", "palladium", "tv", "StartScreen.kt"), encoding="utf-8").read()
 check("app: Start's picture holds still with the remote on it and keeps the page at its top",
       "if (slides.size < 2 || held) return@LaunchedEffect" in _st191
-      and "held = tv && it.hasFocus" in _st191
+      and "held = steer && it.hasFocus" in _st191
       and "onFocus = { scope.launch { list.scrollToItem(0) } }" in _st191)
 
 # ---- a series' Shuffle stands first on its page's button row, not beside Mark all watched
@@ -5706,7 +5707,8 @@ check("start: a row's Show more opens its own tab and kind",
 _st228 = open(os.path.join(_h214, "android", "app", "src", "main", "java", "se", "palladium", "tv", "StartScreen.kt"), encoding="utf-8").read()
 check("app: Start's rows end in a Show more that opens the tab",
       "StartMoreCard(cardW) { onMore(more) }" in _st228 and "StartScreen(onOpen) { more ->" in _ma214
-      and "if (more != null && !onTv()) Modifier.clickable { onMore(more) }" in _st228)
+      and "if (more != null && !onTv())" in _st228
+      and "Modifier.focusProperties { canFocus = false }.clickable { onMore(more) }" in _st228)
 
 # ---- kept lists are read again every day by the server's own round
 _srv230 = server_source()
@@ -8559,8 +8561,10 @@ check("tablet: Home fits two shelves as the television does, above the navigatio
       and "val tvPage = onTv() || tvSizedNow()" in _maT1
       and "val tenWide = if (tvPage) Route.likeTen(maxWidth.value, POSTER_SIDES) else null" in _maT1)
 _mkT1 = open("android/app/src/main/java/se/palladium/tv/MarkControl.kt", encoding="utf-8").read()
-check("marks: the watchlist and collection buttons as tall as Play, the symbols centred in the line",
-      ".screenHeightDp < 560) 5.dp else 9.dp)" in _mkT1 and "LineHeightStyle.Alignment.Center" in _mkT1)
+check("marks: the watchlist and collection buttons as tall as Play, their marks on Play's line",
+      ".screenHeightDp < 560) 5.dp else 9.dp)" in _mkT1
+      and "Modifier.size(width = 20.dp, height = 24.dp)" in _mkT1
+      and "WatchlistOffIcon" in _mkT1 and "CollectionsIcon" in _mkT1)
 import pd_h_post as _hpB1
 _rowsB1 = [{"id": "box:1:2", "box": True, "kind": "in a box set: Top 5000 Movies Pack 1080p BluRay x264-OFT",
             "seeds": 60, "size": 4838829642, "pick": True},
@@ -8582,6 +8586,17 @@ check("motocross: a round's releases one event, its live show included; MXGP's d
       and _spM1.read_name("The Grand 2007 1080p BluRay x264 AAC5 1-YTS MX") is None
       and "2026 AMA Supercross" in _spM1.search_words(time.mktime((2026, 6, 1, 0, 0, 0, 0, 0, -1)))
       and _spM1.SPORT_NAMES["motocross"] == "Motocross")
+# a league's own poster for every event of it, the round, stage or place under it (2026-11-18)
+_lgL1 = [_spM1.read_name(n) for n in ("2026 AMA Supercross Rd 9 Indianapolis 1080p x264 grp",
+                                        "Tour de France 2026 Stage 15 1080p WEB h264-GRP",
+                                        "Dakar 2026 Stage 7 1080p WEB h264-GRP")]
+check("sports: each event carries its league, and the league's poster says the round or the stage",
+      [e["league"] for e in _lgL1] == ["ama supercross", "tour de france", "dakar"]
+      and all(e["league"] in _spM1.LEAGUES for e in _lgL1)
+      and _spM1.league_lines(_lgL1[0]) == ("ROUND 9", "INDIANAPOLIS")
+      and _spM1.league_lines(_lgL1[1]) == ("STAGE 15", "")
+      and _spM1.poster(_lgL1[2], 100)[:2] == bytes([255, 216])
+      and _spM1.sport_poster("motocross", 100)[:2] == bytes([255, 216]))
 _lbC1 = open("pd_library.py", encoding="utf-8").read()
 check("cast: a series by its whole run, two dozen names, the old reading redone once",
       '"/tv/%d/aggregate_credits"' in _lbC1 and "SERIES_CAST_KEPT = 24" in _lbC1
@@ -10795,6 +10810,108 @@ check("house: the copy looks at the main server every 10 s into the record /wher
       "start_house_watch()" in _srvW and "HOUSE_LOOK_EVERY = 10" in _srvW
       and '"house": self.house_seen(),' in _srvW
       and "CONNECTED_UP[where] = (now, up)" in _srvW and 'return {"up": seen["fails"] < 2' in _srvW)
+
+
+# ---- a stream the same player replaced while it started is no fault: marked, and the
+# request answers 410 without a retry or a report (two false reports on 2026-11-15)
+import pd_gpu as _pgS, threading as _thS, types as _tyS
+class _StS:
+    def __init__(self, who):
+        self.who, self.superseded, self.stopped = who, False, False
+    def stop(self):
+        self.stopped = True
+_engS = _pgS.Engine.__new__(_pgS.Engine)
+_engS.lock = _thS.Lock()
+_engS.streams = {"old": _StS("1.2.3.4/web"), "other": _StS("5.6.7.8/web"), "new": _StS(None)}
+_oldS, _otherS = _engS.streams["old"], _engS.streams["other"]
+_engS.stop_others("1.2.3.4", "web", "new")
+import pd_h_stream as _hsS
+_saidS = []
+_selfS = _tyS.SimpleNamespace(send_error=lambda code, why: _saidS.append(code))
+check("stream: one replaced by the same player's newer ask is marked and answered 410, no fault",
+      _oldS.superseded and _oldS.stopped and not _otherS.superseded and not _otherS.stopped
+      and "new" in _engS.streams and _engS.streams["new"].who == "1.2.3.4/web"
+      and _hsS.StreamParts.superseded(_selfS, _oldS) is True and _saidS == [410]
+      and _hsS.StreamParts.superseded(_selfS, _otherS) is False and _saidS == [410])
+
+# ---- a race's or game's poster is its league's own, from the poster site: an F1 race by its
+# round, never a practice or qualifying of the weekend; an NFL game by its teams, home first, on
+# its day; none asked for a sport the site has no posters of (owner, 2026-11-18)
+import pd_sports as _psF
+_eF = _psF.read_name("NFL.2026.10.25.Cincinnati.Bengals.Vs.Baltimore.Ravens.720p.WEB.H264-GRP")
+_jF = _psF.read_name("NFL.2027.01.10.Cincinnati.Bengals.Vs.Baltimore.Ravens.720p.WEB.H264-GRP")
+_fF = dict(_psF.read_name("Formula1.2026.Round19.Mexico.Grand.Prix.Race.1080p.WEB.H264-GRP"), round=19)
+_mF = _psF.read_name("2026 MXGP Rd 19 Australia Day 2 1080p")
+_gameF = [{"strEvent": "Baltimore Ravens vs Cincinnati Bengals", "dateEvent": "2026-10-18",
+           "strPoster": "https://x/old.jpg"},
+          {"strEvent": "Baltimore Ravens vs Cincinnati Bengals", "dateEvent": "2026-10-26",
+           "strPoster": "https://x/game.jpg"}]
+_raceF = [{"strEvent": "Mexico City Grand Prix Practice 1", "strPoster": "https://x/fp1.jpg"},
+          {"strEvent": "Mexico City Grand Prix Qualifying", "strPoster": "https://x/q.jpg"},
+          {"strEvent": "Mexico City Grand Prix Sprint", "strPoster": "https://x/s.jpg"},
+          {"strEvent": "Mexico City Grand Prix", "strPoster": "https://x/race.jpg"}]
+check("sports: the poster site is asked for a game by its teams home first, a race by its round",
+      _psF.poster_ask(_eF) == ("searchevents.php", {"e": "Baltimore_Ravens_vs_Cincinnati_Bengals", "s": 2026})
+      and _psF.poster_ask(_jF)[1]["s"] == 2026
+      and _psF.poster_ask(_fF) == ("eventsround.php", {"id": 4370, "r": 19, "s": 2026})
+      and _psF.poster_ask(_mF) is None)
+import tempfile as _tfP, io as _ioP
+from PIL import Image as _ImP
+_dP = _tfP.mkdtemp()
+_phP = os.path.join(_dP, "p.jpg")
+_ImP.new("RGB", (1024, 769), "#336699").save(_phP)
+_outP = _ImP.open(_ioP.BytesIO(_psF.photo_poster(_phP, "CYCLING", "#F5C400", "MARCO PANTANI", 0.56, 300)))
+_names = [_psF.photo_card_now("cycling", h * _psF.PHOTO_EVERY)[3] for h in range(5)]
+_noLine = _ImP.open(_ioP.BytesIO(_psF.photo_poster(_phP, "MX", "#FF6A13", "", 0.4, 300)))
+check("sports: cycling turns through five riders an hour each with no names, MX and the Dakar are photos",
+      len(set(_names)) == 5 and _psF.photo_card_now("cycling", 0) == _psF.photo_card_now("cycling", 5 * _psF.PHOTO_EVERY)
+      and all(_psF.photo_card_now("cycling", h * _psF.PHOTO_EVERY)[2] == "" for h in range(5))
+      and _psF.photo_card_now("dakar")[0] == "DAKAR" and _psF.photo_card_now("motocross")[0] == "MX"
+      and _psF.photo_card_now("golf") is None and _psF.photo_card_now("f1")[0] == "FORMULA 1"
+      and _outP.size == (300, 450) and _noLine.size == (300, 450)
+      and "cycling" not in _psF.POSTER_LEAGUES and "motocross" not in _psF.POSTER_LEAGUES)
+import shutil as _shP
+_shP.rmtree(_dP, ignore_errors=True)
+check("sports: a card's picture address carries the hour, so the apps fetch the next one",
+      _psF.picture_address("/art/sports/cycling", 7200) == "/art/sports/cycling?h=2"
+      and _psF.picture_address("/art/sports/cycling", 7199) == "/art/sports/cycling?h=1"
+      and _psF.card(dict(_eF, key="spx", releases=[]))["thumb"].startswith("/art/spx/poster?h="))
+check("sports: a league's poster from the site's answer, none where it has none",
+      _psF.league_poster({"leagues": [{"strPoster": "https://x/f1.jpg"}]}) == "https://x/f1.jpg"
+      and _psF.league_poster({"leagues": [{"strPoster": None}]}) == ""
+      and _psF.league_poster({"leagues": None}) == "" and _psF.league_poster(None) == ""
+      and "dakar" not in _psF.POSTER_LEAGUES and _psF.POSTER_LEAGUES["nfl"] == 4391)
+check("sports: the race's poster, not its weekend's sessions; the game's on its day (a day either way)",
+      _psF.poster_pick(_fF, _raceF) == "https://x/race.jpg"
+      and _psF.poster_pick(_eF, _gameF) == "https://x/game.jpg"
+      and _psF.poster_pick(_eF, _gameF[:1]) is None
+      and _psF.poster_pick(_fF, _raceF[:3]) is None and _psF.poster_pick(_fF, None) is None)
+
+
+# ---- the copy's word says whether its last ask was answered, not only "up": up holds through
+# one miss, and an app holds its own miss on a slow line only on an answer (owner, 2026-11-18)
+import types as _tyH
+import pd_h_stream as _hsH, pd_torrents as _tH
+_slH = _tyH.SimpleNamespace(HOUSE_SEEN={"at": 0.0, "fails": 0})
+_wasH = (sys.modules.get("pd_srv_loops"), _tH._following)
+try:
+    # the record the copy's watch writes, standing in for the server's loops module
+    sys.modules["pd_srv_loops"] = _slH
+    _tH._following = lambda: {"master": "http://main"}
+    _slH.HOUSE_SEEN.update(at=time.time() - 3, fails=0)
+    _fnH = _hsH.StreamParts.house_seen
+    _a0 = _fnH(None)
+    _slH.HOUSE_SEEN.update(fails=1)
+    _a1 = _fnH(None)
+    check("house: answered on an answered last ask, not after one miss though still up",
+          _a0.get("answered") is True and _a0.get("up") is True
+          and _a1.get("answered") is False and _a1.get("up") is True)
+finally:
+    if _wasH[0] is None:
+        sys.modules.pop("pd_srv_loops", None)
+    else:
+        sys.modules["pd_srv_loops"] = _wasH[0]
+    _tH._following = _wasH[1]
 
 
 # ---- one definition of "there" for the player and the background check: an answer, or film

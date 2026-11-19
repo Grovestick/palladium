@@ -8,8 +8,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -21,7 +21,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
 /** The watchlist button - off, on the watchlist, a favorite - and the collections. */
 @Composable
@@ -38,13 +37,14 @@ fun MarkControl(
     // two buttons apart: joined into one ground they read as a single button until
     // the remote reached one of them (owner, 2026-11-11)
     Row(Modifier.padding(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Half(mark = if (favorite) "♥" else if (listed) "★" else "☆",
+        // the tab row's marks: the bookmark, filled once on the list; a favorite's heart
+        Half(mark = if (favorite) FavoriteIcon else if (listed) WatchlistIcon else WatchlistOffIcon,
              on = listed || favorite || offline,
              colour = if (offline) Color(0xFF2E9E5B) else Skin.Accent, onPress = onList,
              // a favorite: the heart red, on the ground every chosen button has
              markColour = if (favorite) Color(0xFFFF4D5E) else null)
         if (onCollection != null) {
-            Half(mark = "↻", on = inCollection, colour = Color(0xFF8AB4F8),
+            Half(mark = CollectionsIcon, on = inCollection, colour = Color(0xFF8AB4F8),
                  onPress = onCollection)
         }
     }
@@ -52,7 +52,8 @@ fun MarkControl(
 
 /** One half of it. The white ring says where the remote is, as everywhere else. */
 @Composable
-private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit,
+private fun Half(mark: androidx.compose.ui.graphics.vector.ImageVector, on: Boolean, colour: Color,
+                 onPress: () -> Unit,
                  markColour: Color? = null) {
     var focused by remember { mutableStateOf(false) }
     Box(
@@ -72,14 +73,9 @@ private fun Half(mark: String, on: Boolean, colour: Color, onPress: () -> Unit,
                                         .screenHeightDp < 560) 5.dp else 9.dp),
         contentAlignment = Alignment.Center,
     ) {
-        // the symbol in the middle of its line, not on the line's baseline: the arrow sat
-        // lower than the star
-        Text(mark, fontSize = 17.sp, lineHeight = 24.sp,
-             color = markColour ?: if (on) Color(0xFF111111) else Skin.Dim,
-             style = androidx.compose.ui.text.TextStyle(
-                 platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
-                 lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
-                     alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
-                     trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.None)))
+        // the mark on Play's 24 sp line, so the two stand as tall as Play
+        androidx.compose.material3.Icon(mark, contentDescription = mark.name,
+             tint = markColour ?: if (on) Color(0xFF111111) else Skin.Dim,
+             modifier = Modifier.size(width = 20.dp, height = 24.dp))
     }
 }

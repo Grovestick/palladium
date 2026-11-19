@@ -518,6 +518,17 @@ class StreamParts(_Base):
         stored["noDolby"] = known
         S.write_settings(stored, merge=False)
 
+    def superseded(self, st):
+        """A stream the same player replaced while it started: answered as gone, no retry and
+        no fault written. True when it was."""
+        if not getattr(st, "superseded", False):
+            return False
+        try:
+            self.send_error(410, "replaced by a newer stream from the same player")
+        except Exception:
+            pass
+        return True
+
     @classmethod
     def first_block(cls, st):
         """The first bytes of a stream, or nothing if it never manages any."""
@@ -773,7 +784,7 @@ class StreamParts(_Base):
         return src
 
     def house_seen(self):
-        """What this copy last saw of the main server it follows: {"up", "ago"}, down only after
+        """What this copy last saw of the main server it follows: {"up", "answered", "ago"}, down only after
         two of its own asks in a row went unanswered; None when it follows nothing or has not
         asked yet. Read only, never asked here: /where answers in milliseconds."""
         import pd_srv_loops
@@ -782,7 +793,11 @@ class StreamParts(_Base):
         seen = pd_srv_loops.HOUSE_SEEN
         if not one.get("master") or not seen["at"]:
             return None
-        return {"up": seen["fails"] < 2, "ago": int(max(0.0, time.time() - seen["at"]))}
+        # answered: its last ask had an answer - the word an app trusts over a miss of its own
+        # on a slow line (owner, 2026-11-18: "a status request to one server should have info
+        # about both")
+        return {"up": seen["fails"] < 2, "answered": seen["fails"] == 0,
+                "ago": int(max(0.0, time.time() - seen["at"]))}
 
     def answering_now(self, where):
         """Whether that machine is up, asked at most once every thirty seconds.
@@ -996,6 +1011,11 @@ class StreamParts(_Base):
         # behind it, which the player can only read as a broken container. Read the
         # reason off ffmpeg's own output instead and say it.
         first = self.first_block(st)
+        # Replaced by the same player's newer ask - a seek, another soundtrack - while it
+        # started: nothing failed. Its retries ran on beside the stream that replaced it,
+        # and each was written up as a fault (two on 2026-11-15).
+        if not first and self.superseded(st):
+            return
         # Dolby is asked for by name and cannot always be given. On one file the muxer
         # took the AC-3 track and never wrote a byte - with delay_moov it waits for a
         # header it never manages, without it the header cannot be written at all -
@@ -1016,6 +1036,8 @@ class StreamParts(_Base):
                 self.send_error(500, str(e)[:200])
                 return
             first = self.first_block(st)
+        if not first and self.superseded(st):
+            return
         if not first:
             said = st.why() or "the encoder stopped without saying why"
             st.stop()

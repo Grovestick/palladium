@@ -2334,6 +2334,61 @@ class RouteTest {
                      Route.decide(seen.copy(baseHere = false)).move)
     }
 
+    @Test fun aHeldDirectionStepsNoFasterThanTheScreenShowsIt() {
+        // the keys repeat every 55 ms: about one in three is a step
+        assertFalse(Route.heldStepDue(55, true))
+        assertFalse(Route.heldStepDue(110, true))
+        assertFalse(Route.heldStepDue(165, true))
+        assertTrue(Route.heldStepDue(200, true))
+        // not before the last step is on the screen, however long ago
+        assertFalse(Route.heldStepDue(400, false))
+    }
+
+    @Test fun backFromASportReturnsToItsRowOnHome() {
+        val rows = listOf("Continue watching", "Recently added films", "Sports", "Live")
+        assertEquals(2, Route.rowToReturnTo(rows, "Sports"))
+        assertEquals(-1, Route.rowToReturnTo(rows, null))          // opened from elsewhere
+        assertEquals(-1, Route.rowToReturnTo(rows, "Gone row"))    // the row went meanwhile
+    }
+
+    @Test fun backLeavesAnOpenRowWhereverTheFocusIs() {
+        assertTrue(Route.backLeavesRow(true, true))
+        assertTrue(Route.backLeavesRow(true, false))     // a sport's races, the focus not in them
+        assertFalse(Route.backLeavesRow(false, false))
+        assertFalse(Route.backLeavesRow(false, true))
+    }
+
+    @Test fun aTabOpensWhenTheShoulderButtonsLandOnItNotTheArrows() {
+        assertTrue(Route.shoulderOpens(true, true, "tv", "films"))
+        assertFalse(Route.shoulderOpens(true, false, "tv", "films"))   // left or right: the ring only
+        assertFalse(Route.shoulderOpens(true, true, "films", "films"))  // already shown
+        assertFalse(Route.shoulderOpens(false, true, "tv", "films"))
+    }
+
+    @Test fun aControllerIsCountedAndItsTouchpadAndTheVirtualKeyboardAreNot() {
+        // the tablet's DualSense: gamepad and joystick on one device, its touchpad another
+        assertTrue(Route.isPad(0x01000511, false))
+        assertTrue(Route.isPad(Route.SOURCE_GAMEPAD, false))
+        assertTrue(Route.isPad(Route.SOURCE_JOYSTICK, false))
+        assertFalse(Route.isPad(0x00001002, false))      // touchscreen / the touchpad
+        assertFalse(Route.isPad(0x00000101, false))      // a keyboard
+        assertFalse(Route.isPad(0x00000101, true))       // the virtual keyboard
+        assertFalse(Route.isPad(Route.SOURCE_GAMEPAD, true))
+        // Cross, a remote's centre, Enter and the number pad's open the app's keyboard; Circle does not
+        assertTrue(Route.isPress(96) && Route.isPress(23) && Route.isPress(66) && Route.isPress(160))
+        assertFalse(Route.isPress(97) || Route.isPress(4) || Route.isPress(20))
+    }
+
+    @Test fun aPosterTheNetworkLostIsAskedForAgainWhileOnScreen() {
+        assertEquals(1500L, Route.artPause(0, false))
+        assertEquals(3000L, Route.artPause(1, false))
+        assertEquals(24_000L, Route.artPause(4, false))
+        assertEquals(30_000L, Route.artPause(5, false))
+        assertEquals(30_000L, Route.artPause(50, false))
+        // one the server says is not there: three tries, then left
+        assertEquals(6000L, Route.artPause(2, true))
+        assertNull(Route.artPause(3, true))
+    }
     @Test fun startUpKeepsTheRouteThisRunAlreadyHas() {
         assertTrue(Route.keepRoute("http://192.168.0.181:8765", "http://192.168.0.181:8765",
                                    "http://192.168.0.25:8764"))

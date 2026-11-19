@@ -210,10 +210,33 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_DOWN)
             keyAt = android.os.SystemClock.uptimeMillis()
+        // a controller's L1 and R1: the tab to the left or right, as a console's apps do
+        // (owner, 2026-11-18). Taken here, whatever has the focus.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_BUTTON_L1 ||
+                event.keyCode == android.view.KeyEvent.KEYCODE_BUTTON_R1) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+                Pad.shoulder.value = event.downTime to
+                    (if (event.keyCode == android.view.KeyEvent.KEYCODE_BUTTON_L1) -1 else 1)
+            return true
+        }
         // a direction held: the lists move quickly and straight until it is let go
         if (Route.isDirection(event.keyCode))
             Slide.held = Route.heldDown(event.action == android.view.KeyEvent.ACTION_DOWN,
                                         event.repeatCount)
+        // and its repeats no faster than the screen shows them: eighteen a second ran the ring
+        // rows ahead of the list, which scrolled on for seconds after the key was let go
+        // (owner, 2026-11-18). A repeat waits for the last step to be drawn, and a moment.
+        if (Route.isDirection(event.keyCode) && event.action == android.view.KeyEvent.ACTION_DOWN) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (event.repeatCount > 0 && !Route.heldStepDue(now - heldStepAt, heldDrawn))
+                return true
+            heldStepAt = now
+            heldDrawn = false
+            // two frames: the first lays the next row out, the second shows it
+            android.view.Choreographer.getInstance().postFrameCallback {
+                android.view.Choreographer.getInstance().postFrameCallback { heldDrawn = true }
+            }
+        }
         // Nothing on the screen to go back into: twice closes the app, from here
         // rather than from a handler inside the list that may not be there. This is
         // the one key that has to work when nothing else does.
@@ -268,6 +291,10 @@ class MainActivity : AppCompatActivity() {
         return safeKey(event) { super.dispatchKeyEvent(event) }
     }
 
+    /** When a direction last moved the ring, and whether a frame has been drawn since. */
+    private var heldStepAt = 0L
+    private var heldDrawn = true
+
     /** The press time of a Back the Compose layer took, until its release comes. */
     private var backTakenAt = 0L
 
@@ -285,8 +312,27 @@ class MainActivity : AppCompatActivity() {
         Reach.onView = maxOf(0, Reach.onView - 1)
     }
 
+    /** The bars dark with white marks, in the phone's light mode too. Themes cover the static
+     *  case; this covers phones that recolour the bars when the app resumes. On Android 15
+     *  the bar's colour is ignored and the system laid its own shade over three-button
+     *  navigation - light grey in light mode, under the app's dark ground (owner, 2026-11-18):
+     *  no shade, so the ground shows through. */
+    private fun darkBars() {
+        window.statusBarColor = 0xFF0B0D10.toInt()
+        window.navigationBarColor = 0xFF0B0D10.toInt()
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        darkBars()
         // the picker steps aside again: coming back to the app is an arrival like any
         // other, and the flag being left true from the last one was why the ring still
         // appeared in the corner on anything but the very first start
@@ -314,14 +360,8 @@ class MainActivity : AppCompatActivity() {
         Crash.install(applicationContext)      // before anything that might throw
         watchOpenings(application)
         KnownHosts.load(applicationContext)   // the addresses names last resolved to
-        // themes cover the static case; this covers phones that recolour the bars when
-        // the app resumes, and keeps the icons light against our dark ground
-        window.statusBarColor = 0xFF0B0D10.toInt()
-        window.navigationBarColor = 0xFF0B0D10.toInt()
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            isAppearanceLightStatusBars = false
-            isAppearanceLightNavigationBars = false
-        }
+        Pad.watch(applicationContext)          // a controller steers as a remote does
+        darkBars()
         // an episode the player started on its own: the page under it should be that
         // one, not the episode it rolled on from
         Opening.key = intent.getStringExtra("openKey") ?: ""
@@ -1769,7 +1809,7 @@ private fun SettingsScreen(onBack: () -> Unit, onServers: () -> Unit,
 
                 // Typing on a television: the app's own keyboard walked with the remote, or the
                 // system's, which Google TV hands to a phone. This device's own choice.
-                if (onTv()) {
+                if (onTv() || Pad.on.value) {
                     Typing.load(ctx)
                     SettingsChoices("Keyboard", if (Typing.phone.value)
                         "Text boxes type on your phone, through the Google TV app's remote."
@@ -2834,14 +2874,42 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
         }
         run {
             val along = rememberScrollState()
+            // L1 or R1: one step along this row - the tabs and the lists' filters among them
+            // (owner, 2026-11-18) - from the tab shown when the ring is down in the page.
+            // Only a press made while the row is on the screen; coming back to it is none.
+            val fm = androidx.compose.ui.platform.LocalFocusManager.current
+            val mode = androidx.compose.ui.platform.LocalInputModeManager.current
+            var rowFocused by remember { mutableStateOf(false) }
+            val shown = remember { android.os.SystemClock.uptimeMillis() }
+            val shoulder by Pad.shoulder
+            LaunchedEffect(shoulder) {
+                val (at, by) = shoulder
+                if (at <= shown) return@LaunchedEffect
+                // the ring shown, as any key shows it: L1 and R1 are taken before the page sees them
+                @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+                mode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
+                if (!rowFocused) {
+                    runCatching { tabFocus[tab]?.requestFocus() }
+                    kotlinx.coroutines.delay(40)
+                }
+                Pad.stepping = true
+                try {
+                    fm.moveFocus(if (by > 0) androidx.compose.ui.focus.FocusDirection.Right
+                                 else androidx.compose.ui.focus.FocusDirection.Left)
+                    kotlinx.coroutines.delay(60)
+                } finally {
+                    Pad.stepping = false
+                }
+            }
             Box(Modifier.padding(top = 8.dp).fillMaxWidth()) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(along),
+                Row(Modifier.fillMaxWidth().horizontalScroll(along)
+                        .onFocusChanged { rowFocused = it.hasFocus },
                     verticalAlignment = Alignment.CenterVertically) {
                     Tabs(tab, onTab, tabFocus, picks, where = tabAt)
                     filters?.let { Spacer(Modifier.width(8.dp)); it() }
                     if (housekeeping) {
                         Spacer(Modifier.width(10.dp))
-                        onSetup?.let { Pill("Settings") { it() } }
+                        onSetup?.let { Pill("Settings", icon = SettingsIcon) { it() } }
                     }
                     // room for the arrow to sit over without covering a pill
                     if (along.maxValue > 0) Spacer(Modifier.width(22.dp))
@@ -2960,16 +3028,21 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
     val tight = !onTv()
     val squeeze = tight && LocalConfiguration.current.screenWidthDp < 400
     @Composable
-    fun tabPill(id: String, label: String) {
+    fun tabPill(id: String, label: String,
+                icon: androidx.compose.ui.graphics.vector.ImageVector? = null) {
         val f = focus[id]
         // Down goes straight down, into whatever is under this button - the same as
         // the sort, the genre and the search box beside it. Naming one poster for the
         // whole row instead sent every tab to the first one, so two buttons on one
         // line did two different things.
-        Pill(label, tab == id, narrow = tight, small = squeeze,
+        Pill(label, tab == id, narrow = tight, small = squeeze, icon = icon,
              // the Watchlist, while something on it has come in and it is not open
              blink = id == "watchlist" && tab != id && WatchBlink.on,
              modifier = (if (f == null) Modifier else Modifier.focusRequester(f))
+                 // walked onto by L1 or R1: the tab opens, as a press of it would
+                 .onFocusChanged {
+                     if (Route.shoulderOpens(it.isFocused, Pad.stepping, id, tab)) onTab(id)
+                 }
                  .then(if (where == null) Modifier else Modifier.onGloballyPositioned {
                      where[id] = it.boundsInWindow().center.x
                  })) {
@@ -2978,6 +3051,7 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
     }
     // the Watchlist open, however it was reached: what blinked there has been seen
     LaunchedEffect(tab) { if (tab == "watchlist") WatchBlink.seen() else WatchBlink.left() }
+
     tabPill("start", "Start")
     tabPill("home", "Home")
     tabPill("films", "Films")
@@ -2985,8 +3059,8 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
     // fourth and fifth along, while a list is open: the order it is in and which shelf
     // of it. At the end of the row they were off the side of a phone.
     picks?.let { it() }
-    tabPill("watchlist", "Watchlist")
-    tabPill("collections", "Collections")
+    tabPill("watchlist", "Watchlist", WatchlistIcon)
+    tabPill("collections", "Collections", CollectionsIcon)
 }
 
 /** Something downloading: what, how far, how fast, how long and who asked, on a line of
@@ -3175,7 +3249,12 @@ private class Browse {
             Route.WATCHLIST_OPENS.let { (k, up) -> collSortKey = k; collSortAsc = up }
     }
 
+    /** The Home row and card a sport or a group of channels was opened from: back returns
+     *  to that card (owner, 2026-11-18). */
+    var rowFrom: Pair<String, String>? = null
+
     fun leaveMoreRow() {
+        rowFrom = null
         moreRow = null
         moreList = false
         liveView = false
@@ -4011,7 +4090,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // and the remote starts on the tab shown. It started wherever the framework put it, which
     // on a television is nowhere in particular: the first press of any direction went
     // hunting instead of moving.
-    val remoteHere = onTv()
+    val remoteHere = onTv() || Pad.on.value
     LaunchedEffect(Unit) {
         if (remoteHere && !browse.landed) {
             browse.landed = true
@@ -4099,27 +4178,50 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
     // presses that close the app. Somebody deep in a shelf wants the beginning of
     // that shelf far more often than they want to quit.
     val backScope = androidx.compose.runtime.rememberCoroutineScope()
+    fun leaveRow() {
+        // a shelf of somebody's films goes back to the film it was opened from
+        val reading = browse.personFrom
+        val from = browse.rowFrom
+        browse.leaveMoreRow()
+        if (reading != null) {
+            Api.openWanted.value = reading
+            return
+        }
+        // a sport or a group of channels: back to its card on Home, the remote on it - the
+        // row brought into view and its own return-to-a-card putting the focus there
+        val at = Route.rowToReturnTo(
+            browse.rows.filter { Offline.narrow(it.second).isNotEmpty() }.map { it.first }, from?.first)
+        if (from != null && at >= 0) {
+            browse.openedRow = from.first
+            browse.openedKey = from.second
+            backScope.launch {
+                runCatching { browse.rowsState.scrollToItem(at) }
+                browse.cameBack = browse.cameBack + 1
+            }
+            return
+        }
+        // and the front page as it is first met: the shelves from the top, with
+        // the remote on Home. Left where it was, the page came back half way down
+        // itself with the focus wherever the search happened to put it.
+        backScope.launch {
+            runCatching { browse.rowsState.scrollToItem(0) }
+            kotlinx.coroutines.delay(60)
+            runCatching { tabFocus["home"]?.requestFocus() }
+        }
+    }
+    // A row opened whole - a sport, a group of channels, a shelf's Show more - with the
+    // focus not in it: on the tabs, or nowhere after a finger. No handler answered and back
+    // did nothing in a sport's races (owner, 2026-11-18).
+    BackHandler(enabled = Route.backLeavesRow(browse.moreRow != null, inContent) && !inContent) {
+        leaveRow()
+    }
     BackHandler(enabled = inContent) {
         // A row opened whole is left first, before anything else is considered. Asked
         // after the walk along a shelf, the walk answered instead - the column it reads
         // is the one from the shelf this page was opened from - and back did nothing at
         // all, which left the front page showing this list and no way off it.
-        if (browse.moreRow != null) {
-            // a shelf of somebody's films goes back to the film it was opened from
-            val reading = browse.personFrom
-            browse.leaveMoreRow()
-            if (reading != null) {
-                Api.openWanted.value = reading
-                return@BackHandler
-            }
-            // and the front page as it is first met: the shelves from the top, with
-            // the remote on Home. Left where it was, the page came back half way down
-            // itself with the focus wherever the search happened to put it.
-            backScope.launch {
-                runCatching { browse.rowsState.scrollToItem(0) }
-                kotlinx.coroutines.delay(60)
-                runCatching { tabFocus["home"]?.requestFocus() }
-            }
+        if (Route.backLeavesRow(browse.moreRow != null, inContent)) {
+            leaveRow()
             return@BackHandler
         }
         // On the shelves, back walks along the row before it leaves it: a shelf is
@@ -5072,7 +5174,10 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                     }
                     val hasMore = list.size > SHELF_SHOWS || Route.popularPage(title)
                     SectionTitle(title,
-                                 (if (hasMore && !onTv()) Modifier.clickable { openMore() } else Modifier)
+                                 // pressed by a finger, passed by the remote: the row's
+                                 // Show more card is the remote's way there
+                                 (if (hasMore && !onTv()) Modifier.focusProperties { canFocus = false }
+                                     .clickable { openMore() } else Modifier)
                                      .padding(start = Route.shelfNameInset(onTv()).dp, top = gap.dp, bottom = 2.dp))
                     val w = homeW
                     val rowState = browse.rowStates.getOrPut(title) {
@@ -5139,7 +5244,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             // the card this shelf answers with: the one in the
                             // column the remote is in, or the last of a short shelf
                             val leads = at == browse.column.coerceAtMost(shown.lastIndex)
-                            val tvNow = onTv()
+                            val tvNow = steerByKeys()
                             LaunchedEffect(browse.focusKey) {
                                 if (browse.focusKey == m.ratingKey) {
                                     // the remote's place; a finger has none, and a card
@@ -5584,7 +5689,7 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                             else -> null
                         }
                         val here = remember { FocusRequester() }
-                        val tvNow = onTv()
+                        val tvNow = steerByKeys()
                         LaunchedEffect(browse.focusKey) {
                             if (browse.focusKey == m.ratingKey) {
                                 if (Route.focusByCode(tvNow))
@@ -5809,6 +5914,8 @@ private fun ReportDialog(startAs: String = "problem", onClose: () -> Unit) {
 /** A collection opened: the sort and filters it was saved with come with it. */
 /** One sport's races or games, as a shelf opened whole: newest event first. */
 private fun openSport(ctx: Context, browse: Browse, sport: Media) {
+    // the card it was pressed on, for back: the list's own return takes openedKey for itself
+    browse.rowFrom = browse.openedRow.ifEmpty { null }?.let { it to sport.ratingKey }
     browse.moreWas = Filters(browse.genre, browse.decade, browse.genres, browse.decades,
                              browse.collSortKey, browse.collSortAsc)
     browse.grid = emptyList(); browse.moreAll = emptyList()
@@ -5832,6 +5939,7 @@ private fun openSport(ctx: Context, browse: Browse, sport: Media) {
 private const val POSTER_SIDES = 10
 
 private fun openLiveGroup(ctx: Context, browse: Browse, group: Media) {
+    browse.rowFrom = browse.openedRow.ifEmpty { null }?.let { it to group.ratingKey }
     browse.moreWas = Filters(browse.genre, browse.decade, browse.genres, browse.decades,
                              browse.collSortKey, browse.collSortAsc)
     browse.grid = emptyList(); browse.moreAll = emptyList()

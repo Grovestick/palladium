@@ -311,7 +311,8 @@ object Reach {
         // opening: two seconds to answer - a viewer is waiting for a library, the copy is there
         // in milliseconds, and a look decides only when every address has said; settled,
         // four, so a busy moment does not count
-        val patience = if (Api.homeUnlooked()) 2000 else 4000
+        val patience = Route.lookPatience(Api.homeUnlooked(), doors.values.any {
+            it.up && it.houseUp && now() - it.at <= Route.HOUSE_WORD_MS })
         val conn = Net.open(at + "/where" + (if (tok.isEmpty()) "" else "?t=" + tok),
                             1500, patience, tok)
         // Connected and then no answer is a miss like any other: a server frozen or still
@@ -330,7 +331,9 @@ object Reach {
             f?.optString("lan").orEmpty().ifEmpty { f?.optString("outside").orEmpty() },
             f?.optString("id").orEmpty(),
             houseDown = house != null &&
-                Route.houseSaysDown(house.optBoolean("up", true), house.optInt("ago", 9_999)))
+                Route.houseSaysDown(house.optBoolean("up", true), house.optInt("ago", 9_999)),
+            houseUp = house != null &&
+                Route.houseSaysUp(house.optBoolean("answered", false), house.optInt("ago", 9_999)))
     }
 
     /** One address: who answers there, and how fast. Throws when this device has no

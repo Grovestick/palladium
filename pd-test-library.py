@@ -964,7 +964,6 @@ check("45b the Shuffle row holds the series collections and not the film ones",
       [x["shelf"] for x in _row45] == ["s45"] and _row45[0]["art"] == "/art/%s/backdrop" % _show45,
       str(_row45))
 print("45b. the Start tab's Shuffle row", flush=True)
-
 # ---- 46. Start's rows in the viewer's order, the turned-off ones gone, a new row on the end
 _vs46 = __import__("pd_localapi").viewer_settings
 _st46 = __import__("pd_localapi")._settings
@@ -1011,9 +1010,13 @@ try:
 finally:
     _con48.close()
 # music videos carry no rating: their row is everything in the folder, not a choice
+# and a service's titles of this year and last stand on the new titles' floor, as New does
+_first48 = int(time.strftime("%Y")) - api.FRESH_YEARS + 1
+_new48 = lambda r, m: r["id"].startswith("new-") or (
+    r["id"].startswith("svc-") and int(str(m.get("catalogDate") or "0")[:4] or 0) >= _first48)
 _low48 = [(r["id"], m.get("title"), m.get("rating")) for r in _rows48 for m in r["Metadata"]
           if r["id"] != "music"
-          and float(m.get("rating") or 0) < (api.START_FLOOR_NEW if r["id"].startswith("new-")
+          and float(m.get("rating") or 0) < (api.START_FLOOR_NEW if _new48(r, m)
                                              else api.START_FLOOR)]
 _con48 = api.lib.db()
 try:
@@ -1197,29 +1200,186 @@ check("54 the Service menu: a service's count, My library's and In packs'",
       _c54.get(8) == 1234 and _c54.get(-1) == _held54 and -2 in _c54, str(_c54))
 print("54. the Service menu's counts", flush=True)
 
-# ---- 55. a row a streaming service: its films and series in turn, rated, no children's
+# ---- 55. a row a streaming service: the new first - this year and last - then a few older;
+#          films and series in turn, rated, no children's
 _sc55 = api.service_catalogue
+_y55 = int(time.strftime("%Y"))
+_c55 = lambda k, y, r, g="Drama": {"ratingKey": k, "rating": r, "genres": [g],
+                                   "catalogDate": "%d-05-01" % y}
+_lists55 = {}
 def _fake55(con, one):
-    if one("type") == "movie":
-        return {"Metadata": [{"ratingKey": "m1", "rating": 8.0, "genres": ["Drama"]},
-                             {"ratingKey": "m2", "rating": 5.0, "genres": ["Drama"]},
-                             {"ratingKey": "m3", "rating": 8.0, "genres": ["Family"]},
-                             {"ratingKey": "m4", "rating": 7.0, "genres": ["Action"]}]}
-    return {"Metadata": [{"ratingKey": "s1", "rating": 8.5, "genres": ["Drama"]},
-                         {"ratingKey": "s2", "rating": 7.5, "genres": ["Comedy"]}]}
-try:
-    api.service_catalogue = _fake55
+    return {"Metadata": [dict(c) for c in _lists55[(one("type"), bool(one("since")))]]}
+def _row55(lists):
+    _lists55.clear()
+    _lists55.update(lists)
+    api._start_service_kept.clear()
     _con55 = api.lib.db()
     try:
-        api._start_service_kept.clear()     # the kept lists are the real ones
-        _row55 = [c["ratingKey"] for c in api._start_service(_con55, 8, {})]
+        return [c["ratingKey"] for c in api._start_service(_con55, 8, {})]
     finally:
         _con55.close()
+try:
+    api.service_catalogue = _fake55
+    _new55 = [_c55("m1", _y55, 8.0), _c55("m2", _y55, 5.0), _c55("m3", _y55, 8.0, "Family"),
+              _c55("m4", _y55 - 1, 6.6)]
+    _old55 = [_c55("o%d" % i, 2010, 8.0) for i in range(1, 7)] + [_c55("o7", 2010, 6.8)]
+    _a55 = _row55({("movie", True): _new55, ("movie", False): _new55 + _old55,
+                   ("show", True): [_c55("s1", _y55, 8.5)],
+                   ("show", False): [_c55("s1", _y55, 8.5), _c55("t1", 2012, 7.5)]})
+    _many55 = [_c55("n%d" % i, _y55, 7.5) for i in range(20)]
+    _b55 = _row55({("movie", True): _many55, ("movie", False): _old55[:6] + _many55,
+                   ("show", True): [], ("show", False): []})
+    _c55r = _row55({("movie", True): _many55[:14], ("movie", False): _old55[:1],
+                    ("show", True): [], ("show", False): []})
 finally:
     api.service_catalogue = _sc55
-check("55 a service's row: three films to a series, the low-rated and children's left out",
-      _row55 == ["m1", "m4", "s1", "s2"], str(_row55))
+check("55 a service's row: new first, three films to a series, low-rated and children's out",
+      _a55 == ["m1", "m4", "s1", "o1", "o2", "o3", "t1", "o4", "o5", "o6"], str(_a55))
+check("55b a service with new enough: twelve new, then four older and no more",
+      _b55 == ["n%d" % i for i in range(12)] + ["o1", "o2", "o3", "o4"], str(_b55))
+check("55c few older: the new fill their place",
+      _c55r == ["n%d" % i for i in range(14)] + ["o1"], str(_c55r))
 print("55. a row a streaming service", flush=True)
+
+# ---- 55h. a catalogue series a pack here gives is that pack's series: its card on the services'
+#           rows and its page, not the packs offered again (owner, 2026-11-19)
+_os55h = api._offered_shows_quietly
+_sp55h = __import__("pd_streaming").service_page
+try:
+    api._offered_shows_quietly = lambda: [{"ratingKey": "osgate55h", "title": "The Gate Show",
+                                           "year": 2026, "type": "show"}]
+    _hit55h = api._pack_series("The Gate Show!", 2025)
+    _old55h = api._pack_series("The Gate Show", 2022)
+    _none55h = api._pack_series("Another Show", 2026)
+    __import__("pd_streaming").service_page = lambda *a, **k: ([
+        {"id": 991155, "name": "The Gate Show", "first_air_date": "2026-03-01",
+         "poster_path": "/x.jpg", "vote_average": 7.5, "popularity": 50.0}], 1, 1)
+    _con55h = api.lib.db()
+    try:
+        _cat55h = api.service_catalogue(_con55h, lambda k, d="": {"type": "show", "provider": "8",
+                                                                 "page": "1"}.get(k, d))
+    finally:
+        _con55h.close()
+finally:
+    api._offered_shows_quietly = _os55h
+    __import__("pd_streaming").service_page = _sp55h
+# and its seasons asked for by the catalogue key it was opened with: the pack's
+_md55h = api.metadata_for
+_os55s = __import__("pd_torrents").offered_seasons
+try:
+    api.metadata_for = lambda con, key, brief=False: ({"ratingKey": "os0123456789", "type": "show"}
+                                                     if key == "tv991155" else _md55h(con, key, brief=brief))
+    __import__("pd_torrents").offered_seasons = lambda key: ([{"ratingKey": key + "-s1", "type": "season"}]
+                                                            if key == "os0123456789" else [])
+    _con55h = api.lib.db()
+    try:
+        _kids55h = api.route(_con55h, "/library/metadata/tv991155/children", {})
+    finally:
+        _con55h.close()
+finally:
+    api.metadata_for = _md55h
+    __import__("pd_torrents").offered_seasons = _os55s
+check("55i a series a pack gives: its seasons by the key it was opened with",
+      [k.get("ratingKey") for k in (_kids55h or {}).get("Metadata") or []] == ["os0123456789-s1"],
+      str(_kids55h))
+check("55h a series a pack gives: its card on the services' rows, matched by name and year",
+      _hit55h and _hit55h["ratingKey"] == "osgate55h" and _old55h is None and _none55h is None
+      and [c.get("ratingKey") for c in _cat55h.get("Metadata") or []] == ["osgate55h"],
+      str([c.get("ratingKey") for c in _cat55h.get("Metadata") or []]))
+
+# ---- 55d. a game's poster is its league's own from the poster site: asked in the background,
+#           the drawn one meanwhile; kept once fetched and given at the width asked
+import io as _io55, urllib.request as _ur55
+import pd_sports as _ps55
+from PIL import Image as _Im55
+_pic55 = _io55.BytesIO()
+_Im55.new("RGB", (680, 1000), "#123456").save(_pic55, "JPEG")
+_asked55 = []
+def _open55(req, timeout=0):
+    url = req.full_url if hasattr(req, "full_url") else str(req)
+    _asked55.append(url)
+    if "Shut_Home" in url:
+        import urllib.error
+        raise urllib.error.HTTPError(url, 429, "Too Many Requests", None, None)
+    if "lookupleague" in url:
+        return _io55.BytesIO(json.dumps({"leagues": [
+            {"strLeague": "NFL", "strPoster": "https://posters.example/league.jpg"}]}).encode())
+    if url.startswith(_ps55.POSTER_SITE):
+        return _io55.BytesIO(json.dumps({"event": [
+            {"strEvent": "Gate Home vs Gate Away", "dateEvent": "2026-10-04",
+             "strPoster": "https://posters.example/game.jpg"}]}).encode())
+    return _io55.BytesIO(_pic55.getvalue())
+_name55 = "NFL.2026.10.04.Gate.Away.Vs.Gate.Home.720p.WEB.H264-GRP"
+_rows55 = [{"name": _name55, "at": time.time()},
+           {"name": "NFL.2026.10.03.Shut.Away.Vs.Shut.Home.720p.WEB.H264-GRP", "at": time.time()}]
+_e55 = {x["key"]: x for x in _ps55._all_events(_rows55)}
+_shut55 = next(k for k, x in _e55.items() if x["home"] == "Shut Home")
+_e55 = next(x for x in _e55.values() if x["home"] == "Gate Home")
+_was55 = (_ur55.urlopen, api.SPORT_POSTER_GAP, api.SPORT_POSTER_SHUT)
+try:
+    _ur55.urlopen, api.SPORT_POSTER_GAP, api.SPORT_POSTER_SHUT = _open55, 0, 0
+    _first55 = api._sport_poster_found(_e55, _rows55, 200)
+    _kept55 = {}
+    for _ in range(100):           # the background ask kept its answer
+        try:
+            with open(os.path.join(api.lib.root, "sport_posters.json"), encoding="utf-8") as _f55:
+                _kept55 = json.load(_f55)
+                if _e55["key"] in _kept55:
+                    break
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.05)
+    _then55 = api._sport_poster_found(_e55, _rows55, 200)
+    _again55 = api._sport_poster_found(_e55, _rows55, 200)
+    # a sport's card: its league's poster, asked once and kept; none asked for the Dakar.
+    # From nothing: this copy of the live state may hold F1's already
+    assert api.lib.root.startswith(root)
+    for _gone55 in ("league_posters.json", os.path.join("cache", "sports", "nfl.lg1.jpg"),
+                    os.path.join("cache", "sports", "nfl.lg1.w160.jpg")):
+        try:
+            os.remove(os.path.join(api.lib.root, _gone55))
+        except OSError:
+            pass
+    _lg0 = api._sport_league_poster("nfl", 160)
+    for _ in range(100):
+        try:
+            with open(os.path.join(api.lib.root, "league_posters.json"), encoding="utf-8") as _f55:
+                if "league:nfl" in json.load(_f55):
+                    break
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.05)
+    _lg1 = api._sport_league_poster("nfl", 160)
+    _asks55 = len(_asked55)
+    _dk55 = api._sport_league_poster("dakar", 160)
+    _dkAsked55 = len(_asked55) - _asks55
+    # a sport's photograph card: the photograph fetched once, made into a 2:3 card
+    import glob as _gl55
+    for _gone55 in _gl55.glob(os.path.join(api.lib.root, "cache", "sports", "*dakar*")) +             _gl55.glob(os.path.join(api.lib.root, "cache", "sports", "photo-*")):
+        os.remove(_gone55)
+    _ph55 = api._sport_photo_card("dakar", 200)
+    _phAsks55 = len(_asked55)
+    _ph55b = api._sport_photo_card("dakar", 200)
+    _phNone55 = api._sport_photo_card("golf", 200)
+finally:
+    _ur55.urlopen, api.SPORT_POSTER_GAP, api.SPORT_POSTER_SHUT = _was55
+_size55 = _Im55.open(_io55.BytesIO(_then55)).size if _then55 else None
+check("55d a game's poster: asked of the site in the background, then fetched once and kept",
+      _first55 is None and _size55 == (200, 294) and "Gate_Home_vs_Gate_Away" in _asked55[0]
+      and sum("Gate_Home" in u for u in _asked55) == 1
+      and sum(u == "https://posters.example/game.jpg" for u in _asked55) == 1
+      and _again55 == _then55,
+      "%s %s %s" % (_first55 is None, _size55, _asked55))
+check("55f the NFL's card is its league's poster, asked once; none asked for a sport without one",
+      _lg0 is None and _lg1 is not None and _Im55.open(_io55.BytesIO(_lg1)).size == (160, 235)
+      and any("lookupleague.php?id=4391" in u for u in _asked55)
+      and _dk55 is None and _dkAsked55 == 0, "%s %s %s" % (_lg0 is None, _lg1 is not None, _dkAsked55))
+check("55g the Dakar's card is a photograph made into a poster, fetched once; golf has none",
+      _ph55 is not None and _Im55.open(_io55.BytesIO(_ph55)).size == (200, 300)
+      and _ph55b == _ph55 and len(_asked55) == _phAsks55 and _phNone55 is None
+      and any("upload.wikimedia.org" in u for u in _asked55))
+check("55e shut out by the poster site (429) is not kept as no poster: asked again later",
+      _shut55 not in _kept55 and any("Shut_Home" in u for u in _asked55), str(_kept55))
 
 # ---- 39. a pack taken off a series loses its link unless a download is still coming from
 #          it or another series chose it; a finished download no longer holds it; the
@@ -1643,7 +1803,7 @@ try:
     _r2 = api._start_service(api.lib.db(), 8, {})
     time.sleep(0.5)                  # and nothing built behind it either
     check("217 a service's Start row is built once and then kept",
-          _n1 == 2 and len(_calls217) == 2 and [c.get("ratingKey") for c in _r1] == [c.get("ratingKey") for c in _r2],
+          _n1 == 4 and len(_calls217) == 4 and [c.get("ratingKey") for c in _r1] == [c.get("ratingKey") for c in _r2],
           "%d then %d" % (_n1, len(_calls217)))
     # past its time: the kept one answers at once, a fresh one is built behind it
     for _k217 in list(api._start_service_kept):
@@ -1651,11 +1811,11 @@ try:
         api._start_service_kept[_k217] = (_t - api.START_SERVICE_FOR - 1, _rows, False)
     _r3 = api._start_service(api.lib.db(), 8, {})
     for _ in range(200):
-        if len(_calls217) >= 4:
+        if len(_calls217) >= 8:
             break
         time.sleep(0.05)
     check("217b past its time the kept row answers and a fresh one is built behind it",
-          [c.get("ratingKey") for c in _r3] == [c.get("ratingKey") for c in _r1] and len(_calls217) == 4,
+          [c.get("ratingKey") for c in _r3] == [c.get("ratingKey") for c in _r1] and len(_calls217) == 8,
           str(len(_calls217)))
 finally:
     api.service_catalogue = _real217
@@ -2068,10 +2228,10 @@ _off249 = [r["path"] for r in _rows249 if r["fid"] != _lb249.file_id(r["episode_
 check("249 every file in the library carries its file id, made from its title and its name",
       bool(_rows249) and not _off249, str(_off249[:3]))
 check("249 a file's id is the same on disk, on the cache and inside its pack",
-      _lb249.file_id("e5d4ce2d5d554", r"D:\Download\MacGyver.S01-S07\Season 1\MacGyver.S01E04.The.Gauntlet.1080p.Web.HEVC.x265-JoeBee.mkv")
-      == _lb249.file_id("e5d4ce2d5d554", r"D:\Palladium\MacGyver.S01E04.The.Gauntlet.1080p.Web.HEVC.x265-JoeBee.mkv")
-      == _lb249.file_id("e5d4ce2d5d554", "MacGyver.S01-S07/Season 1/macgyver.s01e04.the.gauntlet.1080p.web.hevc.x265-joebee.mkv")
-      == "e5d4ce2d5d554-c4043735")
+      _lb249.file_id("e5d4ce2d5d554", r"D:\Download\Harbour.Watch.S01-S07\Season 1\Harbour.Watch.S01E04.The.Long.Night.1080p.Web.HEVC.x265-GRP.mkv")
+      == _lb249.file_id("e5d4ce2d5d554", r"D:\Palladium\Harbour.Watch.S01E04.The.Long.Night.1080p.Web.HEVC.x265-GRP.mkv")
+      == _lb249.file_id("e5d4ce2d5d554", "Harbour.Watch.S01-S07/Season 1/harbour.watch.s01e04.the.long.night.1080p.web.hevc.x265-grp.mkv")
+      == "e5d4ce2d5d554-427194bc")
 
 # ---- 250. a film inside a pack carries the title id the library files it under once here
 import pd_torrents as _pt250
@@ -2776,6 +2936,74 @@ try:
           and "token" not in (_hit271.get("offer") or {}), repr(_hit271)[:200])
 finally:
     _S271.cache_downloads, _S271.handed_not_taken = _was271
+
+# ---- 272 the first Recently added after a quiet minute already carries the cache's download:
+# the cache's answer takes its time, as over the house network (owner, 2026-11-18: a pack film
+# coming in on the cache had no card on the row). The suite has no network, so the ask itself
+# stands in; the wait for it is the real one.
+import time as _t272
+_S272 = _ph271.SERVER
+_was272 = (dict(_S272.CACHE_ACTIVE), _S272._ask_cache_downloads, _S272.handed_not_taken)
+def _ask272():
+    _t272.sleep(0.4)
+    _S272.CACHE_ACTIVE.update(at=_t272.time(), rows=[
+        {"ratingKey": "cache272film", "type": "movie", "title": "Made Up Pack Film", "year": 2032,
+         "offer": {"state": "downloading", "progress": 0.3, "token": "secret-272", "on": "the cache"}}])
+try:
+    _S272.CACHE_ACTIVE.update(at=0.0, asked=0.0, rows=[], thread=None)
+    _S272._ask_cache_downloads = _ask272
+    _S272.handed_not_taken = lambda token=None: []
+    _got272 = cards("/library/sections/1/recentlyAdded", {"X-Plex-Container-Size": ["40"]})
+    _hit272 = next((m for m in _got272 if m.get("ratingKey") == "cache272film"), None)
+    check("272 the first Recently added after a quiet minute carries the film coming in on the cache",
+          _hit272 is not None and (_hit272.get("offer") or {}).get("progress") == 0.3
+          and "token" not in (_hit272.get("offer") or {}), repr([m.get("ratingKey") for m in _got272[:3]]))
+finally:
+    _S272.CACHE_ACTIVE.clear(); _S272.CACHE_ACTIVE.update(_was272[0])
+    _S272._ask_cache_downloads, _S272.handed_not_taken = _was272[1], _was272[2]
+
+# ---- 273 the mood rows on Start weigh how popular a title is now, not only its score: with
+# the weight, their films stand higher among the pool's by popularity than without it, and are
+# newer (owner, 2026-11-18: "not all time classics on every row" - "weight in popularity in mood")
+import statistics as _st273
+_con273 = api.lib.db()
+try:
+    _pool273 = api._start_pool(_con273, "movie") + api._start_pool(_con273, "show")
+    api._start_popular([p for p in _pool273 if p["kind"] == "movie"], "movie")
+    api._start_popular([p for p in _pool273 if p["kind"] == "show"], "show")
+    _pop273 = {p["key"]: p["pop"] for p in _pool273}
+    _year273 = {p["key"]: p["year"] for p in _pool273}
+finally:
+    _con273.close()
+_known273 = sum(1 for v in _pop273.values() if v != 0.5)
+def _moods273():
+    _c = api.lib.db()
+    try:
+        _rows = api._start_rows(_c, None, "273")
+    finally:
+        _c.close()
+    keys = [str(m.get("ratingKey")) for r in _rows
+            if not str(r["id"]).startswith(("new-", "svc-", "classic", "kids", "music"))
+            for m in r["Metadata"]]
+    return keys
+_was273 = type(api).START_POPULAR
+try:
+    type(api).START_POPULAR = 0.0
+    _off273 = _moods273()
+    type(api).START_POPULAR = _was273
+    _on273 = _moods273()
+finally:
+    type(api).START_POPULAR = _was273
+_mp = lambda ks: _st273.mean([_pop273.get(k, 0.5) for k in ks]) if ks else 0
+_my = lambda ks: _st273.median([_year273.get(k, 0) for k in ks if _year273.get(k)]) if ks else 0
+print("273. mood rows: popularity place %.2f -> %.2f, median year %s -> %s, %d titles, %d of %d with a popularity known"
+      % (_mp(_off273), _mp(_on273), _my(_off273), _my(_on273), len(_on273), _known273, len(_pop273)))
+if _known273 < 100:
+    print("273. skipped: too few popularities known on this copy")
+else:
+    check("273 the mood rows weigh popularity: higher among the pool by it, and no older",
+          _mp(_on273) >= _mp(_off273) + 0.1 and _my(_on273) >= _my(_off273),
+          "%.2f -> %.2f" % (_mp(_off273), _mp(_on273)))
 
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):

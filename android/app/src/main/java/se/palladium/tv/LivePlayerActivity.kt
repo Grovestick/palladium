@@ -504,7 +504,8 @@ class LivePlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> { zapBy(-1); return true }
             KeyEvent.KEYCODE_DPAD_LEFT -> { groupBy(-1); return true }
             KeyEvent.KEYCODE_DPAD_RIGHT -> { groupBy(1); return true }
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { press(); return true }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_BUTTON_A -> { press(); return true }
         }
         return super.onKeyDown(keyCode, event)
     }

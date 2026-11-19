@@ -517,8 +517,7 @@ private fun HoldPill(label: String, dim: Boolean = false, onStep: () -> Unit) {
             .onKeyEvent { event ->
                 if (dim) return@onKeyEvent false
                 val native = event.nativeKeyEvent
-                val centre = native.keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER ||
-                    native.keyCode == android.view.KeyEvent.KEYCODE_ENTER
+                val centre = Route.isPress(native.keyCode)
                 if (centre && native.action == android.view.KeyEvent.ACTION_DOWN) {
                     onStep()
                     true

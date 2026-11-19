@@ -1,5 +1,142 @@
 [
   {
+    "version": "0.20.107",
+    "when": "2026-11-19",
+    "title": "A series a pack gives: its seasons too",
+    "items": [
+      "A catalogue series a pack gives lists the pack's seasons when asked by the key it was opened with"
+    ]
+  },
+  {
+    "version": "0.20.106",
+    "when": "2026-11-19",
+    "title": "A series a pack gives opens as that series",
+    "items": [
+      "A catalogue series a pack here gives opens as the pack's series with its episodes, on Start, the services and Popular, not with the packs offered again"
+    ]
+  },
+  {
+    "version": "0.20.105",
+    "when": "2026-11-19",
+    "title": "F1 cars, pictures that reach the apps",
+    "items": [
+      "F1's card: the top teams' cars, an hour each, under FORMULA 1",
+      "A sport card's and a race's picture address carries the hour, so phones show a changed picture within the hour instead of the next day",
+      "Cycling: Armstrong's photograph cropped to the rider"
+    ]
+  },
+  {
+    "version": "0.20.104",
+    "when": "2026-11-18",
+    "title": "Sport photo cards, tablet player, light mode bars",
+    "items": [
+      "Sport cards: cycling's riders on their bikes, the Dakar's cars, trucks and bikes, motocross jumps, an hour each; only the sport's name on them",
+      "Motocross and cycling no longer show a league's poster",
+      "Tablet player: black from the first frame, a larger back arrow under the top line that leaves the film at once",
+      "The time bar's loaded-ahead part a shade over the rest, not a light grey block",
+      "Light mode: the navigation buttons stay white on the app's dark bars, in the player too",
+      "Test data: an invented release name in place of a real one"
+    ]
+  },
+  {
+    "version": "0.20.103",
+    "when": "2026-11-18",
+    "title": "Back to the sport, photo cards, tablet player",
+    "items": [
+      "Back from a sport or a channel group returns to its card on Home, the remote on it",
+      "Cycling's card: a rider's photograph, a different great each hour; the Dakar's a rally bike in the dunes",
+      "Motocross keeps MXGP's league poster; cycling no longer shows the World Tour's",
+      "Tablet player: drawn at the app's tablet size - controls, menus and the stills over the bar - and a back arrow top left",
+      "A stream replaced by the same player's newer one ends quietly: no retry beside the new one and no fault report"
+    ]
+  },
+  {
+    "version": "0.20.102",
+    "when": "2026-11-18",
+    "title": "Real league posters, new marks",
+    "items": [
+      "The Sports row's cards: the league's own poster from TheSportsDB for F1, NFL, motocross and cycling; the drawn card for the rest",
+      "A title's watchlist and collection buttons: the tab row's bookmark, heart and film-library marks"
+    ]
+  },
+  {
+    "version": "0.20.101",
+    "when": "2026-11-18",
+    "title": "Controller on a tablet",
+    "items": [
+      "A game controller on a tablet steers as a TV remote: search opens the app's keyboard on Cross; a touch still types on the tablet's own",
+      "Row headings are no longer a stop for the remote or a controller; a finger still opens them",
+      "L1 and R1 walk the tab row, the lists' filters included; a tab opens as they land on it",
+      "Holding Cross on a poster opens its menu, as holding the remote's centre does",
+      "Back leaves a sport's races, a channel group or Show more wherever the focus is",
+      "A held direction steps at most five times a second and waits for each row to be drawn",
+      "Watchlist, Collections and Settings are icons in the tab row"
+    ]
+  },
+  {
+    "version": "0.20.100",
+    "when": "2026-11-18",
+    "title": "Sport posters: shut out is not none",
+    "items": [
+      "Sport posters: a game the poster site refused (too many asks) is asked again later instead of kept as having none; asks spaced 6 s"
+    ]
+  },
+  {
+    "version": "0.20.99",
+    "when": "2026-11-18",
+    "title": "Start: new on the services, real sport posters",
+    "items": [
+      "Popular on a service: this year's and last year's titles first, at most four older ones after them",
+      "Races and games: the league's own poster from TheSportsDB for F1 and NFL; the drawn card where there is none",
+      "Sport posters from a frame of the race removed"
+    ]
+  },
+  {
+    "version": "0.20.98",
+    "when": "2026-11-18",
+    "title": "Race posters from the race",
+    "items": [
+      "A race on disk is found by its release name whatever the separators, for its frame poster"
+    ]
+  },
+  {
+    "version": "0.20.97",
+    "when": "2026-11-18",
+    "title": "Race posters from the race",
+    "items": [
+      "A race or game on disk has a frame of it as its poster, with its league and lines over it"
+    ]
+  },
+  {
+    "version": "0.20.96",
+    "when": "2026-11-18",
+    "title": "Start mood rows",
+    "items": [
+      "Start's mood rows weigh how popular a title is now beside its score"
+    ]
+  },
+  {
+    "version": "0.20.95",
+    "when": "2026-11-18",
+    "title": "Downloads and posters, Opening on a slow line",
+    "items": [
+      "Recently added shows a film coming in on the cache server on the first load, not only after the download list was opened",
+      "A poster that failed to load is asked for again while on screen and when the app changes server, not only three times",
+      "The web page for a title not in the library drops the line saying where a download would come from",
+      "The cache server's status reply says whether the main server answered its last ask",
+      "Opening, the app holds a missed look at the main server for a second look when the cache server says the main server answered it, instead of moving to the cache",
+      "The test run copies the one-time marks, so it does not run a one-time job again"
+    ]
+  },
+  {
+    "version": "0.20.94",
+    "when": "2026-11-18",
+    "title": "A poster for each sport's league",
+    "items": [
+      "Sports: every event wears its league's poster - AMA Supercross, MXGP, Tour de France, Dakar and the rest - with its round, stage or place\nSports: Motocross has a card of its own on the Sports row"
+    ]
+  },
+  {
     "version": "0.20.93",
     "when": "2026-11-18",
     "title": "No library reload while the main server sleeps",

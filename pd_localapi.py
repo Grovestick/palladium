@@ -1945,6 +1945,10 @@ class LocalAPI(pd_search.SearchParts):
                 continue
             if lands and not (lands & {str(c).upper() for c in x.get("countries") or []}):
                 continue
+            pack = self._pack_series(x.get("show") or "", x.get("year") or 0)
+            if pack:
+                out.append(dict(pack, popularity=len(popular) - at))
+                continue
             out.append({"ratingKey": "tv%d" % int(x["tmdb"]), "type": "show",
                         "title": x.get("show") or "", "year": x.get("year") or None,
                         "summary": x.get("overview") or "",
@@ -3603,6 +3607,12 @@ class LocalAPI(pd_search.SearchParts):
         m = re.match(r"^/library/metadata/([^/]+)/children$", path)
         if m:
             key = m.group(1)
+            # a catalogue series a pack gives: the pack's seasons, as its page is the pack's
+            # series - asked for by the key it was opened with, it had none (owner, 2026-11-19)
+            if re.match(r"^tv\d+$", key):
+                found = self.metadata_for(con, key, brief=True)
+                if found and str(found.get("ratingKey") or key) != key:
+                    key = str(found["ratingKey"])
             # a programme on offer, and one of its seasons
             key = self._held_key(con, key)
             import pd_torrents
@@ -3917,10 +3927,13 @@ class LocalAPI(pd_search.SearchParts):
                 return ("image/jpeg", f.read())
         m = re.match(r"^/art/sports/([a-z0-9]+)$", path)
         if m:
-            # a sport's own card on the Sports row, drawn here
+            # a sport's own card on the Sports row: its league's poster, else drawn here
             import pd_sports
             want = max(64, min(int(one("w", "0") or 0) or 400, 400))
-            kept = os.path.join(self.lib.root, "cache", "sports", "%s.w%d.v2.jpg"
+            found = self._sport_photo_card(m.group(1), want) or self._sport_league_poster(m.group(1), want)
+            if found:
+                return ("image/jpeg", found)
+            kept = os.path.join(self.lib.root, "cache", "sports", "%s.w%d.v3.jpg"
                                 % (m.group(1), want))
             if not os.path.exists(kept):
                 os.makedirs(os.path.dirname(kept), exist_ok=True)
@@ -3930,12 +3943,17 @@ class LocalAPI(pd_search.SearchParts):
                 return ("image/jpeg", f.read())
         m = re.match(r"^/art/(sp[0-9a-f]{12})/poster$", path)
         if m:
-            # a race or a game: a poster drawn here, kept once drawn
-            import pd_sports, pd_tracker
+            # a race or a game: its league's own poster where the poster site has one,
+            # else one drawn here, kept once drawn
+            import pd_sports
             want = max(64, min(int(one("w", "0") or 0) or 400, 400))
-            kept = os.path.join(self.lib.root, "cache", "sports", "%s.w%d.v2.jpg" % (m.group(1), want))
+            rows, events = self._sport_index()
+            e = events.get(m.group(1))
+            found = self._sport_poster_found(e, rows, want) if e else None
+            if found:
+                return ("image/jpeg", found)
+            kept = os.path.join(self.lib.root, "cache", "sports", "%s.w%d.v3.jpg" % (m.group(1), want))
             if not os.path.exists(kept):
-                e = pd_sports.releases_of(m.group(1), list(pd_tracker.read().values()))
                 if not e:
                     return None
                 os.makedirs(os.path.dirname(kept), exist_ok=True)
@@ -4848,6 +4866,20 @@ class LocalAPI(pd_search.SearchParts):
             return []
 
 
+    def _pack_series(self, title, year):
+        """The series a pack here gives that is this catalogue series - its name, its year a year
+        either way - or None. A pack added to a series from Start was not found from the
+        series' own page, which offered the packs again (owner, 2026-11-19)."""
+        bare = self._bare(title)
+        if not bare:
+            return None
+        for o in self._offered_shows_quietly():
+            there = int(o.get("year") or 0)
+            if (self._bare(o.get("title")) == bare and o.get("ratingKey")
+                    and (not year or not there or abs(there - int(year)) <= 1)):
+                return o
+        return None
+
     @staticmethod
     def _offered_shows_quietly():
         """Programmes a pack can give. Never worth a failure on a shelf."""
@@ -5025,6 +5057,10 @@ class LocalAPI(pd_search.SearchParts):
             self.lib, what, [g for g in one("genre", "").split(",") if g.strip()])
         firsts = self.decades_asked(one("decade", ""))
         years = (min(firsts), max(firsts) + 9) if firsts else (0, 0)
+        # or from a year to now: what Start's service rows call new
+        since = str(one("since", "") or "")
+        if since.isdigit():
+            years = (int(since), int(time.strftime("%Y")))
         order = str(one("sort", "") or "popularity:desc")
         show = self.films_show()
         by_tmdb, _ = pd_streaming._held(self.lib)
@@ -5077,6 +5113,11 @@ class LocalAPI(pd_search.SearchParts):
                     continue
                 if kind == "show":
                     row = pd_streaming.show_row(r)
+                    # a pack here gives it: that series' card, as a film a pack carries is
+                    pack = self._pack_series(row["show"], row["year"])
+                    if pack:
+                        cards.append(ranked(dict(pack)))
+                        continue
                     rows.append(row)
                     cards.append(ranked({"ratingKey": row["key"], "type": "show", "title": row["show"],
                                   "year": row["year"] or None, "summary": row["overview"],
@@ -5634,11 +5675,13 @@ class LocalAPI(pd_search.SearchParts):
     _start_service_kept = {}
     _start_service_lock = threading.Lock()
 
-    def _service_list(self, con, number, kind):
-        """A service's catalogue page for Start, kept a while. Past its time the kept one
-        is answered and a fresh one built behind it, so Start never waits on it again."""
-        key = (str(number), kind)
-        asked = {"type": kind, "provider": str(number), "page": "1", "sort": "popularity:desc"}
+    def _service_list(self, con, number, kind, since=0):
+        """A service's catalogue page for Start - out `since` that year, or of any year - kept
+        a while. Past its time the kept one is answered and a fresh one built behind it, so
+        Start never waits on it again."""
+        key = (str(number), kind, int(since or 0))
+        asked = {"type": kind, "provider": str(number), "page": "1", "sort": "popularity:desc",
+                 "since": str(since) if since else ""}
 
         def build(db):
             try:
@@ -5673,29 +5716,48 @@ class LocalAPI(pd_search.SearchParts):
         threading.Thread(target=behind, daemon=True, name="start-service").start()
         return kept[1]
 
+    #: of a service's row, how many may be older than this year and last: the rest is new
+    #: on it, so the row is not its all-time favourites (owner, 2026-11-18)
+    START_SERVICE_OLD = 4
+
     def _start_service(self, con, number, taste):
-        """One service's row: its most watched films and series in this country now,
-        the two taken in turn - each as this house has it - rated as Start asks, the
-        children's films left to their own row."""
+        """One service's row: what came out this year or last, most watched there first, then
+        a few of its older most watched - films and series in turn, each as this house has
+        it, rated as Start asks, the children's films left to their own row."""
         never = (taste or {}).get("never") or set()
-        lists = []
+        first = int(time.strftime("%Y")) - self.FRESH_YEARS + 1
+        year = lambda c: int(str(c.get("catalogDate") or c.get("year") or "0")[:4] or 0)
+
+        def fits(c, kind, floor):
+            return (str(c.get("ratingKey")) not in never and float(c.get("rating") or 0) >= floor
+                    and not (kind == "movie" and self.for_kids(c.get("genres") or [])))
+        new, old = [], []
         for kind in ("movie", "show"):
-            lists.append([c for c in self._service_list(con, number, kind)
-                          if str(c.get("ratingKey")) not in never
-                          and float(c.get("rating") or 0) >= self.START_FLOOR
-                          and not (kind == "movie" and self.for_kids(c.get("genres") or []))])
-        # three films to each series: a service's films lead, as the row's name says
-        films, series = lists
-        out, seen = [], set()
-        while (films or series) and len(out) < self.START_ROW:
-            take = [films.pop(0) for _ in range(self.START_FILMS_A_SERIES) if films]
-            if series:
-                take.append(series.pop(0))
-            for c in take:
-                if str(c.get("ratingKey")) not in seen and len(out) < self.START_ROW:
-                    seen.add(str(c.get("ratingKey")))
-                    out.append(c)
-        return out
+            # new titles' scores are still settling: they stand on the new titles' floor
+            new.append([c for c in self._service_list(con, number, kind, first)
+                        if year(c) >= first and fits(c, kind, self.START_FLOOR_NEW)])
+            old.append([c for c in self._service_list(con, number, kind)
+                        if 0 < year(c) < first and fits(c, kind, self.START_FLOOR)])
+        seen = set()
+
+        def mix(films, series, into, most):
+            # three films to each series: a service's films lead, as the row's name says
+            while (films or series) and len(into) < most:
+                take = [films.pop(0) for _ in range(self.START_FILMS_A_SERIES) if films]
+                if series:
+                    take.append(series.pop(0))
+                for c in take:
+                    if str(c.get("ratingKey")) not in seen and len(into) < most:
+                        seen.add(str(c.get("ratingKey")))
+                        into.append(c)
+            return into
+        # the new first, a few older after them - more new where there are fewer older,
+        # more older only where the new run out
+        out = mix(new[0], new[1], [], self.START_ROW - self.START_SERVICE_OLD)
+        olds = mix(old[0], old[1], [], self.START_SERVICE_OLD)
+        mix(new[0], new[1], out, self.START_ROW - len(olds))
+        out += olds
+        return mix(old[0], old[1], out, self.START_ROW)
     #: how many of IMDb's best-rated films Classics draws from
     CLASSICS_TOP = 250
     #: and how long that chart is kept before it is asked again: a day, so the kept
@@ -5802,11 +5864,159 @@ class LocalAPI(pd_search.SearchParts):
     #: a row needs this many to stand
     START_ROW_LEAST = 4
 
+    #: the tracker index's events by key, read again after this long: a row of thirty
+    #: posters read and parsed it thirty times
+    SPORT_INDEX_FOR = 60
+    _sport_index_kept = (0.0, [], {})
+
+    def _sport_index(self):
+        """(the tracker index's rows, its sport events by key), kept a minute."""
+        import pd_sports, pd_tracker
+        at, rows, events = LocalAPI._sport_index_kept
+        if time.time() - at > self.SPORT_INDEX_FOR:
+            rows = list(pd_tracker.read().values())
+            events = {x["key"]: x for x in pd_sports._all_events(rows)}
+            LocalAPI._sport_index_kept = (time.time(), rows, events)
+        return rows, events
+
+    #: how long the poster site's answer for a race stands before it is asked again: one it
+    #: had no poster for may have one by then
+    SPORT_POSTER_FOR = 3 * 86400
+    #: and the pause between two asks of it: it shut out this house's address at about
+    #: thirteen a minute, and both servers ask from it
+    SPORT_POSTER_GAP = 6.0
+    #: and the wait after it has shut us out
+    SPORT_POSTER_SHUT = 60
+
+    def _sport_poster_found(self, e, rows, want):
+        """A race's or game's own poster from the poster site, at `want` wide, kept once
+        fetched; None while it is being asked for and where the site has none. Every event
+        of its sport is asked about in the background, one at a time."""
+        import pd_sports
+        if e["sport"] not in pd_sports.POSTER_SPORTS:
+            return None
+        whole = os.path.join(self.lib.root, "cache", "sports", "%s.p1.jpg" % e["key"])
+        events = {}
+        if not os.path.exists(whole):
+            events = {x["key"]: x for x in pd_sports.sport_events(rows, e["sport"])}
+            events.setdefault(e["key"], e)
+
+        def ask(key):
+            said = pd_sports.poster_ask(events.get(key) or {})
+            if not said:
+                return ""
+            got = self._ask_poster_site(*said)
+            return pd_sports.poster_pick(events[key], got.get("events") or got.get("event")) or ""
+        keys = [e["key"]] + [k for k in events if k != e["key"]]
+        return self._poster_site_image("sport_posters.json", e["key"], keys, ask, whole, want)
+
+    def _sport_league_poster(self, sport, want):
+        """A sport's card on the Sports row: its league's own poster from the poster site
+        (owner, 2026-11-18), kept once fetched; None for a sport it has none of, or while it
+        is being asked for."""
+        import pd_sports
+        league = pd_sports.POSTER_LEAGUES.get(sport)
+        if not league:
+            return None
+        key = "league:" + sport
+
+        def ask(_key):
+            return pd_sports.league_poster(self._ask_poster_site("lookupleague.php", {"id": league}))
+        whole = os.path.join(self.lib.root, "cache", "sports", "%s.lg1.jpg" % sport)
+        # its own kept answers: behind a sport's games, asked for a dozen minutes, it waited
+        return self._poster_site_image("league_posters.json", key, [key], ask, whole, want)
+
+    #: a photograph that could not be fetched is not asked for again before this
+    PHOTO_RETRY = 600
+    _photo_failed = {}
+
+    def _sport_photo_card(self, sport, want):
+        """A sport's card made from a photograph (pd_sports.PHOTO_CARDS), the photograph fetched
+        once and kept; None for a sport without one or a photograph not to be had now."""
+        import pd_sports, hashlib
+        card = pd_sports.photo_card_now(sport)
+        if not card:
+            return None
+        word, colour, line, photo, across = card
+        name = hashlib.sha1(photo.encode()).hexdigest()[:12]
+        folder = os.path.join(self.lib.root, "cache", "sports")
+        made = os.path.join(folder, "%s.%s.w%d.pc1.jpg" % (sport, name, want))
+        if not os.path.exists(made):
+            whole = os.path.join(folder, "photo-%s.jpg" % name)
+            if not os.path.exists(whole):
+                if time.time() - self._photo_failed.get(photo, 0) < self.PHOTO_RETRY:
+                    return None
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(photo, headers={"User-Agent": "Palladium/1.0 (https://palladium.video)"})
+                    with urllib.request.urlopen(req, timeout=15) as answer:
+                        data = answer.read()
+                    os.makedirs(folder, exist_ok=True)
+                    with open(whole + ".tmp", "wb") as f:
+                        f.write(data)
+                    os.replace(whole + ".tmp", whole)
+                except Exception:
+                    # Commons refuses a burst (429): asked again in a while, the drawn card meanwhile
+                    LocalAPI._photo_failed[photo] = time.time()
+                    return None
+            try:
+                data = pd_sports.photo_poster(whole, word, colour, line, across, want)
+            except Exception:
+                return None
+            with open(made + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(made + ".tmp", made)
+        with open(made, "rb") as f:
+            return f.read()
+
+    def _ask_poster_site(self, address, words):
+        """One ask of the poster site, paced: its answer as a dict."""
+        import pd_sports, urllib.parse, urllib.request, urllib.error
+        time.sleep(self.SPORT_POSTER_GAP)
+        req = urllib.request.Request(pd_sports.POSTER_SITE + address + "?" + urllib.parse.urlencode(words),
+                                     headers={"User-Agent": "Palladium"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as answer:
+                return json.loads(answer.read().decode("utf-8", "replace") or "{}") or {}
+        except urllib.error.HTTPError as x:
+            # shut out (429) is not "no poster": nothing kept, asked again later - and
+            # a minute's wait before the next (38 of 50 kept as none on 2026-11-18)
+            if x.code == 429:
+                time.sleep(self.SPORT_POSTER_SHUT)
+            raise RuntimeError("poster site: HTTP %d" % x.code)
+
+    def _poster_site_image(self, kept, key, keys, ask, whole, want):
+        """The picture the poster site's answer for `key` names, at `want` wide, fetched once
+        into `whole`; `keys` asked in the background, the answers kept in `kept`. None while
+        unknown or where there is none."""
+        if not os.path.exists(whole):
+            url = self._kept_answers(kept, keys, ask, self.SPORT_POSTER_FOR, "").get(key)
+            if not url:
+                return None
+            try:
+                import urllib.request
+                req = urllib.request.Request(url, headers={"User-Agent": "Palladium"})
+                with urllib.request.urlopen(req, timeout=15) as answer:
+                    data = answer.read()
+                os.makedirs(os.path.dirname(whole), exist_ok=True)
+                with open(whole + ".tmp", "wb") as f:
+                    f.write(data)
+                os.replace(whole + ".tmp", whole)
+            except OSError:
+                return None
+        sized = self._resized(whole, want) or whole
+        with open(sized, "rb") as f:
+            return f.read()
+
     def _start_rows(self, con, taste, seed):
         """The front's rows, films and series mixed as the services mix theirs: what is
         new, each mood for films and then for series, and the classics last. A row with
         too little in it is left out."""
         films, series = self._start_pool(con, "movie"), self._start_pool(con, "show")
+        # how popular each is now, as a place among its own kind: the mood rows weigh it, so
+        # they are not the all-time classics every one (owner, 2026-11-18)
+        self._start_popular(films, "movie")
+        self._start_popular(series, "show")
         # films for children have a row of their own and stand in no other
         kids = [p for p in films if self.for_kids(p["genres"])]
         films = [p for p in films if not self.for_kids(p["genres"])]
@@ -6036,8 +6246,27 @@ class LocalAPI(pd_search.SearchParts):
             return None
         if rating < floor:
             return None
-        # the score counts for more than the day's shake: the best of a mood come first
-        return hit * 0.5 + rating / 10 * 4 + (0.3 if p["here"] else 0)
+        # the score counts for more than the day's shake: the best of a mood come first -
+        # and how popular it is now, as much again as the score's spread over the floor
+        return (hit * 0.5 + rating / 10 * 4 + (0.3 if p["here"] else 0)
+                + LocalAPI.START_POPULAR * p.get("pop", 0.5))
+
+    #: what the most popular title of its kind gains over the least, on a mood row: the
+    #: score's span from the floor (7.0) to a 9.5 is 1.0
+    START_POPULAR = 2.0
+
+    def _start_popular(self, pool, kind):
+        """Each title's TMDB popularity as its place among the pool's, 0 the least and 1 the
+        most, into p["pop"]; 0.5 where it is not known yet (asked in the background)."""
+        try:
+            scores = self.tmdb_popularity(kind, sorted({p["tmdb"] for p in pool if p.get("tmdb")}))
+        except Exception:
+            scores = {}
+        known = sorted({v for v in scores.values() if v > 0})
+        place = {v: (i / (len(known) - 1) if len(known) > 1 else 0.5) for i, v in enumerate(known)}
+        for p in pool:
+            v = scores.get(p.get("tmdb") or 0, 0)
+            p["pop"] = place.get(v, 0.5)
 
     #: the least a title on Start is rated: films and series alike, 0-10
     START_FLOOR = 7.0
@@ -7165,6 +7394,12 @@ class LocalAPI(pd_search.SearchParts):
                 one = pd_streaming.searched_show(number)
             if not one:
                 return None
+            # a pack here gives it: the pack's series and its episodes, not the packs to add
+            pack = self._pack_series(one.get("show") or "", one.get("year") or 0)
+            if pack:
+                found = self.metadata_for(con, str(pack["ratingKey"]), brief=brief)
+                if found:
+                    return found
             got = {"ratingKey": str(key), "type": "show", "title": one.get("show") or "",
                    "year": one.get("year") or None, "summary": one.get("overview") or "",
                    "rating": one.get("rating"), "tmdb": number, "addable": True,

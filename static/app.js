@@ -7105,15 +7105,8 @@ async function viewOffer(m) {
     '<select id="offerpick" class="pick"></select></div>' +
     badgesRow([], m) +
     '<p class="summary tellme">' + esc(m.summary) + "</p>" +
-    // who is in it under Show more, as on a film here (owner, 2026-11-15)
-    '<div class="note">' + (fetches
-      ? "Not in the library, but a pack here carries it. Downloading downloads this one "
-        + "film in and leaves the rest of the pack alone."
-      : m.onTracker
-      ? "Not in the library, but the tracker has it: Download fetches it."
-      : "Not in the library, and nothing to download yet. Requesting puts it on your "
-        + "watchlist.")
-    + "</div></div>";
+    // no line saying where it would come from: the Download button and the version list say it (owner, 2026-11-18)
+    "</div>";
   // on the watchlist or in a collection before it is here, as a film here can be
   const marks = wrap.querySelector(".actions");
   if (marks) marks.insertBefore(markControl(m), wrap.querySelector("#offersaid"));

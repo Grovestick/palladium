@@ -426,6 +426,8 @@ class Stream:
         self.info = info
         self.log = log
         self.started = time.time()
+        #: stopped because the same player asked for another: nothing failed
+        self.superseded = False
 
     def alive(self):
         return self.proc.poll() is None
@@ -1017,6 +1019,7 @@ class Engine:
                     continue                   # itself, or an HLS session with its own life
                 if getattr(st, "who", None) != who:
                     continue
+                st.superseded = True
                 st.stop()
                 self.streams.pop(sid, None)
             st = self.streams.get(keep)

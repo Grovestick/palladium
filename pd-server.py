@@ -809,7 +809,7 @@ START_FIRST_S = 60
 
 #: what each cache server is downloading, as its own /torrents/active says it: asked in
 #: the background, so a cache that does not answer never holds up the line in the menu
-CACHE_ACTIVE = {"at": 0.0, "asked": 0.0, "rows": []}
+CACHE_ACTIVE = {"at": 0.0, "asked": 0.0, "rows": [], "thread": None}
 
 
 #: what the other server holds, as it last said, kept across a restart: its films stay on the

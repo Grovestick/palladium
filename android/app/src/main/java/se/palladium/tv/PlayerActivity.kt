@@ -89,6 +89,9 @@ private const val UX_ONLY_BAR = 1
 private const val UX_SLIDING_AWAY = 3
 private const val UX_SLIDING_IN = 4
 
+/** The time bar's loaded-ahead part: a shade over the unplayed 0x33FFFFFF. */
+private const val BUFFERED_INK = 0x55FFFFFF
+
 class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
@@ -128,6 +131,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
     private var local: ExoPlayer? = null
     private var cast: CastPlayer? = null
     private var view: PlayerView? = null
+    //: the tablet's back arrow, top left, shown with the controls
+    private var backButton: android.view.View? = null
+    //: Back's first press with the controls up puts them away; the arrow passes it by
+    private var putAway: androidx.activity.OnBackPressedCallback? = null
     private var direct = true
     private var baseOffsetSec = 0L
     /** where a stream with its picture copied really starts, in ms; -1 when not copied */
@@ -523,8 +530,36 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         startMarks.add("" + (android.os.SystemClock.elapsedRealtime() - startedAt) + " " + what)
     }
 
+    /** A tablet's player at the size the rest of the app is drawn at there - Media3's
+     *  controls, ours, the menus and the stills over the bar, all at once (owner, 2026-11-18).
+     *  The picture fills the screen as before. */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        val cfg = newBase.resources.configuration
+        val tv = cfg.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK ==
+            android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+        val scale = Route.tvScale(tv, cfg.smallestScreenWidthDp, cfg.screenWidthDp, cfg.screenHeightDp)
+        super.attachBaseContext(if (scale <= 1f) newBase else newBase.createConfigurationContext(
+            android.content.res.Configuration(cfg).apply {
+                densityDpi = (densityDpi * scale).toInt()
+                screenWidthDp = (screenWidthDp / scale).toInt()
+                screenHeightDp = (screenHeightDp / scale).toInt()
+                smallestScreenWidthDp = (smallestScreenWidthDp / scale).toInt()
+            }))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // straight to black, no fade: the page it was opened from showed through grey for a
+        // moment, the name and the bar over it (owner, 2026-11-18)
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+        } else {
+            @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+        }
+        goImmersive()
+        // black from the first frame: drawn at the tablet's size, the window came up dark grey
+        // for a second before the picture (owner, 2026-11-18)
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK))
         // The player this one replaces stops now, not when Android gets round to
         // destroying it: for that second or two it still held the receiver, read its
         // stream and ran its own recovery - two players sent Dolby at once, the sound
@@ -771,6 +806,10 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         }
         view = player
         // a still of the film over the timeline while it is moved, by finger or remote
+        // what is loaded ahead a shade over the rest, not Media3's light grey: with the bar
+        // alone at the foot it stood out as a grey block beside the played part (owner, 2026-11-18)
+        player.findViewById<androidx.media3.ui.DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)
+            ?.setBufferedColor(BUFFERED_INK)
         player.findViewById<androidx.media3.ui.DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)
             ?.addListener(object : androidx.media3.ui.TimeBar.OnScrubListener {
                 override fun onScrubStart(timeBar: androidx.media3.ui.TimeBar, position: Long) {
@@ -1253,6 +1292,38 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 }
             }
         }
+        // A way out where a finger looks for one, top left with the controls - a tablet has
+        // only the system's back otherwise (owner, 2026-11-18). Not on a television: its
+        // remote has a back of its own.
+        if (!onTelevision()) {
+            // a finger's size, and away from the corner: at 36 it was hard to hit (owner, 2026-11-18)
+            val box = (48 * resources.displayMetrics.density).toInt()
+            val back = android.widget.ImageView(this).apply {
+                setImageResource(androidx.appcompat.R.drawable.abc_ic_ab_back_material)
+                setColorFilter(0xFFE8ECF1.toInt())
+                contentDescription = "Back"
+                val pad = (11 * resources.displayMetrics.density).toInt()
+                setPadding(pad, pad, pad, pad)
+                isClickable = true
+                isFocusable = true
+                background = pillBackground(false)
+                setOnFocusChangeListener { v, has -> v.background = pillBackground(has) }
+                // out of the film at once, back where it was opened from: the controls being
+                // up is what puts the arrow there, and Back's first press only put them away
+                // (owner, 2026-11-18)
+                setOnClickListener {
+                    putAway?.isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+            backButton = back
+            frame.addView(back, android.widget.FrameLayout.LayoutParams(box, box).apply {
+                gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                marginStart = (10 * resources.displayMetrics.density).toInt()
+                // under the information line along the top, not on it (owner, 2026-11-18)
+                topMargin = ((36 + 10) * resources.displayMetrics.density).toInt()
+            })
+        }
         // sat on top of the transport bar and moved with it every frame: the bar slides
         // as the controls come and go, and a name placed once was left behind
         frame.addView(nameBar, android.widget.FrameLayout.LayoutParams(-1, -2).apply {
@@ -1621,6 +1692,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                 if (fitButton.parent === frame) fitButton.visibility = visibility
                 val ours = if (loadingLook) android.view.View.INVISIBLE else visibility
                 infoBar?.visibility = ours
+                backButton?.visibility = visibility
                 nameBar?.visibility = visibility
                 cornerRow?.visibility = ours
                 if (visibility == android.view.View.VISIBLE && loadingLook) {
@@ -1932,6 +2004,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         // transport bar happened to be showing is not what anybody meant by it.
         onBackPressedDispatcher.addCallback(this,
             object : androidx.activity.OnBackPressedCallback(true) {
+                init { putAway = this }
                 override fun handleOnBackPressed() {
                     val v = view
                     // the bar and the name of something loading are not controls to put away
@@ -2976,7 +3049,7 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
         val rest = androidx.media3.ui.DefaultTimeBar.DEFAULT_UNPLAYED_COLOR
         bar.setPlayedColor(if (on) rest else androidx.media3.ui.DefaultTimeBar.DEFAULT_PLAYED_COLOR)
         bar.setScrubberColor(if (on) rest else androidx.media3.ui.DefaultTimeBar.DEFAULT_SCRUBBER_COLOR)
-        bar.setBufferedColor(if (on) rest else androidx.media3.ui.DefaultTimeBar.DEFAULT_BUFFERED_COLOR)
+        bar.setBufferedColor(if (on) rest else BUFFERED_INK)
     }
 
     /** While a film or episode loads: the controls without their buttons, the information
@@ -3299,7 +3372,29 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            // white marks when they come back over the film: in the phone's light mode they
+            // were drawn dark on the picture and could not be seen (owner, 2026-11-18)
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
         }
+        // and said to the platform directly, with no shade of its own under them: the compat
+        // call alone left the window asking for dark marks
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.setSystemBarsAppearance(0,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS or
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // the phone's light or dark mode changed with the film on: the window went back to
+        // dark marks on the bars, over the picture (owner, 2026-11-18)
+        goImmersive()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

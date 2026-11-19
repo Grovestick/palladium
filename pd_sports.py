@@ -116,6 +116,7 @@ def read_name(name):
         # the live show of a round is the same round: one event, its releases together
         place = re.sub(r"(?i)\s*(?:Race\s+)?Day\s+Live$", "", _words(m.group(4))).strip()
         return {"sport": "motocross", "year": year, "round": rnd, "place": place,
+                "league": league_of(series),
                 "event": _key("mx", year, series.lower(), rnd, re.sub(r"[^a-z0-9]", "", place.lower())),
                 "title": "%s%s %s" % (series, " Rd %d" % rnd if rnd else "", place), "when": ""}
     m = _NFL.match(name)
@@ -135,6 +136,7 @@ def read_name(name):
         title = _words(head)
         year = re.search(r"\b(19|20)\d\d\b", title)
         return {"sport": sport, "year": int(year.group(0)) if year else 0,
+                "league": league_of(m.group(1)),
                 "event": _key(sport, re.sub(r"[^a-z0-9]", "", title.lower())),
                 "title": title, "when": ""}
     return None
@@ -158,6 +160,14 @@ def newest_first(e):
     return (-int(e.get("year") or 0), 0, -float(e.get("at") or 0))
 
 
+def picture_address(path, now=None):
+    """A card's picture address with the hour in it: the apps keep a picture by its address
+    for a day, so a card's next photograph, or a poster found after the drawn one was shown,
+    came to a phone only the day after (owner, 2026-11-19). The server reads no more than
+    the path."""
+    return "%s?h=%d" % (path, int((time.time() if now is None else now) // PHOTO_EVERY))
+
+
 def sport_cards(rows, now=None):
     """The Sports row: one card a sport that has anything, the sport with the newest
     posting first. Pressed, the sport's own events."""
@@ -172,7 +182,7 @@ def sport_cards(rows, now=None):
                     "summary": "%d %s%s \u00b7 newest: %s" % (len(these), word,
                                                              "" if len(these) == 1 else "s",
                                                              these[0]["title"]),
-                    "thumb": "/art/sports/%s" % sport, "duration": 0, "viewCount": 0,
+                    "thumb": picture_address("/art/sports/%s" % sport, now), "duration": 0, "viewCount": 0,
                     "addedAt": int(max(float(e.get("at") or 0) for e in these))})
     return sorted(out, key=lambda c: -c["addedAt"])
 
@@ -236,7 +246,7 @@ def card(e):
             "title": e["title"], "year": e.get("year") or None,
             "summary": under + ((" · " + ", ".join(sizes)) if sizes else ""),
             "originallyAvailableAt": e.get("when") or "",
-            "genres": [sport], "thumb": "/art/%s/poster" % e["key"], "duration": 0, "viewCount": 0,
+            "genres": [sport], "thumb": picture_address("/art/%s/poster" % e["key"]), "duration": 0, "viewCount": 0,
             "addedAt": int(e.get("at") or 0),
             # on the tracker, nowhere here: its page lists the versions to fetch
             "askable": True, "onTracker": True}
@@ -332,6 +342,55 @@ SPORT_COLOURS = {"golf": ("#1B5E20", "#FFFFFF"), "cycling": ("#F5C400", "#111111
                  "dakar": ("#C8913A", "#111111")}
 
 
+def league_of(name):
+    """A competition's own key: "Tour.de.France" and "tour de france" alike, "La Vuelta" and
+    "Vuelta a Espana" one."""
+    flat = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+    return {"la vuelta": "vuelta", "vuelta a espana": "vuelta", "dakar rally": "dakar",
+            "masters tournament": "the masters", "us open golf": "us open"}.get(flat, flat)
+
+
+#: each league's own poster: ground, accent, its mark, its name - one look for every event of
+#: it, the event's round, stage or place under it (owner, 2026-11-18)
+LEAGUES = {
+    "ama supercross": ("#0B1F3A", "#FFC72C", "SX", "AMA SUPERCROSS"),
+    "ama motocross": ("#141414", "#E31B23", "MX", "PRO MOTOCROSS"),
+    "mxgp": ("#0A0A0A", "#FF6A13", "MXGP", "WORLD CHAMPIONSHIP"),
+    "motocross of nations": ("#1E3A8A", "#FFFFFF", "MXoN", "MOTOCROSS OF NATIONS"),
+    "australian supercross": ("#00843D", "#FFCD00", "AUSX", "AUSTRALIAN SUPERCROSS"),
+    "tour de france": ("#F5C400", "#111111", "TDF", "TOUR DE FRANCE"),
+    "giro d italia": ("#E5007E", "#FFFFFF", "GIRO", "GIRO D'ITALIA"),
+    "vuelta": ("#D7192A", "#FFFFFF", "VUELTA", "LA VUELTA"),
+    "paris roubaix": ("#3A3A3A", "#FFFFFF", "ROUBAIX", "PARIS-ROUBAIX"),
+    "tour of flanders": ("#FFD500", "#111111", "RONDE", "TOUR OF FLANDERS"),
+    "milan san remo": ("#1F4E9E", "#FFFFFF", "SANREMO", "MILAN-SAN REMO"),
+    "il lombardia": ("#6D2077", "#FFFFFF", "LOMBARDIA", "IL LOMBARDIA"),
+    "pga tour": ("#0B2A4A", "#FFFFFF", "PGA", "PGA TOUR"),
+    "pga championship": ("#1B3D6E", "#C8A15A", "PGA", "PGA CHAMPIONSHIP"),
+    "liv golf": ("#000000", "#FFFFFF", "LIV", "LIV GOLF"),
+    "the masters": ("#006747", "#FCE300", "MASTERS", "THE MASTERS"),
+    "ryder cup": ("#002D72", "#C9A227", "RYDER", "RYDER CUP"),
+    "the open championship": ("#001A57", "#FFD100", "OPEN", "THE OPEN"),
+    "dp world tour": ("#00263E", "#FFFFFF", "DPWT", "DP WORLD TOUR"),
+    "us open": ("#0A2240", "#FFFFFF", "US OPEN", "US OPEN"),
+    "dakar": ("#C8913A", "#111111", "DAKAR", "RALLY"),
+}
+
+
+def league_lines(e):
+    """What tells one event of a league from the next: (big, small) - the round and the
+    place, or what the title says beyond the league and the year."""
+    if e.get("round"):
+        return "ROUND %d" % e["round"], str(e.get("place") or "").upper()
+    rest = str(e.get("title") or "")
+    for word in re.split(r"[ .\-]+", str(e.get("league") or "")):
+        if word:
+            rest = re.sub(r"(?i)\b%s\b" % re.escape(word), " ", rest)
+    rest = re.sub(r"\b(19|20)\d\d\b", " ", rest)
+    rest = " ".join(rest.replace("'", " ").split()).strip(" -").upper()
+    return rest, ""
+
+
 def _font(size, wide=False):
     from PIL import ImageFont
     for name in (("bahnschrift.ttf", "arialbd.ttf") if wide else ("arialbd.ttf", "segoeuib.ttf")):
@@ -389,6 +448,23 @@ def poster(e, width=400):
         _centred(d, H / 2 - 17, "VS", _font(28, wide=True), "#111111", W)
         when = str(e.get("when") or "")
         _centred(d, H - 48, "NFL \u00b7 " + when, _font(24), "#FFFFFF", W)
+    elif e.get("league") in LEAGUES:
+        bg, accent, mark, name = LEAGUES[e["league"]]
+        d.rectangle([0, 0, W, H], fill=bg)
+        # the league's band and mark: the same on every event of it
+        d.polygon([(0, 0), (W, 0), (W, 120), (0, 210)], fill=accent)
+        ink = bg if accent.upper() not in ("#FFFFFF",) or bg.upper() in ("#FFFFFF",) else "#111111"
+        _centred(d, 34, mark, _fit(d, mark, W - 70, 96, wide=True), ink if accent != "#FFFFFF" else bg, W)
+        _centred(d, 250, name, _fit(d, name, W - 50, 34, wide=True), accent, W)
+        big, small = league_lines(e)
+        if big:
+            _centred(d, 330, big, _fit(d, big, W - 50, 56, wide=True),
+                     "#FFFFFF" if bg.upper() not in ("#F5C400", "#FFD500", "#C8913A") else "#111111", W)
+        if small:
+            _centred(d, 410, small, _fit(d, small, W - 50, 40, wide=True),
+                     "#FFFFFF" if bg.upper() not in ("#F5C400", "#FFD500", "#C8913A") else "#111111", W)
+        if e.get("year"):
+            _centred(d, 530, str(e["year"]), _font(28), accent if accent != "#111111" else "#111111", W)
     else:
         bg, fg = SPORT_COLOURS.get(e["sport"], ("#2A2A35", "#FFFFFF"))
         d.rectangle([0, 0, W, H], fill=bg)
@@ -535,6 +611,142 @@ def series_poster(title, season_name="", season=0, width=400):
     return out.getvalue()
 
 
+#: TheSportsDB: the leagues' own posters - every F1 race and NFL game has one; motocross,
+#: cycling and the Dakar none (checked 2026-11-18)
+POSTER_SITE = "https://www.thesportsdb.com/api/v1/json/123/"
+#: its number for Formula 1
+POSTER_SITE_F1 = 4370
+#: the sports it has posters of
+POSTER_SPORTS = ("f1", "nfl")
+#: and the leagues whose own poster is a sport's card on the Sports row: motocross by MXGP's,
+#: cycling by the World Tour's; the Dakar and golf have none there (checked 2026-11-18)
+POSTER_LEAGUES = {"nfl": 4391}
+
+#: sports whose card is a photograph with the sport's name over it, from Wikimedia Commons, an
+#: hour each in turn: the top teams' F1 cars, cycling's great riders on their bikes, the Dakar's cars, trucks and
+#: motorbikes, motocross in the air (owner, 2026-11-18). The name only - no rider's - and MX,
+#: not MXGP. (word, its colour, line under it, [(photo, where across it the subject is)])
+PHOTO_CARDS = {
+    "f1": ("FORMULA 1", "#E10600", "", [
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/2/24/2024_British_Grand_Prix%2C_Verstappen_%283%29.jpg/960px-2024_British_Grand_Prix%2C_Verstappen_%283%29.jpg", 0.55),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/0/0e/Lando_Norris%2CChinese_GP_2024_Race.jpg/960px-Lando_Norris%2CChinese_GP_2024_Race.jpg", 0.5),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/0/0f/2024-08-24_Motorsport%2C_Formel_1%2C_Gro%C3%9Fer_Preis_der_Niederlande_2024_STP_3412_by_Stepro.jpg/960px-2024-08-24_Motorsport%2C_Formel_1%2C_Gro%C3%9Fer_Preis_der_Niederlande_2024_STP_3412_by_Stepro.jpg", 0.58),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/3/39/Lewis_Hamilton_2024_Chinese_GP.jpg/960px-Lewis_Hamilton_2024_Chinese_GP.jpg", 0.5),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6c/Piastri_2025_Espagne_Grand_Prix.jpg/960px-Piastri_2025_Espagne_Grand_Prix.jpg", 0.6),
+    ]),
+    "cycling": ("CYCLING", "#F5C400", "", [
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1b/Miguel_Indur%C3%A1in_Tour_de_France_1993.jpg/960px-Miguel_Indur%C3%A1in_Tour_de_France_1993.jpg", 0.45),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/0/03/Lance_Armstrong_MidiLibre_2002.jpg/960px-Lance_Armstrong_MidiLibre_2002.jpg", 0.55),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e5/Marco_Pantani%2C_1997.jpg/960px-Marco_Pantani%2C_1997.jpg", 0.56),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/2/2f/Jonas_Vingegaard_in_Marie_Blanque_pass_during_Tour_de_France_2023.jpg/960px-Jonas_Vingegaard_in_Marie_Blanque_pass_during_Tour_de_France_2023.jpg", 0.48),
+        ("https://upload.wikimedia.org/wikipedia/commons/7/73/Tadej_Pogacar_%C3%A9tape_16_TDF_2024.jpg", 0.5),
+    ]),
+    "dakar": ("DAKAR", "#F0A030", "RALLY", [
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/4/48/Peugeot_3008_DKR_Dakar_2019.jpg/960px-Peugeot_3008_DKR_Dakar_2019.jpg", 0.62),
+        ("https://upload.wikimedia.org/wikipedia/commons/2/2e/Dutch_team_truck_Dakar_2010.jpg", 0.6),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a7/Dakar_2010_-_Francisco_L%C3%B3pez.jpg/960px-Dakar_2010_-_Francisco_L%C3%B3pez.jpg", 0.5),
+    ]),
+    "motocross": ("MX", "#FF6A13", "", [
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/1/11/Kompetisi_Motocross_MXGP_di_Pangkal_Pinang_Indonesia.jpg/960px-Kompetisi_Motocross_MXGP_di_Pangkal_Pinang_Indonesia.jpg", 0.3),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/d/d7/Motocross_jump_2008.jpg/960px-Motocross_jump_2008.jpg", 0.42),
+        ("https://thumb.wikimedia.org/wikipedia/commons/thumb/f/f1/Motocross_in_Yyteri_2010_-_8.jpg/960px-Motocross_in_Yyteri_2010_-_8.jpg", 0.4),
+    ]),
+}
+
+#: how long one photograph stands before the next
+PHOTO_EVERY = 3600
+
+
+def photo_card_now(sport, now=None):
+    """The photograph a sport's card shows now: (word, colour, line, photo, across), or None."""
+    card = PHOTO_CARDS.get(sport)
+    if not card:
+        return None
+    word, colour, line, photos = card
+    photo, across = photos[int((time.time() if now is None else now) // PHOTO_EVERY) % len(photos)]
+    return word, colour, line, photo, across
+
+
+def photo_poster(photo, word, colour, line, across=0.5, width=400):
+    """A sport's card from a photograph (a path): cropped to 2:3 round `across`, dark at the
+    foot, the sport's name over it and the line under that. JPEG bytes."""
+    import io
+    from PIL import Image, ImageDraw
+    W, H = 400, 600
+    pic = Image.open(photo).convert("RGB")
+    scale = max(W / pic.width, H / pic.height)
+    pic = pic.resize((max(W, int(pic.width * scale + 0.5)), max(H, int(pic.height * scale + 0.5))))
+    left = min(max(0, int(pic.width * across - W / 2)), pic.width - W)
+    top = (pic.height - H) // 3
+    im = pic.crop((left, top, left + W, top + H))
+    shade = Image.new("L", (W, H), 0)
+    sd = ImageDraw.Draw(shade)
+    for y in range(H):
+        if y > 330:
+            sd.line([(0, y), (W, y)], fill=int(235 * min(1.0, (y - 330) / 200.0)))
+    im = Image.composite(Image.new("RGB", (W, H), "#000000"), im, shade)
+    d = ImageDraw.Draw(im)
+    big = _fit(d, word, W - 48, 84, wide=True)
+    small = _fit(d, line or " ", W - 48, 30, wide=True)
+    # the sport's name alone sits lower, where the line would have been
+    said = [(word, big, H - 168, colour), (line, small, H - 66, "#FFFFFF")] if line \
+        else [(word, big, H - 130, colour)]
+    for text, font, y, fill in said:
+        w = d.textlength(text, font=font)
+        d.text(((W - w) / 2 + 2, y + 2), text, font=font, fill="#000000")
+        d.text(((W - w) / 2, y), text, font=font, fill=fill)
+    if width and width < W:
+        im = im.resize((width, int(width * 1.5)))
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=88)
+    return out.getvalue()
+
+
+def league_poster(answer):
+    """The league's poster in the poster site's answer to lookupleague, or ""."""
+    for x in (answer or {}).get("leagues") or []:
+        url = str(x.get("strPoster") or "")
+        if url.startswith("https://"):
+            return url
+    return ""
+
+
+def poster_ask(e):
+    """What the poster site is asked for a race or game: (address, its words), or None for one
+    it has no poster of - a race by its round, a game by its two teams (home first) and season."""
+    if e.get("sport") == "f1" and e.get("round") and e.get("year"):
+        return ("eventsround.php", {"id": POSTER_SITE_F1, "r": int(e["round"]), "s": int(e["year"])})
+    if e.get("sport") == "nfl" and e.get("home") and e.get("away") and e.get("when"):
+        year, month = int(e["when"][:4]), int(e["when"][5:7])
+        # a game in January or February is the season before's
+        return ("searchevents.php", {"e": ("%s vs %s" % (e["home"], e["away"])).replace(" ", "_"),
+                                     "s": year - 1 if month < 3 else year})
+    return None
+
+
+def poster_pick(e, events):
+    """The race's or game's poster among what the site answered: the race, not a practice,
+    qualifying or sprint of its weekend; the game on its day, a day either way (the site
+    counts days in UTC). None where it has none."""
+    for x in events or []:
+        url = str(x.get("strPoster") or "")
+        if not url.startswith("https://"):
+            continue
+        if e.get("sport") == "f1":
+            if re.search(r"(?i)practice|qualifying|sprint|shootout|testing", str(x.get("strEvent") or "")):
+                continue
+            return url
+        if e.get("sport") == "nfl":
+            try:
+                apart = abs(time.mktime(time.strptime(str(x.get("dateEvent")), "%Y-%m-%d"))
+                            - time.mktime(time.strptime(str(e["when"]), "%Y-%m-%d")))
+            except (ValueError, KeyError):
+                continue
+            if apart <= 86400 * 1.5:
+                return url
+    return None
+
+
 def sport_poster(sport, width=400):
     """The Sports row's card for one sport."""
     import io
@@ -544,18 +756,23 @@ def sport_poster(sport, width=400):
              "nfl": ("#013369", "#D50A0A", "NFL", "FOOTBALL"),
              "golf": ("#1B5E20", "#FFFFFF", "GOLF", ""),
              "cycling": ("#F5C400", "#111111", "CYCLING", ""),
-             "dakar": ("#C8913A", "#111111", "DAKAR", "RALLY")}
+             "dakar": ("#C8913A", "#111111", "DAKAR", "RALLY"),
+             "motocross": ("#111111", "#FF6A13", "MX", "MOTOCROSS")}
     bg, accent, big, small = looks.get(sport, ("#2A2A35", "#FFFFFF", str(sport).upper(), ""))
     im = Image.new("RGB", (W, H), bg)
     d = ImageDraw.Draw(im)
     if sport == "f1":
         d.polygon([(0, 0), (W, 0), (W, 140), (0, 260)], fill=accent)
         d.polygon([(0, H), (W, H), (W, H - 120), (0, H - 40)], fill=accent)
+    elif sport == "motocross":
+        # a track's ruts: orange bands across the top and the foot, the name clear between
+        for y in (70, 150, H - 120, H - 40):
+            d.polygon([(0, y), (W, y - 70), (W, y - 40), (0, y + 30)], fill=accent)
     elif sport == "nfl":
         d.rectangle([0, H // 2 - 6, W, H // 2 + 6], fill="#FFFFFF")
         d.rectangle([0, 0, W, 18], fill=accent)
         d.rectangle([0, H - 18, W, H], fill=accent)
-    fg = "#FFFFFF" if sport in ("f1", "nfl") else accent
+    fg = "#FFFFFF" if sport in ("f1", "nfl", "motocross") else accent
     font = _fit(d, big, W - 60, 170, wide=True)
     _centred(d, (H - 170) // 2 if sport != "nfl" else H // 2 - 200, big, font, fg, W)
     if small:

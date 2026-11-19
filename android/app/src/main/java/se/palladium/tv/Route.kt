@@ -74,6 +74,15 @@ object Route {
     /** The four directions of the remote. */
     fun isDirection(code: Int): Boolean = code == 19 || code == 20 || code == 21 || code == 22
 
+    /** The least time between two steps of a held direction: five a second. The eighteen
+     *  the keys repeat at ran the ring rows ahead of the list, and eight still lagged on a
+     *  tablet's Films grid (owner, 2026-11-18). */
+    const val HELD_STEP_MS = 200L
+
+    /** Whether a held direction's repeat moves the ring: the last step drawn, and long
+     *  enough after it. */
+    fun heldStepDue(sinceLastMs: Long, drawn: Boolean): Boolean = drawn && sinceLastMs >= HELD_STEP_MS
+
     /** Whether a direction is being held: down and repeating; a release ends it. */
     fun heldDown(down: Boolean, repeats: Int): Boolean = down && repeats > 0
 
@@ -310,6 +319,35 @@ object Route {
      *  a focused card was held in view and pulled a swiped row back (owner, 2026-11-13). */
     fun focusByCode(television: Boolean): Boolean = television
 
+    /** Whether a key is a press of what is lit: a remote's centre or Enter, a controller's
+     *  A - Cross on a PlayStation pad (Android's key codes). */
+    fun isPress(code: Int): Boolean = code == 23 || code == 66 || code == 160 || code == 96
+
+    /** Where on Home back returns from a sport or a group of channels: the place of the row it
+     *  was opened from among the rows shown, or -1 for none (owner, 2026-11-18). */
+    fun rowToReturnTo(rowsShown: List<String>, from: String?): Int =
+        if (from == null) -1 else rowsShown.indexOf(from)
+
+    /** Whether back leaves a row opened whole: always, wherever the focus is - in the list,
+     *  on the tabs, or nowhere after a finger (owner, 2026-11-18). */
+    fun backLeavesRow(rowOpen: Boolean, focusInList: Boolean): Boolean = rowOpen
+
+    /** Whether a tab opens as the ring lands on it: when L1 or R1 put it there, and it is not
+     *  the one shown. Left and right only move the ring; a filter landed on only has it. */
+    fun shoulderOpens(focused: Boolean, stepping: Boolean, id: String, shown: String): Boolean =
+        focused && stepping && id != shown
+
+    /** InputDevice's gamepad and joystick sources, as numbers: a controller is either. */
+    const val SOURCE_GAMEPAD = 0x00000401
+    const val SOURCE_JOYSTICK = 0x01000010
+
+    /** Whether an input device is a game controller the app steers by: a real one - not the
+     *  virtual keyboard every Android carries - with a gamepad's buttons or a joystick. A
+     *  controller's touchpad is a device of its own, a touch one, and is not counted. */
+    fun isPad(sources: Int, virtual: Boolean): Boolean =
+        !virtual && (sources and SOURCE_GAMEPAD == SOURCE_GAMEPAD ||
+                     sources and SOURCE_JOYSTICK == SOURCE_JOYSTICK)
+
     /** Whether a key went down after `since`: what arrives late does not move the remote
      *  from where somebody has taken it. */
     fun movedSince(keyAt: Long, since: Long): Boolean = keyAt > since
@@ -448,7 +486,9 @@ object Route {
                     val follows: String = "", val followsId: String = "",
                     val misses: Int = 0,
                     /** a copy's own word that the main server it follows did not answer it */
-                    val houseDown: Boolean = false) {
+                    val houseDown: Boolean = false,
+                    /** a copy's own word that the main server it follows answered it just now */
+                    val houseUp: Boolean = false) {
         val down get() = !up && misses >= MISSES
     }
 
@@ -500,6 +540,19 @@ object Route {
     fun houseSaysDown(up: Boolean?, agoSeconds: Int): Boolean =
         up == false && agoSeconds * 1000L <= HOUSE_WORD_MS
 
+    /** And up: it answered the copy's last ask, at most HOUSE_WORD_MS ago. "up" alone is not
+     *  that - the copy says up until two asks in a row went unanswered. */
+    fun houseSaysUp(answered: Boolean?, agoSeconds: Int): Boolean =
+        answered == true && agoSeconds * 1000L <= HOUSE_WORD_MS
+
+    /** How long a look waits for /where once connected. Opening, two seconds: a viewer is
+     *  waiting and the copy is there. Not when the copy has just said the main server answered
+     *  it: then a miss is the line here, slow, and the settled four seconds are its due - a
+     *  phone on mobile data, Maverick answering in 2.6 s, went to the copy (owner, 2026-11-18:
+     *  "a status request to one server should have info about both"). */
+    fun lookPatience(opening: Boolean, copySaysMainUp: Boolean): Int =
+        if (opening && !copySaysMainUp) 2000 else 4000
+
     /**
      * A first miss of the main server made down at once - the first connection and a
      * continued one by slightly different rules (owner, 2026-11-15). Opening, the copy
@@ -515,8 +568,11 @@ object Route {
         // own is down at once, looked at or not. Its own answer always wins, so a copy that is
         // wrong costs nothing (owner, 2026-11-15: "first that answers should have answer").
         val verdict = copies.filter { it.houseDown }.map { it.followsId }.toSet()
-        // opening, the copy answering is enough for an address that missed once
-        val opened = if (opening) copies.map { it.followsId }.toSet() else emptySet()
+        // opening, the copy answering is enough for an address that missed once - unless the
+        // copy says that server answered it just now: then the miss is this line, and it is
+        // looked at again (owner, 2026-11-18)
+        val opened = if (opening) copies.filter { !it.houseUp }.map { it.followsId }.toSet()
+                     else emptySet()
         if (verdict.isEmpty() && opened.isEmpty()) return looks
         val out = HashMap(looks)
         for (id in verdict) {
@@ -1831,6 +1887,14 @@ object Route {
      * which takes two looks; and while it is not known, the library stays where it is
      * unless that address cannot be reached from here.
      */
+    /** The pause before a poster that failed is asked for again; null when it is not asked again.
+     *  A poster the server says is not there stops after three; one the network lost is asked
+     *  again for as long as it is on screen, the pause doubling to 30 s: three tries over nine
+     *  seconds left a phone moving between networks with blank posters for good (owner, 2026-11-18). */
+    fun artPause(tries: Int, notThere: Boolean): Long? =
+        if (notThere && tries >= 3) null
+        else minOf(1500L shl minOf(tries, 5), 30_000L)
+
     /** Whether start-up keeps the route this run of the app already has: the screen made
      *  again - opened from the launcher after a while away - with the app still alive, for the
      *  same server. Setting it again moved the library from the copy to a main server asleep,

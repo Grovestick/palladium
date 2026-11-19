@@ -16,7 +16,8 @@ import se.palladium.tv.Route.Move
  */
 class ReachSimTest {
 
-    enum class S { UP, OFF, FROZEN }
+    /** SLOW: answers, in 2.6 s - a phone on mobile data, 2026-11-18 */
+    enum class S { UP, OFF, FROZEN, SLOW }
 
     companion object {
         const val EVERY_MS = 10_000L
@@ -68,11 +69,13 @@ class ReachSimTest {
 
         /** what the copy's /where says of the main server at t: it asks every 10 s, and says
          *  down only when two asks in a row went unanswered */
-        private fun houseWord(t: Long): Pair<Boolean, Int> {
+        private fun houseWord(t: Long): Triple<Boolean, Boolean, Int> {
             val asked = (t / 10_000) * 10_000
             val seen = copySees ?: main
-            val down = seen(asked) != S.UP && asked >= 10_000 && seen(asked - 10_000) != S.UP
-            return Pair(!down, ((t - asked) / 1000).toInt())
+            // slow from a phone is quick from the copy beside it
+            fun answers(s: S) = s == S.UP || s == S.SLOW
+            val down = !answers(seen(asked)) && asked >= 10_000 && !answers(seen(asked - 10_000))
+            return Triple(!down, answers(seen(asked)), ((t - asked) / 1000).toInt())
         }
 
         /** one address asked at t: the raw look and when it is known */
@@ -82,18 +85,28 @@ class ReachSimTest {
                 S.UP -> {
                     val ms = if (athome(a)) 40L else 90L
                     if (a in copyWays) {
-                        val (up, ago) = houseWord(t)
+                        val (up, answered, ago) = houseWord(t)
                         Pair(Look(true, "C", ms, t + ms, follows = MAIN_LAN, followsId = "M",
-                                  houseDown = Route.houseSaysDown(up, ago)), t + ms)
+                                  houseDown = Route.houseSaysDown(up, ago),
+                                  houseUp = Route.houseSaysUp(answered, ago)), t + ms)
                     } else Pair(Look(true, "M", ms, t + ms), t + ms)
                 }
                 S.OFF -> Pair(Route.miss(t + 1500, id), t + 1500)
                 S.FROZEN -> {
-                    val patience = if (unlooked) 2000L else 4000L
+                    val patience = Route.lookPatience(unlooked, copySaidUp(t)).toLong()
                     Pair(Route.miss(t + 1500 + patience, id), t + 1500 + patience)
+                }
+                S.SLOW -> {
+                    val patience = Route.lookPatience(unlooked, copySaidUp(t)).toLong()
+                    if (patience < 2600) Pair(Route.miss(t + patience, id), t + patience)
+                    else Pair(Look(true, "M", 2600, t + 2600), t + 2600)
                 }
             }
         }
+
+        /** as Reach.ask: the copy's last look said the main server answered it just now */
+        private fun copySaidUp(t: Long) = doors.values.any {
+            it.up && it.houseUp && t - it.at <= Route.HOUSE_WORD_MS }
 
         private fun upAt(a: String, now: Long) = Route.state(doors[a], now, FRESH_MS)
 
@@ -137,7 +150,7 @@ class ReachSimTest {
             when (m) {
                 is Move.Library -> { base = m.door; standby = false; note(t, "library at " + m.door) }
                 is Move.Standby -> { base = m.door; standby = true; homeBase = m.home; note(t, "to the copy at " + m.door) }
-                is Move.HomeAgain -> if (main(t) == S.UP) { base = m.door; standby = false; note(t, "home again at " + m.door) }
+                is Move.HomeAgain -> if (main(t) == S.UP || main(t) == S.SLOW) { base = m.door; standby = false; note(t, "home again at " + m.door) }
                 Move.Nothing -> note(t, "nothing answers")
                 else -> {}
             }
@@ -154,7 +167,7 @@ class ReachSimTest {
         private fun request(t: Long): Long? {
             if (base !in mainWays) return null
             return when (if (base in mainWays) main(t) else S.UP) {
-                S.UP -> null
+                S.UP, S.SLOW -> null
                 S.OFF -> t + 1500
                 S.FROZEN -> t + REQ_READ_MS
             }
@@ -234,7 +247,8 @@ class ReachSimTest {
         // frozen at 25 s, the app opened at 28 s: the copy has not seen it miss twice yet
         val s = Sim(main = { t -> if (t >= 25_000) S.FROZEN else S.UP }, startAt = 28_000).run(60_000).also { it.print("opening 3 s after a freeze") }
         val copy = s.firstAt("to the copy") ?: Long.MAX_VALUE
-        assertTrue("on the copy within 4 s of opening, was " + copy, copy <= 32_000)
+        // the copy saw it answer 8 s ago: its word holds the move for a second look (2026-11-18)
+        assertTrue("on the copy within 6 s of opening, was " + copy, copy <= 34_000)
         assertTrue("never the main server's outside address first",
             s.moves.none { it.second == "library at " + MAIN_OUT })
     }
@@ -299,7 +313,19 @@ class ReachSimTest {
             .also { it.print("opening, main unreachable from here only") }
         assertTrue("never the main server's outside address, moves were " + s.moves,
             s.moves.none { it.second == "library at " + MAIN_OUT })
-        assertTrue("on the copy within 5 s", (s.firstAt("to the copy") ?: Long.MAX_VALUE) <= 35_000)
+        // the copy says the main server answered it: a second look, at four seconds, before
+        // the move - the price of not moving a viewer on a slow line (owner, 2026-11-18)
+        assertTrue("on the copy within 11 s", (s.firstAt("to the copy") ?: Long.MAX_VALUE) <= 41_000)
+    }
+
+    @Test
+    fun openingOnASlowLineWhileTheCopySaysTheMainServerIsUp() {
+        // the phone at 10:34:12 (2026-11-18): on mobile data Maverick answered in 2.6 s, the
+        // opening look gave it 2 s and the copy, saying Maverick was up, answered - it moved
+        val s = Sim(main = { S.SLOW }, startAt = 30_000).run(90_000)
+            .also { it.print("opening, main slow from here, the copy says it is up") }
+        assertEquals("no move at all, moves were " + s.moves, 0, s.moves.size)
+        assertEquals(MAIN_LAN, s.base)
     }
 
     @Test
