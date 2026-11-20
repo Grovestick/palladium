@@ -337,6 +337,63 @@ object Route {
     fun shoulderOpens(focused: Boolean, stepping: Boolean, id: String, shown: String): Boolean =
         focused && stepping && id != shown
 
+    /** Whether a subtitle file beside the film and a download on offer are one release: the
+     *  language word the server puts before a fetched file's name, ".srt" and punctuation
+     *  aside. "English Film-1999-BluRay-..." beside the film is "Film-1999-BluRay-....srt" in the list,
+     *  and the one playing was never shown as in use (owner, 2026-11-19). */
+    fun sameSubRelease(label: String, name: String): Boolean {
+        val lead = Regex("^(english|swedish|svenska|norwegian|norsk|danish|dansk|finnish|suomi|" +
+                         "german|deutsch|french|français|spanish|español)\\s+")
+        fun bare(s: String) = s.trim().lowercase().removeSuffix(".srt").removeSuffix(".vtt")
+            .replace(lead, "").filter { it.isLetterOrDigit() }
+        val a = bare(label)
+        val b = bare(name)
+        // the same name, give or take a language tag on the end: one starting with the
+        // other made every subtitle of an episode "in use", all named S01E01... (owner, 2026-11-19)
+        val tags = listOf("", "en", "eng", "sv", "swe", "no", "nor", "da", "dan", "fi", "fin")
+        return a.isNotEmpty() && b.isNotEmpty() &&
+            tags.any { t -> a == b + t || b == a + t }
+    }
+
+    /** Whether the opening plays as an activity starts: Start, the first screen up after the
+     *  app had been left - not a film coming back, and not Start coming back from a film. */
+    fun splashOnStart(startedBefore: Int, away: Boolean, isMain: Boolean): Boolean =
+        startedBefore == 0 && away && isMain
+
+    /** The gap after a pill: half on the one row on its side, which has to fit Films' and
+     *  TV's four controls, the microphone and the download across a television. */
+    fun pillGap(small: Boolean, oneRow: Boolean): Int = if (small || oneRow) 4 else 8
+
+    /** Whether back from a list goes to the search box: the list is what a search found. */
+    fun backToSearchBox(query: String): Boolean = query.isNotBlank()
+
+    /** How long after coming back from a film Continue watching is read once more. */
+    const val DECK_AGAIN_MS = 5_000L
+
+    /** One row of a page put right from a fresh answer: replaced only when what it holds has
+     *  changed, so a row that was already right does not redraw; the other rows as they are. */
+    fun <T> rowAgain(rows: List<Pair<String, List<T>>>, title: String, fresh: List<T>,
+                     key: (T) -> String): List<Pair<String, List<T>>> {
+        val now = rows.firstOrNull { it.first == title }?.second ?: return rows
+        if (now.map(key) == fresh.map(key)) return rows
+        return rows.map { (t, list) -> if (t == title) t to fresh else t to list }
+    }
+
+    /** The ribbon over a poster whose download has just come in: none. The download's badge
+     *  goes at 100%, and a NEW ribbon stood between it and the film (owner, 2026-11-20). */
+    fun arrivedBand(): String = ""
+
+    /** Whether a tab is read again when a download comes in: the Watchlist, whose list it
+     *  changes. Home was read whole again and every row jumped (owner, 2026-11-20). */
+    fun readAgainOnArrival(tab: String): Boolean = tab == "watchlist"
+
+    /** Whether the app has been left: nothing of it on the screen, and not merely the screen
+     *  made again - a server chosen restarts Start, and the opening played over it. */
+    fun leftTheApp(startedNow: Int, remaking: Boolean): Boolean = startedNow == 0 && !remaking
+
+    /** Whether the opening ends now: Start went behind something, or a key was pressed. */
+    fun splashEnds(stopped: Boolean, keyDown: Boolean): Boolean = stopped || keyDown
+
     /** InputDevice's gamepad and joystick sources, as numbers: a controller is either. */
     const val SOURCE_GAMEPAD = 0x00000401
     const val SOURCE_JOYSTICK = 0x01000010

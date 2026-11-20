@@ -210,6 +210,10 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_DOWN)
             keyAt = android.os.SystemClock.uptimeMillis()
+        // a key while the opening plays ends it, and goes on to Start as it was meant to
+        if (SplashFilm.wanted.value && Route.splashEnds(stopped = false,
+                keyDown = event.action == android.view.KeyEvent.ACTION_DOWN))
+            SplashFilm.wanted.value = false
         // a controller's L1 and R1: the tab to the left or right, as a console's apps do
         // (owner, 2026-11-18). Taken here, whatever has the focus.
         if (event.keyCode == android.view.KeyEvent.KEYCODE_BUTTON_L1 ||
@@ -404,9 +408,15 @@ class MainActivity : AppCompatActivity() {
                 CompositionLocalProvider(LocalIndication provides PressOnly,
                     androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides
                         Slide.keeping(androidx.compose.foundation.gestures.LocalBringIntoViewSpec.current,
-                                      Slide.down)) { TvSized { App() } }
+                                      Slide.down)) {
+                    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
+                        TvSized { App() }
+                        SplashFilmView()
+                    }
+                }
             }
         }
+        SplashFilm.watch(application)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -2760,7 +2770,9 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                    tabAt: MutableMap<String, Float>? = null,
                    picks: (@Composable RowScope.() -> Unit)? = null,
                    search: (@Composable RowScope.() -> Unit)? = null,
-                   filters: (@Composable RowScope.() -> Unit)? = null) {
+                   filters: (@Composable RowScope.() -> Unit)? = null,
+                   //: spoken words into the search: the microphone beside search on the one row
+                   onSpoken: ((String) -> Unit)? = null) {
     // Everything stays where it is on every tab. Settings used to be dropped on
     // Films and TV to make room for the sort control - so a button moved and then
     // vanished depending on which shelf was open, which is worse than a crowded row:
@@ -2769,6 +2781,11 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
     val housekeeping = true
     val wide = onTv() ||
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // On its side, one row: the P a button holding the name, the version and the server; the
+    // tabs and the list's controls; search, the download, cast and settings at the right
+    // (owner, 2026-11-20). Standing, the two rows as before.
+    val oneRow = wide
+    var searching by remember { mutableStateOf(false) }
     // Two rows, on every screen. The name and the cast button take the first; the
     // tabs and everything to do with what is being looked at take the second.
     //
@@ -2780,7 +2797,7 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
     Column(Modifier.fillMaxWidth()
         .background(Brush.verticalGradient(listOf(Skin.Panel, Skin.Bg)))
         .padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        if (!oneRow) Row(verticalAlignment = Alignment.CenterVertically) {
             // The version on a line of its own above the name, so the P and the word
             // keep the height and the spacing they had; the search box takes the width
             // that leaves - except on a short screen, where the two stand side by side
@@ -2901,13 +2918,25 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                     Pad.stepping = false
                 }
             }
-            Box(Modifier.padding(top = 8.dp).fillMaxWidth()) {
+            CompositionLocalProvider(LocalNarrowBar provides oneRow) {
+            Row(Modifier.padding(top = if (oneRow) 0.dp else 8.dp).fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically) {
+            if (oneRow) PButton()
+            Box(Modifier.weight(1f)) {
+                // search pressed: the box where the tabs were, and the way back to them
+                if (oneRow && searching && search != null) Row(verticalAlignment = Alignment.CenterVertically) {
+                    CompositionLocalProvider(LocalSearchOpened provides true) { search() }
+                    Spacer(Modifier.width(8.dp))
+                    Pill("Close search", icon = CloseIcon, narrow = !onTv()) { searching = false }
+                } else
                 Row(Modifier.fillMaxWidth().horizontalScroll(along)
                         .onFocusChanged { rowFocused = it.hasFocus },
                     verticalAlignment = Alignment.CenterVertically) {
-                    Tabs(tab, onTab, tabFocus, picks, where = tabAt)
-                    filters?.let { Spacer(Modifier.width(8.dp)); it() }
-                    if (housekeeping) {
+                    CompositionLocalProvider(LocalNarrowBar provides oneRow) {
+                        Tabs(tab, onTab, tabFocus, picks, where = tabAt)
+                        filters?.let { Spacer(Modifier.width(8.dp)); it() }
+                    }
+                    if (housekeeping && !oneRow) {
                         Spacer(Modifier.width(10.dp))
                         onSetup?.let { Pill("Settings", icon = SettingsIcon) { it() } }
                     }
@@ -2925,6 +2954,12 @@ private fun TopBar(tab: String, onTab: (String) -> Unit, onSettings: () -> Unit,
                         Text("›", color = Skin.Accent, fontSize = 20.sp)
                     }
                 }
+            }
+            if (oneRow) OneRowTools(onSetup,
+                                    onSearch = if (search != null) ({ searching = true }) else null,
+                                    onSpoken = if (search != null && onSpoken != null)
+                                        ({ words -> searching = true; onSpoken(words) }) else null)
+            }
             }
         }
         // up from the download pill goes to the current tab; with no target it had nowhere to go
@@ -3025,8 +3060,8 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
     // A narrow phone - 360 points across, which most of them are, against the 411 a
     // Pixel gives - has no room even for the narrow ones, and the genre hung off the
     // right of the screen.
-    val tight = !onTv()
-    val squeeze = tight && LocalConfiguration.current.screenWidthDp < 400
+    val tight = !onTv() || LocalNarrowBar.current
+    val squeeze = !onTv() && LocalConfiguration.current.screenWidthDp < 400
     @Composable
     fun tabPill(id: String, label: String,
                 icon: androidx.compose.ui.graphics.vector.ImageVector? = null) {
@@ -3041,6 +3076,10 @@ private fun RowScope.Tabs(tab: String, onTab: (String) -> Unit,
              modifier = (if (f == null) Modifier else Modifier.focusRequester(f))
                  // walked onto by L1 or R1: the tab opens, as a press of it would
                  .onFocusChanged {
+                     // the remote on a tab: the P beside them may be gone to again. Cleared on
+                     // every return to the app and set only when the screen was first drawn,
+                     // it could not be reached after coming back (owner, 2026-11-20)
+                     if (it.isFocused) MainActivity.focusLanded.value = true
                      if (Route.shoulderOpens(it.isFocused, Pad.stepping, id, tab)) onTab(id)
                  }
                  .then(if (where == null) Modifier else Modifier.onGloballyPositioned {
@@ -3618,8 +3657,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
         // one is changed; a grid of films does not move because a series was marked
         (if (browse.tab == "watchlist")
              "|" + MainActivity.marksTouched.value else "") +
-        // and a download this viewer asked for coming in, on the two shelves that show it
-        (if (browse.tab == "home" || browse.tab == "watchlist")
+        // and a download this viewer asked for coming in, on the Watchlist: Home is not
+        // read again for it - its poster changes where it stands (owner, 2026-11-20)
+        (if (Route.readAgainOnArrival(browse.tab))
              "|" + Arrivals.landed.intValue else "")
 
     // which genres exist, for the tab in hand: asked once per tab
@@ -3735,6 +3775,15 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             // happened when the film had been started from somewhere else - and a
             // film is nearly always started from here.
             browse.loaded = ""
+            // and Continue watching once more a little later, on its own: the film's last
+            // word can arrive after the two seconds waited above, and a film watched to its
+            // end stood on the row until Home was next read (owner, 2026-11-20)
+            kotlinx.coroutines.delay(Route.DECK_AGAIN_MS)
+            if (browse.tab == "home") {
+                runCatching { Api.onDeck(ctx) }.getOrNull()?.let { fresh ->
+                    browse.rows = Route.rowAgain(browse.rows, DECK, fresh) { it.ratingKey }
+                }
+            }
         }
     }
     // A card played from Continue watching is put first, the row at its start and the
@@ -4224,6 +4273,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
             leaveRow()
             return@BackHandler
         }
+        // In what a search found: back to the magnifying glass on the one row, or the box
+        // on two rows, with no keyboard (owner, 2026-11-20). Where neither can take the
+        // remote, on to the tabs below.
+        if (Route.backToSearchBox(browse.query) &&
+                runCatching { SearchBox.at.requestFocus() }.isSuccess) {
+            return@BackHandler
+        }
         // On the shelves, back walks along the row before it leaves it: a shelf is
         // read left to right and its beginning is where somebody means to return to.
         // In a list of hundreds that is not true - the tab is what they want - so
@@ -4415,6 +4471,9 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                        },
                        onFlip = { browse.sortAsc = !browse.sortAsc },
                        then = Route.tabExtraOrders(browse.tab))
+                   // the genre beside the order, before the service (owner, 2026-11-20)
+                   GenreControl(browse.genre, browse.genres, matching = browse.matching,
+                                onGenre = { browse.genre = it })
                    // a streaming service's catalogue in this country instead of the library
                    DecadeControl(browse.service, browse.services.map { it.first to
                                      (Api.serviceCounts[if (browse.tab == "tv") "show" else "movie"]
@@ -4427,8 +4486,6 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                  counted = Api.serviceCounts[if (browse.tab == "tv") "show"
                                                              else "movie"] != null,
                                  menuWidth = 300.dp)
-                   GenreControl(browse.genre, browse.genres, matching = browse.matching,
-                                onGenre = { browse.genre = it })
                    DecadeControl(browse.decade, browse.decades,
                                  onDecade = { browse.decade = it })
                }) else if (browse.moreRow != null) ({
@@ -4479,7 +4536,8 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                  onDecade = { browse.decade = it })
                }) else null,
                // and on Start: a search there answers over everything, as from Home
-               search = if (browse.tab in setOf("start", "home", "films", "tv")) ({
+               search = if (browse.tab in setOf("start", "home", "films", "tv",
+                                                "watchlist", "collections")) ({
                    // new words close a person's shelf: it stood over the new results
                    FilterControls(browse.query, {
                                       if (browse.moreRow != null && it != browse.query)
@@ -4493,7 +4551,13 @@ private fun HomeScreen(browse: Browse, onOpen: (Media) -> Unit, onSettings: () -
                                   },
                                   onTyping = { browse.typing = it })
                }) else null,
-               filters = null)
+               filters = null,
+               onSpoken = { words ->
+                   if (browse.moreRow != null) browse.leaveMoreRow()
+                   browse.searchPerson = null
+                   browse.searchFrom = null
+                   browse.query = words
+               })
         if (chatting) {
             ChatPanel(scope = (ctx as AppCompatActivity).lifecycleScope) {
                 chatting = false
@@ -6164,7 +6228,9 @@ private fun RowScope.SortControl(
     Box {
         // the order and its direction on one control: the arrows belong to the thing
         // they describe rather than sitting beside it
-        Pill(chosen + " " + (if (sortAsc) "⇅" else "⇵"), narrow = !onTv(),
+        Pill(chosen + " " + (if (sortAsc) "⇅" else "⇵"), narrow = !onTv() || LocalNarrowBar.current,
+             // as wide on every tab whichever order it shows, so what follows stands still
+             holdFor = (orders.map { it.second } + "Released").maxBy { it.length } + " ⇵",
              small = !onTv() && LocalConfiguration.current.screenWidthDp < 400,
              modifier = Modifier.focusRequester(pill)) {
             open = true
@@ -6234,7 +6300,7 @@ private fun RowScope.GenreControl(
                  else -> marked.size.toString() + " genres" +
                          (if (matching >= 0) "  ·  " + matching + " matches" else "")
              },
-             narrow = !onTv(),
+             narrow = !onTv() || LocalNarrowBar.current,
              small = !onTv() && LocalConfiguration.current.screenWidthDp < 400,
              modifier = Modifier.focusRequester(pill)) {
             genreOpen = true
@@ -6378,7 +6444,7 @@ private fun RowScope.DecadeControl(
                  else -> marked.size.toString() + " " + name.lowercase() +
                      (if (name == "Country") "" else "s")
              },
-             narrow = !onTv(),
+             narrow = !onTv() || LocalNarrowBar.current,
              small = !onTv() && LocalConfiguration.current.screenWidthDp < 400,
              modifier = Modifier.focusRequester(pill)) {
             open = true
@@ -6849,7 +6915,10 @@ private fun RowScope.FilterControls(
     val tight = Route.searchFills(onTv(), LocalConfiguration.current.screenWidthDp)
     TextBox(query, "Search",
             (if (tight) Modifier.weight(1f) else Modifier.width(190.dp))
+                // where back from the results goes, where there is no magnifying glass
+                .then(if (!LocalNarrowBar.current) Modifier.focusRequester(SearchBox.at) else Modifier)
                 .onFocusChanged { onTyping(it.isFocused || it.hasFocus) },
+            startTyping = LocalSearchOpened.current,
             onValue = onQuery)
     Spacer(Modifier.width(if (tight) 4.dp else 6.dp))
     SpeakPill(onQuery, small = tight)
@@ -7493,15 +7562,15 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
         if (listing) {
             WatchlistPicker(listed, favorite, onClose = { listing = false },
                 onList = { on ->
-                    MainActivity.marksTouched.value++
+                    listed = on
                     (ctx as AppCompatActivity).lifecycleScope.launch {
                         if (!on && favorite) Api.favorite(full, false)
                         Api.mark(full, on)
-                        listed = on
+                        // the shelves read again once the server has it, not before
+                        MainActivity.marksTouched.value++
                     }
                 },
                 onFavorite = { on ->
-                    MainActivity.marksTouched.value++
                     (ctx as AppCompatActivity).lifecycleScope.launch {
                         // a favorite is on the watchlist as well
                         if (on && !listed) {
@@ -7509,6 +7578,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                             listed = true
                         }
                         Api.favorite(full, on)
+                        MainActivity.marksTouched.value++
                     }
                 },
                 onGoTo = { onGoTo("watchlist") },
@@ -8254,6 +8324,14 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             inUse = ((full.textSubs() + full.bitmapSubs())
                 .firstOrNull { it.index == sub }
                 ?: full.textSubs().lastOrNull { it.index < 0 })?.label ?: "",
+            current = sub,
+            // the film's own, remembered by its number as the subtitle list does
+            onDisc = { idx ->
+                sub = idx
+                (ctx as AppCompatActivity).lifecycleScope.launch {
+                    Api.pickSubtitle(full, "t" + idx)
+                }
+            },
             proved = full.subsConfirmed,
             // asked for one to be written: the list has done its work, and the film
             // is what somebody wants to be looking at while it happens
@@ -9111,4 +9189,168 @@ fun playIntent(ctx: Context, m: Media, at: Long, subIndex: Int? = null,
             putExtra("number", m.index ?: 0)
         }
     }
+}
+
+
+/** The P in 3D as Palladium opens - the star at its corner blinks once, after the light has
+ *  crossed the P - and again whenever it is come back to from outside it -
+ *  not from a film inside it; the studio's name in the corner, as grovestick.com has it
+ *  (owner, 2026-11-19). */
+object SplashFilm {
+    val wanted = mutableStateOf(true)
+    private var started = 0
+    private var away = false
+    private var watching = false
+    fun watch(app: android.app.Application) {
+        if (watching) return
+        watching = true
+        app.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+            override fun onActivityStarted(a: android.app.Activity) {
+                if (Route.splashOnStart(started, away, a is MainActivity)) wanted.value = true
+                if (started == 0) away = false
+                started++
+            }
+            override fun onActivityStopped(a: android.app.Activity) {
+                // Start gone behind something - a film opened during the opening - ends it:
+                // it waited behind the film and played on the way back (owner, 2026-11-20)
+                if (Route.splashEnds(stopped = a is MainActivity, keyDown = false)) wanted.value = false
+                started = (started - 1).coerceAtLeast(0)
+                if (Route.leftTheApp(started, a.isChangingConfigurations)) away = true
+            }
+            override fun onActivityCreated(a: android.app.Activity, b: android.os.Bundle?) {}
+            override fun onActivityResumed(a: android.app.Activity) {}
+            override fun onActivityPaused(a: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(a: android.app.Activity, b: android.os.Bundle) {}
+            override fun onActivityDestroyed(a: android.app.Activity) {}
+        })
+    }
+}
+
+@Composable
+fun SplashFilmView() {
+    if (!SplashFilm.wanted.value) return
+    val ctx = LocalContext.current
+    val done = { SplashFilm.wanted.value = false }
+    val player = remember {
+        androidx.media3.exoplayer.ExoPlayer.Builder(ctx).build().apply {
+            setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(
+                "android.resource://" + ctx.packageName + "/" + R.raw.splash_p)))
+            volume = 0f
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(Unit) {
+        val heard = object : androidx.media3.common.Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == androidx.media3.common.Player.STATE_ENDED) done()
+            }
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) { done() }
+        }
+        player.addListener(heard)
+        onDispose { player.removeListener(heard); player.release() }
+    }
+    // the whole screen is the film where it is wide, so no edge of it can show; standing,
+    // the whole of it. On black: a television lifts the darkest part of a film, and only
+    // black came out as dark as the app's own ground there (owner, 2026-11-19)
+    val wide = LocalConfiguration.current.screenWidthDp >= LocalConfiguration.current.screenHeightDp
+    val tv = onTv()
+    val shown = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) { shown.animateTo(1f, androidx.compose.animation.core.tween(1200, 600)) }
+    androidx.compose.foundation.layout.Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                       indication = null) { done() }) {
+        AndroidView(
+            factory = { c ->
+                androidx.media3.ui.PlayerView(c).apply {
+                    useController = false
+                    this.player = player
+                    resizeMode = if (wide) androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                 else androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    setBackgroundColor(android.graphics.Color.BLACK)
+                }
+            },
+            modifier = Modifier.fillMaxSize())
+        // the studio, as grovestick.com signs itself: capitals, spaced, in the corner - and
+        // very faint, a mark rather than a title (owner, 2026-11-19)
+        Text("GROVESTICK STUDIOS", color = Color(0xFF93A0B0),
+             fontSize = if (tv) 15.sp else 12.sp,
+             letterSpacing = androidx.compose.ui.unit.TextUnit(0.14f, androidx.compose.ui.unit.TextUnitType.Em),
+             modifier = Modifier.align(Alignment.BottomEnd)
+                 .padding(end = if (tv) 40.dp else 22.dp, bottom = if (tv) 30.dp else 18.dp)
+                 .alpha(shown.value * 0.3f))
+    }
+}
+
+
+/** The search box in the top bar, for back from its results to come to. */
+object SearchBox { val at = FocusRequester() }
+
+/** The P as a button, at the start of the one row: the name, the version and the server in
+ *  use behind it, and the server switched from there as the chip did (owner, 2026-11-20). */
+@Composable
+private fun PButton() {
+    var open by remember { mutableStateOf(false) }
+    var lit by remember { mutableStateOf(false) }
+    val pill = RoundedCornerShape(Skin.round(999.dp))
+    Box {
+        Box(Modifier
+                .padding(end = 6.dp)
+                .onFocusChanged { lit = it.isFocused }
+                .focusProperties { canFocus = MainActivity.focusLanded.value }
+                .clip(pill)
+                .border(if (lit) 2.dp else 0.dp, if (lit) Color.White else Color.Transparent, pill)
+                .background(if (lit) Skin.Panel else Color.Transparent, pill)
+                .clickable { open = true }
+                .heightIn(min = 36.dp)
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            contentAlignment = Alignment.Center) {
+            Text("P", color = Skin.Accent, fontSize = 22.sp,
+                 fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
+        }
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false },
+                                                modifier = Modifier.background(Skin.Panel2)) {
+            // a line of text, not a menu item: an item keeps 48 dp of height, and with the
+            // list's own top margin it left an empty row under the name (owner, 2026-11-20)
+            Text("PALLADIUM  " + BuildConfig.VERSION_NAME, color = Skin.Dim,
+                 fontSize = 12.sp, letterSpacing = 2.sp,
+                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 2.dp))
+            // the servers themselves, in the menu: the list was drawn in the bar over the P
+            Box(Modifier.padding(horizontal = 8.dp)) { WhichServer { open = false } }
+        }
+    }
+}
+
+/** The one row's right end: search, what is coming in, cast and settings. */
+@Composable
+private fun RowScope.OneRowTools(onSetup: (() -> Unit)?, onSearch: (() -> Unit)?,
+                                 onSpoken: ((String) -> Unit)? = null) {
+    Spacer(Modifier.width(8.dp))
+    // the microphone always, left of the magnifying glass, the search box open or not
+    // (owner, 2026-11-20)
+    onSpoken?.let { said -> SpeakPill(said, small = false, bare = true); Spacer(Modifier.width(4.dp)) }
+    // back from what a search found comes to the magnifying glass, not into the box: no
+    // keyboard opens until it is pressed (owner, 2026-11-20)
+    onSearch?.let { go -> Pill("Search", icon = SearchIcon, narrow = true,
+                               modifier = Modifier.focusRequester(SearchBox.at)) { go() } }
+    val coming = Api.downloading.value
+    coming.firstOrNull()?.let { d ->
+        // the ring fills as it comes in; pressed, its page - or the queue when there are more
+        Box(Modifier.padding(start = 4.dp), contentAlignment = Alignment.Center) {
+            Pill("Download", icon = DownloadIcon, narrow = true) {
+                if (coming.size > 1) Api.queueOpen.value = true else Api.openWanted.value = d
+            }
+            androidx.compose.material3.CircularProgressIndicator(
+                progress = { d.offerProgress.toFloat().coerceIn(0f, 1f) },
+                // over the icon: the pill keeps an 8 dp gap at its right inside its own
+                // bounds, so the middle of those is 4 dp right of the icon
+                modifier = Modifier.offset(x = (-Route.pillGap(false, true) / 2).dp).size(32.dp),
+                strokeWidth = 2.dp,
+                color = Skin.Accent, trackColor = Color.Transparent)
+        }
+    }
+    CastButton()
+    onSetup?.let { go -> Pill("Settings", icon = SettingsIcon, narrow = true) { go() } }
 }

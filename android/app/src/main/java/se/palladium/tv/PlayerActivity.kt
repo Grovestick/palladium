@@ -1577,7 +1577,12 @@ class PlayerActivity : androidx.appcompat.app.AppCompatActivity() {
                                 media = film,
                                 language = "en",
                                 scope = lifecycleScope,
-                                inUse = "",
+                                // the file beside the film that is showing: the list
+                                // marks it as in use, as it does from the title's page
+                                inUse = film.textSubs().firstOrNull {
+                                    it.index < 0 && it.index == subsIndex() }?.label ?: "",
+                                current = subsIndex(),
+                                onDisc = { idx -> playWith(film, idx) },
                                 proved = film.subsConfirmed,
                                 onTaken = { release ->
                                     // a subtitle chosen: no longer waiting on one

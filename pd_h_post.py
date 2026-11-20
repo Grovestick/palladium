@@ -943,8 +943,12 @@ class PostRoutes(_Base):
             mine = self.viewer_settings(stored)
             # the same as the shuffle: a programme or a season is its episodes
             keys = self.spread(key)
-            marked = [str(k) for k in (mine.get("watchlist") or [])
-                      if str(k) != key and str(k) not in keys]
+            held, came_from = self.opened_up([str(k) for k in (mine.get("watchlist") or [])], key)
+            if came_from:
+                at = mine.get("watchlistAt") if isinstance(mine.get("watchlistAt"), dict) else {}
+                at.update({k: at[w] for k, w in came_from.items() if w in at})
+                mine["watchlistAt"] = at
+            marked = [k for k in held if k != key and k not in keys]
             mine["watchlist"] = marked[:400]
             if body.get("on", True):
                 # newest first: the order it was thought of
@@ -2625,7 +2629,9 @@ class PostRoutes(_Base):
             out = []
             for ident, frame in sys._current_frames().items():
                 out.append("--- %s" % names.get(ident, ident))
-                out.append("".join(traceback.format_stack(frame)[-6:]))
+                # the whole stack: the last six frames showed a thread matching titles and
+                # not what had asked it to, holding the lock everything waited on
+                out.append("".join(traceback.format_stack(frame)[-30:]))
             self.reply_json({"threads": len(out) // 2, "stacks": chr(10).join(out)})
             return
         if path == "/app/restart":

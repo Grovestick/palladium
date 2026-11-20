@@ -726,10 +726,19 @@ def take_rows(rows):
 
 
 def read():
-    """The index as it stands, loading it the first time."""
+    """The index as it stands, loading it the first time.
+
+    Loaded means read from its own file in the server's folder. Asked before the server
+    has said where that is, it is what is in hand and nothing is kept as read: a search
+    that came before the start was then taken for the index, never read from the file,
+    and the next save wrote its 24 rows over 20,533 (gate, 2026-11-20). What such early
+    asks found is put in with the file's rows when it is read."""
     with LOCK:
-        if STATE["rows"]:
+        if STATE["rows"] and STATE.get("loaded") == _path() and STATE.get("root"):
             return STATE["rows"]
+        if not STATE.get("root"):
+            return STATE["rows"]
+        early = dict(STATE["rows"] or {})
     # A file that is there and cannot be read is asked again, and never written over:
     # taken for an empty index, the next write replaced it and the record of who took
     # what went with it.
@@ -755,10 +764,15 @@ def read():
     taken = said.get("taken") if isinstance(said, dict) else None
     log = said.get("log") if isinstance(said, dict) else None
     rows = rows if isinstance(rows, dict) else {}
+    # what asks before the start found, with the file's rows - the file's own kept
+    for k, v in early.items():
+        rows.setdefault(k, v)
     if not STATE.get("unread"):
         _sports_back(rows)
     with LOCK:
         STATE["rows"] = rows
+        # read from this file - or no file is there yet - so what is saved is this file
+        STATE["loaded"] = "" if STATE.get("unread") else _path()
         STATE["asked"] = asked if isinstance(asked, dict) else {}
         STATE["taken"] = taken if isinstance(taken, dict) else {}
         STATE["log"] = log if isinstance(log, list) else []
@@ -794,7 +808,11 @@ SAVING = threading.Lock()
 
 
 def write():
-    """Keep the index, oldest rows dropped."""
+    """Keep the index, oldest rows dropped. Never before its own file has been read."""
+    if STATE.get("loaded") != _path():
+        read()
+        if STATE.get("loaded") != _path():
+            return                        # the file not read: nothing written over it
     with LOCK:
         rows = dict(STATE["rows"])
     cut = time.time() - KEEP_DAYS * 86400

@@ -44,10 +44,20 @@ def _kept(ident):
 
 
 def read():
-    """Every box set read so far, by tracker id."""
+    """Every box set read so far, by tracker id.
+
+    Read means read from its own file in the server's folder. Asked before the server has
+    said where that is, it is what is in hand, kept as not read: an ask before the start
+    found no file beside the program, was taken for the list, and the next save wrote 7
+    entries over 1,200 (gate, 2026-11-20). What such asks found joins the file's entries."""
     with LOCK:
-        if STATE["sets"] is not None:
+        if STATE["sets"] is not None and STATE.get("loaded") == _path() and _root():
             return STATE["sets"]
+        if not _root():
+            if STATE["sets"] is None:
+                STATE["sets"] = {}
+            return STATE["sets"]
+        early = dict(STATE["sets"] or {})
     sets = None
     for _ in range(5):
         try:
@@ -63,8 +73,13 @@ def read():
         if sets is None:
             STATE["unread"] = True      # unreadable is not empty: never written over
             sets = {}
-        if STATE["sets"] is None:
-            STATE["sets"] = sets
+        # what was found before the start, with the file's own entries kept
+        for k, v in early.items():
+            sets.setdefault(k, v)
+        for k, v in (STATE["sets"] or {}).items():
+            sets.setdefault(k, v)       # and any found while the file was being read
+        STATE["sets"] = sets
+        STATE["loaded"] = "" if STATE["unread"] else _path()
         return STATE["sets"]
 
 
@@ -72,6 +87,10 @@ def write(force=False):
     """Kept on disk once a minute while reading, not after every box set."""
     if STATE["unread"] or not _root() or not STATE["dirty"]:
         return
+    if STATE.get("loaded") != _path():
+        read()
+        if STATE.get("loaded") != _path():
+            return                      # its file not read: nothing written over it
     if not force and time.time() - STATE["written"] < 60:
         return
     with LOCK:

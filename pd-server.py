@@ -73,6 +73,10 @@ ROOT = _flag("--root") or (os.path.join(os.environ.get("APPDATA") or CODE, "Pall
                            if PACKAGED else CODE)
 if PACKAGED or _flag("--root"):
     os.makedirs(ROOT, exist_ok=True)
+    # the subtitle maker's papers with the rest, from the start: it learned the folder only
+    # when a subtitle was asked for, and a job resumed at startup on a copy of the state was
+    # written to the installed server's folder (gate, 2026-11-20)
+    os.environ["PALLADIUM_DATA"] = ROOT
 #: run as the Start fronts' own process: on a copy of the state under --root, the fronts
 #: written to this file, then gone. Nothing is served and nothing of the plugins starts.
 FRONTS_CHILD = _flag("--make-fronts")

@@ -1,5 +1,197 @@
 [
   {
+    "version": "0.20.129",
+    "when": "2026-11-20",
+    "title": "Box sets and subtitle jobs",
+    "items": [
+      "The box set list is never written over before the server has read it",
+      "The subtitle maker keeps its jobs in the server's own folder from the start"
+    ]
+  },
+  {
+    "version": "0.20.128",
+    "when": "2026-11-20",
+    "title": "Namesake series",
+    "items": [
+      "A pack series and a library series of the same name but different catalogue ids both show on the shelf, in search and on the popular list"
+    ]
+  },
+  {
+    "version": "0.20.127",
+    "when": "2026-11-20",
+    "title": "Search and packs",
+    "items": [
+      "A search lists each series once; the app closed on a series listed twice",
+      "Two series of one name in packs stay apart; each page offered the other's seasons"
+    ]
+  },
+  {
+    "version": "0.20.126",
+    "when": "2026-11-20",
+    "title": "Series",
+    "items": [
+      "A film's series takes in the catalogue's other collections of the same name: a series split over two collections shows all its films on each"
+    ]
+  },
+  {
+    "version": "0.20.125",
+    "when": "2026-11-20",
+    "title": "Tracker index",
+    "items": [
+      "The tracker's index is never saved before its own file has been read; what a search found before the start joins it"
+    ]
+  },
+  {
+    "version": "0.20.124",
+    "when": "2026-11-20",
+    "title": "Packs, P menu, Continue watching, Back from search",
+    "items": [
+      "A series' pack search asks the tracker season by season for each season the found packs leave out",
+      "The P menu has no empty row under the name",
+      "Continue watching is read once more a few seconds after a film, so one watched to its end leaves it",
+      "Back from what a search found goes to the magnifying glass, with no keyboard"
+    ]
+  },
+  {
+    "version": "0.20.123",
+    "when": "2026-11-20",
+    "title": "Pack list lock",
+    "items": [
+      "A hold of the pack list's lock over 20 seconds is written to the log with what holds it; the thread dump shows whole stacks"
+    ]
+  },
+  {
+    "version": "0.20.122",
+    "when": "2026-11-20",
+    "title": "Top bar on one row",
+    "items": [
+      "The one row fits on a television with Films' and TV's controls, the microphone and the download: half the gap between its buttons",
+      "The microphone has no grey ground on the one row",
+      "The P can be reached with the remote after coming back to the app"
+    ]
+  },
+  {
+    "version": "0.20.121",
+    "when": "2026-11-20",
+    "title": "Arrivals",
+    "items": [
+      "A download coming in changes its poster where it stands: no NEW ribbon in between, and Home is not read again"
+    ]
+  },
+  {
+    "version": "0.20.120",
+    "when": "2026-11-20",
+    "title": "Download ring",
+    "items": [
+      "The download ring sits round the download icon"
+    ]
+  },
+  {
+    "version": "0.20.119",
+    "when": "2026-11-20",
+    "title": "Top bar on one row",
+    "items": [
+      "On a television and a phone or tablet on its side the top bar is one row: the P opens the name, the version and the servers; search, microphone, download, cast and settings at the right",
+      "Search opens with the keyboard ready, and is on Watchlist and Collections too",
+      "The list's controls stand still as Films and TV are chosen; Genre stands beside the order",
+      "Changing server no longer plays the opening"
+    ]
+  },
+  {
+    "version": "0.20.118",
+    "when": "2026-11-20",
+    "title": "Opening",
+    "items": [
+      "The opening ends when a film is opened during it, or a key is pressed, so it never plays on the way back from a film"
+    ]
+  },
+  {
+    "version": "0.20.117",
+    "when": "2026-11-19",
+    "title": "Opening",
+    "items": [
+      "The star at the P's corner blinks once, after the light has crossed the P"
+    ]
+  },
+  {
+    "version": "0.20.116",
+    "when": "2026-11-19",
+    "title": "Opening",
+    "items": [
+      "The opening on black, which a television shows as dark as the app's ground"
+    ]
+  },
+  {
+    "version": "0.20.115",
+    "when": "2026-11-19",
+    "title": "Opening",
+    "items": [
+      "The opening darker on a television, and the studio's name very faint"
+    ]
+  },
+  {
+    "version": "0.20.114",
+    "when": "2026-11-19",
+    "title": "Opening",
+    "items": [
+      "The app opens on the P in 3D, with the studio's name in the corner, and again whenever it is come back to from outside it"
+    ]
+  },
+  {
+    "version": "0.20.113",
+    "when": "2026-11-19",
+    "title": "Subtitle labels",
+    "items": [
+      "Subtitles to download: a download not showing says on disc, the film's own tracks say in the film"
+    ]
+  },
+  {
+    "version": "0.20.112",
+    "when": "2026-11-19",
+    "title": "Series page and subtitles in use",
+    "items": [
+      "A series page opened from a search opens after the search is forgotten, and goes to the pack series once a pack gives it",
+      "Subtitles to download: only the subtitle in use is marked in use, not every one of an episode"
+    ]
+  },
+  {
+    "version": "0.20.111",
+    "when": "2026-11-19",
+    "title": "Series cast",
+    "items": [
+      "A series not held lists the cast of its whole run, not only its last season's"
+    ]
+  },
+  {
+    "version": "0.20.110",
+    "when": "2026-11-19",
+    "title": "Search",
+    "items": [
+      "A word typed a letter or two wrong is put right against every title and name the house knows, and searched as that when it finds as much"
+    ]
+  },
+  {
+    "version": "0.20.109",
+    "when": "2026-11-19",
+    "title": "Watchlist, Subtitles",
+    "items": [
+      "A season taken off a series that is on the watchlist whole leaves the other seasons and the series' own mark goes",
+      "The watchlist reads again once the server has the change, not before",
+      "A subtitle written from the sound, or one cut short, never opens while the film has a whole one in that language: a download first, then the film's own",
+      "Subtitles to download: the film's own tracks in the language are listed as on disc, marked in use when showing, and chosen from there",
+      "Subtitles to download from the player: the file showing is marked in use"
+    ]
+  },
+  {
+    "version": "0.20.108",
+    "when": "2026-11-19",
+    "title": "A pack added: on everyone's Start at once",
+    "items": [
+      "A pack linked to a series puts that series on every user's Start at once, its card no longer one to add; everyone's Start is made again behind it",
+      "Test: the Dakar card's test no longer depends on which photograph the hour shows"
+    ]
+  },
+  {
     "version": "0.20.107",
     "when": "2026-11-19",
     "title": "A series a pack gives: its seasons too",

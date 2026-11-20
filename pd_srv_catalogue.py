@@ -662,18 +662,25 @@ def popular_everything(home="", every=3):
         for r in con.execute("SELECT id, tmdb_id, title FROM item WHERE type='show'"):
             if r["tmdb_id"]:
                 held[int(r["tmdb_id"])] = r["id"]
-            named[flat(r["title"])] = r["id"]
+            named[flat(r["title"])] = (r["id"], int(r["tmdb_id"] or 0))
         try:
             import pd_torrents
-            offered = {flat(o.get("title")): o for o in (pd_torrents.offered_shows() or [])}
+            everything = pd_torrents.offered_shows() or []
         except Exception:
-            offered = {}
+            everything = []
+        offered = {flat(o.get("title")): o for o in everything}
+        offered_by_id = {int(o["tmdb"]): o for o in everything if o.get("tmdb")}
+        # by name only where the catalogue's ids do not say it is another series: a
+        # 2010s namesake opened the 1970s series' page (owner, 2026-11-20)
+        same = lambda number, other: not number or not other or number == other
         for at, one in enumerate(shows):
             number = int(one.get("tmdb") or 0)
-            key = held.get(number) or named.get(flat(one.get("show")))
+            by_name = named.get(flat(one.get("show")))
+            key = held.get(number) or (by_name[0] if by_name and same(number, by_name[1]) else None)
             got = S.local().metadata_for(con, str(key), brief=True) if key else None
-            if not got and flat(one.get("show")) in offered:
-                got = dict(offered[flat(one.get("show"))])
+            pack = offered_by_id.get(number) or offered.get(flat(one.get("show")))
+            if not got and pack and same(number, int(pack.get("tmdb") or 0)):
+                got = dict(pack)
             if not got:
                 got = {"ratingKey": "tv%d" % number, "type": "show",
                        "title": one.get("show") or "", "year": one.get("year") or None,

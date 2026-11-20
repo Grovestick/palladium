@@ -1515,6 +1515,38 @@ def saga_order(parts, held, today):
     return out
 
 
+def collection_base(name):
+    """A catalogue collection's name with the word Collection and any subtitle after a dash or
+    colon taken off, as one series' collections share it: "Harbour Run Collection" and
+    "Harbour Run - New Trilogy Collection" are both "harbour run"."""
+    name = re.sub(r"(?i)\s*collection\s*$", "", str(name or "")).strip()
+    name = re.split(r"\s+[\u2013\u2014-]\s+|:\s+", name)[0]
+    return re.sub(r"\s+", " ", name).strip().lower()
+
+
+def sibling_parts(lib, name, whole, patience=6):
+    """The films of the catalogue's other collections of the same series - the same base name:
+    a series' first four films and its new trilogy are two collections, and each film's page
+    showed only its own half (owner, 2026-11-20)."""
+    base = collection_base(name)
+    if not base:
+        return []
+    out = []
+    try:
+        found = (lib.tmdb("/search/collection", query=base, timeout=patience) or {}).get("results") or []
+    except Exception:
+        return []
+    for one in found[:8]:
+        other = int(one.get("id") or 0)
+        if not other or other == int(whole) or collection_base(one.get("name")) != base:
+            continue
+        try:
+            out += (lib.tmdb("/collection/%d" % other, timeout=patience) or {}).get("parts") or []
+        except Exception:
+            continue
+    return out
+
+
 def saga(lib, tmdb, patience=6):
     """The films of the series film `tmdb` belongs to, in order - [] for one standing
     alone. Those not here are kept as searched films, so their keys open a page."""
@@ -1530,6 +1562,14 @@ def saga(lib, tmdb, patience=6):
             whole = (film.get("belongs_to_collection") or {}).get("id")
             parts = (lib.tmdb("/collection/%d" % int(whole), timeout=patience).get("parts")
                      or []) if whole else []
+            # and the series' other collections, one film each
+            if whole:
+                seen = {int(p.get("id") or 0) for p in parts}
+                for p in sibling_parts(lib, (film.get("belongs_to_collection") or {}).get("name"),
+                                       int(whole), patience):
+                    if int(p.get("id") or 0) not in seen:
+                        seen.add(int(p.get("id") or 0))
+                        parts.append(p)
         except Exception:
             return []
         SAGAS[number] = (time.time(), parts)
@@ -1890,8 +1930,13 @@ def shows_by_name(lib, words, most=BY_NAME_MOST * 2):
         filed = pd_torrents.folded_shows()
     except Exception:
         filed = {}
-    out = []
+    out, seen = [], set()
     for one in said.get("results") or []:
+        # once each: the catalogue's two pages can both carry a series, and the app's
+        # grid closes on a key it is given twice (guest, 2026-11-20)
+        if int(one.get("id") or 0) in seen:
+            continue
+        seen.add(int(one.get("id") or 0))
         first_aired = str(one.get("first_air_date") or "")[:10]
         # a series named for every word asked is what was searched for, however few
         # have rated it: a shared name found its six series, not the spin-offs

@@ -1910,7 +1910,7 @@ check("a series' packs are its versions: the Version picker removes one added, i
 _ui122 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
                            "se", "palladium", "tv", "Ui.kt"), encoding="utf-8").read()
 check("the app's voice search is the mic icon and asks Speech Recognition by name first",
-      'Pill("Search by voice", filled = true, small = small, icon = MicIcon)' in _ui122
+      'Pill("Search by voice", filled = !bare, narrow = bare, small = small, icon = MicIcon)' in _ui122
       and 'const val SPEECH_PACKAGE = "com.google.android.tts"' in _ui122
       and "if (said.resolveActivity(ctx.packageManager) == null) said.setPackage(null)" in _ui122)
 
@@ -2045,6 +2045,17 @@ check("unless picked: a DVD's picture track chosen once opens the next play",
       and _ss([{"index": 2, "codec": "dvd_subtitle", "language": "eng", "picked": True},
                _t(-1, "eng")], "en", "") == 2)
 check("an index 0 track is an answer, not none", _ss([_t(0, "eng")], "en", "") == 0)
+_ai = lambda i, lang, **k: _t(i, lang, title=("English" if lang == "en" else "Swedish") + " ai-gen", **k)
+check("written from the sound never opens while a whole one is here: the download, then the film's own",
+      _ss([_t(3, "eng"), _ai(-1, "en"), _t(-2, "en", title="English A.Release")], "en", "sv") == -2
+      and _ss([_ai(-1, "en"), _t(3, "eng")], "en", "sv") == 3
+      and _ss([_t(3, "eng"), _t(-1, "en", title="English B", short=True)], "en", "") == 3
+      and _ss([_ai(-1, "en", picked=True), _t(3, "eng")], "en", "") == 3
+      and _ss([_t(3, "eng"), _ai(-1, "en"), _ai(-2, "sv", picked=True)], "en", "sv") == 3)
+check("but it opens when it is all the language has, or when picked with nothing whole beside it",
+      _ss([_ai(-1, "en")], "en", "") == -1
+      and _ss([_t(3, "ger"), _ai(-1, "sv", picked=True)], "sv", "") == -1
+      and _ss([_t(3, "eng"), _ai(-1, "sv", picked=True)], "en", "sv") == 3)
 _la_src = _read_localapi()
 check("every title's details carry the server's choice", _la_src.count("sub_langs=self.sub_languages())") == 2
       and '"subsDecided": sub_langs is not None' in _la_src)
@@ -5063,8 +5074,9 @@ check("no In a pack on Start's cards", "In a pack" not in _js176[_js176.find("fu
 _ma177 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src",
                            "main", "java", "se", "palladium", "tv", "MainActivity.kt"),
               encoding="utf-8").read()
-check("app: search on the Start tab",
-      'search = if (browse.tab in setOf("start", "home", "films", "tv"))' in _ma177
+check("app: search on the Start tab, and on Watchlist and Collections as well",
+      ('search = if (browse.tab in setOf("start", "home", "films", "tv",' + chr(10) +
+       '                                                "watchlist", "collections"))') in _ma177
       and 'browse.tab == "start" && browse.query.trim().isEmpty() ->' in _ma177)
 
 # ---- Start is only where the page and the app open; back and coming back go Home
@@ -5603,8 +5615,8 @@ check("series: every upcoming episode and season card says whether it is missing
 
 # ---- search: a lone number is tried spelt out too, and a film not out yet is upcoming
 import pd_streaming as _ps223
-check("search: \"dune 3\" is asked as dune three and dune iii as well",
-      _ps223.number_spellings("dune 3") == ["dune 3", "dune three", "dune iii"]
+check("search: \"sandhill 3\" is asked as sandhill three and sandhill iii as well",
+      _ps223.number_spellings("sandhill 3") == ["sandhill 3", "sandhill three", "sandhill iii"]
       and _ps223.number_spellings("alien") == ["alien"])
 _c223 = _ps223.item({"key": "rtx", "title": "Later", "released": "2099-12-15"})
 _d223 = _ps223.item({"key": "rty", "title": "Earlier", "released": "2001-01-01"})
@@ -5618,27 +5630,27 @@ class _Lib223:
 
     def tmdb(self, path, timeout=6, query="", include_adult="false"):
         _Lib223.asked.append(query)
-        if query == "dune three":
+        if query == "sandhill three":
             return {"results": [
-                {"id": 1, "title": "Dune: Part Three", "release_date": "2099-12-15",
+                {"id": 1, "title": "Sandhill: Part Three", "release_date": "2099-12-15",
                  "poster_path": "/p.jpg", "vote_count": 0, "popularity": 60.0},
-                {"id": 2, "title": "Dune Thing", "release_date": "2099-12-15",
+                {"id": 2, "title": "Sandhill Thing", "release_date": "2099-12-15",
                  "poster_path": "/q.jpg", "vote_count": 0, "popularity": 1.0},
-                {"id": 3, "title": "Old Dune", "release_date": "1990-01-01",
+                {"id": 3, "title": "Old Sandhill", "release_date": "1990-01-01",
                  "poster_path": "/r.jpg", "vote_count": 5, "popularity": 50.0}]}
         return {"results": []}
 
 
 _held223 = _ps223._held
 _ps223._held = lambda lib: ({}, {})
-_ps223.FOUND_BY_NAME.pop("dune 3", None)
+_ps223.FOUND_BY_NAME.pop("sandhill 3", None)
 try:
-    _got223 = _ps223.by_name(_Lib223(), "dune 3")
+    _got223 = _ps223.by_name(_Lib223(), "sandhill 3")
 finally:
     _ps223._held = _held223
-    _ps223.FOUND_BY_NAME.pop("dune 3", None)
-check("search: dune 3 finds the film not out yet that people are waiting for, and not the obscure ones",
-      [r["title"] for r in _got223] == ["Dune: Part Three"] and "dune three" in _Lib223.asked)
+    _ps223.FOUND_BY_NAME.pop("sandhill 3", None)
+check("search: sandhill 3 finds the film not out yet that people are waiting for, and not the obscure ones",
+      [r["title"] for r in _got223] == ["Sandhill: Part Three"] and "sandhill three" in _Lib223.asked)
 
 # ---- a film's Show more: the words take the remote first and are read through
 check("app: Show more's words take the remote first off a television or with nobody listed, and up and down read through them",
@@ -5648,9 +5660,9 @@ check("app: Show more's words take the remote first off a television or with nob
 # ---- a miniseries in parts is one series, its parts the episodes, its year kept
 import pd_library as _pl224
 _m224 = _pl224.parse_miniseries(
-    "F:\\Download\\Dune.The.Miniseries.Part2.2000.1080p.BluRay.x264-PFa\\pfa-dune.p2.1080p.mkv")
+    "F:\\Download\\Sandhill.The.Miniseries.Part2.2000.1080p.BluRay.x264-PFa\\pfa-sandhill.p2.1080p.mkv")
 check("library: a miniseries' part is episode n of its series, with the year to match it by",
-      _m224 == ("Dune", 1, 2, 2000)
+      _m224 == ("Sandhill", 1, 2, 2000)
       and _pl224.parse_miniseries("X:\\Films\\Some.Saga.Miniseries.Part.3.mkv")[:3] == ("Some Saga", 1, 3)
       and _pl224.parse_miniseries("X:\\Films\\Harry.Potter.Deathly.Hallows.Part.2.2011.mkv") is None
       and _pl224.parse_miniseries("X:\\Films\\Kill.Bill.Vol.1.2003.mkv") is None)
@@ -6758,10 +6770,11 @@ _maA = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", 
                          "java", "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
 check("arrived: the shelf's stale card loses Download, and the open page reads itself again",
       "val arrived = (m.offered || m.askable) && live == null && Api.cameIn(m.ratingKey)" in _uiA
-      and 'else if (arrived) CornerBand("NEW", bandW, Color(0xFFD9A21B))' in _uiA
+      # and no NEW ribbon takes its place (owner, 2026-11-20)
+      and 'else if (arrived && Route.arrivedBand().isNotEmpty())' in _uiA
       and 'else if (m.offered && said.isEmpty() && !arrived) CornerBand("DOWNLOAD", bandW)' in _uiA
       and "if (got != null && !got.askable && !got.offered) {" in _maA
-      and _uiA.index('else if (arrived) CornerBand("NEW"') < _uiA.index('else if (m.askable && m.onTracker) CornerBand("DOWNLOAD", bandW,'))
+      and _uiA.index('else if (arrived && Route.arrivedBand().isNotEmpty())') < _uiA.index('else if (m.askable && m.onTracker) CornerBand("DOWNLOAD", bandW,'))
 
 # ---- web: a screen opened while another loads stays; the one left stops drawing and asking
 _apN = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app.js"), encoding="utf-8").read()
@@ -10558,7 +10571,7 @@ check("releases: a telesync or a cam never meets the wishes, however seeded, and
       and _prC.misses(_relC[0], [], {}, 6000)[0] == ["filmed in a cinema"])
 check("releases: only the words after the year say what a release is - a film called Cam is a film",
       not _psC.cammed("Cam.2018.1080p.NF.WEB-DL.DDP5.1.x264-GRP") and _psC.cammed("Film.2026.HDCAM")
-      and _psC.cammed("Film.HDCAM.x264") and _psC.release_kind("Blade.Runner.2049.2017.HDTS") == "telesync")
+      and _psC.cammed("Film.HDCAM.x264") and _psC.release_kind("Gate.Runner.2049.2017.HDTS") == "telesync")
 
 # ---- a viewer's own line: said once, stepped down on the third stall to what it carries,
 #      and climbing back up to the original when it has room (2026-11-14)
@@ -11090,11 +11103,222 @@ check("downloads: one 4K release marked, the best of those meeting the rules",
 # ---- a file still being written is no version of its film: a rip in the making was (2026-11-15)
 import pd_library as _plW
 check("library: a .part file being written is passed over; a film named Part is not",
-      _plW.being_written("The.Odyssey.2026.1080p.BluRay.x264-PD.mkv.part.mkv")
+      _plW.being_written("Gate.Voyage.2026.1080p.BluRay.x264-PD.mkv.part.mkv")
       and _plW.being_written("film.part.mp4")
       and not _plW.being_written("Kill.Bill.Vol.1.Part.One.2003.mkv")
-      and not _plW.being_written("Dune.Part.Two.2024.1080p.mkv"))
+      and not _plW.being_written("Sandhill.Part.Two.2024.1080p.mkv"))
 
+
+# ---- the title page's watchlist button: the shelves are read again after the server has the change
+_ma_wl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                           "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
+_on_wl = _ma_wl[_ma_wl.index("onList = { on ->"):_ma_wl.index("onGoTo = { onGoTo(\"watchlist\") }")]
+check("watchlist button: marksTouched after Api.mark and Api.favorite, never before them",
+      _on_wl.index("Api.mark(full, on)") < _on_wl.index("marksTouched")
+      and _on_wl.count("marksTouched") == 2
+      and _on_wl.rindex("Api.favorite(full, on)") < _on_wl.rindex("marksTouched"))
+
+# ---- the one row's microphone has no grey ground, as the search beside it
+_ui_mic = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                            "se", "palladium", "tv", "Ui.kt"), encoding="utf-8").read()
+_ma_mic = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                            "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
+check("one row: the microphone bare, the search box's own still filled",
+      'Pill("Search by voice", filled = !bare' in _ui_mic
+      and "SpeakPill(said, small = false, bare = true)" in _ma_mic
+      and "SpeakPill(onQuery, small = tight)" in _ma_mic)
+
+# ---- the pack list's lock says who holds it, and a long hold is said once
+import pd_torrents as _ptL
+_lk = _ptL.HeldLock()
+with _lk:
+    with _lk:                                   # held twice by one thread: one hold
+        _o1 = _lk.owner
+    _o2 = _lk.owner
+_o3 = _lk.owner
+with _lk:
+    _t0 = _lk.owner[2]
+    _early = _lk.too_long(_t0 + 5, 20)
+    _late = _lk.too_long(_t0 + 25, 20)
+    _again = _lk.too_long(_t0 + 40, 20)
+check("pack lock: who holds it and since when, kept through a second hold by the same thread, "
+      "cleared on the last release; a hold past 20 s said once",
+      _o1 is not None and _o1 == _o2 and _o3 is None and _early is None
+      and _late is not None and _late[1] == _th.current_thread().name and _again is None)
+
+# ---- a series' packs: the seasons the tracker's list does not cover are asked one by one
+import pd_srv_packs as _spk
+# the server's own season pattern, read out of its source: the packs module reaches it through
+# the server, which these tests do not start
+_srcS = server_source()
+_atS = _srcS.index("SEASON_RUN = re.compile(")
+_endS = _srcS.index('"(?![0-9eE])")', _atS)
+_runS = eval(_srcS[_atS + len("SEASON_RUN = "):_endS + len('"(?![0-9eE])")')], {"re": _re})
+
+
+def _namedS(name):
+    out = set()
+    for a, b in _runS.findall(name):
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+_rows_s = [{"name": "Gate Coast 2003 S01 1080p WEBRip x265-GRP"},
+           {"name": "Gate Coast 2003 S02 1080p WEBRip x265-GRP"},
+           {"name": "Other Show 2003 S03 1080p WEBRip x265-GRP"}]
+check("series packs: the seasons nothing covers are asked by season; a complete run covers all",
+      _spk.seasons_to_ask("Gate Coast", rows=_rows_s, count=4, named=_namedS) == [3, 4]
+      and _spk.seasons_to_ask("Gate Coast", rows=_rows_s + [{"name": "Gate Coast S03-S04 1080p"}],
+                              count=4, named=_namedS) == []
+      and _spk.seasons_to_ask("Gate Coast", rows=_rows_s + [{"name": "Gate Coast Complete Series 1080p"}],
+                              count=4, named=_namedS) == []
+      and _spk.seasons_to_ask("Gate Coast", rows=_rows_s, count=0, named=_namedS) == [])
+
+# ---- the tracker's index: what a search found before the start is put in with the file, and
+#      the file is never written before it has been read
+import pd_tracker as _ptk, tempfile as _tfk, json as _jk, shutil as _shK
+_keepK = {k: (dict(v) if isinstance(v, dict) else (list(v) if isinstance(v, list) else v))
+          for k, v in _ptk.STATE.items()}
+_dirK = _tfk.mkdtemp(prefix="pd-tracker-")
+try:
+    with open(os.path.join(_dirK, "tracker.json"), "w", encoding="utf-8") as _fk:
+        _jk.dump({"at": 1, "rows": {str(i): {"id": str(i), "name": "Old %d" % i, "at": 4102444800}
+                                    for i in range(3)}}, _fk)
+    _ptk.STATE.update(root="", rows={}, loaded="", unread=False)
+    _beforeK = dict(_ptk.read())                                   # before the start: nothing kept
+    _ptk.STATE["rows"]["early"] = {"id": "early", "name": "Found early", "at": 4102444800}
+    _ptk.write()                                                   # no folder yet: nothing written
+    _ptk.use_data_dir(_dirK)
+    _afterK = _ptk.read()
+    _ptk.write()
+    with open(os.path.join(_dirK, "tracker.json"), encoding="utf-8") as _fk:
+        _savedK = _jk.load(_fk)["rows"]
+finally:
+    _ptk.STATE.clear()
+    _ptk.STATE.update(_keepK)
+    _shK.rmtree(_dirK, ignore_errors=True)
+check("tracker index: a search before the start joins the file's rows, and the file is never "
+      "written over before it has been read",
+      _beforeK == {} and sorted(_afterK) == ["0", "1", "2", "early"]
+      and sorted(_savedK) == ["0", "1", "2", "early"])
+
+# ---- a film's series takes in the catalogue's other collections of the same name
+import pd_streaming as _psG
+
+
+class _LibG:
+    def tmdb(self, path, **q):
+        if path == "/search/collection":
+            return {"results": [{"id": 1, "name": "Gate Saga Collection"},
+                                {"id": 2, "name": "Gate Saga \u2013 New Trilogy Collection"},
+                                {"id": 3, "name": "Gate Saga vs. Others Collection"}]}
+        return {"parts": [{"id": 20 + int(path.rsplit("/", 1)[1])}]}
+
+
+check("series: the same base name joins collections; another name stays apart",
+      _psG.collection_base("Harbour Run Collection") == "harbour run"
+      and _psG.collection_base("Harbour Run \u2013 New Trilogy Collection") == "harbour run"
+      and _psG.collection_base("Alien vs. Predator Collection") == "alien vs. predator"
+      and _psG.collection_base("Night Coast: Anthology Collection") == "night coast"
+      and [p["id"] for p in _psG.sibling_parts(_LibG(), "Gate Saga Collection", 1)] == [22])
+
+# ---- a series on both of the catalogue's pages is offered once
+import pd_streaming as _psD
+
+
+class _LibD:
+    def tmdb(self, path, **q):
+        one = {"id": 9001, "name": "Gate Desk", "first_air_date": "2001-01-01",
+               "poster_path": "/p.jpg", "vote_count": 50}
+        two = dict(one, id=9002, name="Gate Desk Two")
+        return {"total_pages": 2, "results": [one] if q.get("page") == 2 else [one, two]}
+
+
+_psD.FOUND_BY_NAME.pop("tv|gate desk", None)
+_keepHeldD, _keepKeptD = _psD._held, _psD._keep_searched
+_psD._held = lambda lib: ({}, {})
+_psD._keep_searched = lambda rows: None          # nothing written to a searched list
+try:
+    _gotD = [r["key"] for r in _psD.shows_by_name(_LibD(), "gate desk")]
+finally:
+    _psD._held, _psD._keep_searched = _keepHeldD, _keepKeptD
+    _psD.FOUND_BY_NAME.pop("tv|gate desk", None)
+check("series search: one on both catalogue pages is offered once " + str(_gotD),
+      _gotD == ["tv9001", "tv9002"])
+
+# ---- two series of one name in packs, one with a comma, are two series by the catalogue's
+#      id: neither's page offers the other's seasons, nor takes the other's key
+import pd_torrents as _ptT, sqlite3 as _sqT
+_keepT = {k: _ptT.STATE.get(k) for k in ("spellings", "series_ids", "spellings_at", "lib")}
+_loadT, _namesT = _ptT.load, dict(_ptT.PROGRAMMES["names"])
+
+
+def _packsT(old_id, new_id):
+    ep = lambda name, tmdb, year: {"kind": "episode", "name": name, "tmdb": tmdb, "year": year}
+    return {"packs": [{"films": [ep("Gate Hall", new_id, 2010)]},
+                      {"films": [ep("Gate, Hall", old_id, 0)]}]}
+
+
+class _LibT:
+    def db(self):
+        con = _sqT.connect(":memory:")
+        con.execute("CREATE TABLE item (id TEXT, type TEXT, title TEXT, tmdb_id INT)")
+        con.execute("INSERT INTO item VALUES ('libold', 'show', 'Gate, Hall', 492)")
+        return con
+
+    def item_key_would_be(self, con, kind, title, year):
+        return "libold"                                   # by name, as the library folds it
+
+
+try:
+    _ptT.STATE["lib"] = lambda: _LibT()
+    _ptT.load = lambda: _packsT(492, 46609)
+    _ptT.STATE["spellings_at"] = 0
+    _ptT.PROGRAMMES["names"].clear()
+    _twoT = (_ptT.show_key("Gate Hall") != _ptT.show_key("Gate, Hall"),
+             _ptT.programme_id("Gate, Hall"), _ptT.programme_id("Gate Hall"))
+    _ptT.load = lambda: _packsT(492, 492)
+    _ptT.STATE["spellings_at"] = 0
+    _ptT.PROGRAMMES["names"].clear()
+    _oneT = (_ptT.show_key("Gate Hall") == _ptT.show_key("Gate, Hall"), _ptT.programme_id("Gate Hall"))
+finally:
+    _ptT.load = _loadT
+    _ptT.STATE.update(_keepT)
+    _ptT.PROGRAMMES["names"].clear()
+    _ptT.PROGRAMMES["names"].update(_namesT)
+check("packs: a series and its namesake of another catalogue id are two keys; one id stays one "
+      + str((_twoT, _oneT)),
+      _twoT[0] and _twoT[1] == "libold" and _twoT[2] not in ("libold", "")
+      and _oneT == (True, "libold"))
+
+# ---- the box set list: what was found before the start joins the file's entries, and the
+#      file is never written over before it has been read
+import pd_boxsets as _pbB, pd_tracker as _ptB, tempfile as _tfB, json as _jB, shutil
+_keepB = {k: (dict(v) if isinstance(v, dict) else (list(v) if isinstance(v, list) else v))
+          for k, v in _pbB.STATE.items()}
+_rootB = _ptB.STATE.get("root")
+_dirB = _tfB.mkdtemp(prefix="pd-boxsets-")
+try:
+    with open(os.path.join(_dirB, "boxsets.json"), "w", encoding="utf-8") as _fB:
+        _jB.dump({str(i): {"name": "Old %d" % i, "seeds": 1, "at": 1, "films": []} for i in range(3)}, _fB)
+    _ptB.STATE["root"] = ""
+    _pbB.STATE.update(sets=None, unread=False, dirty=False, written=0.0, loaded="")
+    _beforeB = dict(_pbB.read())                               # before the start: nothing
+    _pbB.STATE["sets"]["early"] = {"name": "Found early", "seeds": 1, "at": 1, "films": [], "failed": True}
+    _pbB.STATE["dirty"] = True
+    _pbB.write(force=True)                                     # no folder yet: nothing written
+    _ptB.STATE["root"] = _dirB
+    _pbB.write(force=True)                                     # reads its file first, then saves
+    with open(os.path.join(_dirB, "boxsets.json"), encoding="utf-8") as _fB:
+        _savedB = _jB.load(_fB)
+finally:
+    _pbB.STATE.clear()
+    _pbB.STATE.update(_keepB)
+    _ptB.STATE["root"] = _rootB
+    shutil.rmtree(_dirB, ignore_errors=True)
+check("box sets: an ask before the start joins the file's entries, and the file is never "
+      "written over before it has been read " + str(sorted(_savedB)),
+      _beforeB == {} and sorted(_savedB) == ["0", "1", "2", "early"])
 
 print("RULES FAILED: %d" % len(FAILS) if FAILS else "RULES PASSED")
 for f in FAILS:

@@ -468,6 +468,36 @@ class LibraryParts(_Base):
         finally:
             con.close()
 
+    def programme_of(self, key):
+        """The programme a season or an episode key belongs to, or ""."""
+        key = str(key or "")
+        season = re.match(r"^([0-9a-f]{12})-s\d+$", key)
+        if season:
+            return season.group(1)
+        if not S.is_episode(key):
+            return ""
+        con = S.local().lib.db()
+        try:
+            row = con.execute("SELECT item_id FROM episode WHERE id=?", (key,)).fetchone()
+            return str(row["item_id"]) if row else ""
+        except Exception:
+            return ""
+        finally:
+            con.close()
+
+    def opened_up(self, marked, key):
+        """The watchlist with a whole programme's own key - one put there from its pack before
+        it had episodes - opened into its episodes when a season or an episode of it is taken
+        off or put on: the season card came off and the programme's key kept every season on
+        the shelf (owner, 2026-11-19). Each opened key keeps the programme's time."""
+        whole = self.programme_of(key)
+        if not whole or whole not in marked:
+            return marked, {}
+        held = set(marked)
+        parts = [k for k in self.spread(whole) if k != whole and k not in held]
+        at = marked.index(whole)
+        return marked[:at] + parts + marked[at + 1:], {k: whole for k in parts}
+
     def rollup(self, keys):
         """Which seasons and programmes a list of marked episodes amounts to.
 

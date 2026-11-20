@@ -769,7 +769,10 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             // something on the tracker for it: the band says what pressing it
             // does, and asking is not what it does any more
             if (m.askable && said.isNotEmpty()) { /* coming in: the badge says how far */ }
-            else if (arrived) CornerBand("NEW", bandW, Color(0xFFD9A21B))
+            // come in: the download's badge goes at 100% and nothing takes its place - a
+            // NEW ribbon stood there between the download and the film (owner, 2026-11-20)
+            else if (arrived && Route.arrivedBand().isNotEmpty())
+                CornerBand(Route.arrivedBand(), bandW, Color(0xFFD9A21B))
             // on SVT Play: it streams from there, which beats asking or downloading
             else if (Route.streamBand(m.askable, m.addable, m.svtId))
                 CornerBand("STREAM", bandW, Color(0xFF1E9E6A))
@@ -959,7 +962,9 @@ fun Chip(text: String, accent: Boolean = false) {
 /** A search spoken rather than typed: the platform's speech dialog, on a phone or a
  *  television, where the device has one; nothing where it does not. */
 @Composable
-fun SpeakPill(onText: (String) -> Unit, small: Boolean = false) {
+fun SpeakPill(onText: (String) -> Unit, small: Boolean = false,
+              /** no ground of its own: on the one row, as the search beside it (owner, 2026-11-20) */
+              bare: Boolean = false) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val ask = remember {
         val said = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
@@ -980,7 +985,7 @@ fun SpeakPill(onText: (String) -> Unit, small: Boolean = false) {
     val can = remember { ask.resolveActivity(ctx.packageManager) != null }
     if (!can) return
     // the microphone, as every search box draws it
-    Pill("Search by voice", filled = true, small = small, icon = MicIcon) {
+    Pill("Search by voice", filled = !bare, narrow = bare, small = small, icon = MicIcon) {
         try { hear.launch(ask) } catch (_: android.content.ActivityNotFoundException) {}
     }
 }
@@ -1013,6 +1018,14 @@ private fun mark(name: String, path: String): androidx.compose.ui.graphics.vecto
 /** The tab row's marks in place of their words (owner, 2026-11-18): the gear, the bookmark,
  *  the film library. */
 val SettingsIcon by lazy { mark("Settings", "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z") }
+/** The one row on its side: its pills take the narrow form on a television too, so the
+ *  row fits across the screen and never scrolls (owner, 2026-11-20). */
+val LocalNarrowBar = androidx.compose.runtime.compositionLocalOf { false }
+/** The search box shown by pressing search on the one row: its typing starts at once. */
+val LocalSearchOpened = androidx.compose.runtime.compositionLocalOf { false }
+val SearchIcon by lazy { mark("Search", "M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z") }
+val CloseIcon by lazy { mark("Close", "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z") }
+val DownloadIcon by lazy { mark("Download", "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z") }
 val WatchlistIcon by lazy { mark("Watchlist", "M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z") }
 /** Not on the watchlist: the bookmark's outline. */
 val WatchlistOffIcon by lazy { mark("Add to watchlist", "M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2zm0 15l-5-2.18L7 18V5h10v13z") }
@@ -1046,6 +1059,9 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
          /* an accent ring coming and going: something behind it has come in and not been
             looked at yet */
          blink: Boolean = false,
+         /* the words whose width the pill keeps, whatever it says now: a control that
+            changes its words does not move what stands after it */
+         holdFor: String = "",
          modifier: Modifier = Modifier, onClick: () -> Unit) {
     // The release of the hold that opened a menu is not a press of what is in it.
     // Dropped here as well as at the window, because a menu that has just appeared
@@ -1065,10 +1081,12 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
         ring || filled -> Skin.Panel2
         else -> Color.Transparent
     }
+    // the one row on its side: half the gap, and narrower sides, so all of it fits
+    val bar = LocalNarrowBar.current
     Box(
         // the gap to the next one, tighter on a small pill: three of these and a
         // narrow phone is 360 points across, not the 411 a Pixel gives
-        modifier.padding(end = if (small) 4.dp else 8.dp)
+        modifier.padding(end = Route.pillGap(small, bar).dp)
             .clip(RoundedCornerShape(Skin.round(999.dp)))
             .background(bg)
             // A yellow pill on a dark ground reads as "chosen", which is not the same as
@@ -1093,7 +1111,7 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
             // and on a short screen the tall ones come down to the small size:
             // a row of pills nine points deep either side is a shelf's worth of
             // height above the shelves, on the one screen that has none to spare
-            .padding(horizontal = if (small) 10.dp else if (narrow) 12.dp else 18.dp,
+            .padding(horizontal = if (small) 10.dp else if (narrow) (if (bar) 10.dp else 12.dp) else 18.dp,
                      vertical = if (small ||
                                     androidx.compose.ui.platform.LocalConfiguration
                                         .current.screenHeightDp < 560) 5.dp else 9.dp),
@@ -1104,16 +1122,23 @@ fun Pill(label: String, active: Boolean = false, primary: Boolean = false,
                 modifier = Modifier.size(if (small) 16.dp else 19.dp))
             return@Box
         }
-        Text(label,
-             color = if (active || primary) Skin.OnAccent else Skin.Fg,
-             fontSize = if (small ||
-                           androidx.compose.ui.platform.LocalConfiguration
-                               .current.screenHeightDp < 560) 12.5.sp else 14.sp,
-             // never let a squeezed row wrap a button caption into a column of letters
-             maxLines = 1,
-             softWrap = false,
-             overflow = TextOverflow.Clip,
-             fontWeight = if (active || primary) FontWeight.SemiBold else FontWeight.Normal)
+        val size = if (small || androidx.compose.ui.platform.LocalConfiguration
+                               .current.screenHeightDp < 560) 12.5.sp else 14.sp
+        // as wide in bold as plain, and as wide as the words it holds room for: the chosen
+        // tab's bold name pushed the list's controls along as Films and TV were chosen
+        // (owner, 2026-11-20)
+        Box(contentAlignment = Alignment.Center) {
+            Text(holdFor.ifEmpty { label }, color = Color.Transparent, fontSize = size,
+                 maxLines = 1, softWrap = false, fontWeight = FontWeight.SemiBold)
+            Text(label,
+                 color = if (active || primary) Skin.OnAccent else Skin.Fg,
+                 fontSize = size,
+                 // never let a squeezed row wrap a button caption into a column of letters
+                 maxLines = 1,
+                 softWrap = false,
+                 overflow = TextOverflow.Clip,
+                 fontWeight = if (active || primary) FontWeight.SemiBold else FontWeight.Normal)
+        }
     }
 }
 
@@ -1209,6 +1234,9 @@ fun TextBox(
     password: Boolean = false,
     /** a name to offer on the keyboard as one press: the programme, for a collection */
     suggestion: String = "",
+    /** opened by a search button: the typing starts at once - the app's keyboard on a
+     *  television or with a controller, the cursor and the phone's own by touch */
+    startTyping: Boolean = false,
     onValue: (String) -> Unit,
 ) {
     var editing by remember { mutableStateOf(false) }
@@ -1220,6 +1248,17 @@ fun TextBox(
     val pad = !tv && Pad.on.value && !Typing.phone.value
     val view = androidx.compose.ui.platform.LocalView.current
     var focused by remember { mutableStateOf(false) }
+    val typeHere = remember { FocusRequester() }
+    val keys = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(startTyping) {
+        if (!startTyping) return@LaunchedEffect
+        if (tv || pad) editing = true
+        else {
+            kotlinx.coroutines.delay(60)
+            runCatching { typeHere.requestFocus() }
+            keys?.show()
+        }
+    }
 
     Box(
         modifier
@@ -1266,7 +1305,7 @@ fun TextBox(
                     androidx.compose.ui.text.input.PasswordVisualTransformation()
                 else androidx.compose.ui.text.input.VisualTransformation.None,
                 // with a controller, reached only by a finger: the remote stops on the box
-                modifier = Modifier.fillMaxWidth().then(if (pad) Modifier.focusProperties {
+                modifier = Modifier.fillMaxWidth().focusRequester(typeHere).then(if (pad) Modifier.focusProperties {
                     canFocus = view.isInTouchMode } else Modifier),
             )
         }

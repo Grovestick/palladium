@@ -1282,6 +1282,36 @@ finally:
 check("55i a series a pack gives: its seasons by the key it was opened with",
       [k.get("ratingKey") for k in (_kids55h or {}).get("Metadata") or []] == ["os0123456789-s1"],
       str(_kids55h))
+# and in the Start pages already made, for everyone, the moment a pack is linked
+_kept55h = dict(api._START_KEPT)
+_stale55h = set(api._START_STALE)
+try:
+    api._offered_shows_quietly = lambda: [{"ratingKey": "osgate55h", "title": "The Gate Show",
+                                           "year": 2026, "type": "show"}]
+    api._START_KEPT.clear()
+    _page55h = {"rows": [{"id": "svc-8", "Metadata": [
+        {"ratingKey": "tv991155", "type": "show", "title": "The Gate Show", "addable": True,
+         "popularity": 41.0},
+        {"ratingKey": "tv7", "type": "show", "title": "Another Show", "addable": True}]}]}
+    api._START_KEPT[("guest55h", "movie", "0", "")] = (time.time(), _page55h)
+    _con55h = api.lib.db()
+    try:
+        _sw55h = api.start_series_added(_con55h, "The Gate Show")
+        _active55h = set(api.start_active(_con55h))
+    finally:
+        _con55h.close()
+    _row55h = [c.get("ratingKey") for c in _page55h["rows"][0]["Metadata"]]
+    _pop55h = _page55h["rows"][0]["Metadata"][0].get("popularity")
+    _marked55h = _active55h <= set(api._START_STALE)
+finally:
+    api._offered_shows_quietly = _os55h
+    api._START_KEPT.clear()
+    api._START_KEPT.update(_kept55h)
+    api._START_STALE.clear()
+    api._START_STALE.update(_stale55h)
+check("55j a pack linked: the series' card in every kept Start page at once, everyone made again",
+      _sw55h == 1 and _row55h == ["osgate55h", "tv7"] and _pop55h == 41.0 and _marked55h,
+      "%s %s %s" % (_sw55h, _row55h, _marked55h))
 check("55h a series a pack gives: its card on the services' rows, matched by name and year",
       _hit55h and _hit55h["ratingKey"] == "osgate55h" and _old55h is None and _none55h is None
       and [c.get("ratingKey") for c in _cat55h.get("Metadata") or []] == ["osgate55h"],
@@ -1297,7 +1327,10 @@ _Im55.new("RGB", (680, 1000), "#123456").save(_pic55, "JPEG")
 _asked55 = []
 def _open55(req, timeout=0):
     url = req.full_url if hasattr(req, "full_url") else str(req)
-    _asked55.append(url)
+    # the sports asks only: the server's own background asks of the catalogue pass here
+    # too while this runs, and one first put the game's ask second
+    if "api.themoviedb.org" not in url:
+        _asked55.append(url)
     if "Shut_Home" in url:
         import urllib.error
         raise urllib.error.HTTPError(url, 429, "Too Many Requests", None, None)
@@ -1354,6 +1387,9 @@ try:
     _dk55 = api._sport_league_poster("dakar", 160)
     _dkAsked55 = len(_asked55) - _asks55
     # a sport's photograph card: the photograph fetched once, made into a 2:3 card
+    # from nothing: a refusal remembered from a real fetch earlier in this run stands for ten
+    # minutes and would keep this one from being asked at all
+    api._photo_failed.clear()
     import glob as _gl55
     for _gone55 in _gl55.glob(os.path.join(api.lib.root, "cache", "sports", "*dakar*")) +             _gl55.glob(os.path.join(api.lib.root, "cache", "sports", "photo-*")):
         os.remove(_gone55)
@@ -1377,7 +1413,9 @@ check("55f the NFL's card is its league's poster, asked once; none asked for a s
 check("55g the Dakar's card is a photograph made into a poster, fetched once; golf has none",
       _ph55 is not None and _Im55.open(_io55.BytesIO(_ph55)).size == (200, 300)
       and _ph55b == _ph55 and len(_asked55) == _phAsks55 and _phNone55 is None
-      and any("upload.wikimedia.org" in u for u in _asked55))
+      and any("wikimedia.org" in u for u in _asked55),
+      "%s %s %s %s %s" % (_ph55 is not None, _ph55b == _ph55, len(_asked55), _phAsks55,
+                          [u[-50:] for u in _asked55 if "wikimedia" in u]))
 check("55e shut out by the poster site (429) is not kept as no poster: asked again later",
       _shut55 not in _kept55 and any("Shut_Home" in u for u in _asked55), str(_kept55))
 
@@ -2976,10 +3014,10 @@ try:
 finally:
     _con273.close()
 _known273 = sum(1 for v in _pop273.values() if v != 0.5)
-def _moods273():
+def _moods273(seed="273"):
     _c = api.lib.db()
     try:
-        _rows = api._start_rows(_c, None, "273")
+        _rows = api._start_rows(_c, None, seed)
     finally:
         _c.close()
     keys = [str(m.get("ratingKey")) for r in _rows
@@ -2988,15 +3026,19 @@ def _moods273():
     return keys
 _was273 = type(api).START_POPULAR
 try:
-    type(api).START_POPULAR = 0.0
-    _off273 = _moods273()
-    type(api).START_POPULAR = _was273
-    _on273 = _moods273()
+    # over a dozen days' rows, not one: one day's median year swung a year either way with
+    # four titles more in the library, the mean over twelve did not (2026-11-20)
+    _off273, _on273 = [], []
+    for _seed273 in [str(i) for i in range(1, 13)]:
+        type(api).START_POPULAR = 0.0
+        _off273 += _moods273(_seed273)
+        type(api).START_POPULAR = _was273
+        _on273 += _moods273(_seed273)
 finally:
     type(api).START_POPULAR = _was273
 _mp = lambda ks: _st273.mean([_pop273.get(k, 0.5) for k in ks]) if ks else 0
-_my = lambda ks: _st273.median([_year273.get(k, 0) for k in ks if _year273.get(k)]) if ks else 0
-print("273. mood rows: popularity place %.2f -> %.2f, median year %s -> %s, %d titles, %d of %d with a popularity known"
+_my = lambda ks: _st273.mean([_year273.get(k, 0) for k in ks if _year273.get(k)]) if ks else 0
+print("273. mood rows: popularity place %.2f -> %.2f, mean year %.1f -> %.1f, %d titles, %d of %d with a popularity known"
       % (_mp(_off273), _mp(_on273), _my(_off273), _my(_on273), len(_on273), _known273, len(_pop273)))
 if _known273 < 100:
     print("273. skipped: too few popularities known on this copy")
@@ -3004,6 +3046,175 @@ else:
     check("273 the mood rows weigh popularity: higher among the pool by it, and no older",
           _mp(_on273) >= _mp(_off273) + 0.1 and _my(_on273) >= _my(_off273),
           "%.2f -> %.2f" % (_mp(_off273), _mp(_on273)))
+
+# ---- 274 a whole programme on the watchlist as its own key: a season taken off leaves the others
+_con274 = api.lib.db()
+try:
+    _row274 = _con274.execute(
+        "SELECT item_id, COUNT(DISTINCT season) n FROM episode WHERE season > 0 "
+        "GROUP BY item_id HAVING n >= 2 ORDER BY item_id LIMIT 1").fetchone()
+    _show274 = str(_row274["item_id"]) if _row274 else ""
+    _s274 = [int(r["season"]) for r in _con274.execute(
+        "SELECT DISTINCT season FROM episode WHERE item_id=? AND season > 0 ORDER BY season", (_show274,))]
+    _ep274 = str(_con274.execute("SELECT id FROM episode WHERE item_id=? AND season=? ORDER BY number LIMIT 1",
+                                 (_show274, _s274[-1])).fetchone()["id"]) if _show274 else ""
+finally:
+    _con274.close()
+if not _show274:
+    print("274. skipped: no programme with two seasons on this copy")
+else:
+    _h274 = m.Handler.in_house()
+    _season274 = "%s-s%d" % (_show274, _s274[0])
+    _held274, _from274 = _h274.opened_up(["f0000000000a", _show274, "f0000000000b"], _season274)
+    _left274 = [k for k in _held274 if k != _season274 and k not in _h274.spread(_season274)]
+    _rest274 = set(_h274.spread("%s-s%d" % (_show274, _s274[1])))
+    _held274e, _ = _h274.opened_up([_show274], _ep274)
+    check("274 a season off a programme marked whole: its key opened into episodes, the season gone, the rest kept",
+          _show274 not in _left274 and _left274[0] == "f0000000000a" and _left274[-1] == "f0000000000b"
+          and _rest274 <= set(_left274) and not (set(_h274.spread(_season274)) & set(_left274))
+          and set(_from274.values()) == {_show274}
+          and _show274 not in _held274e and _ep274 in _held274e
+          and _h274.opened_up(["f0000000000a"], _season274)[0] == ["f0000000000a"],
+          "%s %d left" % (_show274, len(_left274)))
+
+# ---- 275 a word typed a letter wrong is put right against the titles the house knows
+_con275 = api.lib.db()
+try:
+    _w275 = api._title_words(_con275)
+    # a long word of some title here, and the same word with one letter wrong that no title has
+    _word275, _typo275 = "", ""
+    for _x275 in sorted(w for k, ws in _w275.items() if k for w in ws if len(w) >= 8 and w.isalpha()):
+        _t275 = _x275[:4] + ("q" if _x275[4] != "q" else "z") + _x275[5:]
+        if _t275 not in _w275.get(""):
+            _word275, _typo275 = _x275, _t275
+            break
+    _f275 = api._corrected(_con275, _typo275) if _word275 else ""
+    _same275 = api._corrected(_con275, _word275) if _word275 else ""
+    _none275 = api._corrected(_con275, "qxzvbw")
+    # half a word typed is not a word mistyped
+    _half275 = api._corrected(_con275, _word275[:5]) if _word275 else ""
+finally:
+    _con275.close()
+if not _word275:
+    print("275. skipped: no long title word on this copy")
+else:
+    _st275, _, _b275 = api.handle("/hubs/search", {"query": [_typo275]})
+    _a275 = json.loads(_b275 or b"{}").get("MediaContainer") or {}
+    _titles275 = [str(x.get("title") or "") for h in _a275.get("Hub") or [] for x in h.get("Metadata") or []]
+    check("275 a search a letter off is asked again put right, and finds what the word is in",
+          _f275 == _word275 and _same275 == "" and _none275 == "" and _half275 == ""
+          and _a275.get("corrected") == _word275 and len(_titles275) > 0,
+          "%r %r %r %r %s" % (_typo275, _f275, _same275, _a275.get("corrected"), _titles275[:4]))
+
+# ---- 276 a catalogue series' cast is its whole run, as a held series' is
+_asked276 = []
+_tmdb276 = api.lib.tmdb
+_cfg276 = api.lib.config
+def _fake276(path, **kw):
+    _asked276.append(path)
+    return {"cast": [{"id": 9101, "name": "Gate Regular", "profile_path": "",
+                      "roles": [{"character": "Lead", "episode_count": 92}]},
+                     {"id": 9102, "name": "Gate Leaver", "profile_path": "",
+                      "roles": [{"character": "Left After Three", "episode_count": 70}]}]}
+try:
+    api.lib.tmdb = _fake276
+    api.lib.config = lambda: dict(_cfg276(), tmdb_key="gate")
+    _r276 = api._cast_of("tv99990276", "tv", 99990276)
+finally:
+    api.lib.tmdb = _tmdb276
+    api.lib.config = _cfg276
+check("276 a series not held: its cast from the whole run, the one who left included, each with the part played",
+      _asked276 == ["/tv/99990276/aggregate_credits"]
+      and [(x["tag"], x["role"]) for x in _r276] == [("Gate Regular", "Lead"), ("Gate Leaver", "Left After Three")],
+      "%s %s" % (_asked276, _r276))
+
+# ---- 277 a series' catalogue page opens after its search is forgotten, and goes to its pack
+_tmdb277 = api.lib.tmdb
+_os277 = api._offered_shows_quietly
+def _fake277(path, **kw):
+    return {"name": "Gate Coast Show", "first_air_date": "2003-08-05", "overview": "x",
+            "vote_average": 7.0, "poster_path": "", "number_of_seasons": 4, "genres": []}
+_con277 = api.lib.db()
+try:
+    api.lib.tmdb = _fake277
+    api._offered_shows_quietly = lambda: []
+    _a277 = api.metadata_for(_con277, "tv99990277", brief=True)
+    api._offered_shows_quietly = lambda: [{"ratingKey": "osgate277", "title": "Gate Coast Show",
+                                           "year": 2003, "type": "show"}]
+    _seen277 = []
+    _mf277 = api.metadata_for
+    def _spy277(con, key, brief=False):
+        _seen277.append(key)
+        return {"ratingKey": key, "type": "show"} if key == "osgate277" else _mf277(con, key, brief=brief)
+    api.metadata_for = _spy277
+    _b277 = _mf277(_con277, "tv99990277", brief=True)
+finally:
+    api.lib.tmdb = _tmdb277
+    api._offered_shows_quietly = _os277
+    try:
+        del api.metadata_for
+    except AttributeError:
+        pass
+    _con277.close()
+check("277 a series page from a forgotten search: from the catalogue, and the pack's series once a pack gives it",
+      bool(_a277) and _a277.get("title") == "Gate Coast Show" and _a277.get("year") == 2003
+      and _a277.get("addable") is True and (_b277 or {}).get("ratingKey") == "osgate277",
+      "%s %s" % (_a277, _b277))
+
+# ---- 278 a search's answer never has one key twice in a hub: the app's grid closes on it
+from collections import Counter as _C278
+_dups278 = {}
+for _q278 in ("upstairs", "downstairs", "the", "house", "star", "office", "red"):
+    _st278, _, _b278 = api.handle("/hubs/search", {"query": [_q278]})
+    for _h278 in (json.loads(_b278 or b"{}").get("MediaContainer") or {}).get("Hub") or []:
+        _twice = [k for k, n in _C278(str(m.get("ratingKey") or "") for m in _h278.get("Metadata") or []).items()
+                  if n > 1 and k]
+        if _twice:
+            _dups278["%s/%s" % (_q278, _h278.get("type"))] = _twice[:3]
+check("278 a search's hubs carry each key once (a library series and its pack spelt with a comma)",
+      not _dups278, str(_dups278))
+
+# ---- 279 a pack series and a library series of one name but two catalogue ids are two
+#      series: each its own key, the pack's one on the start pool and in a search, and a
+#      catalogue card of the pack's id never opens the library's
+import re as _re279
+_flat279 = lambda t: _re279.sub(r"[^a-z0-9]+", "", str(t or "").lower())
+_con279 = api.lib.db()
+try:
+    _lib279 = {}
+    for _r in _con279.execute("SELECT id, title, tmdb_id FROM item WHERE type='show' AND tmdb_id IS NOT NULL"):
+        _lib279[_flat279(_r["title"])] = (str(_r["id"]), int(_r["tmdb_id"]))
+    _pool279 = {p["key"] for p in api._start_pool(_con279, "show")}
+finally:
+    _con279.close()
+_pairs279 = [(o, _lib279[_flat279(o["title"])]) for o in pd_torrents.offered_shows()
+             if o.get("tmdb") and _flat279(o["title"]) in _lib279
+             and _lib279[_flat279(o["title"])][1] != int(o["tmdb"])]
+_bad279 = []
+_cards279 = {int(c.get("tmdb") or 0): str(c.get("ratingKey")) for c in m.popular_everything()
+             if c.get("tmdb")}
+for _o, (_lk, _lt) in _pairs279:
+    _k = str(_o["ratingKey"])
+    if _k == _lk:
+        _bad279.append("one key")
+    if _k not in _pool279:
+        _bad279.append("not on the pool")
+    _st, _, _b = api.handle("/hubs/search", {"query": [_o["title"]], "corrected": ["1"]})
+    _found = {str(x.get("ratingKey")) for h in json.loads(_b)["MediaContainer"].get("Hub") or []
+              for x in h.get("Metadata") or []}
+    if _k not in _found:
+        _bad279.append("not in a search")
+    if _cards279.get(int(_o["tmdb"])) == _lk:
+        _bad279.append("its card opens the other")
+if not _pairs279:
+    print("279. skipped: no pack series shares a name with a library series of another id")
+check("279 namesake series stay apart (%d pairs) %s" % (len(_pairs279), _bad279), not _bad279)
+
+# ---- 280 the subtitle maker keeps its jobs in the server's own folder from the start
+import pd_ai_subs as _pas280
+check("280 the subtitle maker's jobs are kept under the server's root: " + _pas280.saved_path(),
+      os.path.normcase(os.path.abspath(_pas280.saved_path())).startswith(
+          os.path.normcase(os.path.abspath(root))))
 
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):

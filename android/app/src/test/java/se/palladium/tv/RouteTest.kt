@@ -2395,6 +2395,77 @@ class RouteTest {
         assertFalse(Route.keepRoute("", "http://192.168.0.181:8765", ""))
         assertFalse(Route.keepRoute("http://other:8765", "http://192.168.0.181:8765", "http://x"))
     }
+    @Test fun backFromSearchResultsGoesToTheSearchBox() {
+        assertTrue(Route.backToSearchBox("alien"))
+        assertFalse(Route.backToSearchBox(""))
+        assertFalse(Route.backToSearchBox("   "))
+    }
+
+    @Test fun aFilmWatchedToItsEndLeavesContinueWatching() {
+        val rows = listOf("Continue watching" to listOf("a", "b", "c"), "Recently added" to listOf("x"))
+        // the finished film gone from the fresh answer: that row swapped, the others kept
+        val after = Route.rowAgain(rows, "Continue watching", listOf("b", "c")) { it }
+        assertEquals(listOf("b", "c"), after[0].second)
+        assertEquals(listOf("x"), after[1].second)
+        // nothing changed: the very same rows, nothing redrawn
+        assertTrue(Route.rowAgain(rows, "Continue watching", listOf("a", "b", "c")) { it } === rows)
+        // no such row on the page: as it was
+        assertTrue(Route.rowAgain(rows, "Sports", listOf("q")) { it } === rows)
+    }
+
+    @Test fun theOneRowHasHalfTheGapBetweenPills() {
+        assertEquals(4, Route.pillGap(small = false, oneRow = true))
+        assertEquals(8, Route.pillGap(small = false, oneRow = false))
+        assertEquals(4, Route.pillGap(small = true, oneRow = false))
+    }
+
+    @Test fun aDownloadComingInChangesItsPosterNotTheScreen() {
+        // no NEW ribbon between the download's badge and the film
+        assertEquals("", Route.arrivedBand())
+        // Home is not read again whole; the Watchlist, whose list it changes, is
+        assertFalse(Route.readAgainOnArrival("home"))
+        assertFalse(Route.readAgainOnArrival("start"))
+        assertTrue(Route.readAgainOnArrival("watchlist"))
+    }
+
+    @Test fun theOpeningPlaysWhenPalladiumIsComeBackTo() {
+        // left and come back to: Start plays it
+        assertTrue(Route.splashOnStart(0, away = true, isMain = true))
+        // back from a film: the film's screen is still up as Start starts again
+        assertFalse(Route.splashOnStart(1, away = false, isMain = true))
+        // come back to a film left part way: not over the film
+        assertFalse(Route.splashOnStart(0, away = true, isMain = false))
+        // Start shown again without the app having been left
+        assertFalse(Route.splashOnStart(0, away = false, isMain = true))
+        // the screen made again for another server is not the app left and come back to
+        assertFalse(Route.leftTheApp(0, remaking = true))
+        assertTrue(Route.leftTheApp(0, remaking = false))
+        assertFalse(Route.leftTheApp(1, remaking = false))
+        // a film opened during the opening ends it, so it does not wait behind the film;
+        // a key on the remote ends it too
+        assertTrue(Route.splashEnds(stopped = true, keyDown = false))
+        assertTrue(Route.splashEnds(stopped = false, keyDown = true))
+        assertFalse(Route.splashEnds(stopped = false, keyDown = false))
+    }
+
+    @Test fun aFetchedSubtitleIsTheDownloadOfTheSameRelease() {
+        // the server names a fetched file with its language first; the list does not
+        assertTrue(Route.sameSubRelease("English Harbour-Light-1994-BluRay-720p-x264-GRP",
+                                        "Harbour-Light-1994-BluRay-720p-x264-GRP.srt"))
+        assertTrue(Route.sameSubRelease("Swedish Film.2003.1080p.BluRay-GRP", "Film.2003.1080p.BluRay-GRP"))
+        assertFalse(Route.sameSubRelease("English Harbour-Light-1994-1080p-WEBRip-x264-R",
+                                         "Harbour-Light-1994-BluRay-720p-x264-GRP.srt"))
+        assertFalse(Route.sameSubRelease("", "Harbour-Light-1994-BluRay-720p-x264-GRP.srt"))
+        assertFalse(Route.sameSubRelease("English", "Harbour-Light-1994-BluRay-720p-x264-GRP.srt"))
+        // an episode's subtitles all begin with the same words: only the one in use matches
+        assertFalse(Route.sameSubRelease("English Show.S01E01.Pilot.1080p.WEBRip-GRP",
+                                         "Show.S01E01.srt"))
+        assertFalse(Route.sameSubRelease("English Show.S01E01",
+                                         "Show.S01E01.Pilot.1080p.WEBRip-GRP.srt"))
+        assertTrue(Route.sameSubRelease("English Show.S01E01.Pilot.1080p.WEBRip-GRP.en",
+                                        "Show.S01E01.Pilot.1080p.WEBRip-GRP.srt"))
+    }
+
     @Test fun standingByTheCopyDoesNotHopBetweenItsOwnAddresses() {
         // the television at 07:14:00.164 (2026-11-18): on the copy at home, its house address
         // missed twice as the app came back to the screen, its outside address answered. It

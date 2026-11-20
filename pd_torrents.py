@@ -25,7 +25,72 @@ import urllib.request
 import uuid
 import pd_safe
 
-LOCK = threading.RLock()
+class HeldLock:
+    """The pack list's lock, saying who holds it and since when. After a restart every library
+    page waited half a minute on it for ten minutes, and nothing said what held it (owner,
+    2026-11-20): a hold of over HELD_TOO_LONG seconds is written to the log with the holder's
+    stack, once a hold."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._mine = threading.local()
+        self.owner = None              # (thread id, thread name, since) of the outermost hold
+        self.said = None               # the hold already written down
+
+    def acquire(self, blocking=True, timeout=-1):
+        got = self._lock.acquire(blocking, timeout)
+        if got:
+            depth = getattr(self._mine, "depth", 0)
+            if depth == 0:
+                me = threading.current_thread()
+                self.owner = (me.ident, me.name, time.time())
+            self._mine.depth = depth + 1
+        return got
+
+    def release(self):
+        depth = getattr(self._mine, "depth", 1) - 1
+        self._mine.depth = depth
+        if depth == 0:
+            self.owner = None
+        self._lock.release()
+
+    __enter__ = acquire
+
+    def __exit__(self, *exc):
+        self.release()
+
+    def too_long(self, now, limit):
+        """(thread id, name, seconds) when one hold has lasted over `limit` and not been
+        said yet; else None. Said once a hold."""
+        held = self.owner
+        if not held or now - held[2] < limit or self.said == held:
+            return None
+        self.said = held
+        return held[0], held[1], now - held[2]
+
+
+HELD_TOO_LONG = 20.0
+
+
+def watch_the_lock():
+    """Every five seconds: a hold of the pack list's lock over HELD_TOO_LONG seconds goes into
+    the log, with what the holder is doing - the next long wait names itself."""
+    import sys
+    import traceback
+    while True:
+        try:
+            held = LOCK.too_long(time.time(), HELD_TOO_LONG)
+            if held:
+                frame = sys._current_frames().get(held[0])
+                stack = "".join(traceback.format_stack(frame)[-25:]) if frame else "(gone)"
+                pd_log.raw("%s pack list lock held %.0f s by %s:%s%s%s" % (
+                    time.strftime("%H:%M:%S"), held[2], held[1], chr(10), stack, chr(10)))
+        except Exception:
+            pass
+        time.sleep(5)
+
+
+LOCK = HeldLock()
 STATE = {"root": "", "data": None, "lib": None, "scan": None, "worker": False,
          "owned": None, "owned_at": 0.0, "scan_wanted": False, "why": "",
          # the films on offer, worked out again at most every few seconds: every
@@ -56,6 +121,10 @@ QUALITY = re.compile(r"^(2160p|1080p|720p|576p|480p|bluray|brrip|bdrip|web|web-d
 
 def start(root, lib_of, scan):
     """Where the state lives, how to reach the library, and how to ask for a scan."""
+    # who holds the pack list's lock, said when one hold runs long
+    if not STATE.get("watching_lock"):
+        STATE["watching_lock"] = True
+        threading.Thread(target=watch_the_lock, name="palladium-pack-lock", daemon=True).start()
     STATE["root"] = root
     STATE["lib"] = lib_of
     STATE["scan"] = scan
@@ -1920,15 +1989,39 @@ def programme_id(name):
     lib = STATE["lib"]() if STATE["lib"] else None
     if not lib:
         return show_key(plain)
+    tmdb, year = pack_series_id(plain)
     con = lib.db()
     try:
-        got = lib.item_key_would_be(con, "show", plain, None)
+        # the library's series with the catalogue id the pack names, before any by name
+        row = con.execute("SELECT id FROM item WHERE type='show' AND tmdb_id=?",
+                          (tmdb,)).fetchone() if tmdb else None
+        got = str(row[0]) if row else lib.item_key_would_be(con, "show", plain, None)
+        # by name it is another series of that name: its own key, with its year
+        other = con.execute("SELECT tmdb_id FROM item WHERE id=?", (got,)).fetchone() if tmdb else None
+        if other and other[0] and int(other[0]) != tmdb:
+            import pd_library
+            got = pd_library.title_key("show", plain, year or None)
     except Exception:
         return show_key(plain)
     finally:
         con.close()
     PROGRAMMES["names"][plain] = got
     return got
+
+
+def same_as_held(offer, held_names, held_keys, plain):
+    """Whether an offered series is one the library holds: by its key, and by its name only
+    where the packs give no catalogue id - by name, the 2010s namesake of a series held
+    here was left off the shelf and out of a search (owner, 2026-11-20)."""
+    if str(offer.get("ratingKey") or "") in held_keys:
+        return True
+    return not offer.get("tmdb") and plain(offer.get("title")) in held_names
+
+
+def pack_series_id(name):
+    """(catalogue id, year) the packs give a series by this name, or (0, 0)."""
+    _pack_spelling(name)
+    return (STATE.get("series_ids") or {}).get(str(name or "").strip(), (0, 0))
 
 
 def _programmes():
@@ -2337,9 +2430,13 @@ def show_key(name):
 
 
 def _pack_spelling(name):
-    """The name the packs give a programme spelled the same in letters and digits."""
+    """The name the packs give a programme spelled the same in letters and digits.
+
+    Not where packs of that spelling are different series by the catalogue: a 1970s series
+    and its 2010s namesake, one with a comma, were one key, and each one's page offered
+    the other's seasons (owner, 2026-11-20). Each is then known by its own spelling."""
     if time.time() - STATE.get("spellings_at", 0) > 30:
-        names = {}
+        names, ids, which = {}, {}, {}
         try:
             for pack in load()["packs"]:
                 for f in pack.get("films") or []:
@@ -2347,9 +2444,16 @@ def _pack_spelling(name):
                         said = str(f.get("name") or f.get("title") or "").strip()
                         if said:
                             names.setdefault(_plain(said), said)
+                            if int(f.get("tmdb") or 0):
+                                ids.setdefault(said, (int(f["tmdb"]), int(f.get("year") or 0)))
+                                which.setdefault(_plain(said), set()).add(int(f["tmdb"]))
         except Exception:
             pass
-        STATE["spellings"], STATE["spellings_at"] = names, time.time()
+        for flat, series in which.items():
+            if len(series) > 1:
+                names.pop(flat, None)
+        STATE["spellings"], STATE["series_ids"] = names, ids
+        STATE["spellings_at"] = time.time()
     return (STATE.get("spellings") or {}).get(_plain(name), name)
 
 
@@ -2642,6 +2746,9 @@ def offered_shows():
         got = [latest_download(f["key"]) or {} for f, _ in holds]
         out.append({
             "ratingKey": programme_id(name), "type": "show", "title": name,
+            # the catalogue's series, where the packs name it: its key says whether the
+            # library holds it, and its name alone does not
+            "tmdb": pack_series_id(name)[0] or None,
             "titleSort": re.sub(r"^(the|a|an) ", "", name.lower()),
             "year": film.get("year") or None,
             "originallyAvailableAt": str(film.get("released") or ""),

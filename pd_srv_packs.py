@@ -155,6 +155,10 @@ def show_packs(title, look=False, tmdb=0):
         asks = [str(title), str(title) + " complete"]
         for other in S.series_names(title)[:2]:
             asks += [other, other + " complete"]
+        # and season by season, for each season the catalogue gives it that nothing known
+        # covers: the name asked found seasons 1 and 2 of a series of four, and the page
+        # offered no pack for the other two (owner, 2026-11-20)
+        asks += ["%s S%02d" % (title, n) for n in seasons_to_ask(title, tmdb)]
         import pd_streaming as _known
         if pd_tracker.asked_within(str(title), 0, _known.CHECKED_FOR):
             # asked before - behind, or by an earlier look: answered from what is known
@@ -298,7 +302,46 @@ def use_show_pack(title, ident="", info_hash="", drop=False, season=0, unlink=Fa
     # added from a season's page: that season comes from it
     if season and info_hash:
         pd_torrents.set_season_pack(title, int(season), info_hash)
+    # and on everyone's Start at once, not with the next day's pages
+    if info_hash:
+        try:
+            con = S.local().lib.db()
+            try:
+                S.local().start_series_added(con, title)
+            finally:
+                con.close()
+        except Exception as e:
+            import pd_log
+            pd_log.raw("%s Start after a pack: %s%s" % (time.strftime("%H:%M:%S"), str(e)[:120], chr(10)))
     return {"ok": True, "hash": info_hash or ""}
+
+
+def seasons_to_ask(title, tmdb=0, rows=None, count=None, named=None):
+    """The seasons of a series to ask the tracker for one by one: those the catalogue gives
+    it that no release the tracker's list holds under its name covers - a run of seasons
+    or a complete one covers all it names. At most fifteen."""
+    import pd_tracker
+    if count is None:
+        own, _others = S.series_twins(title, tmdb)
+        count = int((own or {}).get("seasons") or 0)
+        if not count and tmdb:
+            try:
+                count = int((S.local().lib.tmdb("/tv/%d" % int(tmdb)) or {})
+                            .get("number_of_seasons") or 0)
+            except Exception:
+                count = 0
+    if not count:
+        return []
+    flat = re.sub(r"[^a-z0-9]+", "", pd_tracker.plain(title).lower())
+    covered = set()
+    for row in (rows if rows is not None else list(pd_tracker.read().values())):
+        name = str(row.get("name") or "")
+        if not flat or flat not in re.sub(r"[^a-z0-9]+", "", name.lower()):
+            continue
+        if re.search(r"(?i)complete|collection", name):
+            return []
+        covered |= set((named or S.seasons_named)(name))
+    return [n for n in range(1, min(count, 15) + 1) if n not in covered]
 
 
 def season_offers(title, season, ask=True):

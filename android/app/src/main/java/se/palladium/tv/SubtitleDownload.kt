@@ -70,6 +70,9 @@ fun SubtitleDownloadDialog(
     //: a subtitle is being written from the sound: the film is what the viewer wants
     //: to be looking at while it happens
     onStarted: () -> Unit = {},
+    //: the track showing now, and the way to switch to one of the film's own
+    current: Int? = null,
+    onDisc: (Int) -> Unit = {},
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var results by remember { mutableStateOf<List<Api.SubCandidate>?>(null) }
@@ -146,6 +149,46 @@ fun SubtitleDownloadDialog(
                         kotlinx.coroutines.delay(if (said.on) 3000 else 8000)
                     }
                 }
+                // The film's own in this language, above what can be fetched: a disc
+                // track that fits is the answer, and it is shown as in use when it is
+                // the one on screen (owner, 2026-11-19).
+                val disc = (media.textSubs() + media.bitmapSubs()).filter {
+                    it.index >= 0 && Route.sameLanguage(it.language, speaking)
+                }
+                disc.forEach { track ->
+                    var onIt by remember(track.index) { mutableStateOf(false) }
+                    val using = current == track.index
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp)
+                            .background(if (using) Skin.Accent.copy(alpha = 0.22f) else Skin.Panel2,
+                                        RoundedCornerShape(Skin.round(8.dp)))
+                            .border(2.dp, if (onIt) Color.White else Color.Transparent,
+                                    RoundedCornerShape(Skin.round(8.dp)))
+                            .onFocusChanged { onIt = it.isFocused }
+                            .focusable()
+                            .clickable { onDisc(track.index); onClose() }
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("💿", fontSize = 13.sp, modifier = Modifier.padding(end = 8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(track.shown(release = true),
+                                 color = if (using) Skin.Accent else OnDisk, fontSize = 13.5.sp)
+                            // the film's own track: "in the film", as the subtitle list's key says;
+                            // "on disc" is a download kept beside it (owner, 2026-11-19)
+                            Text(listOfNotNull("in the film", if (using) "in use" else null,
+                                               if (track.confirmed) "confirmed" else null)
+                                     .joinToString("  ·  "),
+                                 color = if (track.confirmed) Proved
+                                         else if (using) Skin.Accent else Skin.Dim,
+                                 fontSize = 11.5.sp)
+                        }
+                        if (using || track.confirmed) {
+                            Text("\u2713", color = if (track.confirmed) Proved else Skin.Accent,
+                                 fontSize = 16.sp)
+                        }
+                    }
+                }
                 val list = results
                 when {
                     list == null -> Text("Searching…", color = Skin.Dim, fontSize = 14.sp)
@@ -163,8 +206,7 @@ fun SubtitleDownloadDialog(
                                 // app, so the one in use is amber instead - a tinted
                                 // row rather than a word in a different colour
                                 .background(
-                                    if (inUse.isNotEmpty() && inUse.startsWith(
-                                            candidate.name.removeSuffix(".srt")))
+                                    if (Route.sameSubRelease(inUse, candidate.name))
                                         Skin.Accent.copy(alpha = 0.22f) else Skin.Panel2,
                                     RoundedCornerShape(Skin.round(8.dp)))
                                 // the same white ring as everywhere else: this is
@@ -196,8 +238,7 @@ fun SubtitleDownloadDialog(
                         ) {
                             // named for the release it came from, which is exactly
                             // what these candidates are called
-                            val bare = candidate.name.removeSuffix(".srt")
-                            val using = inUse.isNotEmpty() && inUse.startsWith(bare)
+                            val using = Route.sameSubRelease(inUse, candidate.name)
                             // the server decides this: the same release as the one
                             // proved on this series, which is named differently on
                             // every episode
@@ -219,7 +260,8 @@ fun SubtitleDownloadDialog(
                                         if (candidate.autoPick) "auto pick" else null,
                                         if (sure) "confirmed" else null,
                                         if (using) "in use" else null,
-                                        if (candidate.onDisk && !using) "on disk" else null,
+                                        // downloaded already and not the one showing
+                                        if (candidate.onDisk && !using) "on disc" else null,
                                         if (candidate.sameName) "matches this file by name"
                                         else if (candidate.hashOdd)
                                             "hash says this file, name says another"

@@ -206,11 +206,21 @@ def start_subtitle(tracks, first, second=""):
             return []
         return [t for t in text if not lang(t) or same_language(lang(t), w)]
 
+    # Written from the sound, or a file that stops short or runs past the end: never the
+    # opening one while the language has a whole subtitle - a file beside the film, or the
+    # film's own. A film with a good English track and a download opened on 34 lines of
+    # one being written (owner, 2026-11-19).
+    whole = lambda t: ("ai-gen" not in str(t.get("title") or "").lower()
+                       and not t.get("short") and not t.get("overruns"))
+
     main = None
     if first and first != "off":
         mine = speaking(first) or ([] if second == "off" else speaking(second))
         if mine or second != "off":
-            main = (next((t for t in mine if beside(t)), None)
+            main = (next((t for t in mine if beside(t) and whole(t)), None)
+                    or next((t for t in mine if not beside(t) and not t.get("forced")
+                             and not t.get("sdh")), None)
+                    or next((t for t in mine if beside(t)), None)
                     or next((t for t in mine if not t.get("forced") and not t.get("sdh")), None)
                     or next((t for t in mine if not t.get("forced")), None)
                     or (mine[0] if mine else None)
@@ -219,6 +229,10 @@ def start_subtitle(tracks, first, second=""):
                     or next((t for t in text if not t.get("forced")), None)
                     or text[0])
     in_main = lambda t: bool(lang(t)) and bool(first) and same_language(lang(t), first[:3])
+    # a pick that is not whole gives way to a whole one in its own language
+    if (picked and main is not None and not whole(picked) and whole(main)
+            and lang(picked)[:2] == lang(main)[:2]):
+        picked = None
     if picked and (in_main(picked) or main is None or not in_main(main)):
         return picked.get("index")
     chosen = main or picked
@@ -5411,6 +5425,27 @@ class LocalAPI(pd_search.SearchParts):
         """This viewer finished or marked something: their Start fronts are made again."""
         self._START_STALE.add(str(who))
 
+    def start_series_added(self, con, title):
+        """A pack linked to a series: in every kept Start page its catalogue card becomes the
+        pack series' card now, for every viewer, and everyone's pages are made again behind -
+        it stood as one to add until the next day's making (owner, 2026-11-19). How many
+        cards were swapped."""
+        swapped = 0
+        pack = self._pack_series(title, 0)
+        bare = self._bare(title)
+        if pack and bare:
+            for _when, page in list(self._START_KEPT.values()):
+                for row in (page or {}).get("rows") or []:
+                    cards = row.get("Metadata") or []
+                    for at, card in enumerate(cards):
+                        if (card.get("type") == "show" and card.get("addable")
+                                and self._bare(card.get("title")) == bare):
+                            cards[at] = dict(pack, **{k: card[k] for k in ("popularity", "catalogDate")
+                                                      if k in card})
+                            swapped += 1
+        self._START_STALE.update(self.start_active(con))
+        return swapped
+
     def start_stale_take(self):
         """The viewers waiting for new fronts, taken off the list."""
         took = sorted(self._START_STALE)
@@ -5653,7 +5688,8 @@ class LocalAPI(pd_search.SearchParts):
         for o in offered:
             # a pack's copy of something here already: the one here is the one to choose,
             # and both stood in a row side by side. By its key too: a wrong match has another name
-            if flat(o.get("title")) in held or str(o.get("ratingKey") or "") in here_keys:
+            if (pd_torrents.same_as_held(o, held, here_keys, flat) if kind == "show"
+                    else flat(o.get("title")) in held or str(o.get("ratingKey") or "") in here_keys):
                 continue
             out.append({"key": str(o.get("ratingKey") or ""), "here": False, "kind": kind,
                         "genres": {str(g).strip() for g in o.get("genres") or [] if str(g).strip()},
@@ -7242,15 +7278,24 @@ class LocalAPI(pd_search.SearchParts):
             rows = con.execute("SELECT person, name, role, profile FROM credit "
                                "WHERE item_id=? ORDER BY ord", (key,)).fetchall()
             if not rows and number and (self.lib.config().get("tmdb_key") or "").strip():
+                # a series by its whole run, as a held one is: its plain credits are the
+                # last season's regulars, and one who left after three seasons of four was
+                # not on its page (owner, 2026-11-19)
                 try:
-                    said = self.lib.tmdb("/%s/%d/credits" % (kind, number)) or {}
+                    said = self.lib.tmdb(("/tv/%d/aggregate_credits" if kind == "tv"
+                                          else "/movie/%d/credits") % number) or {}
                 except Exception:
                     said = {}
                 if "cast" not in said:
                     # no answer is not "nobody in it": kept, the empty row stood for good
                     # and the film's Show more had no cast from then on
                     return []
-                cast = (said.get("cast") or [])[:self.lib.CAST_KEPT]
+                cast = (said.get("cast") or [])[:self.lib.SERIES_CAST_KEPT if kind == "tv"
+                                                 else self.lib.CAST_KEPT]
+                for p in cast:
+                    # the whole run gives each part played, most episodes first
+                    if "character" not in p:
+                        p["character"] = ((p.get("roles") or [{}])[0] or {}).get("character") or ""
                 con.execute("DELETE FROM credit WHERE item_id=?", (key,))
                 con.executemany(
                     "INSERT INTO credit (item_id, ord, person, name, role, profile) "
@@ -7392,6 +7437,20 @@ class LocalAPI(pd_search.SearchParts):
                 # or one a search found
                 import pd_streaming
                 one = pd_streaming.searched_show(number)
+            if not one:
+                # or the catalogue itself: a page opened from a search answered "not found"
+                # once the search was forgotten, the pack added from it included (owner,
+                # 2026-11-19)
+                try:
+                    said = self.lib.tmdb("/tv/%d" % number) or {}
+                except Exception:
+                    said = {}
+                if said.get("name"):
+                    one = {"show": said["name"], "tmdb": number,
+                           "year": int(str(said.get("first_air_date") or "0")[:4] or 0) or None,
+                           "overview": said.get("overview") or "",
+                           "rating": said.get("vote_average"),
+                           "poster": said.get("poster_path") or ""}
             if not one:
                 return None
             # a pack here gives it: the pack's series and its episodes, not the packs to add

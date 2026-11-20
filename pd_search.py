@@ -192,6 +192,24 @@ class SearchParts(_Base):
         want_year = 0
         if not place:
             spelt, want_year = title_and_year(spelt)
+        # A word no title or name here has, a letter or two off one that is: put right
+        # against every title the house knows - library, packs, the tracker's index, new
+        # on streaming - and the people in them, and asked as that. a name one letter off found
+        # one film of five (owner, 2026-11-19).
+        # Kept only when it finds as much as the words as typed, and something: a whole
+        # name the catalogue knows is nobody's name here and was put right to somebody
+        # else's.
+        if spelt and len(spelt.strip()) >= 4 and not place and not one("corrected"):
+            fixed = self._corrected(con, spelt)
+            if fixed:
+                typed_as = self.search(con, dict(q, corrected=["1"]))
+                again = self.search(con, dict(q, corrected=["1"], query=[
+                    fixed + (" %d" % want_year if want_year else "")]))
+                cards = lambda a: sum(len(h.get("Metadata") or []) for h in a.get("Hub") or [])
+                if cards(again) >= max(1, cards(typed_as)):
+                    again["corrected"] = fixed
+                    return again
+                return typed_as
         term = "%" + spelt + "%"
         # titles compared as they are spelt in the search box: "dont" finds "Don't"
         con.create_function("bare", 1, bare, deterministic=True)
@@ -342,10 +360,13 @@ class SearchParts(_Base):
                 linked = []
             tv = next((h for h in hubs if h["type"] == "show"), None)
             if linked and tv:
-                held = {str(x.get("title") or "").strip().lower()
-                        for x in tv["Metadata"]}
+                # the same series by its key, or by its name less punctuation: "Harbour,
+                # Run" here and "Harbour Run" off a pack were one key twice,
+                # and the app's grid closed the app on it (owner, 2026-11-20)
+                held = {bare(x.get("title")) for x in tv["Metadata"]}
+                held_keys = {str(x.get("ratingKey") or "") for x in tv["Metadata"]}
                 linked = [s for s in linked
-                          if str(s.get("title") or "").strip().lower() not in held]
+                          if not pd_torrents.same_as_held(s, held, held_keys, bare)]
             if linked:
                 if tv:
                     # in order of fit across both, so a one-letter title stays ahead of a longer one
@@ -620,6 +641,65 @@ class SearchParts(_Base):
         else:
             at = next((n + 1 for n, h in enumerate(hubs) if h["type"] == "movie"), 0)
             hubs.insert(at, {"type": "show", "title": "TV shows", "Metadata": cards})
+
+    #: every word of every title and name known here, and when it was read: (when, {first
+    #: letter: words, "": all of them in one line})
+    _WORDS = [0.0, {}]
+    WORDS_FOR = 600
+
+    def _title_words(self, con):
+        """The words of every title the house knows, by first letter, read every ten minutes."""
+        from pd_localapi import bare
+        kept = type(self)._WORDS
+        if kept[1] and time.time() - kept[0] < self.WORDS_FOR:
+            return kept[1]
+        titles = [r["title"] for r in con.execute("SELECT title FROM item")]
+        # and the people: a name typed is not a title mistyped
+        titles += [r["name"] for r in con.execute("SELECT DISTINCT name FROM credit")]
+        try:
+            import pd_tracker
+            titles += [row.get("title") for row in list(pd_tracker.read().values())]
+        except Exception:
+            pass
+        try:
+            import pd_torrents
+            titles += [o.get("title") for o in pd_torrents.offered()]
+        except Exception:
+            pass
+        try:
+            import pd_streaming
+            titles += [r.get("title") for r in pd_streaming.read()]
+        except Exception:
+            pass
+        by = {}
+        for t in titles:
+            for w in re.split(r"[^a-z0-9]+", bare(t or "")):
+                if len(w) >= 3:
+                    by.setdefault(w[0], set()).add(w)
+        # every word in one line as well: a word typed is known when it is inside one,
+        # so a search typed half way - "termin" - is never put right to something else
+        by[""] = "|" + "|".join(sorted(w for ws in by.values() for w in ws)) + "|"
+        kept[:] = [time.time(), by]
+        return by
+
+    def _corrected(self, con, spelt):
+        """The search with each word of four letters or more that no title has put right to
+        the closest word one does, or "" when nothing was changed."""
+        import difflib
+        from pd_localapi import bare
+        by = self._title_words(con)
+        known = lambda w: w in by.get("", "")
+        out, changed = [], False
+        for w in [x for x in re.split(r"[^a-z0-9]+", bare(spelt)) if x]:
+            if len(w) >= 4 and not known(w):
+                # a word mistyped keeps its first letter far more often than not, and
+                # looking among those alone is a thousand words rather than fifty thousand
+                pool = [x for x in by.get(w[0], ()) if abs(len(x) - len(w)) <= 2]
+                got = difflib.get_close_matches(w, pool, n=1, cutoff=0.8)
+                if got:
+                    w, changed = got[0], True
+            out.append(w)
+        return " ".join(out) if changed else ""
 
     def _near_misses(self, con, spelt, listed):
         """Films and series whose title is the search with a letter or two wrong."""
