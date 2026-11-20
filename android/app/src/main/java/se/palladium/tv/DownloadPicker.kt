@@ -46,7 +46,9 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                    /** GB free where it would land; negative when not known */
                    free: Double = -1.0,
                    /** what pressing one does instead of downloading it: a series' pack */
-                   onTake: ((Api.Carried) -> Unit)? = null) {
+                   onTake: ((Api.Carried) -> Unit)? = null,
+                   /** that press asked about first, as a download is: a series not held */
+                   askFirst: Boolean = false) {
     val ctx = LocalContext.current
     // the search behind this list: said while it runs, and the list drawn again with it
     var live by remember { mutableStateOf(rows) }
@@ -79,16 +81,18 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
         AlertDialog(
             onDismissRequest = { asking = null },
             containerColor = Skin.Panel,
-            title = { Text("Download this one?", color = Skin.Fg, fontSize = 17.sp) },
+            title = { Text(if (onTake != null) Route.seriesAsk(one.id).first else "Download this one?",
+                           color = Skin.Fg, fontSize = 17.sp) },
             text = {
                 Text(one.name + (if (one.size > 0) "  ·  " + String.format(java.util.Locale.US,
                          "%.1f GB", one.size / 1073741824.0) else ""),
                      color = Skin.Fg, fontSize = 13.sp, lineHeight = 18.sp)
             },
             confirmButton = {
-                Pill("Download", primary = true) {
+                Pill(if (onTake != null) Route.seriesAsk(one.id).second else "Download", primary = true) {
                     asking = null
                     onClose()
+                    if (onTake != null) { onTake(one); return@Pill }
                     val plain = askingPlain
                     onSaid(if (plain) "Checking the tracker…" else "Starting the download…")
                     (ctx as AppCompatActivity).lifecycleScope.launch {
@@ -135,7 +139,13 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                             }
                             .focusable()
                             .clickable {
-                                // a download is asked about first (owner, 2026-11-15)
+                                // a download is asked about first (owner, 2026-11-15), and a
+                                // pack for a series not held, as its Add page did
+                                if (onTake != null && askFirst) {
+                                    asking = one
+                                    askingPlain = false
+                                    return@clickable
+                                }
                                 if (onTake == null && !one.have && one.why.isEmpty()) {
                                     asking = one
                                     // the one it opened on: nobody chose, so the best as of now
@@ -171,7 +181,8 @@ fun DownloadPicker(full: Media, rows: List<Api.Carried>, onClose: () -> Unit,
                         val here = one.disk || one.have
                         val tagPart = tag.takeIf { it.isNotEmpty() }?.let {
                             it to (if (here) Color(0xFFE0B341) else null) }
-                        val parts = listOfNotNull(
+                        // letting it find packs is no release: no source, no seeders to count
+                        val parts = if (Route.isFindRow(one.id)) emptyList() else listOfNotNull(
                             one.word.takeIf { it.isNotEmpty() }?.let { it to null },
                             tagPart,
                             one.res.takeIf { it.isNotEmpty() }?.let { it to resColor },

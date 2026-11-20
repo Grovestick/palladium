@@ -1101,9 +1101,13 @@ object Api {
                 val got = if (grace <= 0) asked.map { it?.await() } else {
                     // the first answer, then the others for at most `grace` more
                     val first = CompletableDeferred<Unit>()
+                    // the grace starts at the first answer with something in it, or when
+                    // every machine has answered: the copy's empty answer in a second cut
+                    // off the main server's eight-second one, and a search found nothing
+                    // (owner, 2026-11-20)
                     val watching = asked.filterNotNull().map { d ->
-                        launch { if (d.await() != null) first.complete(Unit) }
-                    }
+                        launch { if (Route.answerStartsGrace(d.await())) first.complete(Unit) }
+                    } + launch { asked.filterNotNull().awaitAll(); first.complete(Unit) }
                     withTimeoutOrNull(patience) { first.await() }
                     val until = System.currentTimeMillis() + grace
                     val heard = asked.map { d ->
@@ -1728,10 +1732,10 @@ object Api {
     /** Into the library with this pack as a link; its library key, or empty. */
     /** The series in the library with that pack: (its key or "", what went wrong with
      *  the pack or ""). */
-    suspend fun addShowPack(m: Media, id: String): Pair<String, String> = withContext(Dispatchers.IO) {
+    suspend fun addShowPack(m: Media, id: String, season: Int = 0): Pair<String, String> = withContext(Dispatchers.IO) {
         runCatching {
             val said = JSONObject(post("/shows/addpack", JSONObject().put("show", m.title)
-                .put("tmdb", m.tmdb).put("id", id), readMs = 60_000))
+                .put("tmdb", m.tmdb).put("id", id).put("season", season), readMs = 60_000))
             said.optString("key", "") to said.optString("error", "")
         }.getOrDefault("" to "the server did not answer")
     }
@@ -3220,6 +3224,8 @@ object Api {
         }
         // a machine known to be down is not waited for, nor asked again and again
         if (answered < Servers.merged(ctx).count { Reach.upRow(it) != false }) searchFilling = true
+        // nothing found while a server said nothing is that server's silence, not the words'
+        Route.searchSilence(got.isEmpty(), silent)?.let { throw java.io.IOException(it) }
         return sortMerged(got, "originallyAvailableAt:desc").sortedBy { it.match }
     }
 

@@ -1888,9 +1888,12 @@ _api120 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android
                             "se", "palladium", "tv", "Api.kt"), encoding="utf-8").read()
 check("the app waits a minute for the tracker, and a silence offers Look again, not Add",
       ".put(\"look\", true), readMs = 60_000))" in _api120 and "}.getOrNull()" in _api120
-      and "lookFailed = found == null" in _kt120 and 'Pill("Look again", filled = true)' in _kt120)
+      and 'if (found == null) { otherSaid = "The tracker did not answer in time"; return@LaunchedEffect }' in _kt120
+      and "seriesFind++" in _kt120)
 check("the app says when the pack failed rather than that it is on its way",
-      'error.isNotEmpty() -> "In the library, but the pack: $error"' in _kt120)
+      'error.isNotEmpty() -> "In the library, but the pack: $error"' in open(os.path.join(
+          os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+          "se", "palladium", "tv", "Route.kt"), encoding="utf-8").read())
 
 # ---- a held series' packs can be added, chosen and dropped from its page in the app
 _kt121 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
@@ -1955,7 +1958,7 @@ check("no answer from the catalogue keeps no empty cast, and Show more asks agai
 check("Show more puts the cast under the plot; a title's page keeps what it loaded",
       _kt120.index("Text(full.summary, color = Skin.Fg.copy(alpha = 0.82f), fontSize = 14.sp,") <
       _kt120.index("Box(Modifier.padding(bottom = 14.dp)) { studios() }")
-      and _kt120.count("mutableStateOf(m, androidx.compose.runtime.referentialEqualityPolicy())") == 2)
+      and _kt120.count("mutableStateOf(m, androidx.compose.runtime.referentialEqualityPolicy())") >= 1)
 
 # ---- the app's title page waits on the tracker, saying so
 check("the app's title page says Checking and asks the tracker again while it is still asked",
@@ -3867,18 +3870,21 @@ try:
 finally:
     _ps101.fetchable, _ps101.boxed = _keep101
 
-# ---- on the app's page for adding a series, pressing a pack adds it
-_ma100 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
-                           "se", "palladium", "tv", "MainActivity.kt"), encoding="utf-8").read()
-_row100 = _ma100[_ma100.index('item(packSays(one), "p:" + one.id == choice, one.pick)'):]
-# pressing a pack asks first; Add adds it and says so at once (owner, 2026-11-15)
-_ask100 = _ma100[_ma100.index("asking?.let { (id, words) ->"):_ma100.index("packs?.let { list ->")]
-check("adding a series: pressing a pack asks, and Add adds it",
-      "asking = one.id to packSays(one)" in _row100[:_row100.index('item(find, choice == "find"')]
-      and "add(id)" in _ask100)
-check("adding a series: Add says so at once, and the end says the pack was added",
-      '"Adding " + words.substringBefore' in _ask100
-      and "Pack added - nothing is downloaded" in _ma100)
+# ---- a series not held: on its own page, pressing a pack asks first; Add adds it and says so
+#      at once (owner, 2026-11-15; the Add page went, 2026-11-20)
+_tv100 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "android", "app", "src", "main", "java",
+                      "se", "palladium", "tv")
+_ma100 = open(os.path.join(_tv100, "MainActivity.kt"), encoding="utf-8").read()
+_dp100 = open(os.path.join(_tv100, "DownloadPicker.kt"), encoding="utf-8").read()
+_rt100 = open(os.path.join(_tv100, "Route.kt"), encoding="utf-8").read()
+check("a series not held: pressing a pack asks, and Add adds it",
+      "askFirst = full.addable," in _ma100
+      and "if (onTake != null && askFirst) {" in _dp100
+      and "if (onTake != null) { onTake(one); return@Pill }" in _dp100
+      and '"Add this pack?" to "Add"' in _rt100)
+check("a series not held: Add says so at once, and the end says the pack was added",
+      'otherSaid = "Adding…"' in _ma100 and "Pack added - nothing is downloaded" in _rt100
+      and "AddShowPage(" not in _ma100)
 
 # ---- the versions played are on the copy list straight after a restart, nobody playing
 import json as _js102, tempfile as _tf102, time as _ti102
@@ -8503,7 +8509,8 @@ _pkV1 = open("pd_srv_packs.py", encoding="utf-8").read()
 _maV1 = open("android/app/src/main/java/se/palladium/tv/MainActivity.kt", encoding="utf-8").read()
 check("series packs: sizes read from the torrents within the budget; a pack asks before it is added",
       "pd_tracker.measure_many(unsized)" in _pkV1
-      and 'asking = one.id to packSays(one)' in _maV1 and '"Add this pack?"' in _maV1
+      and "askFirst = full.addable," in _maV1
+      and '"Add this pack?"' in open("android/app/src/main/java/se/palladium/tv/Route.kt", encoding="utf-8").read()
       and '"⤓ Add as pack  "' not in _maV1)
 import glob as _glV1, re as _reV1
 _maK1 = open("android/app/src/main/java/se/palladium/tv/MainActivity.kt", encoding="utf-8").read()

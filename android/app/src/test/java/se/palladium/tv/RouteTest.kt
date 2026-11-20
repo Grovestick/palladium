@@ -904,7 +904,7 @@ class RouteTest {
 
     @Test
     fun aSeriesNobodyHasSaysWhereItCanComeFrom() {
-        assertEquals("ADD", Route.seriesBand(true, true, false))
+        assertEquals("DOWNLOAD", Route.seriesBand(true, true, false))
         assertEquals("CHECKING", Route.seriesBand(true, false, true))
         assertEquals("REQUEST", Route.seriesBand(true, false, false))
         assertEquals("", Route.seriesBand(false, false, false))
@@ -2395,6 +2395,48 @@ class RouteTest {
         assertFalse(Route.keepRoute("", "http://192.168.0.181:8765", ""))
         assertFalse(Route.keepRoute("http://other:8765", "http://192.168.0.181:8765", "http://x"))
     }
+    @Test fun aSearchHandedInIsActedOnOnce() {
+        assertTrue(Route.takesIntent(true, false))
+        assertFalse(Route.takesIntent(false, false))      // made again: not replayed
+        assertFalse(Route.takesIntent(true, true))        // from the recent apps: not replayed
+    }
+
+    @Test fun aCatalogueSeasonAndItsEpisodesAndASilentServer() {
+        // an episode of a series not held opens its releases, as one a pack offers does
+        assertTrue(Route.episodeOpensReleases("episode", false, true))
+        assertFalse(Route.episodeOpensReleases("episode", false, false))
+        assertFalse(Route.episodeOpensReleases("season", false, true))
+        assertEquals("abc123def456-s2", Route.librarySeason("abc123def456", 2))
+        assertTrue(Route.marksAll(true, false))
+        assertFalse(Route.marksAll(true, true))
+        assertFalse(Route.marksAll(false, false))
+        // an empty answer does not cut the other server short; one with something does
+        assertFalse(Route.answerStartsGrace(emptyList<Int>()))
+        assertFalse(Route.answerStartsGrace(null))
+        assertTrue(Route.answerStartsGrace(listOf(1)))
+        // nothing found with a server silent says so; found, or nobody silent, says nothing
+        assertTrue(Route.searchSilence(true, "Maverick")!!.startsWith("Maverick did not answer"))
+        assertNull(Route.searchSilence(false, "Maverick"))
+        assertNull(Route.searchSilence(true, ""))
+    }
+
+    @Test fun aSeriesNotHeldOffersItsPacksThenFindingThenEpisodes() {
+        val rows = Route.seriesChoices(
+            listOf(Api.ShowPack("11", "Gate.S01-S02", listOf(1, 2), false, 5L, 9, true, true, false)),
+            listOf(Api.TrackerEpisode("22", "Pilot", 1, 2, 1L, 3), Api.TrackerEpisode("21", "", 1, 1, 1L, 3)))
+        assertEquals(listOf("t:11", "find", "e:21", "e:22"), rows.map { it.id })
+        assertEquals("11", Route.seriesPackId("t:11"))
+        assertEquals("Add this pack?" to "Add", Route.seriesAsk("t:11"))
+        assertEquals("Add to the library?" to "Add", Route.seriesAsk("find"))
+        assertEquals("Download", Route.seriesAsk("e:22").second)
+        assertEquals("", Route.seriesPackId("find"))
+        assertTrue(Route.isFindRow(rows[1].id))
+        assertFalse(Route.isFindRow(rows[0].id))
+        assertTrue(Route.seriesAddedSaid("", "", "11").startsWith("Could not"))
+        assertTrue(Route.seriesAddedSaid("k", "", "").contains("a season at a time"))
+        assertTrue(Route.seriesAddedSaid("k", "", "11").startsWith("Pack added"))
+    }
+
     @Test fun backFromSearchResultsGoesToTheSearchBox() {
         assertTrue(Route.backToSearchBox("alien"))
         assertFalse(Route.backToSearchBox(""))

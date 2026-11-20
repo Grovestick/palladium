@@ -368,8 +368,15 @@ class MainActivity : AppCompatActivity() {
         darkBars()
         // an episode the player started on its own: the page under it should be that
         // one, not the episode it rolled on from
-        Opening.key = intent.getStringExtra("openKey") ?: ""
-        Spoken.take(intent)
+        // what it was opened for, once: an activity made again (the app brought back, the
+        // process restarted) carries the intent it was first started with, and a search
+        // handed in once opened the app on its results every time after (owner, 2026-11-20)
+        if (Route.takesIntent(savedInstanceState == null,
+                              intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0)) {
+            Opening.key = intent.getStringExtra("openKey") ?: ""
+            Spoken.take(intent)
+        }
+        setIntent(Intent(this, MainActivity::class.java).setAction(Intent.ACTION_MAIN))
         Api.loadServer(this)
         // titles kept on this device, and whether offline viewing is on at all
         Offline.load(this)
@@ -421,9 +428,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent)
         Opening.key = intent.getStringExtra("openKey") ?: ""
         Spoken.take(intent)
+        // and not kept: the next time it is made again it opens as it would from the icon
+        setIntent(Intent(this, MainActivity::class.java).setAction(Intent.ACTION_MAIN))
     }
 }
 
@@ -462,7 +470,6 @@ private fun App() {
     var cameFrom by remember { mutableStateOf("home") }
     val stack = remember { mutableStateListOf<Media>() }
     // a popular programme not held yet, whose page is open for choosing a version
-    var adding by remember { mutableStateOf<Media?>(null) }
     // outlives the detail screen; opens on the tab chosen last time, so Home is not drawn
     // and then left for Start a second later
     val browse = remember { Browse().also { it.tab = Api.lastStartTab(ctx) } }
@@ -478,7 +485,6 @@ private fun App() {
     LaunchedEffect(Spoken.asked) {
         if (Spoken.asked == 0 || Spoken.query.isEmpty()) return@LaunchedEffect
         val words = Spoken.query
-        adding = null
         stack.clear()
         if (screen != "setup") screen = "home"
         browse.collectionOn = null
@@ -587,6 +593,9 @@ private fun App() {
                 DetailScreen(stack.last(),
                              onBack = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) },
                              onOpen = { stack.add(it) },
+                             // a series not held, once something of it is chosen: its
+                             // library page in place of the catalogue's
+                             onReplace = { if (stack.isNotEmpty()) stack[stack.lastIndex] = it },
                              // the same words in the tab where they can be worked on:
                              // taken off, added to, a decade put beside them
                              onFilter = { kind, words ->
@@ -681,8 +690,6 @@ private fun App() {
                                        .putExtra("key", picked.ratingKey)
                                        .putExtra("title", picked.title)
                                        .putExtra("token", picked.srv?.token ?: Api.token))
-                               // not held yet: its page, where a version is chosen
-                               else if (picked.addable) adding = picked
                                // an episode still to come: its season, on the greyed
                                // episode with its air date
                                // an episode: its season, scrolled to it
@@ -694,18 +701,6 @@ private fun App() {
                            onPeople = { screen = "people" },
                            onPrefs = { screen = "settings" },
                            onPerson = { who -> openPerson(ctx, browse, stack, who) })
-                adding?.let { one ->
-                    AddShowPage(one, onClose = { adding = null }, onAdded = { key ->
-                        adding = null
-                        (ctx as AppCompatActivity).lifecycleScope.launch {
-                            val full = runCatching {
-                                Api.metadata(one.copy(ratingKey = key)
-                                                 .also { it.srv = one.srv })
-                            }.getOrNull()
-                            if (full != null) stack.add(full)
-                        }
-                    })
-                }
             }
         }
     }
@@ -6568,249 +6563,54 @@ private fun FaceBubble(one: Api.Face, onPress: () -> Unit) {
     }
 }
 
-/**
- * A popular programme not held yet: its poster, what it is, and the versions the
- * tracker holds, one of which is added as a pack.
- *
- * Adding downloads nothing. The pack is a link; its episodes stand on the TV shelf
- * with a button each, and a file comes only when one is played.
- */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+/** A series' episodes on SVT Play, a season at a time: pressing one plays it from there. */
 @Composable
-private fun AddShowPage(m: Media, onClose: () -> Unit, onAdded: (String) -> Unit) {
+private fun SvtSeriesDialog(svtId: String, title: String, onClose: () -> Unit) {
     val ctx = LocalContext.current
-    // By the object, not by equals(): Media is a data class, and the cast, the studios
-    // and the services are kept outside its constructor - so the page loaded with them
-    // counted as no change from the card it was opened from, and was thrown away.
-    var full by remember(m.ratingKey) {
-        mutableStateOf(m, androidx.compose.runtime.referentialEqualityPolicy()) }
-    var packs by remember(m.ratingKey) { mutableStateOf<List<Api.ShowPack>?>(null) }
-    // the tracker's single episodes of it, in the one download menu after the packs
-    var trackerEps by remember(m.ratingKey) { mutableStateOf<List<Api.TrackerEpisode>>(emptyList()) }
-    // what that menu has chosen: "p:<pack>", "find", or "e:<episode>"; null for the default
-    var chosen by remember(m.ratingKey) { mutableStateOf<String?>(null) }
-    // the tracker did not answer, and how many times it has been asked again
-    var lookFailed by remember(m.ratingKey) { mutableStateOf(false) }
-    var lookAgain by remember(m.ratingKey) { mutableStateOf(0) }
-    var busy by remember(m.ratingKey) { mutableStateOf(false) }
-    // its seasons on SVT Play, when SVT has it unprotected, and the one shown
-    var svt by remember(m.ratingKey) { mutableStateOf<List<Api.SvtSeason>>(emptyList()) }
-    var svtSeason by remember(m.ratingKey) { mutableStateOf(0) }
-    var seasonsOpen by remember(m.ratingKey) { mutableStateOf(false) }
-    var castOpen by remember(m.ratingKey) { mutableStateOf(false) }
-    LaunchedEffect(m.ratingKey) {
-        if (m.svtId.isNotEmpty()) svt = Api.svtSeries(m.svtId)
-        full = runCatching { Api.metadata(m) }.getOrNull() ?: m
-    }
-    LaunchedEffect(m.ratingKey, lookAgain) {
-        val found = Api.showFind(m)
-        lookFailed = found == null
-        if (found != null) {
-            packs = found.first
-            trackerEps = found.second.sortedWith(compareBy({ it.season }, { it.episode }))
-        }
-    }
-    val add: (String) -> Unit = { id ->
-        if (!busy) {
-            busy = true
-            (ctx as AppCompatActivity).lifecycleScope.launch {
-                val (key, error) = Api.addShowPack(full.also { it.tmdb = m.tmdb }, id)
-                busy = false
-                // said as it is: a pack that failed was reported as on its way
-                val said = when {
-                    key.isEmpty() -> "Could not add that one" + (if (error.isNotEmpty()) ": $error" else "")
-                    error.isNotEmpty() -> "In the library, but the pack: $error"
-                    id.isEmpty() -> "In the library - its packs are looked for a season at a time"
-                    else -> "Pack added - nothing is downloaded until you start an episode"
-                }
-                Toast.makeText(ctx, said, Toast.LENGTH_LONG).show()
-                if (key.isNotEmpty()) onAdded(key)
-            }
-        }
-    }
-    val span = { list: List<Int> ->
-        when {
-            list.isEmpty() -> ""
-            list.size == 1 -> "S%02d".format(list[0])
-            else -> "S%02d–S%02d".format(list.first(), list.last())
-        }
-    }
+    var svt by remember(svtId) { mutableStateOf<List<Api.SvtSeason>>(emptyList()) }
+    var svtSeason by remember(svtId) { mutableStateOf(0) }
+    var seasonsOpen by remember(svtId) { mutableStateOf(false) }
+    LaunchedEffect(svtId) { svt = Api.svtSeries(svtId) }
     AlertDialog(
         onDismissRequest = onClose,
         containerColor = Skin.Panel,
-        title = { Text(full.title, color = Skin.Fg, fontSize = 18.sp) },
+        title = { Text(title + "  ·  SVT Play", color = Skin.Fg, fontSize = 18.sp) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Row {
-                    Api.artUrl(full, 300)?.let { url ->
-                        Art(url, full.title, Modifier.width(96.dp).height(144.dp)
-                                .clip(RoundedCornerShape(Skin.round(8.dp))), mark = 0)
-                        Spacer(Modifier.width(12.dp))
+                if (svt.isEmpty()) Text("Asking SVT Play…", color = Skin.Dim, fontSize = 12.sp)
+                // the seasons in a menu: a long-running series has twenty
+                if (svt.size > 1) Box {
+                    Pill((svt.getOrNull(svtSeason)?.name ?: "") + "  ▾", small = true) {
+                        seasonsOpen = true
                     }
-                    Column {
-                        Text(listOfNotNull(full.year?.toString(),
-                                           full.genres.take(3).joinToString(", ")
-                                               .ifEmpty { null })
-                                 .joinToString("  ·  "),
-                             color = Skin.Dim, fontSize = 12.sp)
-                        // where it streams: Region and the services, as on a film's page
-                        if (full.providers.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            ProviderBadges(full)
+                    DropdownMenu(expanded = seasonsOpen, onDismissRequest = { seasonsOpen = false },
+                                 modifier = Modifier.background(Skin.Panel).heightIn(max = 360.dp)) {
+                        svt.forEachIndexed { n, se ->
+                            DropdownMenuItem(
+                                contentPadding = MENU_PAD,
+                                text = { Text((if (n == svtSeason) "✓  " else "     ") + se.name +
+                                              "  (" + se.episodes.size + ")", fontSize = 14.sp,
+                                              color = if (n == svtSeason) Skin.Accent else Skin.Fg) },
+                                onClick = { svtSeason = n; seasonsOpen = false })
                         }
                     }
                 }
-                // what it is and who is in it, which is what decides whether to add it
-                if (full.summary.isNotBlank()) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(full.summary, color = Skin.Fg, fontSize = 13.sp, lineHeight = 18.sp)
-                }
-                // who is in it under Show more, as on every other page: the page is for
-                // choosing how to get it (or its episodes, when it streams)
-                if (full.cast.isNotEmpty() && !castOpen) {
-                    Spacer(Modifier.height(8.dp))
-                    Pill("Show more", small = true, narrow = true) { castOpen = true }
-                } else if (full.cast.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        full.cast.take(10).forEach { who ->
-                            FaceBubble(Api.Face(who, full.srv)) { }
-                        }
-                    }
-                }
-                // on SVT Play, unprotected: its episodes play from there, a season at a time
-                if (svt.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    Text("On SVT Play - an episode plays from there", color = Skin.Dim,
-                         fontSize = 12.sp)
-                    Spacer(Modifier.height(6.dp))
-                    // the seasons in a menu: a long-running series has twenty
-                    Box {
-                        Pill((svt.getOrNull(svtSeason)?.name ?: "") + "  ▾", small = true) {
-                            seasonsOpen = true
-                        }
-                        DropdownMenu(expanded = seasonsOpen, onDismissRequest = { seasonsOpen = false },
-                                     modifier = Modifier.background(Skin.Panel).heightIn(max = 360.dp)) {
-                            svt.forEachIndexed { n, se ->
-                                DropdownMenuItem(
-                                    contentPadding = MENU_PAD,
-                                    text = { Text((if (n == svtSeason) "✓  " else "     ") + se.name +
-                                                  "  (" + se.episodes.size + ")", fontSize = 14.sp,
-                                                  color = if (n == svtSeason) Skin.Accent else Skin.Fg) },
-                                    onClick = { svtSeason = n; seasonsOpen = false })
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    svt.getOrNull(svtSeason)?.episodes?.forEach { (id, name, seconds) ->
-                        PackChoice(onPress = {
-                            ctx.startActivity(android.content.Intent(ctx, SvtPlayerActivity::class.java)
-                                .putExtra("svt", id).putExtra("title", full.title + " · " + name))
-                        }) { lit ->
-                            Text("▶  " + name, fontSize = 13.sp, lineHeight = 17.sp,
-                                 color = if (lit) Skin.OnAccent else Skin.Fg)
-                            if (seconds > 0) Text("${seconds / 60} min", fontSize = 11.5.sp,
-                                                  color = if (lit) Skin.OnAccent.copy(alpha = 0.7f)
-                                                          else Skin.Dim)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Text(if (lookFailed) "The tracker did not answer in time - nothing has been added"
-                     else if (packs == null) "Looking on the tracker…"
-                     else if (packs!!.isEmpty() && trackerEps.isNotEmpty())
-                         "No season packs - its single episodes are in the menu."
-                     else if (packs!!.isEmpty()) "Nothing on the tracker for it yet."
-                     else "Choose a version: packs first, then single episodes",
-                     color = Skin.Dim, fontSize = 12.sp)
                 Spacer(Modifier.height(6.dp))
-                if (lookFailed) {
-                    Pill("Look again", filled = true) { lookFailed = false; lookAgain++ }
-                }
-                // a pack is asked about before it is added: (id, what it is), "" letting it find
-                // them itself (owner, 2026-11-15)
-                var asking by remember { mutableStateOf<Pair<String, String>?>(null) }
-                asking?.let { (id, words) ->
-                    AlertDialog(
-                        onDismissRequest = { asking = null },
-                        containerColor = Skin.Panel,
-                        title = { Text(if (id.isEmpty()) "Add to the library?" else "Add this pack?",
-                                       color = Skin.Fg, fontSize = 17.sp) },
-                        text = { Text(words, color = Skin.Fg, fontSize = 13.sp, lineHeight = 18.sp) },
-                        confirmButton = {
-                            Pill("Add", primary = true) {
-                                asking = null
-                                Toast.makeText(ctx, if (id.isEmpty()) "Adding to the library"
-                                                    else "Adding " + words.substringBefore("  ·  "),
-                                               Toast.LENGTH_SHORT).show()
-                                add(id)
-                            }
-                        },
-                        dismissButton = { Pill("Cancel") { asking = null } })
-                }
-                packs?.let { list ->
-                    // one download menu: the packs, letting it find them, the single episodes
-                    val choice = chosen ?: ((list.firstOrNull { it.pick } ?: list.firstOrNull { !it.unsure })
-                                                ?.let { "p:" + it.id } ?: "find")
-                    val gb = { n: Long -> String.format(java.util.Locale.US, "%.1f GB", n / 1073741824.0) }
-                    val packSays = { one: Api.ShowPack ->
-                        listOfNotNull(one.name, if (one.complete) "complete" else span(one.seasons),
-                                      one.size.takeIf { it > 0 }?.let(gb),
-                                      one.seeds.takeIf { it > 0 }?.let { "$it seeding" },
-                                      "could be another series of this name".takeIf { one.unsure })
-                            .joinToString("  ·  ") }
-                    val epSays = { e: Api.TrackerEpisode ->
-                        listOfNotNull("S%02dE%02d".format(e.season, e.episode), e.name,
-                                      e.size.takeIf { it > 0 }?.let(gb),
-                                      e.seeds.takeIf { it > 0 }?.let { "$it seeding" })
-                            .joinToString("  ·  ") }
-                    val find = "Let it find packs by itself, a season at a time"
-                    val takeEpisode = { e: Api.TrackerEpisode ->
-                        (ctx as AppCompatActivity).lifecycleScope.launch {
-                            val (ok, said) = Api.takeFromTracker(full, e.id)
-                            Toast.makeText(ctx, if (ok) "Downloading" else said,
-                                           Toast.LENGTH_SHORT).show()
-                        }
-                        Unit
-                    }
-                    // every choice on show, not a menu: closed, it read as one pack on offer. A
-                    // press does it: it only marked the row, with the button under the list, and
-                    // read as nothing happening. A pack added downloads nothing and can be removed
-                    val item = @Composable { words: String, mine: Boolean, green: Boolean, pick: () -> Unit ->
-                        PackChoice(onPress = pick) { lit ->
-                            Text((if (mine) "✓  " else "") + words, fontSize = 13.sp, lineHeight = 17.sp,
-                                 color = if (lit) Skin.OnAccent else if (mine) Skin.Accent
-                                         else if (green) Color(0xFF5FD08A) else Skin.Fg)
-                        }
-                    }
-                    Column(Modifier.fillMaxWidth().heightIn(max = 300.dp)
-                               .verticalScroll(rememberScrollState())) {
-                        list.forEach { one ->
-                            item(packSays(one), "p:" + one.id == choice, one.pick) {
-                                chosen = "p:" + one.id
-                                asking = one.id to packSays(one)
-                            }
-                        }
-                        item(find, choice == "find", false) {
-                            chosen = "find"
-                            asking = "" to find
-                        }
-                        if (trackerEps.isNotEmpty()) {
-                            Text("Single episodes", color = Skin.Dim, fontSize = 12.sp,
-                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                        }
-                        trackerEps.forEach { e ->
-                            item(epSays(e), "e:" + e.id == choice, false) {
-                                chosen = "e:" + e.id
-                                takeEpisode(e)
-                            }
-                        }
+                svt.getOrNull(svtSeason)?.episodes?.forEach { (id, name, seconds) ->
+                    PackChoice(onPress = {
+                        ctx.startActivity(android.content.Intent(ctx, SvtPlayerActivity::class.java)
+                            .putExtra("svt", id).putExtra("title", title + " · " + name))
+                    }) { lit ->
+                        Text("▶  " + name, fontSize = 13.sp, lineHeight = 17.sp,
+                             color = if (lit) Skin.OnAccent else Skin.Fg)
+                        if (seconds > 0) Text("${seconds / 60} min", fontSize = 11.5.sp,
+                                              color = if (lit) Skin.OnAccent.copy(alpha = 0.7f)
+                                                      else Skin.Dim)
                     }
                 }
             }
         },
-        confirmButton = { Pill(if (busy) "Adding…" else "Close") { onClose() } })
+        confirmButton = { Pill("Close") { onClose() } })
 }
 
 /** Where a title streams, in a row: "Region" and the country's flag, then each service's
@@ -7075,7 +6875,9 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                          /** "watchlist", or a collection's id: that page, this one closed */
                          onGoTo: (String) -> Unit = {},
                          /** a name pressed in the cast: everything held with them in it */
-                         onPerson: (Media.Player) -> Unit = {}) {
+                         onPerson: (Media.Player) -> Unit = {},
+                         /** this page swapped for another: a series not held, once added */
+                         onReplace: (Media) -> Unit = {}) {
     val ctx = LocalContext.current
     val portrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     // A phone on its side has about three hundred and sixty points of height, and the
@@ -7120,6 +6922,20 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     }
     var otherOpen by remember(m.ratingKey) { mutableStateOf(false) }
     var otherSaid by remember(m.ratingKey) { mutableStateOf("") }
+    // a series not held: Download pressed (a count, so a second press asks again), and its
+    // SVT Play episodes open
+    var seriesFind by remember(m.ratingKey) { mutableStateOf(0) }
+    var svtOpen by remember(m.ratingKey) { mutableStateOf(false) }
+    LaunchedEffect(m.ratingKey, seriesFind) {
+        if (seriesFind == 0) return@LaunchedEffect
+        otherSaid = "Looking on the tracker…"
+        val found = Api.showFind(full.also { if (it.tmdb == 0) it.tmdb = m.tmdb })
+        if (found == null) { otherSaid = "The tracker did not answer in time"; return@LaunchedEffect }
+        other = Api.Carrying(rows = Route.seriesChoices(found.first, found.second))
+        otherSaid = ""
+        packList = true
+    }
+    if (svtOpen) SvtSeriesDialog(full.svtId.ifEmpty { m.svtId }, full.title) { svtOpen = false }
     var downloading by remember(m.ratingKey) { mutableStateOf(false) }
     //: waiting for a subtitle being written, so the remote can be put on Play as soon
     //: as there is enough of it to start
@@ -8234,7 +8050,28 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
             }
             // a series' versions are its packs: the Version picker films and episodes
             // have, saying the one in use, to change it or add another
-            if (full.type == "show") {
+            // a series not held here: its page as a held one's, with Download where its
+            // version would be - the tracker's packs and episodes, a press taking one and
+            // putting the series in the library. There was an Add page in front of it
+            // (owner, 2026-11-20)
+            if (full.type == "show" && full.addable) {
+                // the film page's button, words and all, and the remote on it as the page
+                // opens: as an icon beside the marks it read as something else (owner, 2026-11-20)
+                val dlFocus = remember { FocusRequester() }
+                LaunchedEffect(full.ratingKey) {
+                    kotlinx.coroutines.delay(300)
+                    runCatching { dlFocus.requestFocus() }
+                }
+                Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Pill("⤓ Download", primary = true,
+                         modifier = Modifier.focusRequester(dlFocus)) { seriesFind++ }
+                    // and its episodes on SVT Play, where SVT has it unprotected
+                    if ((full.svtId.ifEmpty { m.svtId }).isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                        Pill("SVT Play") { svtOpen = true }
+                    }
+                }
+            } else if (full.type == "show") {
                 val inUse = seriesPacks?.let { (chosen, rows) ->
                     chosen.mapNotNull { h -> rows.firstOrNull { it.hash == h } } }
                 Pill("Version: " + when {
@@ -8455,8 +8292,26 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
     if (packList) {
         DownloadPicker(full, other.rows, onClose = { packList = false },
                        onSaid = { otherSaid = it },
+                       askFirst = full.addable,
                        onTake = { one ->
-                           if (one.word == "In use") {
+                           if (full.addable) {
+                               (ctx as AppCompatActivity).lifecycleScope.launch {
+                                   if (one.id.startsWith("e:")) {
+                                       val (got, said) = Api.takeFromTracker(full, one.id.removePrefix("e:"))
+                                       otherSaid = if (got) "Downloading $said" else said
+                                       return@launch
+                                   }
+                                   otherSaid = "Adding…"
+                                   val pack = Route.seriesPackId(one.id)
+                                   val (key, error) = Api.addShowPack(
+                                       full.also { if (it.tmdb == 0) it.tmdb = m.tmdb }, pack)
+                                   otherSaid = Route.seriesAddedSaid(key, error, pack)
+                                   if (key.isNotEmpty()) {
+                                       runCatching { Api.metadata(full.copy(ratingKey = key).also { it.srv = full.srv }) }
+                                           .getOrNull()?.let(onReplace)
+                                   }
+                               }
+                           } else if (one.word == "In use") {
                                otherSaid = "Already in use - remove it under Version"
                            } else {
                                (ctx as AppCompatActivity).lifecycleScope.launch {
@@ -8610,7 +8465,8 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     // it asks first. Plain until the remote reaches them, which is
                     // the only state worth marking.
                     // not under a film's extras: the film is what they would mark
-                    if (full.isFolder) {
+                    // and not on a series or season with nothing here: nothing to mark
+                    if (Route.marksAll(full.isFolder, full.addable)) {
                         Pill("Mark all watched") { marking = true }
                         Pill("Mark all unwatched") { marking = false }
                     }
@@ -8620,6 +8476,14 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                     SeasonPacks(full, onAdded = {
                         (ctx as AppCompatActivity).lifecycleScope.launch {
                             children = runCatching { Api.children(full) }.getOrDefault(children)
+                        }
+                    }, onLibrary = { showKey ->
+                        // a season of a series not held: the library's season now, in its place
+                        (ctx as AppCompatActivity).lifecycleScope.launch {
+                            runCatching {
+                                Api.metadata(full.copy(ratingKey = Route.librarySeason(showKey, full.index))
+                                                 .also { it.srv = full.srv })
+                            }.getOrNull()?.let(onReplace)
                         }
                     }) { addingPack = false }
                 }
@@ -8792,7 +8656,7 @@ private fun DetailScreen(m: Media, onBack: () -> Unit, onOpen: (Media) -> Unit,
                                 // matched or not: with nothing matched, its search -
                                 // and in the Play build, nothing
                                 if (!BuildConfig.PLAY) fetchingEp = c
-                            } else if (Route.episodeOpensReleases(c.type, c.offered)) {
+                            } else if (Route.episodeOpensReleases(c.type, c.offered, c.addable)) {
                                 // not downloaded: the same release list, the pack's
                                 // copy one of its rows
                                 if (!BuildConfig.PLAY) fetchingEp = c

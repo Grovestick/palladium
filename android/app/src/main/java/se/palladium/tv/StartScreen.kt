@@ -550,7 +550,8 @@ private fun StartSlide(m: Media, eyebrow: String, text: String, wide: Boolean,
             Spacer(Modifier.height(2.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 val act = if (m.actWord.isNotEmpty()) m.actWord to m.actPlays
-                          else Route.heroAct(m.offered, m.upcoming, m.askable || m.addable, m.type, m.released)
+                          else Route.heroAct(m.offered || (m.addable && m.onTracker), m.upcoming,
+                                        m.askable || (m.addable && !m.onTracker), m.type, m.released)
                 Pill(act.first, primary = true) { if (act.second) play(m) else onOpen(m) }
                 Pill("More info") { onOpen(m) }
             }

@@ -918,7 +918,44 @@ object Route {
         !addable -> ""
         checking -> "CHECKING"
         !onTracker -> "REQUEST"
-        else -> "ADD"
+        else -> "DOWNLOAD"
+    }
+
+    /** What a series not held offers under Download: its packs ("t:"), letting it find them a
+     *  season at a time ("find"), then its single episodes ("e:"). */
+    fun seriesChoices(packs: List<Api.ShowPack>, eps: List<Api.TrackerEpisode>): List<Api.Carried> =
+        packs.map { p ->
+            Api.Carried("t:" + p.id, listOfNotNull(p.name,
+                            if (p.complete) "complete" else seasonSpan(p.seasons).ifEmpty { null },
+                            "could be another series of this name".takeIf { p.unsure })
+                            .joinToString("  ·  "),
+                        p.seeds, size = p.size, pick = p.pick, box = true, seasonPack = true)
+        } + Api.Carried("find", "Let it find packs by itself, a season at a time", 0) +
+        eps.sortedWith(compareBy({ it.season }, { it.episode })).map { e ->
+            Api.Carried("e:" + e.id, listOfNotNull("S%02dE%02d".format(e.season, e.episode),
+                                                   e.name.ifEmpty { null }).joinToString("  ·  "),
+                        e.seeds, size = e.size)
+        }
+
+    /** The question and its button before a Download choice on a series not held is taken. */
+    fun seriesAsk(choice: String): Pair<String, String> = when {
+        choice.startsWith("t:") -> "Add this pack?" to "Add"
+        choice == "find" -> "Add to the library?" to "Add"
+        else -> "Download this one?" to "Download"
+    }
+
+    /** The row of a series' Download list that lets it find packs itself: no release facts. */
+    fun isFindRow(id: String): Boolean = id == "find"
+
+    /** The tracker id a Download choice adds as a pack: "" for letting it find them. */
+    fun seriesPackId(choice: String): String = if (choice.startsWith("t:")) choice.removePrefix("t:") else ""
+
+    /** What taking a pack for a series not held says: in the library, or what went wrong. */
+    fun seriesAddedSaid(key: String, error: String, packId: String): String = when {
+        key.isEmpty() -> "Could not add that one" + (if (error.isNotEmpty()) ": $error" else "")
+        error.isNotEmpty() -> "In the library, but the pack: $error"
+        packId.isEmpty() -> "In the library - its packs are looked for a season at a time"
+        else -> "Pack added - nothing is downloaded until you start an episode"
     }
 
     /** The key something played from SVT Play keeps its place under: "sv" + its video id. */
@@ -1818,8 +1855,27 @@ object Route {
 
     /** An episode a pack offers, pressed on its season: the release list every missing
      *  episode opens, rather than its own page with one button. */
-    fun episodeOpensReleases(type: String, offered: Boolean): Boolean =
-        type == "episode" && offered
+    fun episodeOpensReleases(type: String, offered: Boolean, addable: Boolean = false): Boolean =
+        type == "episode" && (offered || addable)
+
+    /** Whether a server's answer to a search starts the short wait for the others: one with
+     *  something in it. An empty one does not - the other may be the one that holds it. */
+    fun answerStartsGrace(answer: List<*>?): Boolean = !answer.isNullOrEmpty()
+
+    /** What a search that found nothing says when a server did not answer, or null. */
+    fun searchSilence(empty: Boolean, silent: String): String? =
+        if (empty && silent.isNotBlank()) "$silent did not answer the search - try again" else null
+
+    /** Whether the app acts on what it was opened for: only when first made, and not when
+     *  brought back from the recent apps, which hands over the first intent again. */
+    fun takesIntent(fresh: Boolean, fromHistory: Boolean): Boolean = fresh && !fromHistory
+
+    /** Whether a page offers Mark all watched / unwatched: a series or season with something
+     *  here, not one only the catalogue knows (owner, 2026-11-20). */
+    fun marksAll(folder: Boolean, notHeld: Boolean): Boolean = folder && !notHeld
+
+    /** The library season a catalogue season becomes once a pack of it is added. */
+    fun librarySeason(showKey: String, index: Int?): String = showKey + "-s" + (index ?: 0)
 
     private val LANG_SAME = mapOf(
         "en" to "en", "eng" to "en", "sv" to "sv", "swe" to "sv", "da" to "da", "dan" to "da",

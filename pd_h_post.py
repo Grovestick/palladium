@@ -2752,6 +2752,9 @@ class PostRoutes(_Base):
             # single-episode releases, early ones before the air date included
             episode = re.match(r"^upnext-([0-9a-f]{12})-s(\d+)e(\d+)$",
                                str(body.get("key") or ""))
+            # an episode of a catalogue series not held: by the series' name, which the
+            # app sends as the title (owner, 2026-11-20)
+            catalogue_ep = re.match(r"^tv\d+-s(\d+)e(\d+)$", str(body.get("key") or ""))
             # and an episode that is here: other versions of it, as a film has
             held_ep = None
             if not episode and re.match(r"^e[0-9a-f]{12}$", str(body.get("key") or "")):
@@ -2778,6 +2781,9 @@ class PostRoutes(_Base):
                 episode = True
                 want = str(held_ep["title"] or want)
                 season, number_ep = int(held_ep["season"]), int(held_ep["number"])
+            elif catalogue_ep:
+                episode = True
+                season, number_ep = int(catalogue_ep.group(1)), int(catalogue_ep.group(2))
             elif offered_ep:
                 episode = True
                 want = str(offered_ep.get("name") or offered_ep.get("title") or want)
@@ -3270,7 +3276,9 @@ class PostRoutes(_Base):
             # a series added from its pack: on the watchlist of whoever added it
             self.onto_watchlist(key)
             if body.get("id"):
-                got = S.use_show_pack(show, str(body.get("id")))
+                # from a season's page: that season comes from it
+                got = S.use_show_pack(show, str(body.get("id")),
+                                      season=int(body.get("season") or 0))
                 if got.get("error"):
                     said["error"] = got["error"]
             self.reply_json(said)

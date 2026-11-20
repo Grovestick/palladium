@@ -1974,7 +1974,7 @@ function card(it, onDeck, coll) {
       // is asked, Request where nothing carries it
       : it.addable && it.checking ? '<div class="ribbon checking"><span>Checking…</span></div>'
       : it.addable && it.onTracker === false ? '<div class="ribbon"><span>Request</span></div>'
-      : it.addable ? '<div class="ribbon"><span>Add</span></div>'
+      : it.addable ? '<div class="ribbon"><span>Download</span></div>'
       // on the other server, which is off: greyed, and it can be downloaded here
       : it.away ? '<div class="ribbon"><span>Download</span></div>'
       : it.offered && !offerWord(it)
@@ -2586,21 +2586,21 @@ async function addPopularShow(it) {
   wrap.innerHTML =
     '<div class="poster"><span class="ph"></span>' +
     (m.thumb ? '<img src="' + img(m.thumb, 400, 600, null) + '" alt="" onerror="this.remove()">' : "") +
-    '<div class="ribbon"><span>Add</span></div></div>' +
+    '<div class="ribbon"><span>Download</span></div></div>' +
     '<div class="meta"><h1>' + esc(m.title) + "</h1>" +
     '<div class="sub">' + facts + "</div>" +
     // where it streams: Region and the services, as on a film's page
     badgesRow([], m) +
     '<div class="actions"><select class="pick" id="addpick"><option value="">' +
     "Looking on the tracker\u2026</option></select>" +
-    '<button class="btn" id="addgo" disabled>\u2913 Add as pack</button>' +
+    '<button class="btn" id="addgo" disabled>\u2913 Download</button>' +
     '<span class="note" id="addsaid"></span></div>' +
     '<p class="summary' + (it.svt ? " tellme" : "") + '">' + esc(m.summary || "") + "</p>" +
     // on SVT Play, unprotected: its episodes play from there
     (it.svt ? '<div class="svtseries"><div class="note">On SVT Play - an episode plays ' +
       'from there</div><div class="svtseasons"></div><div class="svteps"></div></div>' : "") +
     '<div class="cast"></div>' +
-    '<div class="note">Not in the library. Adding puts it there with the pack chosen ' +
+    '<div class="note">Not in the library yet. Downloading puts it there with the pack chosen ' +
     "above as a link: every episode gets a download button, and nothing is " +
     "downloaded until one is played.</div></div>";
   main.innerHTML = "";
@@ -2667,7 +2667,7 @@ async function addPopularShow(it) {
     const one = found.filter((p) => p.id === pick.value)[0];
     const ep = single();
     go.textContent = ep ? "\u2913 Download episode  " + gb(ep.size)
-      : one ? "\u2913 Add as pack  " + gb(one.size) : "\u2913 Add to the library";
+      : one ? "\u2913 Download  " + gb(one.size) : "\u2913 Let it find packs";
   };
   label();
   pick.onchange = label;

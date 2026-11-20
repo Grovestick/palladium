@@ -3627,6 +3627,14 @@ class LocalAPI(pd_search.SearchParts):
                 found = self.metadata_for(con, key, brief=True)
                 if found and str(found.get("ratingKey") or key) != key:
                     key = str(found["ratingKey"])
+                elif found:
+                    # held nowhere and in no pack: its seasons from the catalogue
+                    out = self.catalogue_seasons(int(key[2:]), str(found.get("title") or ""))
+                    return {"size": len(out), "Metadata": out}
+            season_of = re.match(r"^tv(\d+)-s(\d+)$", key)
+            if season_of:
+                out = self.catalogue_episodes(int(season_of.group(1)), int(season_of.group(2)))
+                return {"size": len(out), "Metadata": out}
             # a programme on offer, and one of its seasons
             key = self._held_key(con, key)
             import pd_torrents
@@ -7410,7 +7418,80 @@ class LocalAPI(pd_search.SearchParts):
             item.pop("viewOffset", None)
         return item
 
+    #: a catalogue series' seasons and episodes as read: (path) -> (when, answer)
+    _CATALOGUE_SEASONS = {}
+    CATALOGUE_SEASONS_FOR = 3600
+
+    def _catalogue_read(self, path):
+        """The catalogue's answer for one series or season, kept an hour, {} when it has none."""
+        kept = type(self)._CATALOGUE_SEASONS
+        got = kept.get(path)
+        if got and time.time() - got[0] < self.CATALOGUE_SEASONS_FOR:
+            return got[1]
+        try:
+            said = self.lib.tmdb(path, timeout=8) or {}
+        except Exception:
+            return {}
+        if len(kept) > 200:
+            kept.clear()
+        kept[path] = (time.time(), said)
+        return said
+
+    def catalogue_seasons(self, number, show=""):
+        """The seasons of a catalogue series this library does not hold, as library season
+        rows: its page listed nothing under the plot until a pack was added (owner,
+        2026-11-20). Specials left out, as the library leaves them."""
+        said = self._catalogue_read("/tv/%d" % int(number))
+        show = show or str(said.get("name") or "")
+        out = []
+        for s in said.get("seasons") or []:
+            n = int(s.get("season_number") or 0)
+            if n < 1 or not int(s.get("episode_count") or 0):
+                continue
+            aired = str(s.get("air_date") or "")[:10]
+            out.append({"ratingKey": "tv%d-s%d" % (int(number), n), "type": "season",
+                        "title": "Season %d" % n, "index": n,
+                        "parentTitle": show, "grandparentTitle": show,
+                        "parentRatingKey": "tv%d" % int(number),
+                        "leafCount": int(s.get("episode_count") or 0), "viewedLeafCount": 0,
+                        "originallyAvailableAt": aired, "year": int(aired[:4] or 0) or None,
+                        "summary": str(s.get("overview") or ""),
+                        "thumb": "/art/tv%d/poster" % int(number),
+                        # not here: the Download ribbon, and its page offers the packs
+                        "addable": True, "onTracker": True, "tmdb": int(number)})
+        return out
+
+    def catalogue_episodes(self, number, season, show=""):
+        """One season's episodes of a catalogue series not held, as library episode rows,
+        each opening its releases on the tracker."""
+        show = show or str(self._catalogue_read("/tv/%d" % int(number)).get("name") or "")
+        said = self._catalogue_read("/tv/%d/season/%d" % (int(number), int(season)))
+        out = []
+        for e in said.get("episodes") or []:
+            n = int(e.get("episode_number") or 0)
+            if n < 1:
+                continue
+            out.append({"ratingKey": "tv%d-s%de%d" % (int(number), int(season), n),
+                        "type": "episode", "title": str(e.get("name") or ""),
+                        "summary": str(e.get("overview") or ""),
+                        "index": n, "parentIndex": int(season),
+                        "grandparentTitle": show,
+                        "grandparentRatingKey": "tv%d" % int(number),
+                        "parentRatingKey": "tv%d-s%d" % (int(number), int(season)),
+                        "originallyAvailableAt": str(e.get("air_date") or "")[:10],
+                        "duration": int(e.get("runtime") or 0) * 60000,
+                        "thumb": "/art/tv%d/poster" % int(number),
+                        "addable": True, "onTracker": True, "tmdb": int(number)})
+        return out
+
     def metadata_for(self, con, key, brief=False):
+        # a season, or an episode, of a catalogue series not held: from the catalogue
+        part = re.match(r"^tv(\d+)-s(\d+)(?:e(\d+))?$", str(key))
+        if part:
+            number, season = int(part.group(1)), int(part.group(2))
+            rows = (self.catalogue_episodes(number, season) if part.group(3)
+                    else self.catalogue_seasons(number))
+            return next((r for r in rows if r["ratingKey"] == str(key)), None)
         if re.match(r"^sv[A-Za-z0-9]{4,20}$", str(key)):
             # something played from SVT Play: its card, from SVT's own list
             import pd_svtplay

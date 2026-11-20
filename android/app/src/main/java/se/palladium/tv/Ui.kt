@@ -799,7 +799,7 @@ fun Poster(m: Media, width: Int = 150, fill: Boolean = false,
             else if (m.addable) when (Route.seriesBand(true, m.onTracker, m.checking)) {
                 "CHECKING" -> CornerBand("CHECKING", bandW, Skin.Dim)
                 "REQUEST" -> CornerBand("REQUEST", bandW, Skin.Accent)
-                else -> CornerBand("ADD", bandW)
+                else -> CornerBand("DOWNLOAD", bandW)
             }
             else if (m.away) CornerBand("DOWNLOAD", bandW)
             else if (m.offered && said.isEmpty() && !arrived) CornerBand("DOWNLOAD", bandW)

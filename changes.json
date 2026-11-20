@@ -1,5 +1,48 @@
 [
   {
+    "version": "0.20.134",
+    "when": "2026-11-20",
+    "title": "Series not held",
+    "items": [
+      "A series or season with nothing here has no Mark all watched"
+    ]
+  },
+  {
+    "version": "0.20.133",
+    "when": "2026-11-20",
+    "title": "Search handed in",
+    "items": [
+      "A search handed to the app opens its results once, not every time the app comes back"
+    ]
+  },
+  {
+    "version": "0.20.132",
+    "when": "2026-11-20",
+    "title": "Series not held",
+    "items": [
+      "A series not in the library lists its seasons and episodes from the catalogue; a season's Add pack puts it in the library with that pack",
+      "An episode of such a series opens its releases on the tracker",
+      "A search waits for a server with something to say; a silent server is named, not shown as nothing found",
+      "Letting it find packs shows no seeders"
+    ]
+  },
+  {
+    "version": "0.20.131",
+    "when": "2026-11-20",
+    "title": "Series page",
+    "items": [
+      "A series not in the library has the film page's Download button, the remote on it as the page opens"
+    ]
+  },
+  {
+    "version": "0.20.130",
+    "when": "2026-11-20",
+    "title": "Series page",
+    "items": [
+      "A series not in the library opens its own page; Download there takes a pack or an episode and puts it in the library"
+    ]
+  },
+  {
     "version": "0.20.129",
     "when": "2026-11-20",
     "title": "Box sets and subtitle jobs",

@@ -35,7 +35,9 @@ import kotlinx.coroutines.launch
  * come from it, nothing downloaded. Green is the recommended one.
  */
 @Composable
-fun SeasonPacks(season: Media, onAdded: () -> Unit, onClose: () -> Unit) {
+fun SeasonPacks(season: Media, onAdded: () -> Unit,
+                /** a season of a series not held, once its pack is added: the series' library key */
+                onLibrary: (String) -> Unit = {}, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     var got by remember { mutableStateOf<List<Api.SeasonPack>?>(null) }
     var said by remember { mutableStateOf("") }
@@ -113,6 +115,15 @@ fun SeasonPacks(season: Media, onAdded: () -> Unit, onClose: () -> Unit) {
                                    .clickable(enabled = !busy) {
                                        busy = true
                                        scope.launch {
+                                           // a series not held: into the library with this
+                                           // pack, this season from it
+                                           if (season.addable) {
+                                               val (key, error) = Api.addShowPack(season, p.id, season.index ?: 0)
+                                               said = Route.seriesAddedSaid(key, error, p.id)
+                                               busy = false
+                                               if (key.isNotEmpty()) { onClose(); onLibrary(key) }
+                                               return@launch
+                                           }
                                            val err = Api.addSeasonPack(season, p.id)
                                            said = err.ifEmpty { "Pack added - nothing downloaded" }
                                            busy = false

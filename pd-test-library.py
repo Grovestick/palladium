@@ -3216,6 +3216,35 @@ check("280 the subtitle maker's jobs are kept under the server's root: " + _pas2
       os.path.normcase(os.path.abspath(_pas280.saved_path())).startswith(
           os.path.normcase(os.path.abspath(root))))
 
+# ---- 281 a catalogue series not held: its page lists the catalogue's seasons, a season its
+#      episodes, each with the Download ribbon; specials left out
+def _fake281(path, **kw):
+    if path == "/tv/990281":
+        return {"name": "Gate Harbour", "first_air_date": "2020-01-01",
+                "seasons": [{"season_number": 0, "episode_count": 2},
+                            {"season_number": 1, "episode_count": 2, "air_date": "2020-01-01"},
+                            {"season_number": 2, "episode_count": 1, "air_date": "2021-01-01"}]}
+    if path == "/tv/990281/season/1":
+        return {"episodes": [{"episode_number": 1, "name": "Pier", "runtime": 50},
+                             {"episode_number": 2, "name": "Tide", "runtime": 48}]}
+    return {}
+_was281 = api.lib.tmdb
+type(api)._CATALOGUE_SEASONS.clear()
+try:
+    api.lib.tmdb = _fake281
+    _s281 = cards("/library/metadata/tv990281/children")
+    _e281 = cards("/library/metadata/tv990281-s1/children")
+    _one281 = cards("/library/metadata/tv990281-s1e2")
+finally:
+    api.lib.tmdb = _was281
+    type(api)._CATALOGUE_SEASONS.clear()
+check("281 a catalogue series not held lists its seasons and their episodes",
+      [x.get("ratingKey") for x in _s281] == ["tv990281-s1", "tv990281-s2"]
+      and all(x.get("addable") and x.get("grandparentTitle") == "Gate Harbour" for x in _s281)
+      and [(x.get("index"), x.get("title")) for x in _e281] == [(1, "Pier"), (2, "Tide")]
+      and [x.get("ratingKey") for x in _one281] == ["tv990281-s1e2"],
+      str((_s281, _e281, _one281))[:300])
+
 print("LIBRARY FAILED: %d" % len(FAILS) if FAILS else "LIBRARY PASSED")
 for f in sorted(set(FAILS)):
     # a title with a letter the console's code page lacks ("⧸") stopped the printout
